@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 11.3.0
+ * Version: 11.4.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -37,7 +37,7 @@ class Scraper_Auto_Shop_Plugin {
 			'top_bar_notice'              => 'تخفیف ویژه امروز: ارسال رایگان برای سفارش‌های بالای ۴۰۰ هزار تومان! 🚚',
 			'contact_phone'               => '۰۲۱-۱۲۳۴۵۶۷۸',
 			'support_hours'               => 'پاسخگویی ۹ الی ۲۲',
-			'shop_title'                  => 'فروشگاه آنلاین و هوشمند نوآوران',
+			'shop_title'                  => 'فروشگاه آنلاین نوآوران',
 			'shop_subtitle'               => 'تنوع بی‌نظیر کالاها با تضمین اصالت، سلامت فیزیکی و ارسال سریع به سراسر کشور',
 			'price_markup_percent'        => 20,
 			'price_fixed_add'             => 0,
@@ -47,9 +47,9 @@ class Scraper_Auto_Shop_Plugin {
 			'fallback_price_behavior'     => 'use_fallback', // 'use_fallback' or 'call_for_price'
 			'accent_color'                => '#2563eb',
 			'products_per_page'           => 16,
-			'show_brand_badge'            => true,
 			'show_features_banner'        => true,
 			'show_special_badge'          => true,
+			'free_shipping_threshold'     => 400000,
 		);
 	}
 
@@ -309,7 +309,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * Get summary list of profiles from scraper4 profiles.json.
+	 * Get summary list of profiles from scraper4 profiles.json (used internally for admin sync).
 	 *
 	 * @return array
 	 */
@@ -381,8 +381,7 @@ class Scraper_Auto_Shop_Plugin {
 					if ( ! is_array( $p_item ) ) {
 						continue;
 					}
-					$profile_name = ! empty( $p_item['name'] ) ? $p_item['name'] : $p_key;
-					$raw_prods    = $p_item['products'] ?? array();
+					$raw_prods = $p_item['products'] ?? array();
 					if ( is_array( $raw_prods ) ) {
 						foreach ( $raw_prods as $entry ) {
 							$prod = null;
@@ -425,7 +424,6 @@ class Scraper_Auto_Shop_Plugin {
 
 							$desc = $prod['long_desc'] ?? $prod['description'] ?? $prod['desc'] ?? $prod['short_desc'] ?? '';
 							$cat  = $prod['category'] ?? $prod['cat'] ?? 'عمومی';
-							$link = $prod['link'] ?? $prod['url'] ?? '';
 
 							$products[] = array(
 								'id'              => $hash,
@@ -438,9 +436,6 @@ class Scraper_Auto_Shop_Plugin {
 								'gallery'         => $gallery,
 								'category'        => $cat,
 								'description'     => $desc,
-								'link'            => $link,
-								'profile'         => $profile_name,
-								'profile_key'     => $p_key,
 								'in_stock'        => true,
 							);
 						}
@@ -476,9 +471,6 @@ class Scraper_Auto_Shop_Plugin {
 									'gallery'         => $gallery,
 									'category'        => $prod['category'] ?? $prod['cat'] ?? 'عمومی',
 									'description'     => $prod['description'] ?? $prod['desc'] ?? '',
-									'link'            => $prod['link'] ?? $prod['url'] ?? '',
-									'profile'         => 'برند برتر',
-									'profile_key'     => 'woo_temp',
 									'in_stock'        => true,
 								);
 							}
@@ -505,7 +497,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( empty( $products ) ) {
 			return array(
 				'ok'      => false,
-				'message' => 'هیچ محصولی در پروفایل‌ها برای همگام‌سازی یافت نشد.',
+				'message' => 'هیچ محصولی برای همگام‌سازی یافت نشد.',
 				'created' => 0,
 				'updated' => 0,
 				'total'   => 0,
@@ -551,10 +543,6 @@ class Scraper_Auto_Shop_Plugin {
 				}
 				update_post_meta( $product_id, '_manage_stock', 'no' );
 				update_post_meta( $product_id, '_stock_status', 'instock' );
-				update_post_meta( $product_id, '_scraped_source_profile', $p['profile'] );
-				if ( ! empty( $p['link'] ) ) {
-					update_post_meta( $product_id, '_scraped_source_url', $p['link'] );
-				}
 
 				// Assign category
 				if ( ! empty( $p['category'] ) ) {
@@ -666,25 +654,17 @@ class Scraper_Auto_Shop_Plugin {
 
 	/**
 	 * Shortcode [scraped_shop] / [modern_shop] HTML Renderer.
-	 * 100% clean customer experience with NO internal scraper/extraction references.
+	 * 100% customer-facing, ultra-modern luxury e-commerce experience.
 	 */
 	public static function render_shop_shortcode() {
 		$settings = self::get_settings();
 		$products = self::get_all_scraped_products();
-		$profiles = self::get_profiles_summary();
 
 		// Unique categories
 		$categories = array();
 		foreach ( $products as $p ) {
 			$cat = ! empty( $p['category'] ) ? $p['category'] : 'عمومی';
 			$categories[ $cat ] = ( $categories[ $cat ] ?? 0 ) + 1;
-		}
-
-		// Unique brands/profiles (presented cleanly as Brands/Suppliers)
-		$prof_counts = array();
-		foreach ( $products as $p ) {
-			$pr = ! empty( $p['profile'] ) ? $p['profile'] : 'سایر';
-			$prof_counts[ $pr ] = ( $prof_counts[ $pr ] ?? 0 ) + 1;
 		}
 
 		$account_url = function_exists( 'wc_get_page_permalink' ) ? wc_get_page_permalink( 'myaccount' ) : wp_login_url();
@@ -703,16 +683,17 @@ class Scraper_Auto_Shop_Plugin {
 				--sp-text: #0f172a;
 				--sp-muted: #64748b;
 				--sp-radius: 18px;
-				--sp-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.07);
+				--sp-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.06);
 			}
 			.modern-shop-root {
-				font-family: Vazirmatn, system-ui, -apple-system, sans-serif;
+				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Vazirmatn", "IRANSans", sans-serif;
 				direction: rtl;
 				text-align: right;
-				margin: 15px auto 60px;
+				margin: 15px auto 80px;
 				color: var(--sp-text);
 				width: 100%;
 				box-sizing: border-box;
+				-webkit-font-smoothing: antialiased;
 			}
 			.modern-shop-root * {
 				box-sizing: border-box;
@@ -739,7 +720,7 @@ class Scraper_Auto_Shop_Plugin {
 			.store-badge-live {
 				background: #10b981;
 				color: #fff;
-				padding: 2px 8px;
+				padding: 2px 9px;
 				border-radius: 20px;
 				font-size: 0.75rem;
 				font-weight: 700;
@@ -777,6 +758,7 @@ class Scraper_Auto_Shop_Plugin {
 				justify-content: space-between;
 				gap: 20px;
 				flex-wrap: wrap;
+				position: relative;
 			}
 			.store-brand {
 				display: flex;
@@ -821,20 +803,21 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			.store-header-search input {
 				width: 100%;
-				padding: 12px 46px 12px 18px;
+				padding: 12px 46px 12px 36px;
 				border: 1.5px solid #cbd5e1;
 				border-radius: 30px;
 				font-size: 0.92rem;
 				background: #f8fafc;
 				transition: all 0.25s ease;
 				outline: none;
+				font-family: inherit;
 			}
 			.store-header-search input:focus {
 				border-color: var(--sp-accent);
 				background: #fff;
 				box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 			}
-			.store-header-search svg {
+			.store-header-search svg.search-icon {
 				position: absolute;
 				right: 16px;
 				top: 50%;
@@ -843,6 +826,26 @@ class Scraper_Auto_Shop_Plugin {
 				height: 20px;
 				fill: #94a3b8;
 				pointer-events: none;
+			}
+			.search-clear-btn {
+				position: absolute;
+				left: 14px;
+				top: 50%;
+				transform: translateY(-50%);
+				width: 20px;
+				height: 20px;
+				border-radius: 50%;
+				background: #cbd5e1;
+				color: #475569;
+				display: none;
+				align-items: center;
+				justify-content: center;
+				font-size: 0.75rem;
+				cursor: pointer;
+				user-select: none;
+			}
+			.search-clear-btn.active {
+				display: flex;
 			}
 
 			/* Header Actions Area */
@@ -888,6 +891,15 @@ class Scraper_Auto_Shop_Plugin {
 				padding: 2px 7px;
 				font-size: 0.75rem;
 				font-weight: 800;
+				transition: transform 0.2s;
+			}
+			.cart-count-badge.pulse {
+				animation: cartPulse 0.4s ease;
+			}
+			@keyframes cartPulse {
+				0% { transform: scale(1); }
+				50% { transform: scale(1.4); }
+				100% { transform: scale(1); }
 			}
 			.btn-mobile-toggle {
 				display: none;
@@ -904,7 +916,7 @@ class Scraper_Auto_Shop_Plugin {
 				border: 1px solid var(--sp-border);
 				border-radius: var(--sp-radius);
 				padding: 8px 16px;
-				margin-bottom: 25px;
+				margin-bottom: 20px;
 				box-shadow: 0 4px 15px rgba(0,0,0,0.03);
 				display: flex;
 				align-items: center;
@@ -955,7 +967,7 @@ class Scraper_Auto_Shop_Plugin {
 				background: rgba(37,99,235,0.08);
 			}
 
-			/* Dropdown Mega Menu for Categories & Brands */
+			/* Dropdown Mega Menu for Categories */
 			.mega-dropdown-panel {
 				display: none;
 				position: absolute;
@@ -996,39 +1008,82 @@ class Scraper_Auto_Shop_Plugin {
 				color: var(--sp-accent);
 			}
 
+			/* Flash Sale Promotional Bar */
+			.flash-sale-bar {
+				background: linear-gradient(135deg, #ef4444 0%, #dc2626 50%, #991b1b 100%);
+				color: #fff;
+				border-radius: 14px;
+				padding: 12px 20px;
+				margin-bottom: 20px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				flex-wrap: wrap;
+				gap: 12px;
+				box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25);
+			}
+			.flash-sale-title {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				font-size: 0.95rem;
+			}
+			.flash-icon {
+				font-size: 1.2rem;
+				animation: flashSpin 2s infinite ease-in-out;
+			}
+			@keyframes flashSpin {
+				0%, 100% { transform: scale(1); }
+				50% { transform: scale(1.25); }
+			}
+			.flash-timer {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				font-weight: 800;
+				direction: ltr;
+			}
+			.timer-box {
+				background: rgba(0,0,0,0.3);
+				padding: 4px 8px;
+				border-radius: 6px;
+				font-size: 0.88rem;
+				letter-spacing: 1px;
+			}
+
 			/* Luxury Hero Banner */
 			.modern-shop-hero {
 				background: radial-gradient(circle at 85% 20%, rgba(37,99,235,0.3) 0%, transparent 50%),
 				            linear-gradient(135deg, #090d16 0%, #0f172a 50%, #1e1b4b 100%);
 				border-radius: var(--sp-radius);
-				padding: 50px 30px;
+				padding: 45px 30px;
 				color: #fff;
 				text-align: center;
-				margin-bottom: 30px;
+				margin-bottom: 25px;
 				box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.35);
 				position: relative;
 				overflow: hidden;
 				border: 1px solid rgba(255,255,255,0.1);
 			}
 			.modern-shop-hero h1 {
-				font-size: 2.5rem;
+				font-size: 2.3rem;
 				font-weight: 900;
-				margin-bottom: 12px;
+				margin-bottom: 10px;
 				color: #ffffff;
 				letter-spacing: -0.5px;
 			}
 			.modern-shop-hero p {
-				font-size: 1.12rem;
+				font-size: 1.08rem;
 				color: #cbd5e1;
 				max-width: 680px;
-				margin: 0 auto 26px;
+				margin: 0 auto 24px;
 				line-height: 1.7;
 			}
 			.hero-features-bar {
 				display: flex;
 				flex-wrap: wrap;
 				justify-content: center;
-				gap: 15px;
+				gap: 12px;
 			}
 			.hero-feature-item {
 				background: rgba(255,255,255,0.08);
@@ -1036,32 +1091,32 @@ class Scraper_Auto_Shop_Plugin {
 				border: 1px solid rgba(255,255,255,0.15);
 				padding: 8px 16px;
 				border-radius: 30px;
-				font-size: 0.88rem;
+				font-size: 0.85rem;
 				color: #f8fafc;
 				display: flex;
 				align-items: center;
 				gap: 8px;
 			}
 
-			/* Toolbar & Filters */
+			/* Toolbar & Category Chips */
 			.shop-toolbar {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				margin-bottom: 20px;
-				padding: 14px 20px;
+				margin-bottom: 16px;
+				padding: 12px 20px;
 				background: #ffffff;
 				border: 1px solid var(--sp-border);
 				border-radius: var(--sp-radius);
 				flex-wrap: wrap;
-				gap: 15px;
+				gap: 12px;
 			}
 			.sort-select {
-				padding: 9px 16px;
-				border-radius: 12px;
+				padding: 8px 14px;
+				border-radius: 10px;
 				border: 1px solid #cbd5e1;
 				font-family: inherit;
-				font-size: 0.9rem;
+				font-size: 0.88rem;
 				background-color: #fff;
 				color: #334155;
 				cursor: pointer;
@@ -1069,20 +1124,23 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			.filter-pills-wrap {
 				display: flex;
-				flex-wrap: wrap;
-				gap: 10px;
-				margin-bottom: 24px;
+				overflow-x: auto;
+				padding-bottom: 8px;
+				gap: 8px;
+				margin-bottom: 22px;
+				scrollbar-width: thin;
 			}
 			.filter-pill {
 				background: #fff;
 				border: 1px solid var(--sp-border);
-				padding: 9px 18px;
+				padding: 8px 16px;
 				border-radius: 30px;
 				font-size: 0.88rem;
 				font-weight: 600;
 				color: #475569;
 				cursor: pointer;
-				transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+				white-space: nowrap;
+				transition: all 0.2s;
 				display: inline-flex;
 				align-items: center;
 				gap: 6px;
@@ -1091,13 +1149,13 @@ class Scraper_Auto_Shop_Plugin {
 				background: var(--sp-accent);
 				color: #fff;
 				border-color: var(--sp-accent);
-				box-shadow: 0 6px 16px rgba(37,99,235,0.25);
+				box-shadow: 0 4px 12px rgba(37,99,235,0.25);
 			}
 			.filter-pill-badge {
 				background: rgba(0,0,0,0.08);
 				padding: 2px 7px;
 				border-radius: 20px;
-				font-size: 0.75rem;
+				font-size: 0.72rem;
 			}
 			.filter-pill.active .filter-pill-badge {
 				background: rgba(255,255,255,0.25);
@@ -1107,8 +1165,8 @@ class Scraper_Auto_Shop_Plugin {
 			/* Products Grid */
 			.products-grid {
 				display: grid;
-				grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-				gap: 24px;
+				grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+				gap: 22px;
 			}
 			.product-card {
 				background: var(--sp-bg-card);
@@ -1117,19 +1175,19 @@ class Scraper_Auto_Shop_Plugin {
 				overflow: hidden;
 				display: flex;
 				flex-direction: column;
-				transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
+				transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s ease;
 				position: relative;
 				box-shadow: var(--sp-shadow);
 			}
 			.product-card:hover {
-				transform: translateY(-8px);
-				box-shadow: 0 20px 35px -10px rgba(0,0,0,0.12);
+				transform: translateY(-6px);
+				box-shadow: 0 16px 30px -8px rgba(0,0,0,0.12);
 			}
 			.card-thumb-wrap {
 				position: relative;
 				width: 100%;
 				padding-top: 100%;
-				background: #f1f5f9;
+				background: #f8fafc;
 				overflow: hidden;
 			}
 			.card-thumb-wrap img {
@@ -1139,54 +1197,84 @@ class Scraper_Auto_Shop_Plugin {
 				width: 100%;
 				height: 100%;
 				object-fit: cover;
-				transition: transform 0.5s ease;
+				transition: transform 0.45s ease;
 			}
 			.product-card:hover .card-thumb-wrap img {
-				transform: scale(1.08);
+				transform: scale(1.06);
 			}
-			.card-brand-tag {
+			.card-wishlist-btn {
 				position: absolute;
 				top: 12px;
 				right: 12px;
-				background: rgba(15, 23, 42, 0.78);
-				backdrop-filter: blur(8px);
-				color: #fff;
-				font-size: 0.75rem;
-				font-weight: 600;
-				padding: 4px 10px;
-				border-radius: 8px;
-				z-index: 2;
+				width: 34px;
+				height: 34px;
+				border-radius: 50%;
+				background: rgba(255, 255, 255, 0.9);
+				backdrop-filter: blur(4px);
+				border: none;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				cursor: pointer;
+				z-index: 3;
+				transition: transform 0.2s, background 0.2s;
+				box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+			}
+			.card-wishlist-btn:hover {
+				transform: scale(1.15);
+				background: #fff;
+			}
+			.card-wishlist-btn svg {
+				width: 18px;
+				height: 18px;
+				fill: #94a3b8;
+				transition: fill 0.2s;
+			}
+			.card-wishlist-btn.liked svg {
+				fill: #ef4444;
 			}
 			.card-stock-badge {
 				position: absolute;
 				top: 12px;
 				left: 12px;
-				background: #10b981;
+				background: rgba(16, 185, 129, 0.95);
+				color: #fff;
+				font-size: 0.72rem;
+				font-weight: 700;
+				padding: 3px 9px;
+				border-radius: 6px;
+				z-index: 2;
+			}
+			.card-discount-badge {
+				position: absolute;
+				bottom: 10px;
+				right: 12px;
+				background: #ef4444;
 				color: #fff;
 				font-size: 0.75rem;
-				font-weight: 700;
-				padding: 4px 10px;
-				border-radius: 8px;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 6px;
 				z-index: 2;
 			}
 			.card-body {
-				padding: 20px;
+				padding: 18px;
 				display: flex;
 				flex-direction: column;
 				flex-grow: 1;
 			}
 			.card-category {
-				font-size: 0.8rem;
+				font-size: 0.78rem;
 				color: var(--sp-muted);
 				margin-bottom: 6px;
-				font-weight: 500;
+				font-weight: 600;
 			}
 			.card-title {
-				font-size: 1.05rem;
+				font-size: 0.98rem;
 				font-weight: 700;
 				line-height: 1.55;
-				margin-bottom: 14px;
-				height: 50px;
+				margin-bottom: 12px;
+				height: 46px;
 				overflow: hidden;
 				display: -webkit-box;
 				-webkit-line-clamp: 2;
@@ -1195,51 +1283,49 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			.card-pricing-block {
 				margin-top: auto;
-				margin-bottom: 18px;
+				margin-bottom: 16px;
 				display: flex;
 				flex-direction: column;
-				gap: 4px;
+				gap: 3px;
 			}
 			.pricing-row-top {
 				display: flex;
 				align-items: center;
 				justify-content: space-between;
+				min-height: 20px;
 			}
 			.card-old-price {
-				font-size: 0.85rem;
+				font-size: 0.82rem;
 				color: #94a3b8;
 				text-decoration: line-through;
 			}
-			.card-special-badge {
-				background: #ecfdf5;
+			.card-special-tag {
 				color: #059669;
-				border: 1px solid #a7f3d0;
-				padding: 2px 8px;
-				border-radius: 6px;
 				font-size: 0.75rem;
 				font-weight: 700;
 			}
 			.card-new-price {
-				font-size: 1.35rem;
+				font-size: 1.28rem;
 				font-weight: 900;
 				color: #059669;
 			}
 			.card-actions {
 				display: grid;
 				grid-template-columns: 1fr 1fr;
-				gap: 10px;
+				gap: 8px;
 			}
 			.btn-card-quick {
 				background: #f1f5f9;
 				color: #334155;
 				border: none;
 				border-radius: 10px;
-				padding: 10px;
+				padding: 9px;
 				font-weight: 700;
-				font-size: 0.88rem;
+				font-size: 0.85rem;
 				cursor: pointer;
 				text-align: center;
 				transition: all 0.2s;
+				font-family: inherit;
 			}
 			.btn-card-quick:hover {
 				background: #e2e8f0;
@@ -1249,43 +1335,46 @@ class Scraper_Auto_Shop_Plugin {
 				color: #fff;
 				border: none;
 				border-radius: 10px;
-				padding: 10px;
+				padding: 9px;
 				font-weight: 700;
-				font-size: 0.88rem;
+				font-size: 0.85rem;
 				cursor: pointer;
 				text-align: center;
 				transition: all 0.2s;
 				text-decoration: none;
-				display: inline-block;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 6px;
+				font-family: inherit;
 			}
 			.btn-card-buy:hover {
 				background: var(--sp-accent-hover);
 				color: #fff;
 			}
+			.btn-card-buy.added {
+				background: #10b981;
+			}
 
-			/* Empty state */
-			.shop-empty-state {
+			/* Empty search state */
+			.search-no-results {
 				background: #fff;
-				border: 2px dashed #cbd5e1;
+				border: 1px solid var(--sp-border);
 				border-radius: var(--sp-radius);
-				padding: 60px 20px;
+				padding: 40px 20px;
 				text-align: center;
-				margin: 30px auto;
-				max-width: 600px;
+				grid-column: 1 / -1;
+				margin: 10px 0;
 			}
-			.shop-empty-state .empty-icon {
-				font-size: 4rem;
-				margin-bottom: 15px;
-			}
-			.shop-empty-state h3 {
-				font-size: 1.4rem;
+			.search-no-results h4 {
+				margin: 10px 0;
+				font-size: 1.15rem;
 				font-weight: 800;
-				margin-bottom: 10px;
 			}
-			.shop-empty-state p {
-				color: #64748b;
-				margin-bottom: 25px;
-				line-height: 1.7;
+			.search-no-results p {
+				color: var(--sp-muted);
+				font-size: 0.9rem;
+				margin-bottom: 16px;
 			}
 
 			/* Slide-over Cart Drawer */
@@ -1306,9 +1395,9 @@ class Scraper_Auto_Shop_Plugin {
 			.cart-drawer {
 				position: fixed;
 				top: 0;
-				left: -400px;
-				width: 380px;
-				max-width: 90vw;
+				left: -420px;
+				width: 400px;
+				max-width: 92vw;
 				height: 100vh;
 				background: #fff;
 				z-index: 9999;
@@ -1323,19 +1412,38 @@ class Scraper_Auto_Shop_Plugin {
 				left: 0;
 			}
 			.cart-drawer-header {
-				padding: 20px;
+				padding: 18px 22px;
 				border-bottom: 1px solid var(--sp-border);
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
 			}
+			.cart-shipping-progress {
+				background: #f8fafc;
+				padding: 12px 20px;
+				border-bottom: 1px solid #f1f5f9;
+				font-size: 0.82rem;
+			}
+			.progress-track {
+				height: 6px;
+				background: #e2e8f0;
+				border-radius: 10px;
+				margin-top: 6px;
+				overflow: hidden;
+			}
+			.progress-fill {
+				height: 100%;
+				background: #10b981;
+				width: 0%;
+				transition: width 0.3s;
+			}
 			.cart-drawer-items {
 				flex-grow: 1;
 				overflow-y: auto;
-				padding: 20px;
+				padding: 16px 20px;
 				display: flex;
 				flex-direction: column;
-				gap: 15px;
+				gap: 14px;
 			}
 			.cart-item-row {
 				display: flex;
@@ -1345,9 +1453,9 @@ class Scraper_Auto_Shop_Plugin {
 				border-bottom: 1px solid #f1f5f9;
 			}
 			.cart-item-img {
-				width: 60px;
-				height: 60px;
-				border-radius: 10px;
+				width: 64px;
+				height: 64px;
+				border-radius: 12px;
 				object-fit: cover;
 				background: #f1f5f9;
 			}
@@ -1361,9 +1469,49 @@ class Scraper_Auto_Shop_Plugin {
 				line-height: 1.4;
 			}
 			.cart-item-price {
-				font-size: 0.85rem;
+				font-size: 0.88rem;
 				color: #059669;
 				font-weight: 800;
+				margin-bottom: 6px;
+			}
+			.cart-item-qty-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.cart-qty-btn {
+				width: 26px;
+				height: 26px;
+				border: 1px solid #cbd5e1;
+				background: #fff;
+				border-radius: 6px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				cursor: pointer;
+				font-weight: 700;
+			}
+			.cart-qty-btn:hover {
+				background: #f1f5f9;
+			}
+			.cart-qty-num {
+				font-weight: 800;
+				font-size: 0.9rem;
+				min-width: 18px;
+				text-align: center;
+			}
+			.cart-item-del {
+				background: none;
+				border: none;
+				color: #94a3b8;
+				font-size: 0.95rem;
+				cursor: pointer;
+				margin-right: auto;
+				padding: 4px;
+				transition: color 0.2s;
+			}
+			.cart-item-del:hover {
+				color: #ef4444;
 			}
 			.cart-drawer-footer {
 				padding: 20px;
@@ -1373,43 +1521,9 @@ class Scraper_Auto_Shop_Plugin {
 			.cart-total-row {
 				display: flex;
 				justify-content: space-between;
-				font-size: 1.1rem;
+				font-size: 1.15rem;
 				font-weight: 800;
-				margin-bottom: 15px;
-			}
-
-			/* Mobile Off-Canvas Drawer Menu */
-			.mobile-drawer-overlay {
-				position: fixed;
-				inset: 0;
-				background: rgba(0, 0, 0, 0.45);
-				backdrop-filter: blur(4px);
-				z-index: 9998;
-				opacity: 0;
-				pointer-events: none;
-				transition: opacity 0.3s ease;
-			}
-			.mobile-drawer-overlay.open {
-				opacity: 1;
-				pointer-events: auto;
-			}
-			.mobile-drawer {
-				position: fixed;
-				top: 0;
-				right: -320px;
-				width: 300px;
-				height: 100vh;
-				background: #ffffff;
-				z-index: 9999;
-				box-shadow: -10px 0 30px rgba(0,0,0,0.15);
-				transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-				display: flex;
-				flex-direction: column;
-				padding: 20px;
-				overflow-y: auto;
-			}
-			.mobile-drawer.open {
-				right: 0;
+				margin-bottom: 14px;
 			}
 
 			/* Quick View Modal */
@@ -1430,22 +1544,22 @@ class Scraper_Auto_Shop_Plugin {
 			.modal-content {
 				background: #fff;
 				border-radius: 24px;
-				max-width: 780px;
+				max-width: 760px;
 				width: 100%;
 				overflow: hidden;
 				position: relative;
-				animation: modalSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+				animation: modalSlide 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 				box-shadow: 0 25px 60px -15px rgba(0,0,0,0.3);
 			}
 			@keyframes modalSlide {
-				from { transform: translateY(30px); opacity: 0; }
+				from { transform: translateY(25px); opacity: 0; }
 				to { transform: translateY(0); opacity: 1; }
 			}
 			.modal-close {
 				position: absolute;
 				top: 18px;
 				left: 18px;
-				font-size: 1.4rem;
+				font-size: 1.3rem;
 				cursor: pointer;
 				width: 36px;
 				height: 36px;
@@ -1456,6 +1570,10 @@ class Scraper_Auto_Shop_Plugin {
 				justify-content: center;
 				color: #475569;
 				z-index: 10;
+				transition: background 0.2s;
+			}
+			.modal-close:hover {
+				background: #e2e8f0;
 			}
 			.modal-inner { display: flex; flex-direction: column; max-height: 85vh; overflow-y: auto; }
 			@media(min-width: 680px) {
@@ -1463,8 +1581,121 @@ class Scraper_Auto_Shop_Plugin {
 				.modal-col-img { width: 45%; }
 				.modal-col-info { width: 55%; padding: 30px; }
 			}
-			.modal-col-info { padding: 20px; }
+			.modal-col-info { padding: 22px; }
 			.modal-col-img img { width: 100%; height: 100%; object-fit: cover; }
+			.modal-qty-control {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				margin-bottom: 18px;
+			}
+			.qty-picker {
+				display: flex;
+				align-items: center;
+				border: 1.5px solid #cbd5e1;
+				border-radius: 10px;
+				overflow: hidden;
+			}
+			.qty-picker button {
+				width: 36px;
+				height: 36px;
+				background: #f8fafc;
+				border: none;
+				cursor: pointer;
+				font-size: 1.1rem;
+				font-weight: 700;
+			}
+			.qty-picker button:hover {
+				background: #e2e8f0;
+			}
+			.qty-picker span {
+				width: 40px;
+				text-align: center;
+				font-weight: 800;
+			}
+
+			/* Toast Notification */
+			.store-toast {
+				position: fixed;
+				bottom: 30px;
+				left: 50%;
+				transform: translateX(-50%) translateY(100px);
+				background: #0f172a;
+				color: #fff;
+				padding: 12px 24px;
+				border-radius: 30px;
+				box-shadow: 0 12px 30px rgba(0,0,0,0.25);
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				font-size: 0.92rem;
+				font-weight: 700;
+				z-index: 100000;
+				transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s;
+				opacity: 0;
+				pointer-events: none;
+			}
+			.store-toast.show {
+				transform: translateX(-50%) translateY(0);
+				opacity: 1;
+			}
+			.toast-icon {
+				width: 22px;
+				height: 22px;
+				background: #10b981;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 0.8rem;
+			}
+
+			/* Mobile Bottom App Navigation Bar */
+			.mobile-bottom-bar {
+				display: none;
+				position: fixed;
+				bottom: 0;
+				left: 0;
+				right: 0;
+				background: rgba(255, 255, 255, 0.94);
+				backdrop-filter: blur(12px);
+				border-top: 1px solid var(--sp-border);
+				padding: 8px 15px;
+				z-index: 9990;
+				justify-content: space-around;
+				align-items: center;
+				box-shadow: 0 -4px 15px rgba(0,0,0,0.06);
+			}
+			.mob-bar-item {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 3px;
+				color: #64748b;
+				text-decoration: none;
+				font-size: 0.72rem;
+				font-weight: 600;
+				position: relative;
+			}
+			.mob-bar-item.active, .mob-bar-item:hover {
+				color: var(--sp-accent);
+			}
+			.mob-bar-item svg {
+				width: 22px;
+				height: 22px;
+				fill: currentColor;
+			}
+			.mob-cart-badge {
+				position: absolute;
+				top: -4px;
+				right: -6px;
+				background: #ef4444;
+				color: #fff;
+				border-radius: 10px;
+				font-size: 0.65rem;
+				padding: 1px 5px;
+				font-weight: 800;
+			}
 
 			/* Modern Store Footer */
 			.modern-store-footer {
@@ -1522,12 +1753,29 @@ class Scraper_Auto_Shop_Plugin {
 				color: #94a3b8;
 			}
 
-			/* Responsive */
+			/* Responsive Adjustments */
 			@media (max-width: 860px) {
 				.store-topbar { flex-direction: column; gap: 8px; text-align: center; }
 				.store-header-search { order: 3; max-width: 100%; width: 100%; }
 				.store-navbar { display: none; }
 				.btn-mobile-toggle { display: block; }
+				.mobile-bottom-bar { display: flex; }
+				.modern-shop-root { margin-bottom: 110px; }
+			}
+			@media (max-width: 640px) {
+				.modern-shop-hero { padding: 30px 18px; }
+				.modern-shop-hero h1 { font-size: 1.7rem; }
+				.modern-shop-hero p { font-size: 0.92rem; }
+				.products-grid {
+					grid-template-columns: repeat(2, 1fr);
+					gap: 12px;
+				}
+				.card-body { padding: 12px; }
+				.card-title { font-size: 0.85rem; height: 38px; line-height: 1.45; }
+				.card-new-price { font-size: 1.05rem; }
+				.btn-card-quick { display: none; }
+				.card-actions { grid-template-columns: 1fr; }
+				.btn-card-buy { padding: 8px; font-size: 0.8rem; }
 			}
 		</style>
 
@@ -1568,7 +1816,8 @@ class Scraper_Auto_Shop_Plugin {
 				<!-- Smart Header Search -->
 				<div class="store-header-search">
 					<input type="text" id="headerLiveSearch" placeholder="جستجو در بین هزاران کالای متنوع و باکیفیت...">
-					<svg viewBox="0 0 24 24"><path d="M10 18a7.952 7.952 0 0 0 4.897-1.688l4.396 4.396 1.414-1.414-4.396-4.396A7.952 7.952 0 0 0 18 10c0-4.411-3.589-8-8-8s-8 3.589-8 8 3.589 8 8 8zm0-14c3.309 0 6 2.691 6 6s-2.691 6-6 6-6-2.691-6-6 2.691-6 6-6z"/></svg>
+					<span class="search-clear-btn" id="searchClearBtn">✕</span>
+					<svg class="search-icon" viewBox="0 0 24 24"><path d="M10 18a7.952 7.952 0 0 0 4.897-1.688l4.396 4.396 1.414-1.414-4.396-4.396A7.952 7.952 0 0 0 18 10c0-4.411-3.589-8-8-8s-8 3.589-8 8 3.589 8 8 8zm0-14c3.309 0 6 2.691 6 6s-2.691 6-6 6-6-2.691-6-6 2.691-6 6-6z"/></svg>
 				</div>
 
 				<!-- Header Action Buttons -->
@@ -1617,29 +1866,6 @@ class Scraper_Auto_Shop_Plugin {
 						<span>همه محصولات (<?php echo self::to_fa_num( count( $products ) ); ?>)</span>
 					</a>
 
-					<?php if ( count( $prof_counts ) > 0 ) : ?>
-						<div style="position:relative; display:inline-block;">
-							<button type="button" class="nav-item-link" id="sourcesDropdownBtn" style="border:none; background:transparent; cursor:pointer;">
-								<span>🏷️</span>
-								<span>برندها و تأمین‌کنندگان</span>
-								<span style="font-size:0.7rem;">▼</span>
-							</button>
-							<div class="mega-dropdown-panel" id="sourcesDropdownPanel">
-								<div style="padding:8px 10px; font-weight:800; font-size:0.85rem; color:#64748b; border-bottom:1px solid #f1f5f9;">انتخاب برند و سازنده:</div>
-								<div class="dropdown-cat-item" data-profile="all">
-									<span>همه برندها</span>
-									<span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span>
-								</div>
-								<?php foreach ( $prof_counts as $pr_name => $pr_count ) : ?>
-									<div class="dropdown-cat-item" data-profile="<?php echo esc_attr( $pr_name ); ?>">
-										<span><?php echo esc_html( $pr_name ); ?></span>
-										<span class="filter-pill-badge"><?php echo self::to_fa_num( $pr_count ); ?></span>
-									</div>
-								<?php endforeach; ?>
-							</div>
-						</div>
-					<?php endif; ?>
-
 					<a href="#productsAnchor" class="nav-item-link" onclick="document.getElementById('sortSelector').value='price-asc'; document.getElementById('sortSelector').dispatchEvent(new Event('change')); document.getElementById('productsGrid').scrollIntoView({behavior:'smooth'}); return false;">
 						<span>🔥</span>
 						<span>پیشنهادهای اقتصادی</span>
@@ -1676,29 +1902,18 @@ class Scraper_Auto_Shop_Plugin {
 				</div>
 			</div>
 
-			<!-- Mobile Drawer -->
-			<div class="mobile-drawer-overlay" id="mobileDrawerOverlay"></div>
-			<div class="mobile-drawer" id="mobileDrawer">
-				<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; padding-bottom:15px; border-bottom:1px solid #e2e8f0;">
-					<span style="font-weight:900; font-size:1.1rem;">منوی فروشگاه</span>
-					<button type="button" id="closeMobileDrawer" style="background:none; border:none; font-size:1.5rem; cursor:pointer; color:#64748b;">✕</button>
+			<!-- Flash Sale Promotional Bar -->
+			<div class="flash-sale-bar">
+				<div class="flash-sale-title">
+					<span class="flash-icon">⚡</span>
+					<strong>پیشنهادات شگفت‌انگیز امروز</strong>
+					<span style="font-size:0.82rem; opacity:0.9;">(فرصت ویژه با تخفیف‌های استثنایی)</span>
 				</div>
-				<div style="margin-bottom:20px;">
-					<input type="text" id="mobileSearchInput" placeholder="جستجوی کالا..." style="width:100%; padding:10px 14px; border-radius:10px; border:1px solid #cbd5e1;">
+				<div class="flash-timer" id="flashTimer">
+					<span class="timer-box" id="timerHours">۰۸</span> :
+					<span class="timer-box" id="timerMinutes">۴۲</span> :
+					<span class="timer-box" id="timerSeconds">۱۵</span>
 				</div>
-				<div style="font-weight:800; font-size:0.9rem; color:#64748b; margin-bottom:10px;">دسته‌بندی‌ها:</div>
-				<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:20px;">
-					<div class="dropdown-cat-item" data-cat="all" style="background:#f8fafc;">همه دسته‌ها</div>
-					<?php foreach ( $categories as $cat_name => $cat_count ) : ?>
-						<div class="dropdown-cat-item" data-cat="<?php echo esc_attr( $cat_name ); ?>" style="background:#f8fafc;">
-							<span><?php echo esc_html( $cat_name ); ?></span>
-							<span class="filter-pill-badge"><?php echo self::to_fa_num( $cat_count ); ?></span>
-						</div>
-					<?php endforeach; ?>
-				</div>
-				<a href="<?php echo esc_url( $account_url ); ?>" class="btn-card-buy" style="margin-top:auto; padding:12px; text-align:center;">
-					👤 ورود / ثبت‌نام در فروشگاه
-				</a>
 			</div>
 
 			<!-- Hero Banner -->
@@ -1709,9 +1924,9 @@ class Scraper_Auto_Shop_Plugin {
 				<?php if ( ! empty( $settings['show_features_banner'] ) ) : ?>
 					<div class="hero-features-bar">
 						<div class="hero-feature-item"><span>🚀</span> ارسال سریع سراسر کشور</div>
-						<div class="hero-feature-item"><span>💎</span> تضمین اصالت و سلامت کالا</div>
-						<div class="hero-feature-item"><span>🔄</span> تضمین بهترین قیمت بازار</div>
-						<div class="hero-feature-item"><span>🛡️</span> پشتیبانی ۲۴ ساعته</div>
+						<div class="hero-feature-item"><span>💎</span> تضمین ۱۰۰٪ اصالت فیزیکی کالا</div>
+						<div class="hero-feature-item"><span>🔄</span> ضمانت ۷ روزه بازگشت وجه</div>
+						<div class="hero-feature-item"><span>🛡️</span> پشتیبانی تخصصی ۲۴ ساعته</div>
 					</div>
 				<?php endif; ?>
 			</div>
@@ -1735,12 +1950,12 @@ class Scraper_Auto_Shop_Plugin {
 				<!-- Toolbar -->
 				<div class="shop-toolbar">
 					<div class="toolbar-right">
-						<span id="productCounter" style="font-weight:700; color:#475569;">
+						<span id="productCounter" style="font-weight:700; color:#475569; font-size:0.92rem;">
 							نمایش <?php echo self::to_fa_num( count( $products ) ); ?> محصول فعال
 						</span>
 					</div>
 					<div class="toolbar-left" style="display:flex; align-items:center; gap:10px;">
-						<label for="sortSelector" style="font-size:0.9rem; color:#64748b;">مرتب‌سازی:</label>
+						<label for="sortSelector" style="font-size:0.88rem; color:#64748b;">مرتب‌سازی:</label>
 						<select id="sortSelector" class="sort-select">
 							<option value="default">پیش‌فرض</option>
 							<option value="price-asc">ارزان‌ترین به گران‌ترین</option>
@@ -1750,21 +1965,7 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
-				<!-- Brand Filter Pills (if multiple brands exist) -->
-				<?php if ( count( $prof_counts ) > 1 ) : ?>
-					<div style="margin-bottom:8px; font-size:0.9rem; font-weight:700; color:#64748b;">فیلتر بر اساس برند:</div>
-					<div class="filter-pills-wrap" id="profilePills">
-						<div class="filter-pill active" data-profile="all">همه برندها <span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span></div>
-						<?php foreach ( $prof_counts as $pr_name => $pr_count ) : ?>
-							<div class="filter-pill" data-profile="<?php echo esc_attr( $pr_name ); ?>">
-								<?php echo esc_html( $pr_name ); ?>
-								<span class="filter-pill-badge"><?php echo self::to_fa_num( $pr_count ); ?></span>
-							</div>
-						<?php endforeach; ?>
-					</div>
-				<?php endif; ?>
-
-				<!-- Category Filter Pills -->
+				<!-- Category Filter Chips -->
 				<div class="filter-pills-wrap" id="categoryPills">
 					<div class="filter-pill active" data-cat="all">همه دسته‌ها <span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span></div>
 					<?php foreach ( $categories as $cat_name => $cat_count ) : ?>
@@ -1781,18 +1982,25 @@ class Scraper_Auto_Shop_Plugin {
 						<div class="product-card" 
 							data-id="<?php echo esc_attr( $p['id'] ); ?>"
 							data-cat="<?php echo esc_attr( $p['category'] ); ?>" 
-							data-profile="<?php echo esc_attr( $p['profile'] ); ?>"
 							data-title="<?php echo esc_attr( mb_strtolower( $p['title'] ) ); ?>"
 							data-price-num="<?php echo esc_attr( $p['price'] ); ?>">
 							
 							<div class="card-thumb-wrap">
-								<span class="card-stock-badge">✨ موجود</span>
-								<?php if ( ! empty( $settings['show_brand_badge'] ) && ! empty( $p['profile'] ) ) : ?>
-									<span class="card-brand-tag">🏷️ <?php echo esc_html( $p['profile'] ); ?></span>
+								<!-- Wishlist Heart Button -->
+								<button type="button" class="card-wishlist-btn" data-id="<?php echo esc_attr( $p['id'] ); ?>" title="افزودن به علاقه‌مندی‌ها">
+									<svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+								</button>
+
+								<span class="card-stock-badge">موجود در انبار</span>
+
+								<?php if ( $p['original_price'] > $p['price'] ) : 
+									$disc = round( ( ( $p['original_price'] - $p['price'] ) / $p['original_price'] ) * 100 );
+								?>
+									<span class="card-discount-badge"><?php echo self::to_fa_num( $disc ); ?>٪ تخفیف</span>
 								<?php endif; ?>
 
 								<?php if ( ! empty( $p['image'] ) ) : ?>
-									<img src="<?php echo esc_url( $p['image'] ); ?>" alt="<?php echo esc_attr( $p['title'] ); ?>" loading="lazy">
+									<img src="<?php echo esc_url( $p['image'] ); ?>" alt="<?php echo esc_attr( $p['title'] ); ?>" loading="lazy" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'300\' height=\'300\' viewBox=\'0 0 300 300\'><rect width=\'300\' height=\'300\' fill=\'%23f1f5f9\'/><text x=\'50%25\' y=\'50%25\' dominant-baseline=\'middle\' text-anchor=\'middle\' font-size=\'40\' fill=\'%23cbd5e1\'>📦</text></svg>'">
 								<?php else : ?>
 									<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:3.5rem;color:#cbd5e1;">📦</div>
 								<?php endif; ?>
@@ -1811,7 +2019,7 @@ class Scraper_Auto_Shop_Plugin {
 										<?php endif; ?>
 
 										<?php if ( ! empty( $settings['show_special_badge'] ) ) : ?>
-											<span class="card-special-badge">✨ پیشنهاد ویژه</span>
+											<span class="card-special-tag">✨ پیشنهاد ویژه</span>
 										<?php endif; ?>
 									</div>
 									<div class="card-new-price"><?php echo esc_html( $p['price_formatted'] ); ?></div>
@@ -1824,9 +2032,7 @@ class Scraper_Auto_Shop_Plugin {
 										data-old-price="<?php echo esc_attr( $p['original_price'] > $p['price'] ? self::to_fa_num( number_format( $p['original_price'] ) ) . ' ' . $settings['currency_symbol'] : '' ); ?>"
 										data-img="<?php echo esc_url( $p['image'] ); ?>"
 										data-cat="<?php echo esc_attr( $p['category'] ); ?>"
-										data-desc="<?php echo esc_attr( $p['description'] ); ?>"
-										data-profile="<?php echo esc_attr( $p['profile'] ); ?>"
-										data-link="<?php echo esc_url( $p['link'] ); ?>">
+										data-desc="<?php echo esc_attr( $p['description'] ); ?>">
 										مشاهده مشخصات
 									</button>
 									<button type="button" class="btn-card-buy add-to-cart-btn"
@@ -1841,6 +2047,14 @@ class Scraper_Auto_Shop_Plugin {
 							</div>
 						</div>
 					<?php endforeach; ?>
+
+					<!-- No Results Message -->
+					<div class="search-no-results" id="searchNoResults" style="display:none;">
+						<div style="font-size:3.5rem; margin-bottom:8px;">🔍</div>
+						<h4>متأسفانه کالایی با عبارت جستجو شده یافت نشد</h4>
+						<p>لطفاً املای عبارت را بررسی کنید یا دسته‌بندی دیگری را انتخاب نمایید.</p>
+						<button type="button" class="btn-card-quick" id="resetSearchBtn" style="padding:10px 22px;">نمایش همه محصولات</button>
+					</div>
 				</div>
 
 			<?php endif; ?>
@@ -1854,19 +2068,28 @@ class Scraper_Auto_Shop_Plugin {
 							<img src="" id="modalImg" alt="تصویر کالا">
 						</div>
 						<div class="modal-col-info">
-							<div style="display:flex; gap:10px; margin-bottom:8px;">
-								<span id="modalCat" style="background:#f1f5f9; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:700; color:#475569;"></span>
-								<span id="modalProfile" style="background:#e0f2fe; color:#0369a1; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:700;"></span>
+							<div style="display:flex; gap:10px; margin-bottom:10px;">
+								<span id="modalCat" style="background:#f1f5f9; padding:4px 12px; border-radius:6px; font-size:0.8rem; font-weight:700; color:#475569;"></span>
+								<span style="background:#ecfdf5; color:#059669; padding:4px 10px; border-radius:6px; font-size:0.8rem; font-weight:700;">✨ آماده ارسال فوری</span>
 							</div>
-							<h2 id="modalTitle" style="font-size:1.35rem; font-weight:900; margin-bottom:15px; line-height:1.5;"></h2>
+							<h2 id="modalTitle" style="font-size:1.3rem; font-weight:900; margin-bottom:15px; line-height:1.5;"></h2>
 							
 							<div style="margin-bottom:15px;">
 								<div id="modalOldPrice" style="font-size:0.9rem; color:#94a3b8; text-decoration:line-through; margin-bottom:2px;"></div>
 								<div id="modalPrice" style="font-size:1.6rem; font-weight:900; color:#059669;"></div>
 							</div>
 
-							<p id="modalDesc" style="color:#64748b; font-size:0.92rem; line-height:1.8; max-height:150px; overflow-y:auto; margin-bottom:20px;"></p>
+							<p id="modalDesc" style="color:#64748b; font-size:0.92rem; line-height:1.8; max-height:160px; overflow-y:auto; margin-bottom:20px;"></p>
 							
+							<div class="modal-qty-control">
+								<label style="font-weight:700; font-size:0.9rem;">تعداد:</label>
+								<div class="qty-picker">
+									<button type="button" id="modalQtyMinus">-</button>
+									<span id="modalQtyNum">۱</span>
+									<button type="button" id="modalQtyPlus">+</button>
+								</div>
+							</div>
+
 							<div style="display:flex; gap:12px; align-items:center; margin-bottom:15px;">
 								<button type="button" class="btn-card-buy" id="modalAddToCartBtn" style="flex:1; padding:12px; font-size:1rem;">
 									افزودن به سبد خرید
@@ -1888,9 +2111,19 @@ class Scraper_Auto_Shop_Plugin {
 					<h3 style="margin:0; font-size:1.2rem; font-weight:800;">سبد خرید شما</h3>
 					<span id="closeCartDrawer" style="cursor:pointer; font-size:1.4rem; color:#64748b;">✕</span>
 				</div>
+
+				<!-- Free Shipping Progress -->
+				<div class="cart-shipping-progress" id="cartShippingBox">
+					<div id="shippingProgressText">در حال محاسبه هزینه ارسال...</div>
+					<div class="progress-track">
+						<div class="progress-fill" id="shippingProgressFill"></div>
+					</div>
+				</div>
+
 				<div class="cart-drawer-items" id="cartItemsList">
 					<!-- Injected by JS -->
 				</div>
+
 				<div class="cart-drawer-footer">
 					<div class="cart-total-row">
 						<span>مجموع خرید:</span>
@@ -1903,6 +2136,35 @@ class Scraper_Auto_Shop_Plugin {
 						تکمیل سفارش و تسویه حساب
 					</a>
 				</div>
+			</div>
+
+			<!-- Toast Notification -->
+			<div class="store-toast" id="storeToast">
+				<span class="toast-icon">✓</span>
+				<span id="toastMessage">کالا به سبد خرید اضافه شد</span>
+			</div>
+
+			<!-- Mobile Bottom App Navigation Bar -->
+			<div class="mobile-bottom-bar">
+				<a href="#" class="mob-bar-item active" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">
+					<svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+					<span>خانه</span>
+				</a>
+				<a href="#" class="mob-bar-item" id="mobBarCatsBtn">
+					<svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+					<span>دسته‌ها</span>
+				</a>
+				<a href="#" class="mob-bar-item" id="mobBarSearchBtn">
+					<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+					<span>جستجو</span>
+				</a>
+				<a href="#" class="mob-bar-item" id="mobBarCartBtn">
+					<div style="position:relative; display:inline-block;">
+						<svg viewBox="0 0 24 24"><path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63h7.45c.75 0 1.41-.41 1.75-1.03l3.58-6.49c.08-.14.12-.31.12-.48 0-.55-.45-1-1-1H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/></svg>
+						<span class="mob-cart-badge" id="mobCartCount">۰</span>
+					</div>
+					<span>سبد خرید</span>
+				</a>
 			</div>
 
 			<!-- Modern Store Footer -->
@@ -1957,10 +2219,19 @@ class Scraper_Auto_Shop_Plugin {
 			const app = document.getElementById('modernShopApp');
 			if (!app) return;
 
+			const freeShippingThreshold = <?php echo (int) ( $settings['free_shipping_threshold'] ?? 400000 ); ?>;
+			const currencySymbol = ' <?php echo esc_js( $settings['currency_symbol'] ); ?>';
+
 			let cart = [];
 			try {
 				const saved = localStorage.getItem('modern_shop_cart');
 				if (saved) cart = JSON.parse(saved);
+			} catch(e) {}
+
+			let wishlist = [];
+			try {
+				const savedW = localStorage.getItem('modern_shop_wishlist');
+				if (savedW) wishlist = JSON.parse(savedW);
 			} catch(e) {}
 
 			function toFa(num) {
@@ -1969,8 +2240,32 @@ class Scraper_Auto_Shop_Plugin {
 			}
 
 			function formatPrice(num) {
-				return toFa(new Intl.NumberFormat('en-US').format(Math.round(num))) + ' <?php echo esc_js( $settings['currency_symbol'] ); ?>';
+				return toFa(new Intl.NumberFormat('en-US').format(Math.round(num))) + currencySymbol;
 			}
+
+			function showToast(msg) {
+				const toast = document.getElementById('storeToast');
+				const txt = document.getElementById('toastMessage');
+				if (!toast || !txt) return;
+				txt.textContent = msg;
+				toast.classList.add('show');
+				setTimeout(() => toast.classList.remove('show'), 2800);
+			}
+
+			// Flash Deals Countdown Timer
+			let timerSecondsTotal = 8 * 3600 + 42 * 60 + 15;
+			setInterval(() => {
+				if (timerSecondsTotal > 0) timerSecondsTotal--;
+				const h = Math.floor(timerSecondsTotal / 3600);
+				const m = Math.floor((timerSecondsTotal % 3600) / 60);
+				const s = timerSecondsTotal % 60;
+				const hEl = document.getElementById('timerHours');
+				const mEl = document.getElementById('timerMinutes');
+				const sEl = document.getElementById('timerSeconds');
+				if (hEl) hEl.textContent = toFa(String(h).padStart(2, '0'));
+				if (mEl) mEl.textContent = toFa(String(m).padStart(2, '0'));
+				if (sEl) sEl.textContent = toFa(String(s).padStart(2, '0'));
+			}, 1000);
 
 			// Mega menu toggle
 			const megaBtn = document.getElementById('megaCategoriesBtn');
@@ -1985,47 +2280,14 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
-			// Brands dropdown toggle
-			const sourcesBtn = document.getElementById('sourcesDropdownBtn');
-			const sourcesPanel = document.getElementById('sourcesDropdownPanel');
-			if (sourcesBtn && sourcesPanel) {
-				sourcesBtn.addEventListener('click', (e) => {
-					e.stopPropagation();
-					sourcesPanel.classList.toggle('open');
-				});
-				document.addEventListener('click', () => {
-					sourcesPanel.classList.remove('open');
-				});
-			}
-
-			// Mobile Drawer toggle
-			const mobToggle = document.getElementById('mobileMenuToggle');
-			const mobDrawer = document.getElementById('mobileDrawer');
-			const mobOverlay = document.getElementById('mobileDrawerOverlay');
-			const mobClose = document.getElementById('closeMobileDrawer');
-
-			function toggleMobile(open) {
-				if (!mobDrawer) return;
-				if (open) {
-					mobDrawer.classList.add('open');
-					mobOverlay.classList.add('open');
-				} else {
-					mobDrawer.classList.remove('open');
-					mobOverlay.classList.remove('open');
-				}
-			}
-
-			if (mobToggle) mobToggle.addEventListener('click', () => toggleMobile(true));
-			if (mobClose) mobClose.addEventListener('click', () => toggleMobile(false));
-			if (mobOverlay) mobOverlay.addEventListener('click', () => toggleMobile(false));
-
 			// Filtering & Searching Logic
 			let currentCat = 'all';
-			let currentProfile = 'all';
 			let searchQuery = '';
 
 			const headerSearch = document.getElementById('headerLiveSearch');
-			const mobileSearch = document.getElementById('mobileSearchInput');
+			const clearBtn = document.getElementById('searchClearBtn');
+			const noResults = document.getElementById('searchNoResults');
+			const resetBtn = document.getElementById('resetSearchBtn');
 
 			function applyFilters() {
 				const cards = app.querySelectorAll('.product-card');
@@ -2033,14 +2295,12 @@ class Scraper_Auto_Shop_Plugin {
 
 				cards.forEach(card => {
 					const cat = card.getAttribute('data-cat');
-					const prof = card.getAttribute('data-profile');
 					const title = card.getAttribute('data-title');
 
 					const matchCat = (currentCat === 'all' || cat === currentCat);
-					const matchProf = (currentProfile === 'all' || prof === currentProfile);
 					const matchSearch = (!searchQuery || title.includes(searchQuery));
 
-					if (matchCat && matchProf && matchSearch) {
+					if (matchCat && matchSearch) {
 						card.style.display = 'flex';
 						visibleCount++;
 					} else {
@@ -2052,20 +2312,40 @@ class Scraper_Auto_Shop_Plugin {
 				if (counter) {
 					counter.textContent = 'نمایش ' + toFa(visibleCount) + ' محصول فعال';
 				}
+
+				if (noResults) {
+					noResults.style.display = (visibleCount === 0 && cards.length > 0) ? 'block' : 'none';
+				}
 			}
 
 			function onSearch(val) {
 				searchQuery = val.trim().toLowerCase();
-				if (headerSearch && headerSearch.value !== val) headerSearch.value = val;
-				if (mobileSearch && mobileSearch.value !== val) mobileSearch.value = val;
+				if (clearBtn) {
+					clearBtn.classList.toggle('active', searchQuery.length > 0);
+				}
 				applyFilters();
 			}
 
 			if (headerSearch) {
 				headerSearch.addEventListener('input', (e) => onSearch(e.target.value));
 			}
-			if (mobileSearch) {
-				mobileSearch.addEventListener('input', (e) => onSearch(e.target.value));
+
+			if (clearBtn) {
+				clearBtn.addEventListener('click', () => {
+					if (headerSearch) headerSearch.value = '';
+					onSearch('');
+				});
+			}
+
+			if (resetBtn) {
+				resetBtn.addEventListener('click', () => {
+					if (headerSearch) headerSearch.value = '';
+					currentCat = 'all';
+					app.querySelectorAll('#categoryPills .filter-pill').forEach(p => {
+						p.classList.toggle('active', p.getAttribute('data-cat') === 'all');
+					});
+					onSearch('');
+				});
 			}
 
 			// Category pill clicks
@@ -2088,33 +2368,6 @@ class Scraper_Auto_Shop_Plugin {
 						p.classList.toggle('active', p.getAttribute('data-cat') === cat);
 					});
 					if (megaPanel) megaPanel.classList.remove('open');
-					toggleMobile(false);
-					applyFilters();
-					const grid = document.getElementById('productsGrid');
-					if (grid) grid.scrollIntoView({behavior:'smooth'});
-				});
-			});
-
-			// Brand pill clicks
-			app.querySelectorAll('#profilePills .filter-pill').forEach(pill => {
-				pill.addEventListener('click', () => {
-					app.querySelectorAll('#profilePills .filter-pill').forEach(p => p.classList.remove('active'));
-					pill.classList.add('active');
-					currentProfile = pill.getAttribute('data-profile');
-					applyFilters();
-				});
-			});
-
-			// Dropdown brand clicks
-			app.querySelectorAll('.dropdown-cat-item[data-profile]').forEach(item => {
-				item.addEventListener('click', (e) => {
-					e.preventDefault();
-					const prof = item.getAttribute('data-profile');
-					currentProfile = prof;
-					app.querySelectorAll('#profilePills .filter-pill').forEach(p => {
-						p.classList.toggle('active', p.getAttribute('data-profile') === prof);
-					});
-					if (sourcesPanel) sourcesPanel.classList.remove('open');
 					applyFilters();
 					const grid = document.getElementById('productsGrid');
 					if (grid) grid.scrollIntoView({behavior:'smooth'});
@@ -2145,38 +2398,114 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
+			// Wishlist functionality
+			function updateWishlistUI() {
+				app.querySelectorAll('.card-wishlist-btn').forEach(btn => {
+					const id = btn.getAttribute('data-id');
+					btn.classList.toggle('liked', wishlist.includes(id));
+				});
+			}
+
+			app.querySelectorAll('.card-wishlist-btn').forEach(btn => {
+				btn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					const id = btn.getAttribute('data-id');
+					const idx = wishlist.indexOf(id);
+					if (idx > -1) {
+						wishlist.splice(idx, 1);
+						showToast('از لیست علاقه‌مندی‌ها حذف شد');
+					} else {
+						wishlist.push(id);
+						showToast('❤️ به لیست علاقه‌مندی‌ها افزوده شد');
+					}
+					try {
+						localStorage.setItem('modern_shop_wishlist', JSON.stringify(wishlist));
+					} catch(err) {}
+					updateWishlistUI();
+				});
+			});
+			updateWishlistUI();
+
 			// Cart Management
 			function updateCartUI() {
 				const countEl = document.getElementById('headerCartCount');
+				const mobCountEl = document.getElementById('mobCartCount');
 				const listEl = document.getElementById('cartItemsList');
 				const totalEl = document.getElementById('cartTotalPrice');
+				const progressText = document.getElementById('shippingProgressText');
+				const progressFill = document.getElementById('shippingProgressFill');
 
 				const totalItems = cart.reduce((acc, it) => acc + it.qty, 0);
 				const totalPrice = cart.reduce((acc, it) => acc + (it.price * it.qty), 0);
 
-				if (countEl) countEl.textContent = toFa(totalItems);
+				if (countEl) {
+					countEl.textContent = toFa(totalItems);
+					countEl.classList.remove('pulse');
+					void countEl.offsetWidth;
+					countEl.classList.add('pulse');
+				}
+				if (mobCountEl) mobCountEl.textContent = toFa(totalItems);
 				if (totalEl) totalEl.textContent = formatPrice(totalPrice);
+
+				// Shipping progress
+				if (progressText && progressFill) {
+					if (totalPrice >= freeShippingThreshold) {
+						progressText.innerHTML = '🎉 <strong style="color:#059669;">تبریک!</strong> سفارش شما شامل <strong>ارسال رایگان</strong> شد.';
+						progressFill.style.width = '100%';
+					} else {
+						const remain = freeShippingThreshold - totalPrice;
+						progressText.innerHTML = '🚚 با خرید <strong>' + formatPrice(remain) + '</strong> دیگر، ارسال شما <strong>رایگان</strong> خواهد بود!';
+						const pct = Math.min(100, Math.round((totalPrice / freeShippingThreshold) * 100));
+						progressFill.style.width = pct + '%';
+					}
+				}
 
 				if (listEl) {
 					if (cart.length === 0) {
-						listEl.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:40px 10px;">سبد خرید شما در حال حاضر خالی است.</div>';
+						listEl.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:50px 10px;">سبد خرید شما در حال حاضر خالی است.</div>';
 					} else {
 						listEl.innerHTML = cart.map((it, idx) => `
 							<div class="cart-item-row">
 								<img src="${it.img || ''}" class="cart-item-img" alt="${it.title}">
 								<div class="cart-item-info">
 									<div class="cart-item-title">${it.title}</div>
-									<div class="cart-item-price">${it.priceTxt || formatPrice(it.price)} × ${toFa(it.qty)}</div>
+									<div class="cart-item-price">${formatPrice(it.price * it.qty)}</div>
+									<div class="cart-item-qty-row">
+										<button type="button" class="cart-qty-btn cart-qty-minus" data-idx="${idx}">-</button>
+										<span class="cart-qty-num">${toFa(it.qty)}</span>
+										<button type="button" class="cart-qty-btn cart-qty-plus" data-idx="${idx}">+</button>
+										<button type="button" class="cart-item-del" data-idx="${idx}" title="حذف کالا">🗑️</button>
+									</div>
 								</div>
-								<button type="button" class="remove-cart-item" data-idx="${idx}" style="background:none; border:none; color:#ef4444; font-size:1.1rem; cursor:pointer;">✕</button>
 							</div>
 						`).join('');
 
-						listEl.querySelectorAll('.remove-cart-item').forEach(btn => {
+						listEl.querySelectorAll('.cart-qty-plus').forEach(btn => {
+							btn.addEventListener('click', () => {
+								const idx = parseInt(btn.getAttribute('data-idx'));
+								cart[idx].qty++;
+								saveCart();
+							});
+						});
+
+						listEl.querySelectorAll('.cart-qty-minus').forEach(btn => {
+							btn.addEventListener('click', () => {
+								const idx = parseInt(btn.getAttribute('data-idx'));
+								if (cart[idx].qty > 1) {
+									cart[idx].qty--;
+								} else {
+									cart.splice(idx, 1);
+								}
+								saveCart();
+							});
+						});
+
+						listEl.querySelectorAll('.cart-item-del').forEach(btn => {
 							btn.addEventListener('click', () => {
 								const idx = parseInt(btn.getAttribute('data-idx'));
 								cart.splice(idx, 1);
 								saveCart();
+								showToast('کالا از سبد خرید حذف شد');
 							});
 						});
 					}
@@ -2190,10 +2519,10 @@ class Scraper_Auto_Shop_Plugin {
 				updateCartUI();
 			}
 
-			function addToCart(prod) {
+			function addToCart(prod, qty = 1) {
 				const found = cart.find(it => it.id === prod.id);
 				if (found) {
-					found.qty++;
+					found.qty += qty;
 				} else {
 					cart.push({
 						id: prod.id,
@@ -2201,14 +2530,14 @@ class Scraper_Auto_Shop_Plugin {
 						price: prod.price,
 						priceTxt: prod.priceTxt,
 						img: prod.img,
-						qty: 1
+						qty: qty
 					});
 				}
 				saveCart();
-				openCartDrawer();
+				showToast('✅ «' + prod.title.substring(0, 24) + '...» به سبد خرید اضافه شد');
 			}
 
-			// Add to cart buttons
+			// Add to cart buttons on product cards
 			app.querySelectorAll('.add-to-cart-btn').forEach(btn => {
 				btn.addEventListener('click', (e) => {
 					e.stopPropagation();
@@ -2219,7 +2548,16 @@ class Scraper_Auto_Shop_Plugin {
 						priceTxt: btn.getAttribute('data-price-txt'),
 						img: btn.getAttribute('data-img')
 					};
-					addToCart(prod);
+					addToCart(prod, 1);
+
+					// Button visual feedback
+					btn.classList.add('added');
+					const origHtml = btn.innerHTML;
+					btn.innerHTML = '✓ افزوده شد';
+					setTimeout(() => {
+						btn.classList.remove('added');
+						btn.innerHTML = origHtml;
+					}, 1600);
 				});
 			});
 
@@ -2228,6 +2566,7 @@ class Scraper_Auto_Shop_Plugin {
 			const cartOverlay = document.getElementById('cartDrawerOverlay');
 			const closeCart = document.getElementById('closeCartDrawer');
 			const headerCartBtn = document.getElementById('headerCartBtn');
+			const mobBarCartBtn = document.getElementById('mobBarCartBtn');
 
 			function openCartDrawer() {
 				if (cartDrawer && cartOverlay) {
@@ -2243,31 +2582,77 @@ class Scraper_Auto_Shop_Plugin {
 			}
 
 			if (headerCartBtn) headerCartBtn.addEventListener('click', openCartDrawer);
+			if (mobBarCartBtn) mobBarCartBtn.addEventListener('click', (e) => { e.preventDefault(); openCartDrawer(); });
 			if (closeCart) closeCart.addEventListener('click', closeCartDrawer);
 			if (cartOverlay) cartOverlay.addEventListener('click', closeCartDrawer);
+
+			// Mobile bottom bar links
+			const mobBarCatsBtn = document.getElementById('mobBarCatsBtn');
+			if (mobBarCatsBtn) {
+				mobBarCatsBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					const pills = document.getElementById('categoryPills');
+					if (pills) pills.scrollIntoView({behavior:'smooth'});
+				});
+			}
+
+			const mobBarSearchBtn = document.getElementById('mobBarSearchBtn');
+			if (mobBarSearchBtn) {
+				mobBarSearchBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					if (headerSearch) {
+						headerSearch.scrollIntoView({behavior:'smooth'});
+						headerSearch.focus();
+					}
+				});
+			}
 
 			// Quick View Modal
 			const qvModal = document.getElementById('quickViewModal');
 			const closeQv = document.getElementById('closeQuickView');
 			let activeModalProduct = null;
+			let modalQty = 1;
+
+			const modalQtyNum = document.getElementById('modalQtyNum');
+			const modalQtyPlus = document.getElementById('modalQtyPlus');
+			const modalQtyMinus = document.getElementById('modalQtyMinus');
+
+			if (modalQtyPlus) {
+				modalQtyPlus.addEventListener('click', () => {
+					modalQty++;
+					if (modalQtyNum) modalQtyNum.textContent = toFa(modalQty);
+				});
+			}
+			if (modalQtyMinus) {
+				modalQtyMinus.addEventListener('click', () => {
+					if (modalQty > 1) {
+						modalQty--;
+						if (modalQtyNum) modalQtyNum.textContent = toFa(modalQty);
+					}
+				});
+			}
 
 			app.querySelectorAll('.open-quick-view').forEach(btn => {
 				btn.addEventListener('click', () => {
+					const card = btn.closest('.product-card');
 					const title = btn.getAttribute('data-title');
-					const price = btn.getAttribute('data-price');
+					const priceTxt = btn.getAttribute('data-price');
 					const oldPrice = btn.getAttribute('data-old-price');
 					const img = btn.getAttribute('data-img');
 					const cat = btn.getAttribute('data-cat');
 					const desc = btn.getAttribute('data-desc');
-					const profile = btn.getAttribute('data-profile');
+					const priceNum = parseFloat(card ? card.getAttribute('data-price-num') : 0);
+
+					modalQty = 1;
+					if (modalQtyNum) modalQtyNum.textContent = toFa(modalQty);
 
 					activeModalProduct = {
-						id: 'qv_' + Math.random(),
-						title, price: 0, priceTxt: price, img
+						id: card ? card.getAttribute('data-id') : 'prod_' + Math.random(),
+						title, price: priceNum, priceTxt, img
 					};
 
 					document.getElementById('modalTitle').textContent = title;
-					document.getElementById('modalPrice').textContent = price;
+					document.getElementById('modalPrice').textContent = priceTxt;
 					
 					const oldEl = document.getElementById('modalOldPrice');
 					if (oldPrice) {
@@ -2278,8 +2663,7 @@ class Scraper_Auto_Shop_Plugin {
 					}
 
 					document.getElementById('modalCat').textContent = '📂 ' + (cat || 'عمومی');
-					document.getElementById('modalProfile').textContent = profile ? '🏷️ برند: ' + profile : '';
-					document.getElementById('modalDesc').textContent = desc || 'توضیحات تکمیلی برای این محصول درج نشده است.';
+					document.getElementById('modalDesc').textContent = desc || 'توضیحات تکمیلی برای این محصول در برگه رسمی درج شده است.';
 					document.getElementById('modalImg').src = img || '';
 
 					qvModal.classList.add('open');
@@ -2295,11 +2679,19 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
+			// Close on ESC key
+			document.addEventListener('keydown', (e) => {
+				if (e.key === 'Escape') {
+					if (qvModal) qvModal.classList.remove('open');
+					closeCartDrawer();
+				}
+			});
+
 			const modalAddBtn = document.getElementById('modalAddToCartBtn');
 			if (modalAddBtn) {
 				modalAddBtn.addEventListener('click', () => {
 					if (activeModalProduct) {
-						addToCart(activeModalProduct);
+						addToCart(activeModalProduct, modalQty);
 						qvModal.classList.remove('open');
 					}
 				});
@@ -2340,9 +2732,9 @@ class Scraper_Auto_Shop_Plugin {
 				'shop_subtitle'           => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
 				'accent_color'            => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
 				'products_per_page'       => intval( $_POST['products_per_page'] ?? 16 ),
-				'show_brand_badge'        => ! empty( $_POST['show_brand_badge'] ),
 				'show_features_banner'    => ! empty( $_POST['show_features_banner'] ),
 				'show_special_badge'      => ! empty( $_POST['show_special_badge'] ),
+				'free_shipping_threshold' => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			$updated = true;
@@ -2373,7 +2765,7 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 					<h2 style="color:#fff; margin:0 0 8px; font-size:1.5rem; font-weight:900;">دسترسی مستقیم به اسکرپر و استخراج محصولات</h2>
 					<p style="color:#cbd5e1; margin:0; max-width:650px; font-size:0.95rem; line-height:1.6;">
-						برای تعریف پروفایل‌های جدید (باسلام، ترب، دیجی‌کالا، فروشگاه‌های ووکامرس)، تنظیم سلکتورها و اجرای فرایند استخراج، وارد داشبورد اسکرپر شوید. تمام محصولات استخراج‌شده فوراً در ویترین مدرن این فروشگاه ظاهر می‌شوند.
+						برای تعریف پروفایل‌های جدید (باسلام، ترب، دیجی‌کالا، فروشگاه‌های ووکامرس)، تنظیم سلکتورها و اجرای فرایند استخراج، وارد داشبورد اسکرپر شوید. تمامی محصولات با استایل کاملاً حرفه‌ای و بدون افشای نام منبع در فروشگاه قرار می‌گیرند.
 					</p>
 				</div>
 				<div style="display:flex; gap:12px; flex-wrap:wrap;">
@@ -2492,42 +2884,49 @@ class Scraper_Auto_Shop_Plugin {
 								<input type="color" name="accent_color" value="<?php echo esc_attr( $opts['accent_color'] ); ?>" style="width:70px; height:38px; border-radius:6px; cursor:pointer;">
 							</td>
 						</tr>
+						<tr>
+							<th scope="row">سقف ارسال رایگان (تومان):</th>
+							<td>
+								<input type="number" name="free_shipping_threshold" value="<?php echo esc_attr( $opts['free_shipping_threshold'] ); ?>" class="regular-text"> تومان
+								<p class="description">مبلغی که با رسیدن فاکتور مشتری به آن، ارسال رایگان در سبد خرید اعمال می‌شود.</p>
+							</td>
+						</tr>
 					</table>
 				</div>
 
 				<!-- Price Adjustment Settings -->
 				<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
 					<h3 style="margin-top:0; margin-bottom:15px; font-size:1.15rem; font-weight:800; color:#0f172a; border-bottom:1px solid #f1f5f9; padding-bottom:10px;">
-						💰 قوانین تعدیل خودکار قیمت و رفع مشکل «تماس بگیرید»
+						💰 قوانین قیمت و سود محصولات
 					</h3>
 
 					<table class="form-table">
 						<tr>
-							<th scope="row">درصد افزایش قیمت (Markup %):</th>
+							<th scope="row">درصد سود و افزایش قیمت (Markup %):</th>
 							<td>
 								<input type="number" step="0.5" name="price_markup_percent" value="<?php echo esc_attr( $opts['price_markup_percent'] ); ?>" class="small-text"> ٪
-								<p class="description">این درصد به طور خودکار به قیمت خام استخراج‌شده از منابع اضافه می‌شود (مثلاً ۲۰٪ سود).</p>
+								<p class="description">این درصد به طور خودکار به قیمت خام اضافه می‌شود (مثلاً ۲۰٪ سود).</p>
 							</td>
 						</tr>
 						<tr>
 							<th scope="row">مبلغ ثابت اضافه شونده:</th>
 							<td>
 								<input type="number" name="price_fixed_add" value="<?php echo esc_attr( $opts['price_fixed_add'] ); ?>" class="regular-text">
-								<p class="description">مبلغ ثابت به تومان که پس از درصد افزایش به قیمت نهایی اضافه می‌شود (مثلاً ۱۰,۰۰۰ تومان هزینه بسته‌بندی).</p>
+								<p class="description">مبلغ ثابت به تومان که به قیمت نهایی اضافه می‌شود (مثلاً هزینه بسته‌بندی).</p>
 							</td>
 						</tr>
 						<tr>
 							<th scope="row">قیمت پایه پیش‌فرض (در صورت نبود قیمت در منبع):</th>
 							<td>
 								<input type="number" name="default_fallback_price" value="<?php echo esc_attr( $opts['default_fallback_price'] ); ?>" class="regular-text"> تومان
-								<p class="description">اگر کالایی در سایت مبدأ بدون قیمت بود یا سلکتور قیمت روی آن عمل نکرد، این قیمت به عنوان قیمت پایه استفاده شده و درصد افزایش به آن تعلق می‌گیرد تا کالایی با «تماس بگیرید» نمایش داده نشود.</p>
+								<p class="description">اگر کالایی در سایت مبدأ بدون قیمت بود، این قیمت به عنوان قیمت پایه استفاده شده و درصد افزایش به آن تعلق می‌گیرد تا کالایی با «تماس بگیرید» نمایش داده نشود.</p>
 							</td>
 						</tr>
 						<tr>
 							<th scope="row">رفتار هنگام نبود قیمت در منبع:</th>
 							<td>
 								<select name="fallback_price_behavior" class="regular-text">
-									<option value="use_fallback" <?php selected( $opts['fallback_price_behavior'], 'use_fallback' ); ?>>استفاده از قیمت پایه پیش‌فرض و نمایش قیمت تعدیل‌شده (توصیه شده)</option>
+									<option value="use_fallback" <?php selected( $opts['fallback_price_behavior'], 'use_fallback' ); ?>>استفاده از قیمت پایه پیش‌فرض و نمایش قیمت فروشگاه (توصیه شده)</option>
 									<option value="call_for_price" <?php selected( $opts['fallback_price_behavior'], 'call_for_price' ); ?>>نمایش عبارت «تماس بگیرید»</option>
 								</select>
 							</td>
@@ -2554,10 +2953,6 @@ class Scraper_Auto_Shop_Plugin {
 								<label style="display:block; margin-bottom:8px;">
 									<input type="checkbox" name="show_special_badge" value="1" <?php checked( ! empty( $opts['show_special_badge'] ) ); ?>>
 									نمایش نشان «پیشنهاد ویژه» روی کارت کالا
-								</label>
-								<label style="display:block; margin-bottom:8px;">
-									<input type="checkbox" name="show_brand_badge" value="1" <?php checked( ! empty( $opts['show_brand_badge'] ) ); ?>>
-									نمایش برچسب برند/سازنده روی تصویر محصول
 								</label>
 								<label style="display:block;">
 									<input type="checkbox" name="show_features_banner" value="1" <?php checked( $opts['show_features_banner'] ); ?>>
@@ -2588,7 +2983,7 @@ class Scraper_Auto_Shop_Plugin {
 					🔄 درج مستقیم در دیتابیس محصولات ووکامرس (WooCommerce Database Sync)
 				</h3>
 				<p style="color:#64748b; font-size:0.95rem; line-height:1.6; max-width:800px;">
-					با فشردن دکمه زیر، تمامی محصولات به عنوان محصولات رسمی ووکامرس (با قیمت نهایی، دسته‌بندی و متای برند) در دیتابیس وردپرس درج یا به‌روزرسانی می‌شوند:
+					با فشردن دکمه زیر، تمامی محصولات به عنوان محصولات رسمی ووکامرس در دیتابیس وردپرس درج یا به‌روزرسانی می‌شوند:
 				</p>
 				<div style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-top:15px;">
 					<button type="button" id="btnSyncToWoo" class="button button-secondary button-hero" style="font-weight:800; padding:8px 24px; border-color:#2563eb; color:#2563eb;">

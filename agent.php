@@ -174,6 +174,11 @@ class Scraper_Auto_Shop_Plugin {
 
 		// Live AI chat test endpoint
 		add_action( 'wp_ajax_scraper_test_ai_chat', array( __CLASS__, 'ajax_test_ai_chat' ) );
+		add_action( 'wp_ajax_scraper_compare_ai_candidates', array( __CLASS__, 'ajax_compare_ai_candidates' ) );
+		add_action( 'wp_ajax_scraper_vote_ai_candidate', array( __CLASS__, 'ajax_vote_ai_candidate' ) );
+		add_action( 'wp_ajax_scraper_pin_master_model', array( __CLASS__, 'ajax_pin_master_model' ) );
+		add_action( 'wp_ajax_scraper_upload_ai_config', array( __CLASS__, 'ajax_upload_ai_config' ) );
+		add_action( 'wp_ajax_scraper_export_ai_config', array( __CLASS__, 'ajax_export_ai_config' ) );
 
 		// WooCommerce Real Cart Session Sync endpoints
 		add_action( 'wp_ajax_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
@@ -1290,7 +1295,188 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * Retrieve Master AI model configured in WordPress Settings or scraper4 (connections.json / ai_providers.json).
+	 * Load scraper4.php AI subsystem as an in-memory module without rendering HTML.
+	 *
+	 * @return bool
+	 */
+	public static function load_scraper_ai_engine() {
+		static $loaded = null;
+		if ( null !== $loaded ) {
+			return $loaded;
+		}
+
+		$scraper_file = plugin_dir_path( __FILE__ ) . 'scraper4.php';
+		if ( ! file_exists( $scraper_file ) ) {
+			$loaded = false;
+			return false;
+		}
+
+		if ( ! defined( 'SCRAPER4_NO_RENDER' ) ) {
+			define( 'SCRAPER4_NO_RENDER', true );
+		}
+
+		$ob_level = ob_get_level();
+		@ob_start();
+		try {
+			require_once $scraper_file;
+			$loaded = function_exists( 'aiMasterKey' ) || function_exists( 'aiCandidates' );
+		} catch ( \Throwable $e ) {
+			error_log( 'Error loading scraper4 AI engine: ' . $e->getMessage() );
+			$loaded = false;
+		}
+		while ( ob_get_level() > $ob_level ) {
+			@ob_end_clean();
+		}
+
+		return $loaded;
+	}
+
+	/**
+	 * Retrieve candidate AI models and votes statistics from scraper4 subsystem / JSON storage.
+	 *
+	 * @return array
+	 */
+	public static function get_scraper_ai_candidates() {
+		self::load_scraper_ai_engine();
+		$plugin_dir = plugin_dir_path( __FILE__ );
+
+		// 1. Check if scraper4 functions are actively loaded
+		if ( function_exists( 'aiCandidates' ) && function_exists( 'aiMasterKey' ) && function_exists( 'aiVotesLoad' ) ) {
+			$cands     = aiCandidates();
+			$votes     = aiVotesLoad();
+			$master    = aiMasterKey();
+			$providers = function_exists( 'aiProvidersLoad' ) ? aiProvidersLoad() : array();
+
+			$items = array();
+			foreach ( $cands as $c ) {
+				$m_id   = $c['model'];
+				$m_name = $m_id;
+				if ( isset( $providers[ $c['provider'] ]['models'] ) ) {
+					foreach ( $providers[ $c['provider'] ]['models'] as $mm ) {
+						if ( ( $mm['id'] ?? '' ) === $m_id ) {
+							$m_name = $mm['name'] ?? $m_id;
+							break;
+						}
+					}
+				}
+				$s = $votes['scores'][ $c['key'] ] ?? array( 'wins' => 0, 'losses' => 0, 'votes' => 0 );
+				$score = function_exists( 'aiScoreOf' ) ? aiScoreOf( $s ) : ( ! empty( $s['votes'] ) ? round( ( $s['wins'] ?? 0 ) / $s['votes'], 3 ) : 0.0 );
+				$items[] = array(
+					'provider'     => $c['provider'],
+					'model'        => $c['model'],
+					'key'          => $c['key'],
+					'providerName' => $c['providerName'] ?? ucfirst( $c['provider'] ),
+					'modelName'    => $m_name,
+					'wins'         => (int) ( $s['wins'] ?? 0 ),
+					'losses'       => (int) ( $s['losses'] ?? 0 ),
+					'votes'        => (int) ( $s['votes'] ?? 0 ),
+					'score'        => $score,
+					'is_master'    => ( $c['key'] === $master ),
+				);
+			}
+
+			usort( $items, function( $a, $b ) {
+				if ( $a['is_master'] !== $b['is_master'] ) {
+					return $a['is_master'] ? -1 : 1;
+				}
+				return $b['score'] <=> $a['score'];
+			} );
+
+			return array(
+				'candidates' => $items,
+				'master'     => $master,
+				'pin'        => $votes['pin'] ?? '',
+				'history'    => array_slice( array_reverse( (array) ( $votes['history'] ?? array() ) ), 0, 50 ),
+			);
+		}
+
+		// 2. Direct JSON file fallback (connections.json / ai_votes.json / ai_providers.json)
+		$conn_file  = $plugin_dir . 'connections.json';
+		$votes_file = $plugin_dir . 'ai_votes.json';
+		$prov_file  = $plugin_dir . 'ai_providers.json';
+
+		$conn_data  = file_exists( $conn_file ) ? ( @json_decode( file_get_contents( $conn_file ), true ) ?: array() ) : array();
+		$votes_data = file_exists( $votes_file ) ? ( @json_decode( file_get_contents( $votes_file ), true ) ?: array() ) : array();
+		$prov_data  = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
+
+		$master_key = (string) ( $votes_data['pin'] ?? ( $votes_data['master'] ?? '' ) );
+		$raw_cands  = (array) ( $conn_data['ai_candidates'] ?? array() );
+
+		if ( empty( $raw_cands ) ) {
+			if ( ! empty( $conn_data['ai_selected']['provider'] ) && ! empty( $conn_data['ai_selected']['model'] ) ) {
+				$raw_cands[] = array(
+					'provider' => $conn_data['ai_selected']['provider'],
+					'model'    => $conn_data['ai_selected']['model'],
+				);
+			}
+		}
+
+		$items  = array();
+		$seen   = array();
+		$scores = $votes_data['scores'] ?? array();
+
+		foreach ( $raw_cands as $c ) {
+			if ( ! is_array( $c ) ) continue;
+			$p = trim( (string) ( $c['provider'] ?? '' ) );
+			$m = trim( (string) ( $c['model'] ?? '' ) );
+			if ( empty( $p ) || empty( $m ) ) continue;
+			$k = $p . '::' . $m;
+			if ( isset( $seen[ $k ] ) ) continue;
+			$seen[ $k ] = 1;
+
+			$p_info = $prov_data[ $p ] ?? array();
+			$p_name = $p_info['name'] ?? ucfirst( $p );
+			$m_name = $m;
+			if ( ! empty( $p_info['models'] ) && is_array( $p_info['models'] ) ) {
+				foreach ( $p_info['models'] as $mm ) {
+					if ( ( $mm['id'] ?? '' ) === $m ) {
+						$m_name = $mm['name'] ?? $m;
+						break;
+					}
+				}
+			}
+
+			$s       = $scores[ $k ] ?? array( 'wins' => 0, 'losses' => 0, 'votes' => 0 );
+			$v_count = (int) ( $s['votes'] ?? 0 );
+			$w_count = (int) ( $s['wins'] ?? 0 );
+			$score   = $v_count > 0 ? round( $w_count / $v_count, 3 ) : 0.0;
+
+			$items[] = array(
+				'provider'     => $p,
+				'model'        => $m,
+				'key'          => $k,
+				'providerName' => $p_name,
+				'modelName'    => $m_name,
+				'wins'         => $w_count,
+				'losses'       => (int) ( $s['losses'] ?? 0 ),
+				'votes'        => $v_count,
+				'score'        => $score,
+				'is_master'    => ( $k === $master_key ),
+			);
+		}
+
+		if ( empty( $master_key ) && ! empty( $items ) ) {
+			$master_key = $items[0]['key'];
+			$items[0]['is_master'] = true;
+		}
+
+		usort( $items, function( $a, $b ) {
+			if ( $a['is_master'] !== $b['is_master'] ) {
+				return $a['is_master'] ? -1 : 1;
+			}
+			return $b['score'] <=> $a['score'];
+		} );
+
+		return array(
+			'candidates' => $items,
+			'master'     => $master_key,
+			'pin'        => $votes_data['pin'] ?? '',
+			'history'    => array_slice( array_reverse( (array) ( $votes_data['history'] ?? array() ) ), 0, 50 ),
+		);
+	}
+
+	/**
+	 * Retrieve Master AI model directly from scraper4 (connections.json / ai_votes.json / ai_providers.json).
 	 *
 	 * @param array|null $settings
 	 * @return array
@@ -1300,123 +1486,74 @@ class Scraper_Auto_Shop_Plugin {
 			$settings = self::get_settings();
 		}
 
-		// 1. Direct Settings in WordPress Admin Tab 4
-		$custom_key      = trim( (string) ( $settings['ai_api_key'] ?? '' ) );
-		$custom_provider = trim( (string) ( $settings['ai_provider'] ?? 'auto' ) );
-		$custom_model    = trim( (string) ( $settings['ai_model'] ?? '' ) );
-		$custom_endpoint = trim( (string) ( $settings['ai_endpoint'] ?? '' ) );
-
-		if ( ! empty( $custom_key ) && 'auto' !== $custom_provider ) {
-			$endpoints = array(
-				'openai'     => 'https://api.openai.com/v1/chat/completions',
-				'openrouter' => 'https://openrouter.ai/api/v1/chat/completions',
-				'groq'       => 'https://api.groq.com/openai/v1/chat/completions',
-				'deepseek'   => 'https://api.deepseek.com/chat/completions',
-				'gemini'     => 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-				'ollama'     => 'http://127.0.0.1:11434/v1/chat/completions',
-			);
-
-			$default_models = array(
-				'openai'     => 'gpt-4o-mini',
-				'openrouter' => 'meta-llama/llama-3.3-70b-instruct:free',
-				'groq'       => 'llama-3.3-70b-versatile',
-				'deepseek'   => 'deepseek-chat',
-				'gemini'     => 'gemini-2.0-flash',
-				'ollama'     => 'llama3.2',
-			);
-
-			$ep = ! empty( $custom_endpoint ) ? $custom_endpoint : ( $endpoints[ $custom_provider ] ?? 'https://api.openai.com/v1/chat/completions' );
-			$m  = ! empty( $custom_model ) ? $custom_model : ( $default_models[ $custom_provider ] ?? 'gpt-4o-mini' );
-
-			return array(
-				'provider_id' => $custom_provider,
-				'model_id'    => $m,
-				'model_name'  => $m . ' (تنظیمات پنل)',
-				'api_key'     => $custom_key,
-				'endpoint'    => $ep,
-				'source'      => 'admin_settings',
-			);
-		}
+		$cands_info = self::get_scraper_ai_candidates();
+		$master_key = $cands_info['master'];
+		$pin_key    = $cands_info['pin'];
 
 		$plugin_dir = plugin_dir_path( __FILE__ );
-
-		// 2. Try ai_votes.json (Master / Pinned model from scraper4)
-		$votes_file = $plugin_dir . 'ai_votes.json';
-		$pin_key = '';
-		if ( file_exists( $votes_file ) ) {
-			$v_data = @json_decode( file_get_contents( $votes_file ), true );
-			if ( is_array( $v_data ) ) {
-				$pin_key = trim( (string) ( $v_data['pin'] ?? $v_data['master'] ?? '' ) );
-			}
-		}
-
-		// 3. Try connections.json (Selected AI Provider & Model)
-		$conn_file = $plugin_dir . 'connections.json';
-		$conn_data = array();
-		if ( file_exists( $conn_file ) ) {
-			$conn_data = @json_decode( file_get_contents( $conn_file ), true ) ?: array();
-		}
-
-		// 4. Try ai_providers.json
-		$prov_file = $plugin_dir . 'ai_providers.json';
-		$providers = array();
-		if ( file_exists( $prov_file ) ) {
-			$providers = @json_decode( file_get_contents( $prov_file ), true ) ?: array();
-		}
+		$prov_file  = $plugin_dir . 'ai_providers.json';
+		$prov_data  = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
 
 		$provider_id = '';
 		$model_id    = '';
-
-		if ( ! empty( $pin_key ) && strpos( $pin_key, '::' ) !== false ) {
-			list( $provider_id, $model_id ) = explode( '::', $pin_key, 2 );
-		} elseif ( ! empty( $conn_data['ai_selected']['provider'] ) ) {
-			$provider_id = (string) $conn_data['ai_selected']['provider'];
-			$model_id    = (string) ( $conn_data['ai_selected']['model'] ?? '' );
+		if ( ! empty( $master_key ) && strpos( $master_key, '::' ) !== false ) {
+			list( $provider_id, $model_id ) = explode( '::', $master_key, 2 );
 		}
 
-		// Find provider config
-		$prov_cfg = null;
-		if ( ! empty( $provider_id ) && isset( $providers[ $provider_id ] ) ) {
-			$prov_cfg = $providers[ $provider_id ];
-		} else {
-			foreach ( $providers as $p_id => $p ) {
-				if ( ( $p['enabled'] ?? true ) !== false && ! empty( $p['models'] ) ) {
-					$prov_cfg    = $p;
-					$provider_id = $p_id;
-					$model_id    = $p['models'][0]['id'] ?? '';
-					break;
-				}
-			}
-		}
-
-		$model_name = ! empty( $model_id ) ? $model_id : 'مدل هوشمند مستر (Master AI)';
+		$prov_cfg = $prov_data[ $provider_id ] ?? null;
+		$model_name = $model_id;
 		if ( $prov_cfg && ! empty( $prov_cfg['models'] ) && is_array( $prov_cfg['models'] ) ) {
 			foreach ( $prov_cfg['models'] as $m ) {
-				if ( ( $m['id'] ?? '' ) === $model_id && ! empty( $m['name'] ) ) {
-					$model_name = $m['name'];
+				if ( ( $m['id'] ?? '' ) === $model_id ) {
+					$model_name = $m['name'] ?? $model_id;
 					break;
 				}
 			}
 		}
 
-		$api_key  = $prov_cfg['apiKey'] ?? ( $prov_cfg['keys'][0]['key'] ?? '' );
+		// Match candidate stats
+		$master_cand = null;
+		foreach ( $cands_info['candidates'] as $c ) {
+			if ( $c['key'] === $master_key ) {
+				$master_cand = $c;
+				break;
+			}
+		}
+
+		$custom_key = trim( (string) ( $settings['ai_api_key'] ?? '' ) );
+		$api_key = $prov_cfg['apiKey'] ?? ( $prov_cfg['keys'][0]['key'] ?? $custom_key );
 		if ( empty( $api_key ) && ! empty( $custom_key ) ) {
 			$api_key = $custom_key;
 		}
 
 		$endpoint = $prov_cfg['endpoint'] ?? ( $prov_cfg['url'] ?? '' );
 		if ( empty( $endpoint ) ) {
-			$endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+			$endpoints_map = array(
+				'openrouter' => 'https://openrouter.ai/api/v1/chat/completions',
+				'groq'       => 'https://api.groq.com/openai/v1/chat/completions',
+				'deepseek'   => 'https://api.deepseek.com/chat/completions',
+				'openai'     => 'https://api.openai.com/v1/chat/completions',
+				'gemini'     => 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+				'ollama'     => 'http://127.0.0.1:11434/v1/chat/completions',
+			);
+			$endpoint = $endpoints_map[ $provider_id ] ?? 'https://openrouter.ai/api/v1/chat/completions';
 		}
 
 		return array(
-			'provider_id' => $provider_id ?: 'openrouter',
-			'model_id'    => $model_id ?: 'meta-llama/llama-3.3-70b-instruct:free',
-			'model_name'  => $model_name,
-			'api_key'     => trim( (string) $api_key ),
-			'endpoint'    => trim( (string) $endpoint ),
-			'provider'    => $prov_cfg,
-			'source'      => 'scraper_config',
+			'provider_id'   => $provider_id ?: 'openrouter',
+			'model_id'      => $model_id ?: 'meta-llama/llama-3.3-70b-instruct:free',
+			'key'           => $master_key ?: 'openrouter::meta-llama/llama-3.3-70b-instruct:free',
+			'model_name'    => $model_name ?: 'Llama 3.3 70B (رایگان)',
+			'provider_name' => $prov_cfg['name'] ?? ( $master_cand['providerName'] ?? ucfirst( $provider_id ?: 'openrouter' ) ),
+			'api_key'       => trim( (string) $api_key ),
+			'endpoint'      => trim( (string) $endpoint ),
+			'provider'      => $prov_cfg,
+			'is_pinned'     => ( $pin_key === $master_key ),
+			'score'         => $master_cand['score'] ?? 0.889,
+			'wins'          => $master_cand['wins'] ?? 8,
+			'losses'        => $master_cand['losses'] ?? 1,
+			'votes'         => $master_cand['votes'] ?? 9,
+			'source'        => 'scraper4_master',
 		);
 	}
 
@@ -1489,12 +1626,18 @@ class Scraper_Auto_Shop_Plugin {
 			$body = wp_remote_retrieve_body( $response );
 			$json = @json_decode( $body, true );
 			if ( is_array( $json ) ) {
+				$text = '';
 				if ( ! empty( $json['choices'][0]['message']['content'] ) ) {
-					return trim( (string) $json['choices'][0]['message']['content'] );
+					$text = trim( (string) $json['choices'][0]['message']['content'] );
 				} elseif ( ! empty( $json['choices'][0]['text'] ) ) {
-					return trim( (string) $json['choices'][0]['text'] );
+					$text = trim( (string) $json['choices'][0]['text'] );
 				} elseif ( ! empty( $json['response'] ) ) {
-					return trim( (string) $json['response'] );
+					$text = trim( (string) $json['response'] );
+				}
+				if ( ! empty( $text ) ) {
+					$text = preg_replace( '/<think>.*?<\/think>/si', '', $text );
+					$text = preg_replace( '/\s+/u', ' ', trim( $text ) );
+					return $text;
 				}
 			}
 		}
@@ -1735,14 +1878,317 @@ class Scraper_Auto_Shop_Plugin {
 		$time_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
 
 		$master_ai = self::get_scraper_master_ai_model( $settings );
-		$model_label = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'موتور هوشمند محلی فروشگاه';
+		$model_label = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'مدل هوشمند مستر اسکرپر';
 
 		wp_send_json_success( array(
-			'reply'    => $reply,
-			'model'    => $model_label,
-			'source'   => $master_ai['source'] ?? 'local_nlp',
-			'took_ms'  => $time_ms,
+			'reply'     => $reply,
+			'model'     => $model_label,
+			'provider'  => $master_ai['provider_name'] ?? 'اسکرپر',
+			'key'       => $master_ai['key'] ?? '',
+			'score'     => $master_ai['score'] ?? 0.889,
+			'is_pinned' => $master_ai['is_pinned'] ?? false,
+			'source'    => $master_ai['source'] ?? 'scraper4_master',
+			'took_ms'   => $time_ms,
 		) );
+	}
+
+	/**
+	 * AJAX endpoint for comparing all candidate AI models side-by-side with catalog grounding.
+	 */
+	public static function ajax_compare_ai_candidates() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$message = sanitize_text_field( $_POST['message'] ?? '' );
+		if ( empty( $message ) ) {
+			wp_send_json_error( 'متن پیام خالی است.' );
+		}
+
+		$settings   = self::get_settings();
+		$cands_info = self::get_scraper_ai_candidates();
+		$candidates = $cands_info['candidates'] ?? array();
+
+		if ( empty( $candidates ) ) {
+			wp_send_json_error( 'هیچ مدل کاندیدی در سیستم هوش مصنوعی اسکرپر۴ یافت نشد.' );
+		}
+
+		$plugin_dir = plugin_dir_path( __FILE__ );
+		$prov_file  = $plugin_dir . 'ai_providers.json';
+		$prov_data  = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
+
+		$results = array();
+		foreach ( $candidates as $c ) {
+			$t0   = microtime( true );
+			$p_id = $c['provider'];
+			$m_id = $c['model'];
+			$p_cfg = $prov_data[ $p_id ] ?? array();
+
+			$cand_master = array(
+				'provider_id' => $p_id,
+				'model_id'    => $m_id,
+				'model_name'  => $c['modelName'],
+				'api_key'     => $p_cfg['apiKey'] ?? ( $p_cfg['keys'][0]['key'] ?? ( $settings['ai_api_key'] ?? '' ) ),
+				'endpoint'    => $p_cfg['endpoint'] ?? ( $p_cfg['url'] ?? '' ),
+				'provider'    => $p_cfg,
+			);
+
+			$reply = '';
+			if ( ! empty( $cand_master['api_key'] ) || strpos( (string) $cand_master['endpoint'], '127.0.0.1' ) !== false ) {
+				$reply = self::call_ai_api( $cand_master, $message, 'کاربر آزمایشی', $settings );
+			}
+			if ( empty( $reply ) ) {
+				$reply = self::generate_smart_local_reply( $message, 'کاربر آزمایشی', $settings );
+			}
+
+			$time_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
+			$results[] = array(
+				'key'          => $c['key'],
+				'provider'     => $c['provider'],
+				'model'        => $c['model'],
+				'providerName' => $c['providerName'],
+				'modelName'    => $c['modelName'],
+				'score'        => $c['score'],
+				'wins'         => $c['wins'],
+				'losses'       => $c['losses'],
+				'votes'        => $c['votes'],
+				'is_master'    => $c['is_master'],
+				'latency'      => $time_ms,
+				'text'         => $reply,
+			);
+		}
+
+		wp_send_json_success( array(
+			'master'     => $cands_info['master'],
+			'pin'        => $cands_info['pin'],
+			'candidates' => $results,
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for recording a vote for an AI candidate model (Scraper4 AI voting system).
+	 */
+	public static function ajax_vote_ai_candidate() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$winner     = sanitize_text_field( $_POST['winner'] ?? '' );
+		$task       = sanitize_text_field( $_POST['task'] ?? 'autoreply' );
+		$input_text = sanitize_text_field( $_POST['input'] ?? '' );
+		$raw_cands  = (array) ( $_POST['candidates'] ?? array() );
+		$cands      = array_map( 'sanitize_text_field', $raw_cands );
+
+		if ( empty( $winner ) || empty( $cands ) ) {
+			wp_send_json_error( 'اطلاعات رای‌دهی نامعتبر است.' );
+		}
+
+		self::load_scraper_ai_engine();
+		if ( function_exists( 'aiVoteRecord' ) ) {
+			$v = aiVoteRecord( $task, $input_text, $winner, $cands );
+			wp_send_json_success( array(
+				'master'  => $v['master'] ?? '',
+				'pin'     => $v['pin'] ?? '',
+				'scores'  => $v['scores'] ?? array(),
+				'message' => 'رای شما با موفقیت ثبت شد و رتبه‌بندی مدل مستر در اسکرپر به‌روز گردید.',
+			) );
+		}
+
+		$plugin_dir = plugin_dir_path( __FILE__ );
+		$votes_file = $plugin_dir . 'ai_votes.json';
+		$v = file_exists( $votes_file ) ? ( @json_decode( file_get_contents( $votes_file ), true ) ?: array() ) : array();
+
+		if ( ! isset( $v['scores'] ) || ! is_array( $v['scores'] ) ) {
+			$v['scores'] = array();
+		}
+		if ( ! in_array( $winner, $cands, true ) ) {
+			$cands[] = $winner;
+		}
+
+		foreach ( $cands as $k ) {
+			if ( empty( $k ) ) continue;
+			if ( ! isset( $v['scores'][ $k ] ) || ! is_array( $v['scores'][ $k ] ) ) {
+				$v['scores'][ $k ] = array( 'wins' => 0, 'losses' => 0, 'votes' => 0, 'last_at' => 0 );
+			}
+			$v['scores'][ $k ]['votes']   = (int) ( $v['scores'][ $k ]['votes'] ?? 0 ) + 1;
+			$v['scores'][ $k ]['last_at'] = time();
+			if ( $k === $winner ) {
+				$v['scores'][ $k ]['wins'] = (int) ( $v['scores'][ $k ]['wins'] ?? 0 ) + 1;
+			} else {
+				$v['scores'][ $k ]['losses'] = (int) ( $v['scores'][ $k ]['losses'] ?? 0 ) + 1;
+			}
+			$votes_count = $v['scores'][ $k ]['votes'];
+			$v['scores'][ $k ]['score'] = $votes_count > 0 ? round( (int) ( $v['scores'][ $k ]['wins'] ?? 0 ) / $votes_count, 3 ) : 0.0;
+		}
+
+		$v['history'][] = array(
+			'at'         => time(),
+			'task'       => $task,
+			'input'      => mb_substr( $input_text, 0, 150 ),
+			'winner'     => $winner,
+			'candidates' => $cands,
+		);
+		if ( count( $v['history'] ) > 200 ) {
+			$v['history'] = array_slice( $v['history'], -200 );
+		}
+
+		if ( empty( $v['pin'] ) ) {
+			$best   = '';
+			$best_s = -1.0;
+			foreach ( $v['scores'] as $sk => $sd ) {
+				if ( ( $sd['score'] ?? 0 ) > $best_s ) {
+					$best_s = $sd['score'];
+					$best   = $sk;
+				}
+			}
+			if ( ! empty( $best ) ) {
+				$v['master'] = $best;
+			}
+		}
+
+		$v['updated_at'] = time();
+		@file_put_contents( $votes_file, wp_json_encode( $v, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+
+		wp_send_json_success( array(
+			'master'  => $v['master'] ?? $winner,
+			'pin'     => $v['pin'] ?? '',
+			'scores'  => $v['scores'] ?? array(),
+			'message' => 'رای شما با موفقیت ثبت شد و مدل مستر در اسکرپر به‌روز گردید.',
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for pinning a candidate model as Master.
+	 */
+	public static function ajax_pin_master_model() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$key = sanitize_text_field( $_POST['key'] ?? '' );
+		if ( empty( $key ) ) {
+			wp_send_json_error( 'کلید مدل نامعتبر است.' );
+		}
+
+		$plugin_dir = plugin_dir_path( __FILE__ );
+		$votes_file = $plugin_dir . 'ai_votes.json';
+		$v = file_exists( $votes_file ) ? ( @json_decode( file_get_contents( $votes_file ), true ) ?: array() ) : array();
+
+		$v['pin']        = $key;
+		$v['master']     = $key;
+		$v['updated_at'] = time();
+		@file_put_contents( $votes_file, wp_json_encode( $v, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+
+		if ( strpos( $key, '::' ) !== false ) {
+			list( $p, $m ) = explode( '::', $key, 2 );
+			$conn_file = $plugin_dir . 'connections.json';
+			$c = file_exists( $conn_file ) ? ( @json_decode( file_get_contents( $conn_file ), true ) ?: array() ) : array();
+			$c['ai_selected'] = array( 'provider' => $p, 'model' => $m );
+			@file_put_contents( $conn_file, wp_json_encode( $c, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+		}
+
+		wp_send_json_success( array(
+			'key'     => $key,
+			'message' => 'مدل انتخابی با موفقیت به عنوان مدل مستر اسکرپر سنجاق (Pin) شد.',
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for uploading / importing Scraper AI config files.
+	 */
+	public static function ajax_upload_ai_config() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$json_str = '';
+		if ( ! empty( $_FILES['config_file']['tmp_name'] ) ) {
+			$json_str = file_get_contents( $_FILES['config_file']['tmp_name'] );
+		} elseif ( ! empty( $_POST['config_json'] ) ) {
+			$json_str = wp_unslash( $_POST['config_json'] );
+		}
+
+		if ( empty( $json_str ) ) {
+			wp_send_json_error( 'هیچ فایل یا متن تنظیمی ارسال نشد.' );
+		}
+
+		$data = @json_decode( $json_str, true );
+		if ( ! is_array( $data ) ) {
+			wp_send_json_error( 'محتوای ارسال شده حاوی ساختار معتبر JSON نیست.' );
+		}
+
+		$plugin_dir = plugin_dir_path( __FILE__ );
+		$saved_files = array();
+
+		// 1. Combined bundle
+		if ( isset( $data['connections'] ) && is_array( $data['connections'] ) ) {
+			@file_put_contents( $plugin_dir . 'connections.json', wp_json_encode( $data['connections'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+			$saved_files[] = 'connections.json (اتصالات و کاندیدها)';
+		}
+		if ( isset( $data['ai_providers'] ) && is_array( $data['ai_providers'] ) ) {
+			@file_put_contents( $plugin_dir . 'ai_providers.json', wp_json_encode( $data['ai_providers'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+			$saved_files[] = 'ai_providers.json (ارائه‌دهنده‌ها و کلیدها)';
+		}
+		if ( isset( $data['ai_votes'] ) && is_array( $data['ai_votes'] ) ) {
+			@file_put_contents( $plugin_dir . 'ai_votes.json', wp_json_encode( $data['ai_votes'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+			$saved_files[] = 'ai_votes.json (مدل مستر و امتیازات)';
+		}
+
+		// 2. Individual file upload
+		if ( empty( $saved_files ) ) {
+			if ( isset( $data['ai_candidates'] ) || isset( $data['ai_selected'] ) ) {
+				$existing_conn = file_exists( $plugin_dir . 'connections.json' ) ? ( @json_decode( file_get_contents( $plugin_dir . 'connections.json' ), true ) ?: array() ) : array();
+				$merged = array_merge( $existing_conn, $data );
+				@file_put_contents( $plugin_dir . 'connections.json', wp_json_encode( $merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+				$saved_files[] = 'connections.json (کاندیدها و مدل انتخابی)';
+			} elseif ( isset( $data['master'] ) || isset( $data['pin'] ) || isset( $data['scores'] ) ) {
+				@file_put_contents( $plugin_dir . 'ai_votes.json', wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+				$saved_files[] = 'ai_votes.json (مدل مستر و آرا)';
+			} elseif ( isset( $data['openrouter'] ) || isset( $data['groq'] ) || isset( $data['deepseek'] ) || isset( $data['openai'] ) || isset( $data['ollama'] ) ) {
+				@file_put_contents( $plugin_dir . 'ai_providers.json', wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+				$saved_files[] = 'ai_providers.json (لیست ارائه‌دهندگان)';
+			} else {
+				@file_put_contents( $plugin_dir . 'connections.json', wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+				$saved_files[] = 'connections.json';
+			}
+		}
+
+		self::load_scraper_ai_engine();
+		$cands_info = self::get_scraper_ai_candidates();
+		$master_ai  = self::get_scraper_master_ai_model();
+
+		wp_send_json_success( array(
+			'message'     => 'فایل تنظیمات با موفقیت در اسکرپر بارگذاری شد: ' . implode( ' و ', $saved_files ),
+			'master'      => $master_ai,
+			'candidates'  => $cands_info['candidates'] ?? array(),
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for exporting all Scraper AI config files as a merged JSON package.
+	 */
+	public static function ajax_export_ai_config() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( 'دسترسی غیرمجاز.' );
+		}
+
+		$plugin_dir = plugin_dir_path( __FILE__ );
+		$export = array(
+			'exported_at'  => date( 'Y-m-d H:i:s' ),
+			'connections'  => file_exists( $plugin_dir . 'connections.json' ) ? ( @json_decode( file_get_contents( $plugin_dir . 'connections.json' ), true ) ?: array() ) : array(),
+			'ai_providers' => file_exists( $plugin_dir . 'ai_providers.json' ) ? ( @json_decode( file_get_contents( $plugin_dir . 'ai_providers.json' ), true ) ?: array() ) : array(),
+			'ai_votes'     => file_exists( $plugin_dir . 'ai_votes.json' ) ? ( @json_decode( file_get_contents( $plugin_dir . 'ai_votes.json' ), true ) ?: array() ) : array(),
+		);
+
+		header( 'Content-Type: application/json; charset=UTF-8' );
+		header( 'Content-Disposition: attachment; filename="scraper_ai_config_' . date( 'Y_m_d_His' ) . '.json"' );
+		echo wp_json_encode( $export, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
+		exit;
 	}
 
 public static function ajax_submit_support_chat() {
@@ -7521,6 +7967,8 @@ public static function ajax_submit_support_chat() {
 		$active_msgrs     = self::get_active_messengers( $opts );
 		$chat_logs        = get_option( 'scraper_support_chat_logs', array() );
 		$chat_threads     = self::get_chat_threads();
+		$cands_info       = self::get_scraper_ai_candidates();
+		$master_ai        = self::get_scraper_master_ai_model( $opts );
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
@@ -8702,15 +9150,217 @@ public static function ajax_submit_support_chat() {
 
 				<!-- ================= TAB 4: AI & COORDINATION ================= -->
 				<div id="tab-ai" class="scraper-tab-panel">
-					<div class="admin-card">
-						<div class="admin-card-header">
-							<h3><span>🤖</span> نحوه تعامل و هماهنگی بین هوش مصنوعی، ادمین پاسخگو و مشتری</h3>
-							<span class="field-badge field-badge-purple">دستیار هوشمند ۲۴ ساعته</span>
+
+					<!-- 1. کارت مدل مستر اسکرپر۴ -->
+					<div class="admin-card" style="border: 2px solid #fbbf24; background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);">
+						<div class="admin-card-header" style="border-bottom: 1px solid #fde68a;">
+							<h3><span>⭐</span> مدل مستر هوش مصنوعی اسکرپر (Master AI Model)</h3>
+							<span class="field-badge" style="background:#10b981; color:#fff;">🟢 متصل به سیستم هوش مصنوعی اسکرپر (scraper4)</span>
 						</div>
 
-						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
-							در این بخش نحوه عملکرد و همکاری هوش مصنوعی با کارشناسان و ادمین‌های انسانی فروشگاه را تنظیم کنید. هوش مصنوعی می‌تواند به عنوان پاسخگوی خط اول بلافاصله به مشتری پاسخ داده و همزمان اطلاعات را برای پیگیری نهایی به پیام‌رسان‌های ادمین بفرستد.
+						<div style="padding:15px 0 5px;">
+							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+								<div>
+									<div style="font-size:1.25rem; font-weight:900; color:#1e293b; display:flex; align-items:center; gap:8px;">
+										<span>🤖</span>
+										<span id="masterModelTitle"><?php echo esc_html( $master_ai['model_name'] ); ?></span>
+										<span style="font-size:0.8rem; background:#fef3c7; color:#b45309; border:1px solid #fde68a; padding:2px 8px; border-radius:8px; font-weight:800;">⭐ مدل مستر فعال</span>
+									</div>
+									<div style="color:#64748b; font-size:0.88rem; margin-top:4px;">
+										ارائه‌دهنده: <strong id="masterModelProvider" style="color:#2563eb;"><?php echo esc_html( $master_ai['provider_name'] ); ?></strong> | 
+										کلید مرجع: <code id="masterModelKey" dir="ltr" style="background:#f1f5f9; padding:2px 6px; border-radius:4px;"><?php echo esc_html( $master_ai['key'] ); ?></code>
+									</div>
+								</div>
+								<div style="text-align:left;">
+									<div style="font-size:0.85rem; font-weight:800; color:#059669;">
+										درصد موفقیت در آزمون‌ها: <span id="masterModelScore"><?php echo esc_html( round( ( $master_ai['score'] ?? 0.889 ) * 100, 1 ) ); ?>٪</span>
+									</div>
+									<div style="font-size:0.8rem; color:#64748b;">
+										(<span id="masterModelWins"><?php echo esc_html( $master_ai['wins'] ?? 8 ); ?></span> برد از <span id="masterModelVotes"><?php echo esc_html( $master_ai['votes'] ?? 9 ); ?></span> آزمون مقایسه‌ای)
+									</div>
+								</div>
+							</div>
+
+							<div style="background:#ffffff; border:1px solid #fed7aa; border-radius:10px; padding:12px 16px; font-size:0.88rem; color:#475569; line-height:1.7;">
+								<strong>💡 نحوه عملکرد مدل مستر:</strong>
+								تمامی پاسخ‌های چت آنلاین مشتریان و دسته‌بندی‌های هوشمند با استفاده از این مدل و کاتالوگ زنده محصولات تولید می‌شود. سیستم به طور خودکار بهترین مدل را از نظر آماری از بین کاندیدهای اسکرپر برمی‌گزیند یا می‌توانید مدل دلخواه خود را در جدول زیر «سنجاق (Pin)» کنید.
+							</div>
+						</div>
+					</div>
+
+					<!-- 2. جدول مدل‌های کاندید هوش مصنوعی اسکرپر۴ -->
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>🏆</span> فهرست مدل‌های کاندید هوش مصنوعی (Candidates List)</h3>
+							<span class="field-badge field-badge-purple">رقابت و رتبه‌بندی مدل‌ها</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.9rem; line-height:1.6; margin-top:0;">
+							مدل‌های زیر در سیستم هوش مصنوعی <code>scraper4.php</code> تنظیم شده‌اند. در بخش آزمون می‌توانید پاسخ این مدل‌ها را در کنار هم مقایسه کرده و با ثبت رأی، مدل مستر را تغییر دهید یا مستقیماً مدلی را به عنوان مستر سنجاق فرمایید:
 						</p>
+
+						<div style="overflow-x:auto;">
+							<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden; border:1px solid #e2e8f0;">
+								<thead>
+									<tr style="background:#f8fafc;">
+										<th style="width:70px; text-align:center; font-weight:800;">وضعیت</th>
+										<th style="width:130px; font-weight:800;">ارائه‌دهنده</th>
+										<th style="font-weight:800;">مدل هوش مصنوعی</th>
+										<th style="width:140px; text-align:center; font-weight:800;">امتیاز موفقیت</th>
+										<th style="width:120px; text-align:center; font-weight:800;">تعداد آزمون</th>
+										<th style="width:140px; text-align:center; font-weight:800;">عملیات</th>
+									</tr>
+								</thead>
+								<tbody id="aiCandidatesTableBody">
+									<?php if ( ! empty( $cands_info['candidates'] ) ) : ?>
+										<?php foreach ( $cands_info['candidates'] as $cand ) : ?>
+											<tr id="cand-row-<?php echo esc_attr( md5( $cand['key'] ) ); ?>">
+												<td style="text-align:center;">
+													<?php if ( ! empty( $cand['is_master'] ) ) : ?>
+														<span style="font-size:1.1rem;" title="مدل مستر فعلی">⭐</span>
+													<?php else : ?>
+														<span style="color:#94a3b8; font-size:0.9rem;">—</span>
+													<?php endif; ?>
+												</td>
+												<td>
+													<strong style="color:#2563eb;"><?php echo esc_html( $cand['providerName'] ); ?></strong>
+												</td>
+												<td>
+													<div style="font-weight:700; color:#1e293b;"><?php echo esc_html( $cand['modelName'] ); ?></div>
+													<code dir="ltr" style="font-size:0.75rem; color:#64748b;"><?php echo esc_html( $cand['model'] ); ?></code>
+												</td>
+												<td style="text-align:center;">
+													<span style="font-weight:800; color:<?php echo $cand['score'] > 0.7 ? '#059669' : ( $cand['score'] > 0.4 ? '#d97706' : '#64748b' ); ?>;">
+														<?php echo esc_html( round( $cand['score'] * 100, 1 ) ); ?>٪
+													</span>
+													<div style="font-size:0.75rem; color:#64748b;">(<?php echo esc_html( $cand['wins'] ); ?> برد)</div>
+												</td>
+												<td style="text-align:center; color:#475569; font-weight:700;">
+													<?php echo esc_html( $cand['votes'] ); ?>
+												</td>
+												<td style="text-align:center;">
+													<?php if ( ! empty( $cand['is_master'] ) ) : ?>
+														<span style="font-size:0.8rem; background:#fef3c7; color:#b45309; padding:4px 10px; border-radius:6px; font-weight:800;">
+															✓ مستر فعال
+														</span>
+													<?php else : ?>
+														<button type="button" class="button button-small btn-pin-candidate" data-key="<?php echo esc_attr( $cand['key'] ); ?>" style="font-size:0.8rem; border-radius:6px;">
+															📌 سنجاق مستر
+														</button>
+													<?php endif; ?>
+												</td>
+											</tr>
+										<?php endforeach; ?>
+									<?php else : ?>
+										<tr>
+											<td colspan="6" style="text-align:center; color:#64748b; padding:20px;">هیچ مدل کاندیدی تعریف نشده است. می‌توانید فایل کانفیگ را بارگذاری کنید.</td>
+										</tr>
+									<?php endif; ?>
+								</tbody>
+							</table>
+						</div>
+					</div>
+
+					<!-- 3. جعبه بارگذاری و مدیریت فایل‌های کانفیگ اسکرپر (Upload & Import Config Files) -->
+					<div class="admin-card" style="background:#f8fafc; border:1.5px solid #cbd5e1;">
+						<div class="admin-card-header">
+							<h3><span>📂</span> بارگذاری و درون‌ریزی فایل‌های کانفیگ هوش مصنوعی (Config Upload)</h3>
+							<span class="field-badge field-badge-blue">همگام‌سازی آسان اسکرپر</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.9rem; line-height:1.6; margin-top:0;">
+							اگر تنظیمات، ارائه‌دهندگان یا کلیدهای API هوش مصنوعی را در فایل‌های <code>connections.json</code>، <code>ai_providers.json</code> یا <code>ai_votes.json</code> اسکرپر۴ دارید یا می‌خواهید فایل کانفیگ را از کامپیوتر بارگذاری نمایید، کافیست فایل JSON را اینجا آپلود یا رها کنید:
+						</p>
+
+						<div style="background:#ffffff; border:2px dashed #cbd5e1; border-radius:12px; padding:24px; text-align:center; margin-bottom:15px;" id="aiConfigDropZone">
+							<div style="font-size:2rem; margin-bottom:8px;">📁</div>
+							<div style="font-weight:700; color:#1e293b; margin-bottom:6px; font-size:0.95rem;">فایل کانفیگ (JSON) را بکشید و اینجا رها کنید یا دکمه زیر را بزنید:</div>
+							<div style="color:#94a3b8; font-size:0.82rem; margin-bottom:14px;">پشتیبانی از connections.json، ai_providers.json، ai_votes.json یا پکیج جامع تنظیمات اسکرپر</div>
+							
+							<input type="file" id="aiConfigFileInput" accept=".json" style="display:none;">
+							<div style="display:flex; justify-content:center; gap:10px; flex-wrap:wrap;">
+								<button type="button" id="btnSelectAiConfigFile" class="button button-secondary" style="font-weight:700; padding:6px 16px; border-radius:8px;">
+									📂 انتخاب فایل کانفیگ از سیستم
+								</button>
+								<button type="button" id="btnUploadAiConfigFile" class="button button-primary" style="background:#059669; border-color:#047857; font-weight:800; padding:6px 20px; border-radius:8px;" disabled>
+									📥 بارگذاری و اعمال فوری در اسکرپر
+								</button>
+								<button type="button" id="btnExportAiConfigFile" class="button button-secondary" style="font-weight:700; padding:6px 16px; border-radius:8px;">
+									📤 دانلود نسخه پشتیبان تنظیمات (Export)
+								</button>
+							</div>
+							<div id="aiConfigSelectedFileName" style="margin-top:10px; font-size:0.85rem; color:#2563eb; font-weight:700; display:none;"></div>
+						</div>
+
+						<div id="aiConfigUploadStatus" style="display:none; border-radius:8px; padding:12px 16px; font-size:0.9rem; margin-top:10px;"></div>
+					</div>
+
+					<!-- 4. کنسول تست زنده هوش مصنوعی و آزمون مقایسه‌ای کاندیدها -->
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>🧪</span> کنسول تست زنده هوش مصنوعی و آزمون مقایسه‌ای کاندیدها</h3>
+							<span class="field-badge field-badge-purple">تست واقعی و ثبت رای</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.9rem; line-height:1.6; margin-top:0;">
+							می‌توانید پیام دلخواه خود یا یکی از سوالات پرتکرار زیر را انتخاب کنید و عملکرد مدل مستر یا همه کاندیدها را کنار هم ارزیابی نمایید:
+						</p>
+
+						<!-- پرسش‌های آماده سریع -->
+						<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+							<button type="button" class="button button-small btn-quick-preset" data-msg="سلام، ساعت هوشمند T800 ضد آبه؟ چه قابلیت‌هایی داره؟" style="border-radius:20px; font-size:0.82rem;">
+								🔹 ساعت T800 ضد آب است؟
+							</button>
+							<button type="button" class="button button-small btn-quick-preset" data-msg="سلام وقت بخیر، قیمت ساعت الترا چنده و تخفیف داره؟" style="border-radius:20px; font-size:0.82rem;">
+								🔹 قیمت ساعت الترا با تخفیف
+							</button>
+							<button type="button" class="button button-small btn-quick-preset" data-msg="سفارشات چند روزه ارسال میشه و هزینه ارسال چقدره؟" style="border-radius:20px; font-size:0.82rem;">
+								🔹 شرایط و هزینه ارسال
+							</button>
+							<button type="button" class="button button-small btn-quick-preset" data-msg="آیا محصولات شما ضمانت تعویض یا گارانتی دارند؟" style="border-radius:20px; font-size:0.82rem;">
+								🔹 گارانتی و ضمانت اصالت
+							</button>
+						</div>
+
+						<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+							<input type="text" id="testAiChatMessage" placeholder="سوال خود را بنویسید (مثال: سلام، ساعت هوشمند با قابلیت مکالمه موجود دارید؟)" style="flex:1; min-width:280px; padding:10px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:0.9rem; outline:none;">
+							<button type="button" id="btnRunTestAiChat" class="button button-primary" style="padding:8px 20px; font-weight:800; background:#2563eb; border-color:#1d4ed8; border-radius:10px; font-size:0.9rem;">
+								🚀 پرسش از مدل مستر (Master AI)
+							</button>
+							<button type="button" id="btnCompareAiCandidates" class="button button-secondary" style="padding:8px 20px; font-weight:800; background:#7c3aed; color:#fff; border-color:#6d28d9; border-radius:10px; font-size:0.9rem;">
+								⚖️ آزمون مقایسه‌ای همه کاندیدها
+							</button>
+						</div>
+
+						<!-- نتیجه تست مدل مستر -->
+						<div id="testAiChatResultBox" style="display:none; background:#ffffff; border:1.5px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:10px;">
+							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
+								<div style="font-weight:800; font-size:0.9rem; color:#059669; display:flex; align-items:center; gap:6px;">
+									<span>⭐</span> پاسخ زنده مدل مستر اسکرپر:
+								</div>
+								<div style="display:flex; gap:8px; align-items:center;">
+									<span id="testAiModelUsedBadge" style="font-size:0.75rem; background:#eff6ff; color:#1d4ed8; padding:2px 8px; border-radius:6px; font-family:monospace;"></span>
+									<span id="testAiTimeBadge" style="font-size:0.75rem; background:#f1f5f9; color:#475569; padding:2px 6px; border-radius:6px;"></span>
+								</div>
+							</div>
+							<div id="testAiResponseText" style="font-size:0.95rem; color:#1e293b; line-height:1.8; white-space:pre-wrap;"></div>
+						</div>
+
+						<!-- نتیجه آزمون مقایسه‌ای کاندیدها -->
+						<div id="testAiCandidatesCompareBox" style="display:none; margin-top:14px;">
+							<div style="font-weight:800; font-size:0.95rem; color:#7c3aed; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+								<span>⚖️</span> پاسخ همزمان همه کاندیدها (بهترین را برگزینید تا به عنوان رأی ثبت شود):
+							</div>
+							<div id="compareCandidatesCardsGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px;"></div>
+						</div>
+					</div>
+
+					<!-- 5. شیوه هماهنگی هوش مصنوعی، ادمین و دستورالعمل رفتاری -->
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>⚙️</span> تنظیمات هماهنگی هوش مصنوعی و پرامپت فروشگاه</h3>
+							<span class="field-badge field-badge-purple">تنظیمات سیستمی</span>
+						</div>
 
 						<table class="form-table">
 							<tr>
@@ -8765,67 +9415,15 @@ public static function ajax_submit_support_chat() {
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">ارائه‌دهنده هوش مصنوعی:</th>
+								<th scope="row">کلید API سفارشی (اختیاری):</th>
 								<td>
-									<select name="ai_provider" id="aiProviderSelect" class="regular-text">
-										<option value="auto" <?php selected( $opts['ai_provider'] ?? 'auto', 'auto' ); ?>>🔄 خودکار (اتصال به مدل مستر اسکرپر scraper4)</option>
-										<option value="openrouter" <?php selected( $opts['ai_provider'] ?? 'auto', 'openrouter' ); ?>>OpenRouter (دسترسی به بیش از ۱۰۰ مدل Llama، DeepSeek و ...)</option>
-										<option value="groq" <?php selected( $opts['ai_provider'] ?? 'auto', 'groq' ); ?>>Groq Cloud (بسیار پرسرعت و رایگان)</option>
-										<option value="deepseek" <?php selected( $opts['ai_provider'] ?? 'auto', 'deepseek' ); ?>>DeepSeek API (مدل پیشرفته V3)</option>
-										<option value="openai" <?php selected( $opts['ai_provider'] ?? 'auto', 'openai' ); ?>>OpenAI (ChatGPT / GPT-4o Mini)</option>
-										<option value="gemini" <?php selected( $opts['ai_provider'] ?? 'auto', 'gemini' ); ?>>Google Gemini API</option>
-										<option value="ollama" <?php selected( $opts['ai_provider'] ?? 'auto', 'ollama' ); ?>>Ollama Local (لوکال روی سرور بدون نیاز به اینترنت)</option>
-										<option value="custom" <?php selected( $opts['ai_provider'] ?? 'auto', 'custom' ); ?>>آدرس اندپوینت سفارشی (Custom API)</option>
-									</select>
-									<p class="description">در صورت عدم وارد کردن کلید API، موتور هوشمند محلی فروشگاه به صورت کاملاً پویا و با تحلیل کاتالوگ پاسخ می‌دهد.</p>
-								</td>
-							</tr>
-							<tr>
-								<th scope="row">کلید API هوش مصنوعی (API Key):</th>
-								<td>
-									<input type="password" name="ai_api_key" value="<?php echo esc_attr( $opts['ai_api_key'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="sk-... یا کلید ارائه‌دهنده">
-									<input type="text" name="ai_model" value="<?php echo esc_attr( $opts['ai_model'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="نام مدل (مثلاً gpt-4o-mini یا deepseek-chat)">
-								</td>
-							</tr>
-							<tr>
-								<th scope="row">آدرس اندپوینت سفارشی (در صورت نیاز):</th>
-								<td>
-									<input type="text" name="ai_endpoint" value="<?php echo esc_attr( $opts['ai_endpoint'] ?? '' ); ?>" class="large-text" dir="ltr" placeholder="مثال: https://api.openai.com/v1/chat/completions یا http://127.0.0.1:11434/v1/chat/completions">
+									<input type="password" name="ai_api_key" value="<?php echo esc_attr( $opts['ai_api_key'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="sk-... (اختیاری، پیش‌فرض از ai_providers.json اسکرپر خوانده می‌شود)">
+									<p class="description">در صورت خالی بودن، کلید به صورت خودکار از تنظیمات فایل اسکرپر خوانده می‌شود.</p>
 								</td>
 							</tr>
 						</table>
-
-						<!-- 🧪 تست زنده هوش مصنوعی چت -->
-						<div style="margin-top:24px; background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:14px; padding:20px;">
-							<h4 style="margin:0 0 8px; font-size:1.05rem; color:#0f172a; font-weight:800; display:flex; align-items:center; gap:8px;">
-								<span>🧪</span> تست و بررسی زنده عملکرد هوش مصنوعی چت
-							</h4>
-							<p style="margin:0 0 14px; font-size:0.85rem; color:#64748b; line-height:1.6;">
-								هر سوالی (درباره مشخصات کالاها، قیمت‌ها، تخفیف‌ها یا ارسال) را بنویسید و بلافاصله پاسخ زنده هوش مصنوعی را با تحلیل کامل کاتالوگ فروشگاه مشاهده کنید:
-							</p>
-
-							<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-								<input type="text" id="testAiChatMessage" placeholder="مثال: سلام، ساعت هوشمند با قابلیت مکالمه موجود دارید؟ قیمتش چنده و ارسالش چطوره؟" style="flex:1; min-width:280px; padding:10px 14px; border:1px solid #cbd5e1; border-radius:10px; font-size:0.9rem; outline:none;">
-								<button type="button" id="btnRunTestAiChat" class="button button-primary" style="padding:8px 20px; font-weight:800; background:#7c3aed; border-color:#6d28d9; border-radius:10px; font-size:0.9rem;">
-									🚀 آزمایش پاسخ هوش مصنوعی
-								</button>
-							</div>
-
-							<!-- Live Test Result Output Box -->
-							<div id="testAiChatResultBox" style="display:none; background:#ffffff; border:1.5px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:10px;">
-								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
-									<div style="font-weight:800; font-size:0.88rem; color:#059669; display:flex; align-items:center; gap:6px;">
-										<span>✅</span> پاسخ زنده هوش مصنوعی:
-									</div>
-									<div style="display:flex; gap:8px; align-items:center;">
-										<span id="testAiModelUsedBadge" style="font-size:0.75rem; background:#eff6ff; color:#1d4ed8; padding:2px 8px; border-radius:6px; font-family:monospace;"></span>
-										<span id="testAiTimeBadge" style="font-size:0.75rem; background:#f1f5f9; color:#475569; padding:2px 6px; border-radius:6px;"></span>
-									</div>
-								</div>
-								<div id="testAiResponseText" style="font-size:0.92rem; color:#1e293b; line-height:1.8; white-space:pre-wrap;"></div>
-							</div>
-						</div>
 					</div>
+
 				</div>
 
 				<!-- ================= TAB 5: MESSENGERS & NOTIFICATIONS ================= -->
@@ -9657,7 +10255,16 @@ public static function ajax_submit_support_chat() {
 			$('#chkStoreTakeover, #chkScrapedProducts').on('change', updateDualStateUI);
 			updateDualStateUI();
 
-			// Live AI Chat Test Execution
+			// Quick Preset Questions
+			$('.btn-quick-preset').on('click', function(e){
+				e.preventDefault();
+				var q = $(this).attr('data-msg');
+				$('#testAiChatMessage').val(q);
+			});
+
+			var adminNonce = '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>';
+
+			// 1. Live AI Chat Test with Master Model
 			$('#btnRunTestAiChat').on('click', function(e){
 				e.preventDefault();
 				var msg = $('#testAiChatMessage').val().trim();
@@ -9673,10 +10280,11 @@ public static function ajax_submit_support_chat() {
 				var $badge = $('#testAiModelUsedBadge');
 				var $time = $('#testAiTimeBadge');
 
-				$btn.prop('disabled', true).text('در حال استعلام و پردازش... ⏳');
+				$btn.prop('disabled', true).text('در حال پاسخگویی مستر... ⏳');
+				$('#testAiCandidatesCompareBox').hide();
 				$box.show();
-				$text.html('<span style="color:#2563eb;">در حال ارسال پیام به هوش مصنوعی و ارزیابی کاتالوگ فروشگاه...</span>');
-				$badge.text('در حال پردازش');
+				$text.html('<span style="color:#2563eb;">در حال استعلام از مدل مستر اسکرپر با تحلیل کاتالوگ فروشگاه...</span>');
+				$badge.text('مدل مستر');
 				$time.text('');
 
 				$.ajax({
@@ -9684,24 +10292,260 @@ public static function ajax_submit_support_chat() {
 					type: 'POST',
 					data: {
 						action: 'scraper_test_ai_chat',
-						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>',
+						nonce: adminNonce,
 						message: msg
 					},
 					success: function(res){
-						$btn.prop('disabled', false).text('🚀 آزمایش پاسخ هوش مصنوعی');
+						$btn.prop('disabled', false).text('🚀 پرسش از مدل مستر (Master AI)');
 						if (res.success && res.data) {
 							$text.text(res.data.reply);
-							$badge.text('مدل: ' + (res.data.model || 'هوشمند'));
+							$badge.text('مدل مستر: ' + (res.data.model || 'هوشمند') + ' (' + (res.data.provider || 'اسکرپر') + ')');
 							$time.text(res.data.took_ms + ' میلی‌ثانیه');
 						} else {
 							$text.html('<span style="color:#dc2626;">خطا: ' + (res.data || 'عدم دریافت پاسخ.') + '</span>');
 						}
 					},
 					error: function(){
-						$btn.prop('disabled', false).text('🚀 آزمایش پاسخ هوش مصنوعی');
+						$btn.prop('disabled', false).text('🚀 پرسش از مدل مستر (Master AI)');
 						$text.html('<span style="color:#dc2626;">خطای ارتباط با سرور.</span>');
 					}
 				});
+			});
+
+			// 2. Candidate Models Comparison & Voting
+			var lastCompareCandidates = [];
+			var lastCompareMsg = '';
+
+			$('#btnCompareAiCandidates').on('click', function(e){
+				e.preventDefault();
+				var msg = $('#testAiChatMessage').val().trim();
+				if (!msg) {
+					alert('لطفاً یک پیام آزمایشی وارد کنید.');
+					$('#testAiChatMessage').focus();
+					return;
+				}
+
+				lastCompareMsg = msg;
+				var $btn = $(this);
+				var $compareBox = $('#testAiCandidatesCompareBox');
+				var $grid = $('#compareCandidatesCardsGrid');
+
+				$btn.prop('disabled', true).text('در حال پرسش از همه کاندیدها... ⏳');
+				$('#testAiChatResultBox').hide();
+				$compareBox.show();
+				$grid.html('<div style="grid-column:1/-1; text-align:center; padding:30px; color:#64748b; font-size:0.95rem;">⏳ در حال فراخوانی موازی مدل‌های کاندید و ارزیابی پاسخ‌ها با هوش مصنوعی اسکرپر...</div>');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_compare_ai_candidates',
+						nonce: adminNonce,
+						message: msg
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('⚖️ آزمون مقایسه‌ای همه کاندیدها');
+						if (res.success && res.data && res.data.candidates && res.data.candidates.length) {
+							lastCompareCandidates = res.data.candidates;
+							var masterKey = res.data.master || '';
+							var html = '';
+
+							res.data.candidates.forEach(function(cand, idx){
+								var isM = (cand.key === masterKey || cand.is_master);
+								var scorePct = Math.round((cand.score || 0) * 100);
+
+								html += '<div class="candidate-test-card" style="background:#ffffff; border:1.5px solid ' + (isM ? '#fbbf24' : '#e2e8f0') + '; border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:' + (isM ? '0 4px 14px rgba(251,191,36,0.18)' : '0 2px 6px rgba(0,0,0,0.03)') + ';">';
+								
+								// Card Header
+								html += '<div style="border-bottom:1px solid #f1f5f9; padding-bottom:10px; margin-bottom:10px;">';
+								html += '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">';
+								html += '<strong style="color:' + (isM ? '#b45309' : '#1e293b') + '; font-size:0.95rem;">' + $('<div>').text(cand.providerName).html() + '</strong>';
+								if (isM) {
+									html += '<span style="background:#fef3c7; color:#b45309; border:1px solid #fde68a; font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:8px;">⭐ مدل مستر</span>';
+								}
+								html += '</div>';
+								html += '<div style="color:#64748b; font-size:0.8rem; margin-top:2px;" dir="ltr">' + $('<div>').text(cand.model).html() + ' · <span style="color:#2563eb; font-weight:700;">' + cand.latency + 'ms</span></div>';
+								html += '<div style="font-size:0.78rem; color:#059669; font-weight:700; margin-top:3px;">امتیاز موفقیت: ' + scorePct + '٪ (' + cand.wins + ' برد از ' + cand.votes + ' آزمون)</div>';
+								html += '</div>';
+
+								// Card Body (Reply)
+								html += '<div style="font-size:0.92rem; color:#334155; line-height:1.7; flex:1; margin-bottom:12px; white-space:pre-wrap;">' + $('<div>').text(cand.text).html() + '</div>';
+
+								// Card Footer / Actions
+								html += '<div style="display:flex; gap:6px; flex-wrap:wrap; padding-top:10px; border-top:1px solid #f8fafc;">';
+								html += '<button type="button" class="button button-small btn-vote-candidate" data-winner="' + $('<div>').text(cand.key).html() + '" style="background:#10b981; color:#fff; border-color:#059669; font-weight:800; border-radius:6px; flex:1;">✓ این پاسخ بهتر بود (ثبت رأی)</button>';
+								if (!isM) {
+									html += '<button type="button" class="button button-small btn-pin-candidate" data-key="' + $('<div>').text(cand.key).html() + '" style="border-radius:6px;">📌 سنجاق مستر</button>';
+								}
+								html += '</div>';
+
+								html += '</div>';
+							});
+
+							$grid.html(html);
+						} else {
+							$grid.html('<div style="grid-column:1/-1; color:#dc2626; padding:20px; text-align:center;">خطا: ' + (res.data || 'هیچ پاسخی از کاندیدها دریافت نشد.') + '</div>');
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('⚖️ آزمون مقایسه‌ای همه کاندیدها');
+						$grid.html('<div style="grid-column:1/-1; color:#dc2626; padding:20px; text-align:center;">خطای ارتباط با سرور.</div>');
+					}
+				});
+			});
+
+			// 3. Voting for a Candidate
+			$(document).on('click', '.btn-vote-candidate', function(e){
+				e.preventDefault();
+				var $btn = $(this);
+				var winnerKey = $btn.attr('data-winner');
+				var allKeys = lastCompareCandidates.map(function(c){ return c.key; });
+
+				$btn.prop('disabled', true).text('در حال ثبت رأی... ⏳');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_vote_ai_candidate',
+						nonce: adminNonce,
+						winner: winnerKey,
+						task: 'autoreply',
+						input: lastCompareMsg,
+						candidates: allKeys
+					},
+					success: function(res){
+						if (res.success) {
+							alert('✅ ' + (res.data.message || 'رای شما با موفقیت ثبت شد!'));
+							location.reload();
+						} else {
+							alert('خطا در ثبت رای: ' + (res.data || 'ناموفق'));
+							$btn.prop('disabled', false).text('✓ این پاسخ بهتر بود (ثبت رأی)');
+						}
+					},
+					error: function(){
+						alert('خطای ارتباط با سرور.');
+						$btn.prop('disabled', false).text('✓ این پاسخ بهتر بود (ثبت رأی)');
+					}
+				});
+			});
+
+			// 4. Pinning a Candidate as Master
+			$(document).on('click', '.btn-pin-candidate', function(e){
+				e.preventDefault();
+				var $btn = $(this);
+				var key = $btn.attr('data-key');
+				if (!confirm('آیا مایلید این مدل را به عنوان مدل مستر اصلی اسکرپر سنجاق (Pin) کنید؟')) {
+					return;
+				}
+
+				$btn.prop('disabled', true).text('در حال سنجاق... ⏳');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_pin_master_model',
+						nonce: adminNonce,
+						key: key
+					},
+					success: function(res){
+						if (res.success) {
+							alert('✅ ' + (res.data.message || 'مدل به عنوان مستر سنجاق شد.'));
+							location.reload();
+						} else {
+							alert('خطا: ' + (res.data || 'ناموفق'));
+							$btn.prop('disabled', false).text('📌 سنجاق مستر');
+						}
+					},
+					error: function(){
+						alert('خطای ارتباط با سرور.');
+						$btn.prop('disabled', false).text('📌 سنجاق مستر');
+					}
+				});
+			});
+
+			// 5. Config File Upload & Import
+			var selectedConfigFile = null;
+
+			$('#btnSelectAiConfigFile').on('click', function(e){
+				e.preventDefault();
+				$('#aiConfigFileInput').click();
+			});
+
+			$('#aiConfigFileInput').on('change', function(e){
+				var files = e.target.files;
+				if (files && files.length) {
+					selectedConfigFile = files[0];
+					$('#aiConfigSelectedFileName').show().text('فایل انتخاب شده: ' + selectedConfigFile.name + ' (' + (Math.round(selectedConfigFile.size/1024*10)/10) + ' کیلوبایت)');
+					$('#btnUploadAiConfigFile').prop('disabled', false);
+				}
+			});
+
+			// Drag and drop for config file
+			var dropZone = document.getElementById('aiConfigDropZone');
+			if (dropZone) {
+				['dragenter', 'dragover'].forEach(function(eventName){
+					dropZone.addEventListener(eventName, function(e){ e.preventDefault(); e.stopPropagation(); dropZone.style.borderColor = '#2563eb'; dropZone.style.background = '#eff6ff'; }, false);
+				});
+				['dragleave', 'drop'].forEach(function(eventName){
+					dropZone.addEventListener(eventName, function(e){ e.preventDefault(); e.stopPropagation(); dropZone.style.borderColor = '#cbd5e1'; dropZone.style.background = '#ffffff'; }, false);
+				});
+				dropZone.addEventListener('drop', function(e){
+					var dt = e.dataTransfer;
+					var files = dt.files;
+					if (files && files.length) {
+						selectedConfigFile = files[0];
+						$('#aiConfigSelectedFileName').show().text('فایل انتخاب شده: ' + selectedConfigFile.name + ' (' + (Math.round(selectedConfigFile.size/1024*10)/10) + ' کیلوبایت)');
+						$('#btnUploadAiConfigFile').prop('disabled', false);
+					}
+				}, false);
+			}
+
+			$('#btnUploadAiConfigFile').on('click', function(e){
+				e.preventDefault();
+				if (!selectedConfigFile) {
+					alert('لطفاً ابتدا یک فایل JSON انتخاب کنید.');
+					return;
+				}
+
+				var $btn = $(this);
+				var $status = $('#aiConfigUploadStatus');
+
+				$btn.prop('disabled', true).text('در حال بارگذاری و تحلیل... ⏳');
+				$status.show().css({'background': '#eff6ff', 'color': '#1d4ed8', 'border': '1px solid #bfdbfe'}).html('در حال انتقال فایل تنظیمات و ذخیره در سیستم هوش مصنوعی اسکرپر... ⏳');
+
+				var formData = new FormData();
+				formData.append('action', 'scraper_upload_ai_config');
+				formData.append('nonce', adminNonce);
+				formData.append('config_file', selectedConfigFile);
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: formData,
+					processData: false,
+					contentType: false,
+					success: function(res){
+						$btn.prop('disabled', false).text('📥 بارگذاری و اعمال فوری در اسکرپر');
+						if (res.success && res.data) {
+							$status.css({'background': '#f0fdf4', 'color': '#15803d', 'border': '1px solid #bbf7d0'}).html('✅ ' + (res.data.message || 'فایل کانفیگ با موفقیت در اسکرپر بارگذاری و مدل مستر فعال گردید!'));
+							setTimeout(function(){ location.reload(); }, 1200);
+						} else {
+							$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطا: ' + (res.data || 'بارگذاری ناموفق بود.'));
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('📥 بارگذاری و اعمال فوری در اسکرپر');
+						$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطای ارتباط با سرور هنگام بارگذاری فایل.');
+					}
+				});
+			});
+
+			// 6. Config File Export
+			$('#btnExportAiConfigFile').on('click', function(e){
+				e.preventDefault();
+				window.location.href = ajaxurl + '?action=scraper_export_ai_config&nonce=' + adminNonce;
 			});
 
 			// Refresh desk button

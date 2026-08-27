@@ -36834,21 +36834,6 @@ if (isset($_GET['ai_candidates_reply'])) {
     $msg = trim((string)($_GET['msg'] ?? ($_GET['text'] ?? '')));
     if ($msg === '') { echo json_encode(['ok' => false, 'error' => 'پیام خالی است'], JSON_UNESCAPED_UNICODE); exit; }
 
-/* v10.72: تولید خودکار توضیحات و دسته‌بندی با هوش مصنوعی (مستر و کاندیدها + وب) */
-if (isset($_GET['ai_generate_product_content']) || ($_POST['action'] ?? '') === 'ai_generate_product_content') {
-    header('Content-Type: application/json; charset=UTF-8');
-    @set_time_limit(180);
-    $title = trim((string)($_REQUEST['title'] ?? ''));
-    if ($title === '') {
-        echo json_encode(['ok' => false, 'error' => 'عنوان محصول نمی‌تواند خالی باشد.'], JSON_UNESCAPED_UNICODE);
-        exit;
-    }
-    $webSearch = !isset($_REQUEST['web_search']) || $_REQUEST['web_search'] === '1' || $_REQUEST['web_search'] === 'true';
-    $res = aiGenerateProductDescriptionAndCategory($title, $webSearch);
-    echo json_encode($res, JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
     $cands = aiCandidates();
     if (!$cands) { echo json_encode(['ok' => false, 'error' => 'هیچ مدل کاندیدی انتخاب نشده'], JSON_UNESCAPED_UNICODE); exit; }
     $providers = aiProvidersLoad();
@@ -36862,6 +36847,21 @@ if (isset($_GET['ai_generate_product_content']) || ($_POST['action'] ?? '') === 
         $items[] = $res;
     }
     echo json_encode(['ok' => true, 'master' => aiMasterKey(), 'items' => $items], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/* v10.72: تولید خودکار توضیحات و دسته‌بندی با هوش مصنوعی (مستر و کاندیدها + وب) */
+if (isset($_GET['ai_generate_product_content']) || ($_POST['action'] ?? '') === 'ai_generate_product_content') {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(180);
+    $title = trim((string)($_REQUEST['title'] ?? ''));
+    if ($title === '') {
+        echo json_encode(['ok' => false, 'error' => 'عنوان محصول نمی‌تواند خالی باشد.'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $webSearch = !isset($_REQUEST['web_search']) || $_REQUEST['web_search'] === '1' || $_REQUEST['web_search'] === 'true';
+    $res = aiGenerateProductDescriptionAndCategory($title, $webSearch);
+    echo json_encode($res, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -44920,6 +44920,10 @@ send_sse('sync_info',['msg'=>'مرحله ۱: اسکرپ محصولات...','phas
 
 send_sse('sync_info',['msg'=>'در انتظار داده از کلاینت...','phase'=>'waiting']);
 send_sse('done',[]);exit;
+}
+// v10.95: بارگذاری به عنوان ماژول بدون رندر HTML توسط افزونه یا سایر اسکریپت‌ها
+if (defined('SCRAPER4_NO_RENDER') && SCRAPER4_NO_RENDER) {
+    return;
 }
 $initialProfiles = [];
 foreach (loadProfiles() as $key => $p) {

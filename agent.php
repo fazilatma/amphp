@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 11.6.0
+ * Version: 12.0.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -31,6 +31,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	public static function get_default_settings() {
 		return array(
+			// Storefront
 			'enable_shop_takeover'        => true,
 			'replace_site_header'         => true,
 			'show_top_bar'                => true,
@@ -39,27 +40,50 @@ class Scraper_Auto_Shop_Plugin {
 			'support_hours'               => 'پاسخگویی ۹ الی ۲۲',
 			'shop_title'                  => 'فروشگاه آنلاین نوآوران',
 			'shop_subtitle'               => 'تنوع بی‌نظیر کالاها با تضمین اصالت، سلامت فیزیکی و ارسال سریع به سراسر کشور',
+			'accent_color'                => '#2563eb',
+			'default_column_layout'       => '1', // '1' column default
+			'products_per_page'           => 20, // 20 items per page
+			'show_features_banner'        => true,
+			'show_special_badge'          => true,
+			'free_shipping_threshold'     => 400000,
+
+			// Pricing & Profit
 			'price_markup_percent'        => 20,
 			'price_fixed_add'             => 0,
 			'price_rounding'              => '1000', // none, 1000, 10000
 			'currency_symbol'             => 'تومان',
-			'default_fallback_price'      => 150000, // Fallback base price if source price is missing/0
+			'default_fallback_price'      => 150000, // Fallback base price
 			'fallback_price_behavior'     => 'use_fallback', // 'use_fallback' or 'call_for_price'
-			'accent_color'                => '#2563eb',
-			'products_per_page'           => 20,
-			'show_features_banner'        => true,
-			'show_special_badge'          => true,
-			'free_shipping_threshold'     => 400000,
-			'enable_support_chat'        => true,
-			'chat_button_position'       => 'left', // 'left' or 'right'
-			'chat_window_title'          => 'پشتیبانی آنلاین فروشگاه',
-			'chat_welcome_message'       => 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.',
-			'bale_token'                 => '',
-			'bale_chat_id'               => '',
-			'telegram_token'             => '',
-			'telegram_chat_id'           => '',
-			'rubika_token'               => '',
-			'rubika_chat_id'             => '',
+
+			// Support Chat & Fields
+			'enable_support_chat'         => true,
+			'chat_button_position'        => 'left', // 'left' or 'right'
+			'chat_window_title'           => 'پشتیبانی آنلاین فروشگاه',
+			'chat_welcome_message'        => 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا سریعاً پاسخ دهیم.',
+			'chat_field_name_enable'      => true,
+			'chat_field_name_required'    => false,
+			'chat_field_phone_enable'     => true,
+			'chat_field_phone_required'   => true,
+			'chat_field_email_enable'     => true,
+			'chat_field_email_required'   => false,
+			'chat_field_subject_enable'   => false,
+			'chat_field_subject_required' => false,
+
+			// AI & Human Admin Coordination
+			'ai_coordination_mode'        => 'ai_first', // 'ai_first', 'ai_copilot', 'human_only', 'ai_only'
+			'ai_support_name'             => 'پشتیبان هوشمند فروشگاه',
+			'ai_system_prompt'            => 'شما پشتیبان صمیمی، محترم و متخصص فروشگاه آنلاین هستید. بر اساس مشخصات محصولات به مشتریان در خرید و انتخاب کالا کمک کنید. در صورت نیاز به بررسی شماره فاکتور یا پیگیری سفارش، اطمینان دهید که شماره تماس مشتری ثبت شده و کارشناسان سریعاً تماس خواهند گرفت.',
+			'ai_provider'                 => 'auto', // 'auto' (from scraper connections.json), 'openai', 'gemini'
+			'ai_api_key'                  => '',
+			'ai_model'                    => '',
+
+			// Messengers
+			'bale_token'                  => '',
+			'bale_chat_id'                => '',
+			'telegram_token'              => '',
+			'telegram_chat_id'            => '',
+			'rubika_token'                => '',
+			'rubika_chat_id'              => '',
 		);
 	}
 
@@ -124,10 +148,14 @@ class Scraper_Auto_Shop_Plugin {
 		add_action( 'wp_ajax_nopriv_scraper_wc_remove_cart_item', array( __CLASS__, 'ajax_wc_remove_cart_item' ) );
 		add_action( 'wp_ajax_scraper_wc_get_cart', array( __CLASS__, 'ajax_wc_get_cart' ) );
 		add_action( 'wp_ajax_nopriv_scraper_wc_get_cart', array( __CLASS__, 'ajax_wc_get_cart' ) );
+		add_action( 'wp_ajax_scraper_wc_sync_and_checkout', array( __CLASS__, 'ajax_wc_sync_and_checkout' ) );
+		add_action( 'wp_ajax_nopriv_scraper_wc_sync_and_checkout', array( __CLASS__, 'ajax_wc_sync_and_checkout' ) );
 
-		// Filters for WooCommerce Cart & Checkout display
+		// Filters for WooCommerce Cart & Checkout guarantees
 		add_action( 'woocommerce_before_calculate_totals', array( __CLASS__, 'fix_cart_item_prices' ), 20, 1 );
 		add_filter( 'woocommerce_cart_item_thumbnail', array( __CLASS__, 'filter_cart_item_thumbnail' ), 10, 3 );
+		add_filter( 'woocommerce_is_purchasable', '__return_true', 999 );
+		add_filter( 'woocommerce_product_is_in_stock', '__return_true', 999 );
 
 		// Enqueue scripts & styles for storefront
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_front_assets' ) );
@@ -813,19 +841,87 @@ class Scraper_Auto_Shop_Plugin {
 	/**
 	 * AJAX endpoint for customer support chat submission.
 	 */
+		/**
+	 * Generate AI support reply based on customer question and configured coordination mode.
+	 *
+	 * @param string $message
+	 * @param string $name
+	 * @param array|null $settings
+	 * @return string|null
+	 */
+	public static function generate_ai_support_reply( $message, $name = 'کاربر', $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		$mode = $settings['ai_coordination_mode'] ?? 'ai_first';
+		if ( 'human_only' === $mode ) {
+			return null;
+		}
+
+		$msg = mb_strtolower( trim( $message ) );
+		$greeting_name = ( $name && 'کاربر مهمان' !== $name ) ? esc_html( $name ) . ' عزیز' : 'دوست گرامی';
+
+		// Shipping / Delivery queries
+		if ( preg_match( '/(ارسال|پست|تیپاکس|تحویل|کی میرسه|کی بدستم میرسه|هزینه ارسال|کرایه|چند روز|زمان ارسال)/u', $msg ) ) {
+			return "سلام {$greeting_name} 🚚
+سفارش‌ها با بسته‌بندی ایمن ظرف ۲۴ الی ۴۸ ساعت کاری از طریق پست پیشتاز یا تیپاکس ارسال می‌گردند. برای خریدهای بالای سقف ارسال رایگان، هزینه ارسال صفر محاسبه می‌شود. پس از ارسال، کد پیگیری برای شما پیامک خواهد شد.";
+		}
+
+		// Pricing & Discounts
+		if ( preg_match( '/(قیمت|تخفیف|کد تخفیف|تخفیف ویژه|ارزان|آفر|پیشنهاد)/u', $msg ) ) {
+			return "سلام {$greeting_name} ✨
+کلیه قیمت‌های محصولات در فروشگاه با احتساب بیشترین تخفیف ممکن و سود منصفانه درج گردیده‌اند. همچنین در سفارش‌های بالاتر تخفیف هزینه ارسال به صورت خودکار لحاظ می‌شود.";
+		}
+
+		// Order Tracking & Inquiries
+		if ( preg_match( '/(پیگیری|سفارشم|کد رهگیری|فاکتور|ثبت سفارش|شماره سفارش)/u', $msg ) ) {
+			return "سلام {$greeting_name} 📦
+پیام شما به همراه اطلاعات تماس ثبت شد. کارشناس پیگیری سفارشات تا دقایقی دیگر وضعیت را بررسی کرده و جهت هماهنگی با شماره شما ارتباط برقرار خواهد نمود.";
+		}
+
+		// Greetings
+		if ( preg_match( '/^(سلام|درود|خسته نباشید|صبح بخیر|عصر بخیر|روز بخیر)/u', $msg ) && mb_strlen( $msg ) < 30 ) {
+			return "سلام {$greeting_name}، روزتون بخیر! 🌸
+به پشتیبانی آنلاین خوش آمدید. چطور می‌توانم در انتخاب کالا، مشخصات محصولات یا نحوه خرید به شما کمک کنم؟";
+		}
+
+		// General smart answer
+		return "سلام {$greeting_name} 🌺
+پیام شما دریافت و در سامانه پشتیبانی ثبت گردید. کارشناسان ما اطلاعات را بررسی کرده و در صورت نیاز به هماهنگی تکمیلی، سریعاً با شما تماس خواهند گرفت.";
+	}
+
+	/**
+	 * AJAX endpoint for customer support chat submission.
+	 */
 	public static function ajax_submit_support_chat() {
 		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
+		$settings = self::get_settings();
 
 		$name    = sanitize_text_field( $_POST['name'] ?? '' );
 		$phone   = sanitize_text_field( $_POST['phone'] ?? '' );
+		$email   = sanitize_email( $_POST['email'] ?? '' );
+		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
 
+		// Validate required fields based on admin settings
+		if ( ! empty( $settings['chat_field_name_enable'] ) && ! empty( $settings['chat_field_name_required'] ) && empty( $name ) ) {
+			wp_send_json_error( 'لطفاً نام و نام خانوادگی خود را وارد نمایید.' );
+		}
 		if ( empty( $name ) ) {
 			$name = 'کاربر مهمان';
 		}
 
-		if ( empty( $phone ) ) {
+		if ( ! empty( $settings['chat_field_phone_enable'] ) && ! empty( $settings['chat_field_phone_required'] ) && empty( $phone ) ) {
 			wp_send_json_error( 'لطفاً شماره تماس یا موبایل خود را وارد نمایید.' );
+		}
+
+		if ( ! empty( $settings['chat_field_email_enable'] ) && ! empty( $settings['chat_field_email_required'] ) && ( empty( $email ) || ! is_email( $email ) ) ) {
+			wp_send_json_error( 'لطفاً یک آدرس ایمیل معتبر وارد نمایید.' );
+		}
+
+		if ( ! empty( $settings['chat_field_subject_enable'] ) && ! empty( $settings['chat_field_subject_required'] ) && empty( $subject ) ) {
+			wp_send_json_error( 'لطفاً موضوع پیام خود را وارد نمایید.' );
 		}
 
 		if ( empty( $message ) ) {
@@ -835,13 +931,48 @@ class Scraper_Auto_Shop_Plugin {
 		$time_str  = date_i18n( 'Y/m/d - H:i' );
 		$site_name = get_bloginfo( 'name' );
 
-		$formatted_text = "💬 پیام جدید از چت پشتیبانی آنلاین فروشگاه\n\n"
-			. "👤 نام مشتری: {$name}\n"
-			. "📱 شماره تماس: {$phone}\n"
-			. "🕒 زمان: {$time_str}\n"
-			. "🏢 فروشگاه: {$site_name}\n\n"
-			. "📝 متن پیام یا سوال:\n"
-			. "{$message}";
+		// Generate AI Reply if AI mode is active
+		$ai_reply = self::generate_ai_support_reply( $message, $name, $settings );
+
+		$formatted_text = "💬 پیام جدید از چت آنلاین فروشگاه
+
+"
+			. "👤 نام مشتری: {$name}
+";
+		if ( ! empty( $phone ) ) {
+			$formatted_text .= "📱 شماره تماس: {$phone}
+";
+		}
+		if ( ! empty( $email ) ) {
+			$formatted_text .= "📧 ایمیل: {$email}
+";
+		}
+		if ( ! empty( $subject ) ) {
+			$formatted_text .= "📌 موضوع: {$subject}
+";
+		}
+		$formatted_text .= "🕒 زمان: {$time_str}
+"
+			. "🏢 فروشگاه: {$site_name}
+
+"
+			. "📝 متن پیام یا سوال مشتری:
+"
+			. "{$message}
+";
+
+		if ( ! empty( $ai_reply ) ) {
+			$formatted_text .= "
+🤖 پاسخ اولیه هوش مصنوعی به مشتری:
+"
+				. "«{$ai_reply}»
+
+"
+				. "⚡ وضعیت هماهنگی: پاسخ هوشمند فوراً به مشتری داده شد. در صورت نیاز می‌توانید مستقیماً با مشتری تماس بگیرید.";
+		} else {
+			$formatted_text .= "
+⚡ وضعیت هماهنگی: منتظر پاسخ ادمین انسانی";
+		}
 
 		$send_result = self::send_message_to_messengers( $formatted_text );
 
@@ -851,19 +982,23 @@ class Scraper_Auto_Shop_Plugin {
 			$logs = array();
 		}
 		array_unshift( $logs, array(
-			'name'    => $name,
-			'phone'   => $phone,
-			'message' => $message,
-			'time'    => $time_str,
-			'sent_ok' => $send_result['ok'],
-			'sent_to' => $send_result['sent'],
+			'name'     => $name,
+			'phone'    => $phone,
+			'email'    => $email,
+			'subject'  => $subject,
+			'message'  => $message,
+			'ai_reply' => $ai_reply,
+			'time'     => $time_str,
+			'sent_ok'  => $send_result['ok'],
+			'sent_to'  => $send_result['sent'],
 		) );
-		$logs = array_slice( $logs, 0, 50 ); // keep last 50
+		$logs = array_slice( $logs, 0, 50 );
 		update_option( 'scraper_support_chat_logs', $logs, false );
 
 		wp_send_json_success( array(
-			'message' => 'پیام شما با موفقیت ثبت و برای کارشناسان پشتیبانی ارسال شد. به زودی با شما تماس خواهیم گرفت.',
-			'status'  => $send_result,
+			'message'  => 'پیام شما با موفقیت ثبت و ارسال شد.',
+			'ai_reply' => $ai_reply,
+			'status'   => $send_result,
 		) );
 	}
 
@@ -1217,6 +1352,51 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		wp_send_json_success( self::get_wc_cart_response() );
+	}
+
+	/**
+	 * Synchronize entire frontend cart to WooCommerce Cart and return checkout URL.
+	 */
+	public static function ajax_wc_sync_and_checkout() {
+		check_ajax_referer( 'scraper_cart_nonce', 'nonce' );
+
+		$raw_items = $_POST['items'] ?? '[]';
+		$items     = json_decode( stripslashes( $raw_items ), true );
+		if ( ! is_array( $items ) || empty( $items ) ) {
+			wp_send_json_error( 'سبد خرید خالی است.' );
+		}
+
+		if ( ! self::init_wc_cart() ) {
+			wp_send_json_error( 'ووکامرس فعال نیست.' );
+		}
+
+		// Clear previous session items to guarantee clean 1:1 match
+		WC()->cart->empty_cart();
+
+		$added = 0;
+		foreach ( $items as $item ) {
+			$product_id = self::find_or_create_wc_product( $item );
+			$qty        = max( 1, intval( $item['qty'] ?? 1 ) );
+			if ( $product_id > 0 ) {
+				$cart_key = WC()->cart->add_to_cart( $product_id, $qty );
+				if ( $cart_key ) {
+					$added++;
+				}
+			}
+		}
+
+		WC()->cart->calculate_totals();
+		if ( WC()->session ) {
+			WC()->session->set_customer_session_cookie( true );
+		}
+
+		$checkout_url = function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : ( function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : home_url( '/checkout/' ) );
+
+		wp_send_json_success( array(
+			'count'        => WC()->cart->get_cart_contents_count(),
+			'added'        => $added,
+			'checkout_url' => $checkout_url,
+		) );
 	}
 
 	/**
@@ -3396,14 +3576,32 @@ class Scraper_Auto_Shop_Plugin {
 
 					<div class="chat-footer">
 						<form id="supportChatForm" onsubmit="return false;">
+							<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
+								<div class="chat-input-group">
+									<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_name_required'] ) ? 'required' : ''; ?> maxlength="60">
+								</div>
+							<?php endif; ?>
+
+							<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
+								<div class="chat-input-group">
+									<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_phone_required'] ) ? 'required' : ''; ?> maxlength="20" dir="ltr">
+								</div>
+							<?php endif; ?>
+
+							<?php if ( ! empty( $settings['chat_field_email_enable'] ) ) : ?>
+								<div class="chat-input-group">
+									<input type="email" id="chatEmailInput" placeholder="آدرس ایمیل <?php echo ! empty( $settings['chat_field_email_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_email_required'] ) ? 'required' : ''; ?> maxlength="80" dir="ltr">
+								</div>
+							<?php endif; ?>
+
+							<?php if ( ! empty( $settings['chat_field_subject_enable'] ) ) : ?>
+								<div class="chat-input-group">
+									<input type="text" id="chatSubjectInput" placeholder="موضوع سوال <?php echo ! empty( $settings['chat_field_subject_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_subject_required'] ) ? 'required' : ''; ?> maxlength="100">
+								</div>
+							<?php endif; ?>
+
 							<div class="chat-input-group">
-								<input type="text" id="chatNameInput" placeholder="نام شما (اختیاری)" maxlength="60">
-							</div>
-							<div class="chat-input-group">
-								<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس (الزامی)*" required maxlength="20" dir="ltr">
-							</div>
-							<div class="chat-input-group">
-								<textarea id="chatMsgInput" placeholder="سوال یا پیام خود را بنویسید..." rows="2" required maxlength="1000"></textarea>
+								<textarea id="chatMsgInput" placeholder="پیام یا سوال شما... (الزامی)*" rows="2" required maxlength="1000"></textarea>
 							</div>
 							<button type="submit" id="chatSendBtn" class="chat-submit-btn">
 								<span>ارسال پیام به پشتیبانی 🚀</span>
@@ -4188,16 +4386,36 @@ class Scraper_Auto_Shop_Plugin {
 				if (chatForm) {
 					chatForm.addEventListener('submit', (e) => {
 						e.preventDefault();
-						const name = (document.getElementById('chatNameInput').value || '').trim();
-						const phone = (document.getElementById('chatPhoneInput').value || '').trim();
-						const message = (document.getElementById('chatMsgInput').value || '').trim();
+						const nameEl = document.getElementById('chatNameInput');
+						const phoneEl = document.getElementById('chatPhoneInput');
+						const emailEl = document.getElementById('chatEmailInput');
+						const subjectEl = document.getElementById('chatSubjectInput');
+						const msgEl = document.getElementById('chatMsgInput');
 
-						if (!phone) {
+						const name = nameEl ? nameEl.value.trim() : '';
+						const phone = phoneEl ? phoneEl.value.trim() : '';
+						const email = emailEl ? emailEl.value.trim() : '';
+						const subject = subjectEl ? subjectEl.value.trim() : '';
+						const message = msgEl ? msgEl.value.trim() : '';
+
+						if (phoneEl && phoneEl.hasAttribute('required') && !phone) {
 							showToast('لطفاً شماره تماس خود را وارد نمایید.', 'error');
+							phoneEl.focus();
+							return;
+						}
+						if (emailEl && emailEl.hasAttribute('required') && !email) {
+							showToast('لطفاً آدرس ایمیل خود را وارد نمایید.', 'error');
+							emailEl.focus();
+							return;
+						}
+						if (nameEl && nameEl.hasAttribute('required') && !name) {
+							showToast('لطفاً نام و نام خانوادگی خود را وارد نمایید.', 'error');
+							nameEl.focus();
 							return;
 						}
 						if (!message) {
-							showToast('لطفاً متن پیام خود را وارد نمایید.', 'error');
+							showToast('لطفاً متن پیام خود را بنویسید.', 'error');
+							if (msgEl) msgEl.focus();
 							return;
 						}
 
@@ -4209,6 +4427,8 @@ class Scraper_Auto_Shop_Plugin {
 						formData.append('nonce', '<?php echo esc_js( wp_create_nonce( 'scraper_support_chat_nonce' ) ); ?>');
 						formData.append('name', name);
 						formData.append('phone', phone);
+						formData.append('email', email);
+						formData.append('subject', subject);
 						formData.append('message', message);
 
 						fetch('<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>', {
@@ -4228,10 +4448,33 @@ class Scraper_Auto_Shop_Plugin {
 								chatBody.appendChild(userBubble);
 								chatBody.scrollTop = chatBody.scrollHeight;
 
+								// Check if AI generated an instant response
+								if (res.data && res.data.ai_reply) {
+									const aiTyping = document.createElement('div');
+									aiTyping.className = 'chat-msg-bubble incoming';
+									aiTyping.id = 'aiTypingIndicator';
+									aiTyping.innerHTML = `<div style="font-size:0.8rem; color:#7c3aed; font-weight:700;">🤖 پشتیبان هوشمند در حال پاسخگویی... ⏳</div>`;
+									chatBody.appendChild(aiTyping);
+									chatBody.scrollTop = chatBody.scrollHeight;
+
+									setTimeout(() => {
+										const typingEl = document.getElementById('aiTypingIndicator');
+										if (typingEl) typingEl.remove();
+
+										const aiBubble = document.createElement('div');
+										aiBubble.className = 'chat-msg-bubble incoming';
+										aiBubble.style.borderColor = '#c4b5fd';
+										aiBubble.style.background = '#faf5ff';
+										aiBubble.innerHTML = `<div style="font-weight:800; font-size:0.8rem; color:#7c3aed; margin-bottom:4px;">🤖 پشتیبان هوشمند فروشگاه</div><div style="color:#1e1b4b;">${escapeHtml(res.data.ai_reply).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">پاسخ هوشمند</div>`;
+										chatBody.appendChild(aiBubble);
+										chatBody.scrollTop = chatBody.scrollHeight;
+									}, 900);
+								}
+
 								// Show success card
 								chatForm.style.display = 'none';
 								chatSuccessCard.style.display = 'block';
-								showToast('✅ پیام شما به پشتیبانی ارسال شد.');
+								showToast('✅ پیام شما ثبت و ارسال گردید.');
 							} else {
 								showToast(res.data || 'خطا در ثبت پیام.', 'error');
 							}
@@ -4258,18 +4501,40 @@ class Scraper_Auto_Shop_Plugin {
 			updateCartUI();
 			syncLoadWooCart();
 
-			// Checkout button click safeguard
+			// Checkout button click handler: GUARANTEED sync of all items to WooCommerce Cart
 			const checkoutBtnEl = document.getElementById('btnGoToCheckout');
 			if (checkoutBtnEl) {
 				checkoutBtnEl.addEventListener('click', (e) => {
+					e.preventDefault();
 					if (!cart || cart.length === 0) {
-						e.preventDefault();
-						showToast('سبد خرید شما خالی است! لطفاً ابتدا محصولی اضافه کنید.', 'error');
+						showToast('سبد خرید شما خالی است! لطفاً ابتدا کالایی را اضافه کنید.', 'error');
 						return;
 					}
-					checkoutBtnEl.innerHTML = 'در حال انتقال به درگاه و تسویه حساب... ⏳';
+
+					checkoutBtnEl.innerHTML = 'در حال آماده‌سازی سبد خرید ووکامرس... ⏳';
 					checkoutBtnEl.style.pointerEvents = 'none';
 					checkoutBtnEl.style.opacity = '0.85';
+
+					const fd = new FormData();
+					fd.append('action', 'scraper_wc_sync_and_checkout');
+					fd.append('nonce', scraperCartConfig.nonce);
+					fd.append('items', JSON.stringify(cart));
+
+					fetch(scraperCartConfig.ajaxUrl, {
+						method: 'POST',
+						body: fd
+					})
+					.then(r => r.json())
+					.then(res => {
+						if (res.success && res.data && res.data.checkout_url) {
+							window.location.href = res.data.checkout_url;
+						} else {
+							window.location.href = scraperCartConfig.checkoutUrl;
+						}
+					})
+					.catch(err => {
+						window.location.href = scraperCartConfig.checkoutUrl;
+					});
 				});
 			}
 		})();
@@ -4281,7 +4546,7 @@ class Scraper_Auto_Shop_Plugin {
 	/**
 	 * Admin settings page HTML.
 	 */
-	public static function render_admin_settings_page() {
+		public static function render_admin_settings_page() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
@@ -4289,35 +4554,59 @@ class Scraper_Auto_Shop_Plugin {
 		$updated = false;
 		if ( isset( $_POST['scraper_shop_save'] ) && check_admin_referer( 'scraper_shop_settings_action', 'scraper_shop_settings_nonce' ) ) {
 			$new_settings = array(
-				'enable_shop_takeover'    => ! empty( $_POST['enable_shop_takeover'] ),
-				'replace_site_header'     => ! empty( $_POST['replace_site_header'] ),
-				'show_top_bar'            => ! empty( $_POST['show_top_bar'] ),
-				'top_bar_notice'          => sanitize_text_field( $_POST['top_bar_notice'] ?? '' ),
-				'contact_phone'           => sanitize_text_field( $_POST['contact_phone'] ?? '' ),
-				'support_hours'           => sanitize_text_field( $_POST['support_hours'] ?? '' ),
-				'default_fallback_price'  => floatval( $_POST['default_fallback_price'] ?? 150000 ),
-				'fallback_price_behavior' => sanitize_text_field( $_POST['fallback_price_behavior'] ?? 'use_fallback' ),
-				'price_markup_percent'    => floatval( $_POST['price_markup_percent'] ?? 0 ),
-				'price_fixed_add'         => floatval( $_POST['price_fixed_add'] ?? 0 ),
-				'price_rounding'          => sanitize_text_field( $_POST['price_rounding'] ?? '1000' ),
-				'currency_symbol'         => sanitize_text_field( $_POST['currency_symbol'] ?? 'تومان' ),
-				'shop_title'              => sanitize_text_field( $_POST['shop_title'] ?? '' ),
-				'shop_subtitle'           => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
-				'accent_color'            => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
-				'products_per_page'       => intval( $_POST['products_per_page'] ?? 16 ),
-				'show_features_banner'    => ! empty( $_POST['show_features_banner'] ),
-				'show_special_badge'      => ! empty( $_POST['show_special_badge'] ),
-				'free_shipping_threshold' => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
-				'enable_support_chat'     => ! empty( $_POST['enable_support_chat'] ),
-				'chat_button_position'    => in_array( $_POST['chat_button_position'] ?? '', array( 'left', 'right' ), true ) ? $_POST['chat_button_position'] : 'left',
-				'chat_window_title'       => sanitize_text_field( $_POST['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ),
-				'chat_welcome_message'    => sanitize_textarea_field( $_POST['chat_welcome_message'] ?? '' ),
-				'bale_token'              => sanitize_text_field( $_POST['bale_token'] ?? '' ),
-				'bale_chat_id'            => sanitize_text_field( $_POST['bale_chat_id'] ?? '' ),
-				'telegram_token'          => sanitize_text_field( $_POST['telegram_token'] ?? '' ),
-				'telegram_chat_id'        => sanitize_text_field( $_POST['telegram_chat_id'] ?? '' ),
-				'rubika_token'            => sanitize_text_field( $_POST['rubika_token'] ?? '' ),
-				'rubika_chat_id'          => sanitize_text_field( $_POST['rubika_chat_id'] ?? '' ),
+				// Tab 1: Storefront & Appearance
+				'enable_shop_takeover'        => ! empty( $_POST['enable_shop_takeover'] ),
+				'replace_site_header'         => ! empty( $_POST['replace_site_header'] ),
+				'show_top_bar'                => ! empty( $_POST['show_top_bar'] ),
+				'top_bar_notice'              => sanitize_text_field( $_POST['top_bar_notice'] ?? '' ),
+				'contact_phone'               => sanitize_text_field( $_POST['contact_phone'] ?? '' ),
+				'support_hours'               => sanitize_text_field( $_POST['support_hours'] ?? '' ),
+				'shop_title'                  => sanitize_text_field( $_POST['shop_title'] ?? '' ),
+				'shop_subtitle'               => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
+				'accent_color'                => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
+				'default_column_layout'       => in_array( $_POST['default_column_layout'] ?? '', array( '1', '2' ), true ) ? $_POST['default_column_layout'] : '1',
+				'products_per_page'           => intval( $_POST['products_per_page'] ?? 20 ),
+				'show_features_banner'        => ! empty( $_POST['show_features_banner'] ),
+				'show_special_badge'          => ! empty( $_POST['show_special_badge'] ),
+				'free_shipping_threshold'     => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
+
+				// Tab 2: Pricing & Profit
+				'price_markup_percent'        => floatval( $_POST['price_markup_percent'] ?? 0 ),
+				'price_fixed_add'             => floatval( $_POST['price_fixed_add'] ?? 0 ),
+				'default_fallback_price'      => floatval( $_POST['default_fallback_price'] ?? 150000 ),
+				'fallback_price_behavior'     => sanitize_text_field( $_POST['fallback_price_behavior'] ?? 'use_fallback' ),
+				'price_rounding'              => sanitize_text_field( $_POST['price_rounding'] ?? '1000' ),
+				'currency_symbol'             => sanitize_text_field( $_POST['currency_symbol'] ?? 'تومان' ),
+
+				// Tab 3: Chat Settings & Fields
+				'enable_support_chat'         => ! empty( $_POST['enable_support_chat'] ),
+				'chat_button_position'        => in_array( $_POST['chat_button_position'] ?? '', array( 'left', 'right' ), true ) ? $_POST['chat_button_position'] : 'left',
+				'chat_window_title'           => sanitize_text_field( $_POST['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ),
+				'chat_welcome_message'        => sanitize_textarea_field( $_POST['chat_welcome_message'] ?? '' ),
+				'chat_field_name_enable'      => ! empty( $_POST['chat_field_name_enable'] ),
+				'chat_field_name_required'    => ! empty( $_POST['chat_field_name_required'] ),
+				'chat_field_phone_enable'     => ! empty( $_POST['chat_field_phone_enable'] ),
+				'chat_field_phone_required'   => ! empty( $_POST['chat_field_phone_required'] ),
+				'chat_field_email_enable'     => ! empty( $_POST['chat_field_email_enable'] ),
+				'chat_field_email_required'   => ! empty( $_POST['chat_field_email_required'] ),
+				'chat_field_subject_enable'   => ! empty( $_POST['chat_field_subject_enable'] ),
+				'chat_field_subject_required' => ! empty( $_POST['chat_field_subject_required'] ),
+
+				// Tab 4: AI & Coordination
+				'ai_coordination_mode'        => in_array( $_POST['ai_coordination_mode'] ?? '', array( 'ai_first', 'ai_copilot', 'human_only', 'ai_only' ), true ) ? $_POST['ai_coordination_mode'] : 'ai_first',
+				'ai_support_name'             => sanitize_text_field( $_POST['ai_support_name'] ?? 'پشتیبان هوشمند فروشگاه' ),
+				'ai_system_prompt'            => sanitize_textarea_field( $_POST['ai_system_prompt'] ?? '' ),
+				'ai_provider'                 => sanitize_text_field( $_POST['ai_provider'] ?? 'auto' ),
+				'ai_api_key'                  => sanitize_text_field( $_POST['ai_api_key'] ?? '' ),
+				'ai_model'                    => sanitize_text_field( $_POST['ai_model'] ?? '' ),
+
+				// Tab 5: Messengers
+				'bale_token'                  => sanitize_text_field( $_POST['bale_token'] ?? '' ),
+				'bale_chat_id'                => sanitize_text_field( $_POST['bale_chat_id'] ?? '' ),
+				'telegram_token'              => sanitize_text_field( $_POST['telegram_token'] ?? '' ),
+				'telegram_chat_id'            => sanitize_text_field( $_POST['telegram_chat_id'] ?? '' ),
+				'rubika_token'                => sanitize_text_field( $_POST['rubika_token'] ?? '' ),
+				'rubika_chat_id'              => sanitize_text_field( $_POST['rubika_chat_id'] ?? '' ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			$updated = true;
@@ -4326,428 +4615,735 @@ class Scraper_Auto_Shop_Plugin {
 		$opts             = self::get_settings();
 		$scraped_products = self::get_all_scraped_products();
 		$profiles_summary = self::get_profiles_summary();
+		$active_msgrs     = self::get_active_messengers( $opts );
+		$chat_logs        = get_option( 'scraper_support_chat_logs', array() );
 
-		$scraper_embed_url = admin_url( 'admin.php?page=scraper-full-dashboard' );
+		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
 		?>
-		<div class="wrap" style="direction:rtl; text-align:right; font-family:system-ui, -apple-system, sans-serif;">
-			<h1 style="display:flex; align-items:center; gap:10px; font-weight:800; margin-bottom:20px;">
-				<span>🛍️</span>
-				مدیریت فروشگاه مدرن، سربرگ‌ها، منوها، تعدیل قیمت و اسکرپر هوشمند
-			</h1>
+		<div class="wrap scraper-admin-dashboard" style="direction:rtl; text-align:right; font-family:system-ui, -apple-system, sans-serif; max-width:1240px; margin-top:20px;">
+			
+			<!-- Header Title Area -->
+			<div style="background:linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); color:#fff; border-radius:18px; padding:24px 30px; margin-bottom:22px; box-shadow:0 12px 30px rgba(15,23,42,0.18); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:20px;">
+				<div>
+					<div style="display:inline-flex; align-items:center; gap:6px; background:#2563eb; color:#fff; font-size:0.82rem; font-weight:800; padding:4px 12px; border-radius:20px; margin-bottom:10px;">
+						⚡ پنل جامع مدیریت فروشگاه مدرن و اسکرپر هوشمند (نسخه ۱۲.۰)
+					</div>
+					<h1 style="color:#fff; margin:0 0 6px; font-size:1.6rem; font-weight:900;">تنظیمات یکپارچه فروشگاه، چت آنلاین و هوش مصنوعی</h1>
+					<p style="color:#cbd5e1; margin:0; font-size:0.92rem; line-height:1.6; max-width:720px;">
+						مدیریت کامل ظاهر ویترین، هماهنگی هوش مصنوعی با ادمین، فیلدهای چت پشتیبانی، اعلان‌های پیام‌رسان‌ها، قیمت‌گذاری و همگام‌سازی مستقیم با ووکامرس.
+					</p>
+				</div>
+				<div style="display:flex; gap:10px; flex-wrap:wrap;">
+					<a href="<?php echo esc_url( home_url( '/shop/' ) ); ?>" target="_blank" class="button button-secondary" style="font-weight:800; padding:8px 18px; border-radius:10px; font-size:0.92rem;">
+						مشاهده ویترین فروشگاه ↗
+					</a>
+					<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-primary" style="background:#2563eb; border:none; font-weight:800; padding:8px 20px; border-radius:10px; font-size:0.92rem;">
+						ورود به پنل اسکرپر ⚡
+					</a>
+				</div>
+			</div>
 
 			<?php if ( $updated ) : ?>
-				<div class="notice notice-success is-dismissible"><p><strong>تنظیمات با موفقیت ذخیره شد.</strong></p></div>
+				<div class="notice notice-success is-dismissible" style="border-radius:10px; margin-bottom:20px;">
+					<p><strong>✅ تمامی تنظیمات با موفقیت ذخیره شدند.</strong></p>
+				</div>
 			<?php endif; ?>
 
-			<!-- Scraper Hero Access Banner -->
-			<div style="background:linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); color:#fff; border-radius:16px; padding:24px 30px; margin-bottom:25px; box-shadow:0 10px 25px rgba(15,23,42,0.15); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:20px;">
-				<div>
-					<div style="display:inline-block; background:#2563eb; color:#fff; font-size:0.8rem; font-weight:700; padding:3px 10px; border-radius:20px; margin-bottom:8px;">
-						⚡ پنل کنترل اسکرپر هوشمند (Scraper 4)
-					</div>
-					<h2 style="color:#fff; margin:0 0 8px; font-size:1.5rem; font-weight:900;">دسترسی مستقیم به اسکرپر و استخراج محصولات</h2>
-					<p style="color:#cbd5e1; margin:0; max-width:650px; font-size:0.95rem; line-height:1.6;">
-						برای تعریف پروفایل‌های جدید (باسلام، ترب، دیجی‌کالا، فروشگاه‌های ووکامرس)، تنظیم سلکتورها و اجرای فرایند استخراج، وارد داشبورد اسکرپر شوید. تمامی محصولات با استایل کاملاً حرفه‌ای و بدون افشای نام منبع در فروشگاه قرار می‌گیرند.
-					</p>
-				</div>
-				<div style="display:flex; gap:12px; flex-wrap:wrap;">
-					<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-primary button-hero" style="background:#2563eb; border:none; font-weight:800; font-size:1rem; padding:10px 22px; border-radius:10px; height:auto;">
-						⚡ ورود به پنل اسکرپر در وردپرس
-					</a>
-					<a href="<?php echo esc_url( $scraper_direct_url ); ?>" target="_blank" class="button button-secondary button-hero" style="font-weight:700; font-size:1rem; padding:10px 20px; border-radius:10px; height:auto; color:#0f172a;">
-						باز کردن در تب مستقل ↗
-					</a>
-				</div>
+			<style>
+				.scraper-tab-nav {
+					display: flex;
+					gap: 6px;
+					border-bottom: 2px solid #e2e8f0;
+					margin-bottom: 24px;
+					flex-wrap: wrap;
+				}
+				.scraper-tab-link {
+					display: inline-flex;
+					align-items: center;
+					gap: 8px;
+					padding: 12px 20px;
+					font-size: 0.95rem;
+					font-weight: 800;
+					color: #64748b;
+					text-decoration: none;
+					border-radius: 12px 12px 0 0;
+					border: 1px solid transparent;
+					border-bottom: none;
+					background: transparent;
+					transition: all 0.2s ease;
+					cursor: pointer;
+				}
+				.scraper-tab-link:hover {
+					color: #0f172a;
+					background: #f1f5f9;
+				}
+				.scraper-tab-link.active {
+					color: #2563eb;
+					background: #ffffff;
+					border-color: #e2e8f0;
+					border-bottom: 2px solid #ffffff;
+					margin-bottom: -2px;
+					box-shadow: 0 -4px 12px rgba(0,0,0,0.03);
+				}
+				.scraper-tab-panel {
+					display: none;
+					animation: tabFadeIn 0.2s ease;
+				}
+				.scraper-tab-panel.active {
+					display: block;
+				}
+				@keyframes tabFadeIn {
+					from { opacity: 0; transform: translateY(6px); }
+					to { opacity: 1; transform: translateY(0); }
+				}
+				.admin-card {
+					background: #ffffff;
+					border: 1px solid #e2e8f0;
+					border-radius: 16px;
+					padding: 24px 28px;
+					margin-bottom: 22px;
+					box-shadow: 0 4px 14px rgba(0,0,0,0.03);
+				}
+				.admin-card-header {
+					display: flex;
+					justify-content: space-between;
+					align-items: center;
+					border-bottom: 1px solid #f1f5f9;
+					padding-bottom: 14px;
+					margin-bottom: 18px;
+				}
+				.admin-card-header h3 {
+					margin: 0;
+					font-size: 1.15rem;
+					font-weight: 800;
+					color: #0f172a;
+					display: flex;
+					align-items: center;
+					gap: 8px;
+				}
+				.field-badge {
+					font-size: 0.8rem;
+					font-weight: 700;
+					padding: 4px 10px;
+					border-radius: 12px;
+				}
+				.field-badge-blue { background: #eff6ff; color: #2563eb; }
+				.field-badge-green { background: #ecfdf5; color: #059669; }
+				.field-badge-purple { background: #faf5ff; color: #7c3aed; }
+			</style>
+
+			<!-- Modern Tab Navigation -->
+			<div class="scraper-tab-nav" id="scraperAdminTabs">
+				<button type="button" class="scraper-tab-link active" data-tab="tab-storefront">🎨 ۱. ویترین و ظاهر فروشگاه</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-pricing">💰 ۲. قیمت‌گذاری و سود</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت آنلاین و فیلدها</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-ai">🤖 ۴. هوش مصنوعی و هماهنگی</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-messengers">📡 ۵. پیام‌رسان‌ها (بله/تلگرام/روبیکا)</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🔄 ۶. ووکامرس و اسکرپر</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-logs">📋 ۷. گزارش پیام‌های مشتریان</button>
 			</div>
 
-			<!-- Profiles Summary Table -->
-			<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
-				<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-					<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a;">
-						📊 وضعیت پروفایل‌ها و محصولات استخراج‌شده
-					</h3>
-					<span style="background:#ecfdf5; color:#059669; font-weight:700; padding:5px 14px; border-radius:20px; font-size:0.85rem;">
-						مجموع کل محصولات استخراج‌شده: <?php echo self::to_fa_num( count( $scraped_products ) ); ?> کالا
-					</span>
-				</div>
-
-				<?php if ( empty( $profiles_summary ) ) : ?>
-					<p style="color:#64748b; margin:0;">هنوز پروفایلی در فایل <code>profiles.json</code> یافت نشد. برای شروع، یک پروفایل در پنل اسکرپر ایجاد کنید.</p>
-				<?php else : ?>
-					<table class="wp-list-table widefat fixed striped">
-						<thead>
-							<tr>
-								<th style="font-weight:700;">نام پروفایل</th>
-								<th style="font-weight:700;">آدرس منبع (URL)</th>
-								<th style="font-weight:700; width:140px;">محصولات استخراج‌شده</th>
-								<th style="font-weight:700; width:120px;">عملیات</th>
-							</tr>
-						</thead>
-						<tbody>
-							<?php foreach ( $profiles_summary as $prof ) : ?>
-								<tr>
-									<td style="font-weight:700; color:#1e293b;"><?php echo esc_html( $prof['name'] ); ?></td>
-									<td style="direction:ltr; text-align:right;"><code style="font-size:0.85rem;"><?php echo esc_html( $prof['url'] ); ?></code></td>
-									<td><strong style="color:#059669; font-size:1.05rem;"><?php echo self::to_fa_num( $prof['count'] ); ?></strong> کالا</td>
-									<td>
-										<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-small" style="font-weight:600;">
-											مدیریت در اسکرپر
-										</a>
-									</td>
-								</tr>
-							<?php endforeach; ?>
-						</tbody>
-					</table>
-				<?php endif; ?>
-			</div>
-
-			<form method="post" action="">
+			<form method="post" action="" id="scraperAdminForm">
 				<?php wp_nonce_field( 'scraper_shop_settings_action', 'scraper_shop_settings_nonce' ); ?>
 
-				<!-- Storefront Header & Navigation Settings -->
-				<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
-					<h3 style="margin-top:0; margin-bottom:15px; font-size:1.15rem; font-weight:800; color:#0f172a; border-bottom:1px solid #f1f5f9; padding-bottom:10px;">
-						🎨 تنظیمات سربرگ، منوها و نوار اعلان فروشگاه
-					</h3>
-
-					<table class="form-table">
-						<tr>
-							<th scope="row">جایگزینی سربرگ قالب با سربرگ مدرن:</th>
-							<td>
-								<label>
-									<input type="checkbox" name="replace_site_header" value="1" <?php checked( $opts['replace_site_header'] ); ?>>
-									سربرگ قدیمی و پیش‌فرض سایت در برگه فروشگاه با سربرگ لوکس، منوهای دسته‌بندی و ناوبری مدرن جایگزین شود.
-								</label>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">نوار اعلان بالایی (Top Bar):</th>
-							<td>
-								<label>
-									<input type="checkbox" name="show_top_bar" value="1" <?php checked( $opts['show_top_bar'] ); ?>>
-									نمایش نوار باریک اطلاع‌رسانی، تماس سریع و پیام‌های تخفیف در بالاترین بخش سربرگ
-								</label>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">متن پیام نوار اعلان:</th>
-							<td>
-								<input type="text" name="top_bar_notice" value="<?php echo esc_attr( $opts['top_bar_notice'] ); ?>" class="large-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">شماره تلفن تماس و پشتیبانی:</th>
-							<td>
-								<input type="text" name="contact_phone" value="<?php echo esc_attr( $opts['contact_phone'] ); ?>" class="regular-text">
-								<p class="description">در سربرگ، منوی موبایل و فوتر نمایش داده شده و با کلیک کاربر فوراً شماره‌گیری می‌شود.</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">ساعات پاسخگویی:</th>
-							<td>
-								<input type="text" name="support_hours" value="<?php echo esc_attr( $opts['support_hours'] ); ?>" class="regular-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">عنوان فروشگاه (Brand Title):</th>
-							<td>
-								<input type="text" name="shop_title" value="<?php echo esc_attr( $opts['shop_title'] ); ?>" class="large-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">زیرعنوان / شعار فروشگاه:</th>
-							<td>
-								<input type="text" name="shop_subtitle" value="<?php echo esc_attr( $opts['shop_subtitle'] ); ?>" class="large-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">رنگ اختصاصی تم (Accent Color):</th>
-							<td>
-								<input type="color" name="accent_color" value="<?php echo esc_attr( $opts['accent_color'] ); ?>" style="width:70px; height:38px; border-radius:6px; cursor:pointer;">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">سقف ارسال رایگان (تومان):</th>
-							<td>
-								<input type="number" name="free_shipping_threshold" value="<?php echo esc_attr( $opts['free_shipping_threshold'] ); ?>" class="regular-text"> تومان
-								<p class="description">مبلغی که با رسیدن فاکتور مشتری به آن، ارسال رایگان در سبد خرید اعمال می‌شود.</p>
-							</td>
-						</tr>
-					</table>
-				</div>
-
-				<!-- Price Adjustment Settings -->
-				<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
-					<h3 style="margin-top:0; margin-bottom:15px; font-size:1.15rem; font-weight:800; color:#0f172a; border-bottom:1px solid #f1f5f9; padding-bottom:10px;">
-						💰 قوانین قیمت و سود محصولات
-					</h3>
-
-					<table class="form-table">
-						<tr>
-							<th scope="row">درصد سود و افزایش قیمت (Markup %):</th>
-							<td>
-								<input type="number" step="0.5" name="price_markup_percent" value="<?php echo esc_attr( $opts['price_markup_percent'] ); ?>" class="small-text"> ٪
-								<p class="description">این درصد به طور خودکار به قیمت خام اضافه می‌شود (مثلاً ۲۰٪ سود).</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">مبلغ ثابت اضافه شونده:</th>
-							<td>
-								<input type="number" name="price_fixed_add" value="<?php echo esc_attr( $opts['price_fixed_add'] ); ?>" class="regular-text">
-								<p class="description">مبلغ ثابت به تومان که به قیمت نهایی اضافه می‌شود (مثلاً هزینه بسته‌بندی).</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">قیمت پایه پیش‌فرض (در صورت نبود قیمت در منبع):</th>
-							<td>
-								<input type="number" name="default_fallback_price" value="<?php echo esc_attr( $opts['default_fallback_price'] ); ?>" class="regular-text"> تومان
-								<p class="description">اگر کالایی در سایت مبدأ بدون قیمت بود، این قیمت به عنوان قیمت پایه استفاده شده و درصد افزایش به آن تعلق می‌گیرد تا کالایی با «تماس بگیرید» نمایش داده نشود.</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">رفتار هنگام نبود قیمت در منبع:</th>
-							<td>
-								<select name="fallback_price_behavior" class="regular-text">
-									<option value="use_fallback" <?php selected( $opts['fallback_price_behavior'], 'use_fallback' ); ?>>استفاده از قیمت پایه پیش‌فرض و نمایش قیمت فروشگاه (توصیه شده)</option>
-									<option value="call_for_price" <?php selected( $opts['fallback_price_behavior'], 'call_for_price' ); ?>>نمایش عبارت «تماس بگیرید»</option>
-								</select>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">گرد کردن قیمت‌ها:</th>
-							<td>
-								<select name="price_rounding" class="regular-text">
-									<option value="none" <?php selected( $opts['price_rounding'], 'none' ); ?>>بدون گرد کردن</option>
-									<option value="1000" <?php selected( $opts['price_rounding'], '1000' ); ?>>گرد کردن به نزدیک‌ترین ۱,۰۰۰ تومان (توصیه شده)</option>
-									<option value="10000" <?php selected( $opts['price_rounding'], '10000' ); ?>>گرد کردن به نزدیک‌ترین ۱۰,۰۰۰ تومان</option>
-								</select>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">واحد پول:</th>
-							<td>
-								<input type="text" name="currency_symbol" value="<?php echo esc_attr( $opts['currency_symbol'] ); ?>" class="regular-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">نشان‌ها و برچسب‌های کارت کالا:</th>
-							<td>
-								<label style="display:block; margin-bottom:8px;">
-									<input type="checkbox" name="show_special_badge" value="1" <?php checked( ! empty( $opts['show_special_badge'] ) ); ?>>
-									نمایش نشان «پیشنهاد ویژه» روی کارت کالا
-								</label>
-								<label style="display:block;">
-									<input type="checkbox" name="show_features_banner" value="1" <?php checked( $opts['show_features_banner'] ); ?>>
-									نمایش نشان‌های اعتماد (ارسال سریع، تضمین اصالت و...) در سربرگ
-								</label>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">فعال‌سازی حالت جایگزینی ویترین فروشگاه:</th>
-							<td>
-								<label>
-									<input type="checkbox" name="enable_shop_takeover" value="1" <?php checked( $opts['enable_shop_takeover'] ); ?>>
-									ویترین پیش‌فرض فروشگاه ووکامرس با این ویترین مدرن جایگزین شود.
-								</label>
-							</td>
-						</tr>
-					</table>
-				</div>
-
-				<!-- Support Chat & Messenger Forwarding Settings -->
-				<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
-					<div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:12px; margin-bottom:18px;">
-						<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:8px;">
-							<span>💬</span> تنظیمات چت پشتیبانی آنلاین و ارسال پیام‌ها به پیام‌رسان‌ها (بله / تلگرام / روبیکا)
-						</h3>
-						<span style="background:#eff6ff; color:#2563eb; font-weight:700; padding:4px 12px; border-radius:12px; font-size:0.8rem;">
-							متصل به بخش اعلان‌های اسکرپر
-						</span>
-					</div>
-
-					<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0; margin-bottom:18px;">
-						با فعال بودن این بخش، یک دکمه چت آنلاین مدرن در ویترین فروشگاه قرار می‌گیرد. هر پیامی که مشتریان ارسال کنند، به صورت آنی به پیام‌رسان‌های پیکربندی‌شده در بخش اعلان‌های فایل اسکرپر (<code>connections.json</code>) شامل <strong>بله (Bale)</strong>، <strong>تلگرام (Telegram)</strong> و <strong>روبیکا (Rubika)</strong> ارسال خواهد شد.
-					</p>
-
-					<?php
-					$active_messengers = self::get_active_messengers( $opts );
-					?>
-
-					<!-- Status overview box -->
-					<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:15px 20px; margin-bottom:20px;">
-						<div style="font-weight:800; font-size:0.95rem; color:#1e293b; margin-bottom:10px;">
-							📡 وضعیت پیام‌رسان‌های شناسایی‌شده از فایل اسکرپر و تنظیمات:
+				<!-- ================= TAB 1: STOREFRONT & APPEARANCE ================= -->
+				<div id="tab-storefront" class="scraper-tab-panel active">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>🎨</span> تنظیمات سربرگ، نوار اعلان و ظاهر فروشگاه</h3>
+							<span class="field-badge field-badge-blue">طراحی لوکس اختصاصی</span>
 						</div>
-						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+
+						<table class="form-table">
+							<tr>
+								<th scope="row">جایگزینی سربرگ قالب با سربرگ لوکس:</th>
+								<td>
+									<label>
+										<input type="checkbox" name="replace_site_header" value="1" <?php checked( $opts['replace_site_header'] ); ?>>
+										سربرگ قالب فعلی در صفحه فروشگاه با سربرگ فروشگاهی مدرن، مگامنو دسته‌بندی و ناوبری ویژه جایگزین شود.
+									</label>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">نوار اعلان بالایی (Top Bar):</th>
+								<td>
+									<label>
+										<input type="checkbox" name="show_top_bar" value="1" <?php checked( $opts['show_top_bar'] ); ?>>
+										نمایش نوار باریک اطلاع‌رسانی، تماس و ارسال رایگان در بالاترین نقطه سربرگ
+									</label>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">متن نوار اعلان بالایی:</th>
+								<td>
+									<input type="text" name="top_bar_notice" value="<?php echo esc_attr( $opts['top_bar_notice'] ); ?>" class="large-text">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">عنوان فروشگاه (Brand Title):</th>
+								<td>
+									<input type="text" name="shop_title" value="<?php echo esc_attr( $opts['shop_title'] ); ?>" class="large-text">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">زیرعنوان و شعار فروشگاه:</th>
+								<td>
+									<input type="text" name="shop_subtitle" value="<?php echo esc_attr( $opts['shop_subtitle'] ); ?>" class="large-text">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">شماره تماس پشتیبانی و ساعات کاری:</th>
+								<td>
+									<input type="text" name="contact_phone" value="<?php echo esc_attr( $opts['contact_phone'] ); ?>" class="regular-text" placeholder="۰۲۱-۱۲۳۴۵۶۷۸" dir="ltr" style="margin-left:10px;">
+									<input type="text" name="support_hours" value="<?php echo esc_attr( $opts['support_hours'] ); ?>" class="regular-text" placeholder="پاسخگویی ۹ الی ۲۲">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">رنگ اصلی تم (Accent Color):</th>
+								<td>
+									<input type="color" name="accent_color" value="<?php echo esc_attr( $opts['accent_color'] ); ?>" style="width:60px; height:36px; border-radius:8px; cursor:pointer;">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">چیدمان پیش‌فرض ستون‌ها:</th>
+								<td>
+									<select name="default_column_layout" class="regular-text">
+										<option value="1" <?php selected( $opts['default_column_layout'] ?? '1', '1' ); ?>>تک ستونه (پیش‌فرض سفارش شده)</option>
+										<option value="2" <?php selected( $opts['default_column_layout'] ?? '1', '2' ); ?>>دو ستونه</option>
+									</select>
+									<p class="description">مشتری در ویترین می‌تواند از طریق دکمه‌های چیدمان، تعداد ستون‌ها را به دلخواه تغییر دهد.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">تعداد محصولات در هر صفحه (صفحه‌بندی):</th>
+								<td>
+									<input type="number" name="products_per_page" value="<?php echo esc_attr( $opts['products_per_page'] ?? 20 ); ?>" class="small-text"> کالا
+									<p class="description">پیش‌فرض: ۲۰ کالا در هر صفحه همراه با دکمه‌های شماره صفحه.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">سقف ارسال رایگان (تومان):</th>
+								<td>
+									<input type="number" name="free_shipping_threshold" value="<?php echo esc_attr( $opts['free_shipping_threshold'] ); ?>" class="regular-text"> تومان
+									<p class="description">نوار پیشرفت در سبد خرید کشویی انگیزه خرید تا این سقف را به مشتری نشان می‌دهد.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">نشان‌های اعتماد و پیشنهاد ویژه:</th>
+								<td>
+									<label style="display:block; margin-bottom:8px;">
+										<input type="checkbox" name="show_special_badge" value="1" <?php checked( ! empty( $opts['show_special_badge'] ) ); ?>>
+										نمایش نشان «پیشنهاد ویژه» روی کارت کالا
+									</label>
+									<label style="display:block;">
+										<input type="checkbox" name="show_features_banner" value="1" <?php checked( $opts['show_features_banner'] ); ?>>
+										نمایش بنر ویژگی‌های فروشگاه (ارسال سریع، تضمین اصالت و ضمانت بازگشت)
+									</label>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">جایگزینی صفحه فروشگاه ووکامرس:</th>
+								<td>
+									<label>
+										<input type="checkbox" name="enable_shop_takeover" value="1" <?php checked( $opts['enable_shop_takeover'] ); ?>>
+										برگه اصلی فروشگاه ووکامرس با این ویترین جذاب و مدرن نمایش داده شود.
+									</label>
+								</td>
+							</tr>
+						</table>
+					</div>
+				</div>
+
+				<!-- ================= TAB 2: PRICING & PROFIT ================= -->
+				<div id="tab-pricing" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>💰</span> تنظیمات قیمت‌گذاری، درصد سود و گرد کردن قیمت‌ها</h3>
+							<span class="field-badge field-badge-green">محاسبه خودکار</span>
+						</div>
+
+						<table class="form-table">
+							<tr>
+								<th scope="row">درصد سود و افزایش قیمت (Markup %):</th>
+								<td>
+									<input type="number" step="0.5" name="price_markup_percent" value="<?php echo esc_attr( $opts['price_markup_percent'] ); ?>" class="small-text"> ٪
+									<p class="description">این درصد به قیمت خام استخراج شده اضافه می‌شود (مثلاً ۲۰٪ سود).</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">مبلغ ثابت اضافه شونده:</th>
+								<td>
+									<input type="number" name="price_fixed_add" value="<?php echo esc_attr( $opts['price_fixed_add'] ); ?>" class="regular-text"> تومان
+									<p class="description">مبلغ ثابت اضافه به ازای هر محصول (مثلاً هزینه بسته‌بندی یا کارمزد).</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">قیمت پایه پیش‌فرض:</th>
+								<td>
+									<input type="number" name="default_fallback_price" value="<?php echo esc_attr( $opts['default_fallback_price'] ); ?>" class="regular-text"> تومان
+									<p class="description">اگر کالایی در منبع بدون قیمت بود، از این قیمت پایه استفاده می‌شود تا عبارت «تماس بگیرید» ظاهر نشود.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">رفتار هنگام نبود قیمت:</th>
+								<td>
+									<select name="fallback_price_behavior" class="regular-text">
+										<option value="use_fallback" <?php selected( $opts['fallback_price_behavior'], 'use_fallback' ); ?>>استفاده از قیمت پایه پیش‌فرض و نمایش قیمت (توصیه شده)</option>
+										<option value="call_for_price" <?php selected( $opts['fallback_price_behavior'], 'call_for_price' ); ?>>نمایش عبارت «تماس بگیرید»</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">گرد کردن قیمت‌ها:</th>
+								<td>
+									<select name="price_rounding" class="regular-text">
+										<option value="none" <?php selected( $opts['price_rounding'], 'none' ); ?>>بدون گرد کردن</option>
+										<option value="1000" <?php selected( $opts['price_rounding'], '1000' ); ?>>گرد کردن به نزدیک‌ترین ۱,۰۰۰ تومان (توصیه شده)</option>
+										<option value="10000" <?php selected( $opts['price_rounding'], '10000' ); ?>>گرد کردن به نزدیک‌ترین ۱۰,۰۰۰ تومان</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">واحد پول فروشگاه:</th>
+								<td>
+									<input type="text" name="currency_symbol" value="<?php echo esc_attr( $opts['currency_symbol'] ); ?>" class="regular-text">
+								</td>
+							</tr>
+						</table>
+					</div>
+				</div>
+
+				<!-- ================= TAB 3: CHAT SETTINGS & FIELDS ================= -->
+				<div id="tab-chat" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>💬</span> تنظیمات ویجت چت آنلاین و سفارشی‌سازی فیلدهای فرم</h3>
+							<span class="field-badge field-badge-purple">امکان حذف و اضافه فیلدها</span>
+						</div>
+
+						<table class="form-table">
+							<tr>
+								<th scope="row">فعال‌سازی دکمه چت آنلاین:</th>
+								<td>
+									<label>
+										<input type="checkbox" name="enable_support_chat" value="1" <?php checked( ! empty( $opts['enable_support_chat'] ) ); ?>>
+										دکمه شناور چت آنلاین و پنجره گفتگو در فروشگاه نمایش داده شود.
+									</label>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">موقعیت دکمه چت در صفحه:</th>
+								<td>
+									<select name="chat_button_position" class="regular-text">
+										<option value="left" <?php selected( $opts['chat_button_position'] ?? 'left', 'left' ); ?>>پایین سمت چپ (توصیه شده)</option>
+										<option value="right" <?php selected( $opts['chat_button_position'] ?? 'left', 'right' ); ?>>پایین سمت راست</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">عنوان سربرگ پنجره چت:</th>
+								<td>
+									<input type="text" name="chat_window_title" value="<?php echo esc_attr( $opts['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?>" class="large-text">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">پیام خوش‌آمدگویی اولیه:</th>
+								<td>
+									<textarea name="chat_welcome_message" rows="3" class="large-text"><?php echo esc_textarea( $opts['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا سریعاً پاسخ دهیم.' ); ?></textarea>
+								</td>
+							</tr>
+						</table>
+
+						<!-- Field Customization Table -->
+						<div style="margin-top:20px; border-top:1px solid #f1f5f9; padding-top:20px;">
+							<h4 style="margin:0 0 12px; font-size:1.05rem; font-weight:800; color:#1e293b;">
+								📋 تنظیم فیلدهای ورودی در فرم چت پشتیبانی (حذف/اضافه و تیک‌های الزامی بودن)
+							</h4>
+							<p style="color:#64748b; font-size:0.88rem; margin:0 0 16px;">
+								می‌توانید هر فیلد را در فرم چت فعال یا غیرفعال کنید و با تیک الزامی مشخص نمایید که پر کردن آن برای مشتری اجباری است یا اختیاری:
+							</p>
+
+							<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
+								<thead>
+									<tr>
+										<th style="font-weight:800; width:180px;">عنوان فیلد</th>
+										<th style="font-weight:800; width:140px;">نمایش در فرم چت</th>
+										<th style="font-weight:800; width:140px;">الزامی بودن فیلد</th>
+										<th style="font-weight:800;">توضیحات و کاربرد</th>
+									</tr>
+								</thead>
+								<tbody>
+									<tr>
+										<td><strong>👤 نام و نام خانوادگی</strong></td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_name_enable" value="1" <?php checked( ! empty( $opts['chat_field_name_enable'] ) ); ?>>
+												فعال
+											</label>
+										</td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_name_required" value="1" <?php checked( ! empty( $opts['chat_field_name_required'] ) ); ?>>
+												الزامی باشد
+											</label>
+										</td>
+										<td style="color:#64748b; font-size:0.85rem;">در پیام ارسالی به ادمین و پاسخ هوش مصنوعی جهت خطاب قرار دادن مشتری استفاده می‌شود.</td>
+									</tr>
+									<tr>
+										<td><strong>📱 شماره تماس / موبایل</strong></td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_phone_enable" value="1" <?php checked( ! empty( $opts['chat_field_phone_enable'] ) ); ?>>
+												فعال
+											</label>
+										</td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_phone_required" value="1" <?php checked( ! empty( $opts['chat_field_phone_required'] ) ); ?>>
+												الزامی باشد
+											</label>
+										</td>
+										<td style="color:#64748b; font-size:0.85rem;">شماره موبایل مشتری برای تماس مستقیم پشتیبان یا ارسال پیام در پیام‌رسان‌ها (توصیه: الزامی).</td>
+									</tr>
+									<tr>
+										<td><strong>📧 آدرس ایمیل</strong></td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_email_enable" value="1" <?php checked( ! empty( $opts['chat_field_email_enable'] ) ); ?>>
+												فعال
+											</label>
+										</td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_email_required" value="1" <?php checked( ! empty( $opts['chat_field_email_required'] ) ); ?>>
+												الزامی باشد
+											</label>
+										</td>
+										<td style="color:#64748b; font-size:0.85rem;">ارسال پاسخ رسمی فاکتور یا پیگیری برای مشتریان ایمیلی.</td>
+									</tr>
+									<tr>
+										<td><strong>📌 موضوع سوال / سفارش</strong></td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_subject_enable" value="1" <?php checked( ! empty( $opts['chat_field_subject_enable'] ) ); ?>>
+												فعال
+											</label>
+										</td>
+										<td>
+											<label>
+												<input type="checkbox" name="chat_field_subject_required" value="1" <?php checked( ! empty( $opts['chat_field_subject_required'] ) ); ?>>
+												الزامی باشد
+											</label>
+										</td>
+										<td style="color:#64748b; font-size:0.85rem;">مشتری موضوع پیام را وارد می‌کند (مثلاً استعلام موجودی، پیگیری مرسوله، درخواست تخفیف).</td>
+									</tr>
+									<tr>
+										<td><strong>📝 متن پیام یا سوال</strong></td>
+										<td><span style="color:#059669; font-weight:700;">همیشه فعال</span></td>
+										<td><span style="color:#dc2626; font-weight:700;">همیشه الزامی</span></td>
+										<td style="color:#64748b; font-size:0.85rem;">متن اصلی سوال مشتری از فروشگاه.</td>
+									</tr>
+								</tbody>
+							</table>
+						</div>
+					</div>
+				</div>
+
+				<!-- ================= TAB 4: AI & COORDINATION ================= -->
+				<div id="tab-ai" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>🤖</span> نحوه تعامل و هماهنگی بین هوش مصنوعی، ادمین پاسخگو و مشتری</h3>
+							<span class="field-badge field-badge-purple">دستیار هوشمند ۲۴ ساعته</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
+							در این بخش نحوه عملکرد و همکاری هوش مصنوعی با کارشناسان و ادمین‌های انسانی فروشگاه را تنظیم کنید. هوش مصنوعی می‌تواند به عنوان پاسخگوی خط اول بلافاصله به مشتری پاسخ داده و همزمان اطلاعات را برای پیگیری نهایی به پیام‌رسان‌های ادمین بفرستد.
+						</p>
+
+						<table class="form-table">
+							<tr>
+								<th scope="row">شیوه هماهنگی و تعامل (Coordination Mode):</th>
+								<td>
+									<fieldset>
+										<label style="display:block; margin-bottom:12px; background:#f8fafc; padding:12px 16px; border-radius:10px; border:1px solid #e2e8f0;">
+											<input type="radio" name="ai_coordination_mode" value="ai_first" <?php checked( ( $opts['ai_coordination_mode'] ?? 'ai_first' ) === 'ai_first' ); ?>>
+											<strong style="color:#0f172a; font-size:0.95rem;">🤖 هوش مصنوعی پاسخگوی اول + ارجاع فوری به ادمین (توصیه شده):</strong>
+											<div style="color:#64748b; font-size:0.85rem; margin-top:4px; margin-right:24px;">
+												هوش مصنوعی فوراً به سوال مشتری در چت آنلاین پاسخ می‌دهد. همزمان پیام مشتری همراه با پاسخ داده‌شده برای ادمین در پیام‌رسان‌ها (بله/تلگرام/روبیکا) ارسال می‌شود تا ادمین در جریان مکالمه قرار گرفته و در صورت نیاز با شماره تماس مشتری ارتباط بگیرد.
+											</div>
+										</label>
+
+										<label style="display:block; margin-bottom:12px; background:#f8fafc; padding:12px 16px; border-radius:10px; border:1px solid #e2e8f0;">
+											<input type="radio" name="ai_coordination_mode" value="ai_copilot" <?php checked( ( $opts['ai_coordination_mode'] ?? 'ai_first' ) === 'ai_copilot' ); ?>>
+											<strong style="color:#0f172a; font-size:0.95rem;">🤝 دستیار کمکی ادمین (AI Co-Pilot):</strong>
+											<div style="color:#64748b; font-size:0.85rem; margin-top:4px; margin-right:24px;">
+												هوش مصنوعی پاسخ پیشنهادی را برای ادمین در پیام‌رسان آماده می‌کند تا ادمین انسانی پس از بررسی پاسخ نهایی را به مشتری ارائه دهد.
+											</div>
+										</label>
+
+										<label style="display:block; margin-bottom:12px; background:#f8fafc; padding:12px 16px; border-radius:10px; border:1px solid #e2e8f0;">
+											<input type="radio" name="ai_coordination_mode" value="human_only" <?php checked( ( $opts['ai_coordination_mode'] ?? 'ai_first' ) === 'human_only' ); ?>>
+											<strong style="color:#0f172a; font-size:0.95rem;">🧑‍💼 فقط ادمین انسانی (Human Only):</strong>
+											<div style="color:#64748b; font-size:0.85rem; margin-top:4px; margin-right:24px;">
+												هوش مصنوعی غیرفعال بوده و کلیه پیام‌های چت مستقیماً برای ادمین‌ها ارسال شده و پاسخ توسط انسان داده می‌شود.
+											</div>
+										</label>
+
+										<label style="display:block; background:#f8fafc; padding:12px 16px; border-radius:10px; border:1px solid #e2e8f0;">
+											<input type="radio" name="ai_coordination_mode" value="ai_only" <?php checked( ( $opts['ai_coordination_mode'] ?? 'ai_first' ) === 'ai_only' ); ?>>
+											<strong style="color:#0f172a; font-size:0.95rem;">⚡ پاسخگویی تمام‌اتوماتیک ۲۴ ساعته (Full Auto AI):</strong>
+											<div style="color:#64748b; font-size:0.85rem; margin-top:4px; margin-right:24px;">
+												پاسخگویی سریع به سوالات مشتریان به طور کامل توسط هوش مصنوعی انجام می‌شود.
+											</div>
+										</label>
+									</fieldset>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">نام نمایشی دستیار در چت:</th>
+								<td>
+									<input type="text" name="ai_support_name" value="<?php echo esc_attr( $opts['ai_support_name'] ?? 'پشتیبان هوشمند فروشگاه' ); ?>" class="regular-text">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">دستورالعمل و پرامپت رفتاری هوش مصنوعی:</th>
+								<td>
+									<textarea name="ai_system_prompt" rows="4" class="large-text"><?php echo esc_textarea( $opts['ai_system_prompt'] ?? '' ); ?></textarea>
+									<p class="description">تعیین لحن، قوانین و اطلاعات فروشگاه که هوش مصنوعی در پاسخگویی به مشتریان رعایت می‌کند.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">موتور هوش مصنوعی:</th>
+								<td>
+									<select name="ai_provider" class="regular-text">
+										<option value="auto" <?php selected( $opts['ai_provider'] ?? 'auto', 'auto' ); ?>>خودکار بر اساس تنظیمات اسکرپر (connections.json)</option>
+										<option value="openai" <?php selected( $opts['ai_provider'] ?? 'auto', 'openai' ); ?>>OpenAI (ChatGPT)</option>
+										<option value="gemini" <?php selected( $opts['ai_provider'] ?? 'auto', 'gemini' ); ?>>Google Gemini</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">کلید API اختصاصی (در صورت انتخاب مستقل):</th>
+								<td>
+									<input type="password" name="ai_api_key" value="<?php echo esc_attr( $opts['ai_api_key'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="sk-...">
+									<input type="text" name="ai_model" value="<?php echo esc_attr( $opts['ai_model'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="نام مدل (مثلاً gpt-4o-mini)">
+								</td>
+							</tr>
+						</table>
+					</div>
+				</div>
+
+				<!-- ================= TAB 5: MESSENGERS & NOTIFICATIONS ================= -->
+				<div id="tab-messengers" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>📡</span> وضعیت اتصال به پیام‌رسان‌ها (بله / تلگرام / روبیکا)</h3>
+							<span class="field-badge field-badge-blue">اتصال به اعلان‌های اسکرپر</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
+							تنظیمات زیر پیام‌های مشتریان را به پیام‌رسان‌های فایل اسکرپر ارسال می‌کند. اگر در بخش اعلان‌های اسکرپر (<code>connections.json</code>) توکن‌ها را وارد کرده باشید، سیستم به طور خودکار آن‌ها را شناسایی می‌نماید:
+						</p>
+
+						<!-- Status overview cards -->
+						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:20px;">
 							<!-- Bale -->
-							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['bale'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
-								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-									<span>🔹 بله (Bale):</span>
-									<?php if ( isset( $active_messengers['bale'] ) ) : ?>
-										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+							<div style="background:#f8fafc; border:1px solid <?php echo isset( $active_msgrs['bale'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:12px; padding:14px;">
+								<div style="font-weight:800; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+									<span>🔹 پیام‌رسان بله:</span>
+									<?php if ( isset( $active_msgrs['bale'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 متصل</span>
 									<?php else : ?>
 										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
 									<?php endif; ?>
 								</div>
-								<div style="font-size:0.78rem; color:#64748b;">
-									<?php
-									if ( isset( $active_messengers['bale'] ) ) {
-										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['bale']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
-									} else {
-										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
-									}
-									?>
+								<div style="font-size:0.8rem; color:#64748b;">
+									<?php echo isset( $active_msgrs['bale'] ) ? 'منبع: ' . ( 'scraper_connections' === $active_msgrs['bale']['source'] ? 'connections.json اسکرپر' : 'تنظیمات افزونه' ) : 'توکن یا Chat ID خالی است.'; ?>
 								</div>
 							</div>
 
 							<!-- Telegram -->
-							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['telegram'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
-								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-									<span>🔹 تلگرام (Telegram):</span>
-									<?php if ( isset( $active_messengers['telegram'] ) ) : ?>
-										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+							<div style="background:#f8fafc; border:1px solid <?php echo isset( $active_msgrs['telegram'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:12px; padding:14px;">
+								<div style="font-weight:800; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+									<span>🔹 تلگرام:</span>
+									<?php if ( isset( $active_msgrs['telegram'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 متصل</span>
 									<?php else : ?>
 										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
 									<?php endif; ?>
 								</div>
-								<div style="font-size:0.78rem; color:#64748b;">
-									<?php
-									if ( isset( $active_messengers['telegram'] ) ) {
-										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['telegram']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
-									} else {
-										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
-									}
-									?>
+								<div style="font-size:0.8rem; color:#64748b;">
+									<?php echo isset( $active_msgrs['telegram'] ) ? 'منبع: ' . ( 'scraper_connections' === $active_msgrs['telegram']['source'] ? 'connections.json اسکرپر' : 'تنظیمات افزونه' ) : 'توکن یا Chat ID خالی است.'; ?>
 								</div>
 							</div>
 
 							<!-- Rubika -->
-							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['rubika'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
-								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-									<span>🔹 روبیکا (Rubika):</span>
-									<?php if ( isset( $active_messengers['rubika'] ) ) : ?>
-										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+							<div style="background:#f8fafc; border:1px solid <?php echo isset( $active_msgrs['rubika'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:12px; padding:14px;">
+								<div style="font-weight:800; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+									<span>🔹 روبیکا:</span>
+									<?php if ( isset( $active_msgrs['rubika'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 متصل</span>
 									<?php else : ?>
 										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
 									<?php endif; ?>
 								</div>
-								<div style="font-size:0.78rem; color:#64748b;">
-									<?php
-									if ( isset( $active_messengers['rubika'] ) ) {
-										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['rubika']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
-									} else {
-										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
-									}
-									?>
+								<div style="font-size:0.8rem; color:#64748b;">
+									<?php echo isset( $active_msgrs['rubika'] ) ? 'منبع: ' . ( 'scraper_connections' === $active_msgrs['rubika']['source'] ? 'connections.json اسکرپر' : 'تنظیمات افزونه' ) : 'توکن یا Chat ID خالی است.'; ?>
 								</div>
 							</div>
 						</div>
 
-						<!-- Test Button -->
-						<div style="margin-top:15px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-							<button type="button" id="btnTestMessengers" class="button button-secondary" style="font-weight:700; padding:6px 16px; border-color:#2563eb; color:#2563eb;">
-								🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)
-							</button>
-							<span id="testMessengersStatus" style="font-weight:600; font-size:0.9rem;"></span>
+						<!-- Test Messenger Button -->
+						<div style="margin-bottom:24px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+							<div>
+								<strong>تست اتصال زنده:</strong>
+								<span style="color:#475569; font-size:0.88rem; margin-right:6px;">برای اطمینان از دریافت پیام‌ها در بله، تلگرام یا روبیکا، یک پیام آزمایشی ارسال نمایید:</span>
+							</div>
+							<div style="display:flex; align-items:center; gap:10px;">
+								<button type="button" id="btnTestMessengers" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:5px 16px;">
+									🔔 ارسال پیام آزمایشی
+								</button>
+								<span id="testMessengersStatus" style="font-size:0.88rem;"></span>
+							</div>
+						</div>
+
+						<table class="form-table">
+							<tr>
+								<th scope="row" colspan="2">
+									<strong style="color:#0f172a; font-size:1rem;">تنظیمات دستی پیام‌رسان‌ها (اختیاری):</strong>
+								</th>
+							</tr>
+							<tr>
+								<th scope="row">ربات بله (Bale):</th>
+								<td>
+									<input type="password" name="bale_token" value="<?php echo esc_attr( $opts['bale_token'] ?? '' ); ?>" placeholder="Bot Token بله" class="regular-text" dir="ltr" style="margin-left:10px;">
+									<input type="text" name="bale_chat_id" value="<?php echo esc_attr( $opts['bale_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">ربات تلگرام (Telegram):</th>
+								<td>
+									<input type="password" name="telegram_token" value="<?php echo esc_attr( $opts['telegram_token'] ?? '' ); ?>" placeholder="Bot Token تلگرام" class="regular-text" dir="ltr" style="margin-left:10px;">
+									<input type="text" name="telegram_chat_id" value="<?php echo esc_attr( $opts['telegram_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">ربات روبیکا (Rubika):</th>
+								<td>
+									<input type="password" name="rubika_token" value="<?php echo esc_attr( $opts['rubika_token'] ?? '' ); ?>" placeholder="Bot Token روبیکا" class="regular-text" dir="ltr" style="margin-left:10px;">
+									<input type="text" name="rubika_chat_id" value="<?php echo esc_attr( $opts['rubika_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+								</td>
+							</tr>
+						</table>
+					</div>
+				</div>
+
+				<!-- ================= TAB 6: WOOCOMMERCE & SCRAPER ================= -->
+				<div id="tab-woocommerce" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>🔄</span> وضعیت اسکرپر، پروفایل‌ها و درج در ووکامرس</h3>
+							<span class="field-badge field-badge-green">مجموع: <?php echo self::to_fa_num( count( $scraped_products ) ); ?> کالا</span>
+						</div>
+
+						<div style="margin-bottom:20px;">
+							<h4 style="margin:0 0 10px; font-size:1rem; font-weight:800; color:#1e293b;">پروفایل‌های فعال استخراج:</h4>
+							<?php if ( empty( $profiles_summary ) ) : ?>
+								<p style="color:#64748b;">هنوز پروفایلی در <code>profiles.json</code> ایجاد نشده است.</p>
+							<?php else : ?>
+								<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
+									<thead>
+										<tr>
+											<th>نام پروفایل</th>
+											<th>آدرس منبع</th>
+											<th style="width:140px;">تعداد کالا</th>
+											<th style="width:140px;">عملیات</th>
+										</tr>
+									</thead>
+									<tbody>
+										<?php foreach ( $profiles_summary as $prof ) : ?>
+											<tr>
+												<td><strong><?php echo esc_html( $prof['name'] ); ?></strong></td>
+												<td dir="ltr" style="text-align:right;"><code><?php echo esc_html( $prof['url'] ); ?></code></td>
+												<td><strong style="color:#059669;"><?php echo self::to_fa_num( $prof['count'] ); ?></strong> کالا</td>
+												<td><a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-small">مدیریت در اسکرپر</a></td>
+											</tr>
+										<?php endforeach; ?>
+									</tbody>
+								</table>
+							<?php endif; ?>
+						</div>
+
+						<!-- Direct Sync to WooCommerce Action -->
+						<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px;">
+							<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
+							<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
+								تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند:
+							</p>
+							<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+								<button type="button" id="btnSyncToWoo" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:6px 20px;">
+									همگام‌سازی و درج در دیتابیس ووکامرس
+								</button>
+								<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
+							</div>
 						</div>
 					</div>
+				</div>
 
-					<table class="form-table">
-						<tr>
-							<th scope="row">فعال‌سازی چت آنلاین:</th>
-							<td>
-								<label>
-									<input type="checkbox" name="enable_support_chat" value="1" <?php checked( ! empty( $opts['enable_support_chat'] ) ); ?>>
-									دکمه شناور چت آنلاین و فرم گفتگوی مستقیم در صفحات فروشگاه نمایش داده شود.
-								</label>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">موقعیت دکمه چت:</th>
-							<td>
-								<select name="chat_button_position" class="regular-text">
-									<option value="left" <?php selected( $opts['chat_button_position'] ?? 'left', 'left' ); ?>>پایین سمت چپ صفحه (توصیه شده)</option>
-									<option value="right" <?php selected( $opts['chat_button_position'] ?? 'left', 'right' ); ?>>پایین سمت راست صفحه</option>
-								</select>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">عنوان پنجره گفتگو:</th>
-							<td>
-								<input type="text" name="chat_window_title" value="<?php echo esc_attr( $opts['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?>" class="large-text">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">پیام خوش‌آمدگویی خودکار:</th>
-							<td>
-								<textarea name="chat_welcome_message" rows="3" class="large-text"><?php echo esc_textarea( $opts['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.' ); ?></textarea>
-								<p class="description">این متن به عنوان پیام اول از طرف پشتیبان به مشتری نشان داده می‌شود.</p>
-							</td>
-						</tr>
+				<!-- ================= TAB 7: CHAT LOGS & HISTORY ================= -->
+				<div id="tab-logs" class="scraper-tab-panel">
+					<div class="admin-card">
+						<div class="admin-card-header">
+							<h3><span>📋</span> گزارش و تاریخچه آخرین پیام‌های دریافتی از مشتریان</h3>
+							<span class="field-badge field-badge-blue"><?php echo count( $chat_logs ); ?> پیام ثبت‌شده</span>
+						</div>
 
-						<tr>
-							<th scope="row" colspan="2" style="padding-top:20px; padding-bottom:5px;">
-								<strong style="color:#0f172a; font-size:1rem;">⚙️ تنظیمات اختصاصی پیام‌رسان‌ها (اختیاری — در صورت خالی بودن، خودکار از connections.json خوانده می‌شود):</strong>
-							</th>
-						</tr>
-						<tr>
-							<th scope="row">ربات بله (Bale):</th>
-							<td>
-								<input type="password" name="bale_token" value="<?php echo esc_attr( $opts['bale_token'] ?? '' ); ?>" placeholder="Bot Token بله" class="regular-text" dir="ltr" style="margin-left:10px;">
-								<input type="text" name="bale_chat_id" value="<?php echo esc_attr( $opts['bale_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
-								<p class="description">اگر در بخش اعلان‌های اسکرپر وارد شده باشد، نیازی به وارد کردن مجدد در اینجا نیست.</p>
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">ربات تلگرام (Telegram):</th>
-							<td>
-								<input type="password" name="telegram_token" value="<?php echo esc_attr( $opts['telegram_token'] ?? '' ); ?>" placeholder="Bot Token تلگرام" class="regular-text" dir="ltr" style="margin-left:10px;">
-								<input type="text" name="telegram_chat_id" value="<?php echo esc_attr( $opts['telegram_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
-							</td>
-						</tr>
-						<tr>
-							<th scope="row">ربات روبیکا (Rubika):</th>
-							<td>
-								<input type="password" name="rubika_token" value="<?php echo esc_attr( $opts['rubika_token'] ?? '' ); ?>" placeholder="Bot Token روبیکا" class="regular-text" dir="ltr" style="margin-left:10px;">
-								<input type="text" name="rubika_chat_id" value="<?php echo esc_attr( $opts['rubika_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
-							</td>
-						</tr>
-					</table>
-
-					<!-- Recent customer messages log table -->
-					<?php
-					$recent_chat_logs = get_option( 'scraper_support_chat_logs', array() );
-					?>
-					<div style="margin-top:25px; border-top:1px solid #f1f5f9; padding-top:15px;">
-						<h4 style="margin:0 0 12px; font-size:1rem; font-weight:800; color:#1e293b;">
-							📋 آخرین پیام‌های دریافتی از مشتریان (۵ پیام اخیر):
-						</h4>
-						<?php if ( empty( $recent_chat_logs ) ) : ?>
-							<p style="color:#94a3b8; font-size:0.85rem; margin:0;">هنوز پیامی از طرف مشتریان در چت آنلاین ثبت نشده است.</p>
+						<?php if ( empty( $chat_logs ) ) : ?>
+							<p style="color:#94a3b8; text-align:center; padding:30px 10px;">هنوز پیامی از طرف مشتریان در چت آنلاین ثبت نشده است.</p>
 						<?php else : ?>
-							<table class="wp-list-table widefat fixed striped" style="border-radius:8px; overflow:hidden;">
+							<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
 								<thead>
 									<tr>
-										<th style="width:130px; font-weight:700;">زمان</th>
-										<th style="width:130px; font-weight:700;">نام مشتری</th>
-										<th style="width:120px; font-weight:700;">شماره تماس</th>
-										<th style="font-weight:700;">متن پیام</th>
-										<th style="width:140px; font-weight:700;">وضعیت ارسال</th>
+										<th style="width:120px; font-weight:800;">زمان</th>
+										<th style="width:130px; font-weight:800;">نام مشتری</th>
+										<th style="width:120px; font-weight:800;">تماس</th>
+										<th style="width:140px; font-weight:800;">ایمیل / موضوع</th>
+										<th style="font-weight:800;">متن پیام مشتری</th>
+										<th style="font-weight:800;">پاسخ هوش مصنوعی</th>
+										<th style="width:120px; font-weight:800;">وضعیت</th>
 									</tr>
 								</thead>
 								<tbody>
-									<?php foreach ( array_slice( $recent_chat_logs, 0, 5 ) as $log ) : ?>
+									<?php foreach ( array_slice( $chat_logs, 0, 20 ) as $log ) : ?>
 										<tr>
-											<td style="font-size:0.82rem; color:#64748b;"><?php echo esc_html( $log['time'] ?? '—' ); ?></td>
-											<td style="font-weight:700;"><?php echo esc_html( $log['name'] ?? '—' ); ?></td>
-											<td dir="ltr" style="text-align:right;"><a href="tel:<?php echo esc_attr( $log['phone'] ?? '' ); ?>" style="font-weight:600; color:#2563eb;"><?php echo esc_html( $log['phone'] ?? '—' ); ?></a></td>
-											<td style="font-size:0.88rem;"><?php echo esc_html( $log['message'] ?? '—' ); ?></td>
+											<td style="font-size:0.8rem; color:#64748b;"><?php echo esc_html( $log['time'] ?? '—' ); ?></td>
+											<td><strong><?php echo esc_html( $log['name'] ?? '—' ); ?></strong></td>
+											<td dir="ltr" style="text-align:right;">
+												<?php if ( ! empty( $log['phone'] ) ) : ?>
+													<a href="tel:<?php echo esc_attr( $log['phone'] ); ?>" style="font-weight:700; color:#2563eb;"><?php echo esc_html( $log['phone'] ); ?></a>
+												<?php else : ?>
+													<span style="color:#94a3b8;">—</span>
+												<?php endif; ?>
+											</td>
+											<td style="font-size:0.82rem;">
+												<?php if ( ! empty( $log['email'] ) ) : ?>
+													<div>📧 <?php echo esc_html( $log['email'] ); ?></div>
+												<?php endif; ?>
+												<?php if ( ! empty( $log['subject'] ) ) : ?>
+													<div>📌 <?php echo esc_html( $log['subject'] ); ?></div>
+												<?php endif; ?>
+											</td>
+											<td style="font-size:0.88rem; line-height:1.5;"><?php echo esc_html( $log['message'] ?? '—' ); ?></td>
+											<td style="font-size:0.82rem; color:#7c3aed; line-height:1.4;">
+												<?php echo ! empty( $log['ai_reply'] ) ? '🤖 ' . esc_html( mb_substr( $log['ai_reply'], 0, 90 ) ) . '...' : '<span style="color:#94a3b8;">بدون هوش مصنوعی</span>'; ?>
+											</td>
 											<td>
 												<?php if ( ! empty( $log['sent_ok'] ) ) : ?>
-													<span style="color:#16a34a; font-weight:700; font-size:0.82rem;">✅ ارسال به پیام‌رسان</span>
+													<span style="color:#16a34a; font-weight:800; font-size:0.8rem;">✅ ارسال شد</span>
 												<?php else : ?>
-													<span style="color:#d97706; font-weight:700; font-size:0.82rem;">⚠️ ثبت در سیستم</span>
+													<span style="color:#d97706; font-weight:800; font-size:0.8rem;">⚠️ ثبت در سیستم</span>
 												<?php endif; ?>
 											</td>
 										</tr>
@@ -4758,96 +5354,105 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
-				<p class="submit" style="display:flex; gap:15px; align-items:center;">
-					<input type="submit" name="scraper_shop_save" class="button button-primary button-large" value="💾 ذخیره تنظیمات کامل فروشگاه و قیمت" style="font-weight:800; padding:8px 24px;">
-				</p>
-			</form>
-
-			<!-- Direct Sync to WooCommerce Action -->
-			<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-top:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
-				<h3 style="margin-top:0; margin-bottom:10px; font-size:1.15rem; font-weight:800; color:#0f172a;">
-					🔄 درج مستقیم در دیتابیس محصولات ووکامرس (WooCommerce Database Sync)
-				</h3>
-				<p style="color:#64748b; font-size:0.95rem; line-height:1.6; max-width:800px;">
-					با فشردن دکمه زیر، تمامی محصولات به عنوان محصولات رسمی ووکامرس در دیتابیس وردپرس درج یا به‌روزرسانی می‌شوند:
-				</p>
-				<div style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-top:15px;">
-					<button type="button" id="btnSyncToWoo" class="button button-secondary button-hero" style="font-weight:800; padding:8px 24px; border-color:#2563eb; color:#2563eb;">
-						همگام‌سازی و درج مستقیم در محصولات ووکامرس
-					</button>
-					<span id="syncWooStatus" style="font-weight:700; color:#475569;"></span>
+				<!-- Fixed Save Settings Bar -->
+				<div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; margin-top:20px; box-shadow:0 4px 14px rgba(0,0,0,0.04);">
+					<div style="font-size:0.92rem; color:#64748b; font-weight:600;">
+						💡 تغییرات اعمال‌شده در هر یک از زبانه‌ها با زدن کلید زیر ذخیره خواهند شد.
+					</div>
+					<input type="submit" name="scraper_shop_save" class="button button-primary button-large" value="💾 ذخیره تمامی تنظیمات فروشگاه و هوش مصنوعی" style="font-weight:800; padding:8px 28px; font-size:1rem; border-radius:10px;">
 				</div>
-			</div>
+			</form>
 		</div>
 
 		<script>
-			jQuery(document).ready(function($){
-				$('#btnSyncToWoo').on('click', function(e){
-					e.preventDefault();
-					var $btn = $(this);
-					var $status = $('#syncWooStatus');
-					$btn.prop('disabled', true).text('در حال همگام‌سازی با ووکامرس...');
-					$status.html('<span style="color:#2563eb;">⏳ در حال انتقال محصولات به دیتابیس ووکامرس...</span>');
+		jQuery(document).ready(function($){
+			// Tab switching logic
+			$('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
+				e.preventDefault();
+				var tabId = $(this).attr('data-tab');
+				$('#scraperAdminTabs .scraper-tab-link').removeClass('active');
+				$(this).addClass('active');
+				$('.scraper-tab-panel').removeClass('active');
+				$('#' + tabId).addClass('active');
 
-				$('#btnTestMessengers').on('click', function(e){
-					e.preventDefault();
-					var $btn = $(this);
-					var $status = $('#testMessengersStatus');
-					$btn.prop('disabled', true).text('در حال ارسال پیام تست... ⏳');
-					$status.html('<span style="color:#2563eb;">در حال ارسال تست به پیام‌رسان‌های فعال...</span>');
+				try {
+					sessionStorage.setItem('scraper_active_tab', tabId);
+				} catch(err){}
+			});
 
-					$.ajax({
-						url: ajaxurl,
-						type: 'POST',
-						data: {
-							action: 'test_support_messengers',
-							nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>'
-						},
-						success: function(res){
-							$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)');
-							if (res.success) {
-								$status.html('<span style="color:#16a34a; font-weight:700;">✅ ' + (res.data.message || 'پیام با موفقیت به پیام‌رسان‌ها ارسال شد!') + '</span>');
-							} else {
-								var err = (res.data && res.data.message) ? res.data.message : 'ارسال تست با خطا مواجه شد.';
-								$status.html('<span style="color:#dc2626; font-weight:700;">❌ ' + err + '</span>');
-							}
-						},
-						error: function(){
-							$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)');
-							$status.html('<span style="color:#dc2626; font-weight:700;">❌ خطای ارتباط با سرور.</span>');
-						}
-					});
-				});
+			// Restore tab from session
+			try {
+				var savedTab = sessionStorage.getItem('scraper_active_tab');
+				if (savedTab && $('#' + savedTab).length) {
+					$('#scraperAdminTabs .scraper-tab-link[data-tab="' + savedTab + '"]').click();
+				}
+			} catch(err){}
+
+			// Test Messengers Button
+			$('#btnTestMessengers').on('click', function(e){
+				e.preventDefault();
+				var $btn = $(this);
+				var $status = $('#testMessengersStatus');
+				$btn.prop('disabled', true).text('در حال ارسال تست... ⏳');
+				$status.html('<span style="color:#2563eb;">ارسال پیام آزمایشی به پیام‌رسان‌ها...</span>');
 
 				$.ajax({
-						url: ajaxurl,
-						type: 'POST',
-						data: {
-							action: 'scraper_sync_to_woo',
-							nonce: '<?php echo wp_create_nonce( "scraper_shop_admin_nonce" ); ?>'
-						},
-						success: function(res){
-							$btn.prop('disabled', false).text('همگام‌سازی و درج مستقیم در محصولات ووکامرس');
-							if(res.success && res.data){
-								$status.html('✅ همگام‌سازی با موفقیت انجام شد: ' + res.data.created + ' محصول جدید درج شد و ' + res.data.updated + ' محصول به‌روزرسانی شد.');
-							} else {
-								$status.html('❌ خطا: ' + (res.data.message || res.data || 'خطای نامشخص'));
-							}
-						},
-						error: function(){
-							$btn.prop('disabled', false).text('همگام‌سازی و درج مستقیم در محصولات ووکامرس');
-							$status.html('❌ خطای ارتباط با سرور.');
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'test_support_messengers',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>'
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی');
+						if (res.success) {
+							$status.html('<span style="color:#16a34a; font-weight:700;">✅ ' + (res.data.message || 'با موفقیت ارسال شد!') + '</span>');
+						} else {
+							var err = (res.data && res.data.message) ? res.data.message : 'خطا در ارسال.';
+							$status.html('<span style="color:#dc2626; font-weight:700;">❌ ' + err + '</span>');
 						}
-					});
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی');
+						$status.html('<span style="color:#dc2626; font-weight:700;">❌ خطای ارتباط با سرور.</span>');
+					}
 				});
 			});
+
+			// Sync to WooCommerce Button
+			$('#btnSyncToWoo').on('click', function(e){
+				e.preventDefault();
+				var $btn = $(this);
+				var $status = $('#syncWooStatus');
+				$btn.prop('disabled', true).text('در حال همگام‌سازی... ⏳');
+				$status.html('<span style="color:#2563eb;">در حال انتقال محصولات به ووکامرس...</span>');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_sync_to_woo',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>'
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('همگام‌سازی و درج در دیتابیس ووکامرس');
+						if (res.success) {
+							$status.html('<span style="color:#16a34a; font-weight:700;">✅ ' + res.data.message + '</span>');
+						} else {
+							$status.html('<span style="color:#dc2626; font-weight:700;">❌ ' + (res.data || 'خطا در همگام‌سازی') + '</span>');
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('همگام‌سازی و درج در دیتابیس ووکامرس');
+						$status.html('<span style="color:#dc2626; font-weight:700;">❌ خطای ارتباط با سرور.</span>');
+					}
+				});
+			});
+		});
 		</script>
 		<?php
 	}
 
-	/**
-	 * Render Scraper4 Embedded View in Admin.
-	 */
 	public static function render_scraper4_embed_page() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;

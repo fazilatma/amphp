@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 11.5.0
+ * Version: 11.6.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -46,7 +46,7 @@ class Scraper_Auto_Shop_Plugin {
 			'default_fallback_price'      => 150000, // Fallback base price if source price is missing/0
 			'fallback_price_behavior'     => 'use_fallback', // 'use_fallback' or 'call_for_price'
 			'accent_color'                => '#2563eb',
-			'products_per_page'           => 16,
+			'products_per_page'           => 20,
 			'show_features_banner'        => true,
 			'show_special_badge'          => true,
 			'free_shipping_threshold'     => 400000,
@@ -114,6 +114,20 @@ class Scraper_Auto_Shop_Plugin {
 		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
 		add_action( 'wp_ajax_nopriv_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
 		add_action( 'wp_ajax_test_support_messengers', array( __CLASS__, 'ajax_test_support_messengers' ) );
+
+		// WooCommerce Real Cart Session Sync endpoints
+		add_action( 'wp_ajax_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
+		add_action( 'wp_ajax_nopriv_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
+		add_action( 'wp_ajax_scraper_wc_update_cart_qty', array( __CLASS__, 'ajax_wc_update_cart_qty' ) );
+		add_action( 'wp_ajax_nopriv_scraper_wc_update_cart_qty', array( __CLASS__, 'ajax_wc_update_cart_qty' ) );
+		add_action( 'wp_ajax_scraper_wc_remove_cart_item', array( __CLASS__, 'ajax_wc_remove_cart_item' ) );
+		add_action( 'wp_ajax_nopriv_scraper_wc_remove_cart_item', array( __CLASS__, 'ajax_wc_remove_cart_item' ) );
+		add_action( 'wp_ajax_scraper_wc_get_cart', array( __CLASS__, 'ajax_wc_get_cart' ) );
+		add_action( 'wp_ajax_nopriv_scraper_wc_get_cart', array( __CLASS__, 'ajax_wc_get_cart' ) );
+
+		// Filters for WooCommerce Cart & Checkout display
+		add_action( 'woocommerce_before_calculate_totals', array( __CLASS__, 'fix_cart_item_prices' ), 20, 1 );
+		add_filter( 'woocommerce_cart_item_thumbnail', array( __CLASS__, 'filter_cart_item_thumbnail' ), 10, 3 );
 
 		// Enqueue scripts & styles for storefront
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_front_assets' ) );
@@ -881,6 +895,375 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
+	 * Ensure WooCommerce Cart and Session are initialized in AJAX requests.
+	 *
+	 * @return bool
+	 */
+	public static function init_wc_cart() {
+		if ( ! function_exists( 'WC' ) ) {
+			return false;
+		}
+
+		if ( is_null( WC()->session ) ) {
+			$session_class = apply_filters( 'woocommerce_session_handler', 'WC_Session_Handler' );
+			if ( class_exists( $session_class ) ) {
+				WC()->session = new $session_class();
+				WC()->session->init();
+			}
+		}
+
+		if ( is_null( WC()->customer ) && class_exists( 'WC_Customer' ) ) {
+			WC()->customer = new WC_Customer( get_current_user_id(), true );
+		}
+
+		if ( is_null( WC()->cart ) && class_exists( 'WC_Cart' ) ) {
+			WC()->cart = new WC_Cart();
+		}
+
+		if ( WC()->session && ! WC()->session->has_session() ) {
+			WC()->session->set_customer_session_cookie( true );
+		}
+
+		return ( ! is_null( WC()->cart ) );
+	}
+
+	/**
+	 * Find an existing WooCommerce product by scraped hash or exact title, or create it dynamically.
+	 *
+	 * @param array $item_data
+	 * @return int Product ID or 0
+	 */
+	public static function find_or_create_wc_product( $item_data ) {
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return 0;
+		}
+
+		$hash  = sanitize_text_field( $item_data['id'] ?? $item_data['hash'] ?? '' );
+		$title = sanitize_text_field( $item_data['title'] ?? '' );
+		$price = floatval( $item_data['price'] ?? 0 );
+		$img   = esc_url_raw( $item_data['image'] ?? '' );
+		$cat   = sanitize_text_field( $item_data['category'] ?? 'عمومی' );
+
+		if ( empty( $title ) && empty( $hash ) ) {
+			return 0;
+		}
+
+		$product_id = 0;
+
+		// 1. Try lookup by scraped hash
+		if ( ! empty( $hash ) ) {
+			$existing = get_posts( array(
+				'post_type'      => 'product',
+				'post_status'    => 'any',
+				'posts_per_page' => 1,
+				'meta_key'       => '_scraped_hash',
+				'meta_value'     => $hash,
+				'fields'         => 'ids',
+			) );
+			if ( ! empty( $existing ) ) {
+				$product_id = (int) $existing[0];
+			}
+		}
+
+		// 2. Try lookup by exact title
+		if ( ! $product_id && ! empty( $title ) ) {
+			$existing = get_posts( array(
+				'post_type'      => 'product',
+				'post_status'    => 'any',
+				'posts_per_page' => 1,
+				'title'          => $title,
+				'fields'         => 'ids',
+			) );
+			if ( ! empty( $existing ) ) {
+				$product_id = (int) $existing[0];
+			}
+		}
+
+		// 3. If found, ensure price and active stock status
+		if ( $product_id > 0 ) {
+			if ( $price > 0 ) {
+				update_post_meta( $product_id, '_price', $price );
+				update_post_meta( $product_id, '_regular_price', $price );
+			}
+			update_post_meta( $product_id, '_stock_status', 'instock' );
+			if ( ! empty( $hash ) ) {
+				update_post_meta( $product_id, '_scraped_hash', $hash );
+			}
+			if ( ! empty( $img ) && ! get_post_meta( $product_id, '_scraped_image_url', true ) ) {
+				update_post_meta( $product_id, '_scraped_image_url', $img );
+			}
+			return $product_id;
+		}
+
+		// 4. If not found, create new WooCommerce simple product
+		$post_data = array(
+			'post_title'   => $title,
+			'post_content' => sanitize_textarea_field( $item_data['description'] ?? '' ),
+			'post_status'  => 'publish',
+			'post_type'    => 'product',
+		);
+		$product_id = wp_insert_post( $post_data );
+
+		if ( $product_id && ! is_wp_error( $product_id ) ) {
+			wp_set_object_terms( $product_id, 'simple', 'product_type' );
+			if ( ! empty( $cat ) ) {
+				wp_set_object_terms( $product_id, $cat, 'product_cat' );
+			}
+			update_post_meta( $product_id, '_scraped_hash', $hash );
+			update_post_meta( $product_id, '_price', $price );
+			update_post_meta( $product_id, '_regular_price', $price );
+			update_post_meta( $product_id, '_stock_status', 'instock' );
+			update_post_meta( $product_id, '_visibility', 'visible' );
+			update_post_meta( $product_id, '_virtual', 'no' );
+			update_post_meta( $product_id, '_manage_stock', 'no' );
+			if ( ! empty( $img ) ) {
+				update_post_meta( $product_id, '_scraped_image_url', $img );
+			}
+			return (int) $product_id;
+		}
+
+		return 0;
+	}
+
+	/**
+	 * Build JSON response with current WooCommerce Cart contents.
+	 *
+	 * @return array
+	 */
+	public static function get_wc_cart_response() {
+		if ( ! self::init_wc_cart() ) {
+			return array(
+				'items'        => array(),
+				'count'        => 0,
+				'total'        => 0,
+				'checkout_url' => function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : '#',
+				'cart_url'     => function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : '#',
+			);
+		}
+
+		$items     = array();
+		$raw_total = 0;
+
+		foreach ( WC()->cart->get_cart() as $cart_item_key => $cart_item ) {
+			$product = $cart_item['data'] ?? null;
+			if ( ! $product || ! is_object( $product ) ) {
+				continue;
+			}
+
+			$pid  = $cart_item['product_id'];
+			$hash = get_post_meta( $pid, '_scraped_hash', true );
+			if ( empty( $hash ) ) {
+				$hash = (string) $pid;
+			}
+			$img = get_post_meta( $pid, '_scraped_image_url', true );
+			if ( empty( $img ) && has_post_thumbnail( $pid ) ) {
+				$img = get_the_post_thumbnail_url( $pid, 'thumbnail' );
+			}
+
+			$price      = floatval( $product->get_price() );
+			$qty        = intval( $cart_item['quantity'] );
+			$line_total = $price * $qty;
+			$raw_total += $line_total;
+
+			$items[] = array(
+				'id'         => $hash,
+				'product_id' => $pid,
+				'key'        => $cart_item_key,
+				'title'      => $product->get_name(),
+				'price'      => $price,
+				'priceTxt'   => number_format( $price ) . ' تومان',
+				'img'        => $img,
+				'qty'        => $qty,
+				'line_total' => $line_total,
+			);
+		}
+
+		return array(
+			'items'        => $items,
+			'count'        => WC()->cart->get_cart_contents_count(),
+			'total'        => $raw_total,
+			'checkout_url' => function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : '#',
+			'cart_url'     => function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : '#',
+		);
+	}
+
+	/**
+	 * AJAX endpoint to add scraped product directly into WooCommerce Cart.
+	 */
+	public static function ajax_wc_add_to_cart() {
+		check_ajax_referer( 'scraper_cart_nonce', 'nonce' );
+
+		$hash  = sanitize_text_field( $_POST['id'] ?? '' );
+		$title = sanitize_text_field( $_POST['title'] ?? '' );
+		$price = floatval( $_POST['price'] ?? 0 );
+		$img   = esc_url_raw( $_POST['image'] ?? '' );
+		$qty   = max( 1, intval( $_POST['qty'] ?? 1 ) );
+
+		if ( empty( $title ) && empty( $hash ) ) {
+			wp_send_json_error( 'اطلاعات محصول نامعتبر است.' );
+		}
+
+		if ( ! self::init_wc_cart() ) {
+			wp_send_json_error( 'ووکامرس فعال نیست.' );
+		}
+
+		$product_id = self::find_or_create_wc_product( array(
+			'id'    => $hash,
+			'title' => $title,
+			'price' => $price,
+			'image' => $img,
+		) );
+
+		if ( ! $product_id ) {
+			wp_send_json_error( 'ثبت محصول در دیتابیس با شکست مواجه شد.' );
+		}
+
+		// Find if already in cart
+		$cart_item_key = null;
+		foreach ( WC()->cart->get_cart() as $key => $item ) {
+			if ( (int) $item['product_id'] === (int) $product_id ) {
+				$cart_item_key = $key;
+				break;
+			}
+		}
+
+		if ( $cart_item_key ) {
+			$current_qty = WC()->cart->get_cart()[ $cart_item_key ]['quantity'];
+			WC()->cart->set_quantity( $cart_item_key, $current_qty + $qty );
+		} else {
+			$cart_item_key = WC()->cart->add_to_cart( $product_id, $qty );
+		}
+
+		if ( ! $cart_item_key ) {
+			wp_send_json_error( 'افزودن به سبد خرید ووکامرس انجام نشد.' );
+		}
+
+		WC()->cart->calculate_totals();
+
+		wp_send_json_success( self::get_wc_cart_response() );
+	}
+
+	/**
+	 * AJAX endpoint to update quantity of an item in WooCommerce Cart.
+	 */
+	public static function ajax_wc_update_cart_qty() {
+		check_ajax_referer( 'scraper_cart_nonce', 'nonce' );
+
+		$hash = sanitize_text_field( $_POST['id'] ?? '' );
+		$qty  = intval( $_POST['qty'] ?? 0 );
+
+		if ( ! self::init_wc_cart() ) {
+			wp_send_json_error( 'ووکامرس فعال نیست.' );
+		}
+
+		$target_key = null;
+		foreach ( WC()->cart->get_cart() as $key => $item ) {
+			$pid       = $item['product_id'];
+			$item_hash = get_post_meta( $pid, '_scraped_hash', true );
+			if ( $item_hash === $hash || (string) $pid === (string) $hash ) {
+				$target_key = $key;
+				break;
+			}
+		}
+
+		if ( $target_key ) {
+			if ( $qty <= 0 ) {
+				WC()->cart->remove_cart_item( $target_key );
+			} else {
+				WC()->cart->set_quantity( $target_key, $qty );
+			}
+			WC()->cart->calculate_totals();
+		}
+
+		wp_send_json_success( self::get_wc_cart_response() );
+	}
+
+	/**
+	 * AJAX endpoint to remove an item from WooCommerce Cart.
+	 */
+	public static function ajax_wc_remove_cart_item() {
+		check_ajax_referer( 'scraper_cart_nonce', 'nonce' );
+
+		$hash = sanitize_text_field( $_POST['id'] ?? '' );
+
+		if ( ! self::init_wc_cart() ) {
+			wp_send_json_error( 'ووکامرس فعال نیست.' );
+		}
+
+		$target_key = null;
+		foreach ( WC()->cart->get_cart() as $key => $item ) {
+			$pid       = $item['product_id'];
+			$item_hash = get_post_meta( $pid, '_scraped_hash', true );
+			if ( $item_hash === $hash || (string) $pid === (string) $hash ) {
+				$target_key = $key;
+				break;
+			}
+		}
+
+		if ( $target_key ) {
+			WC()->cart->remove_cart_item( $target_key );
+			WC()->cart->calculate_totals();
+		}
+
+		wp_send_json_success( self::get_wc_cart_response() );
+	}
+
+	/**
+	 * AJAX endpoint to read current WooCommerce Cart items.
+	 */
+	public static function ajax_wc_get_cart() {
+		if ( ! self::init_wc_cart() ) {
+			wp_send_json_error( 'ووکامرس فعال نیست.' );
+		}
+
+		wp_send_json_success( self::get_wc_cart_response() );
+	}
+
+	/**
+	 * Ensure scraped product price is kept during WooCommerce cart totals calculation.
+	 *
+	 * @param WC_Cart $cart
+	 */
+	public static function fix_cart_item_prices( $cart ) {
+		if ( is_admin() && ! defined( 'DOING_AJAX' ) ) {
+			return;
+		}
+		if ( did_action( 'woocommerce_before_calculate_totals' ) >= 2 ) {
+			return;
+		}
+		foreach ( $cart->get_cart() as $cart_item_key => $cart_item ) {
+			$product = $cart_item['data'] ?? null;
+			if ( $product && is_object( $product ) ) {
+				$product_id   = $product->get_id();
+				$custom_price = get_post_meta( $product_id, '_price', true );
+				if ( '' !== $custom_price && floatval( $custom_price ) > 0 ) {
+					$product->set_price( floatval( $custom_price ) );
+				}
+			}
+		}
+	}
+
+	/**
+	 * Display scraped image in WooCommerce Cart & Checkout tables if no media thumbnail exists.
+	 *
+	 * @param string $thumbnail
+	 * @param array $cart_item
+	 * @param string $cart_item_key
+	 * @return string
+	 */
+	public static function filter_cart_item_thumbnail( $thumbnail, $cart_item, $cart_item_key ) {
+		$product = $cart_item['data'] ?? null;
+		if ( $product && is_object( $product ) ) {
+			$product_id  = $product->get_id();
+			$scraped_img = get_post_meta( $product_id, '_scraped_image_url', true );
+			if ( ! empty( $scraped_img ) && ! has_post_thumbnail( $product_id ) ) {
+				return '<img width="64" height="64" src="' . esc_url( $scraped_img ) . '" class="attachment-woocommerce_thumbnail size-woocommerce_thumbnail" alt="" style="object-fit:cover; border-radius:8px; width:64px; height:64px;">';
+			}
+		}
+		return $thumbnail;
+	}
+
+	/**
 	 * Hijack WooCommerce shop template with modern full-experience shop.
 	 *
 	 * @param string $template
@@ -1443,8 +1826,192 @@ class Scraper_Auto_Shop_Plugin {
 			/* Products Grid */
 			.products-grid {
 				display: grid;
-				grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-				gap: 22px;
+				gap: 20px;
+				transition: all 0.25s ease;
+			}
+
+			/* Columns Switcher Classes (Default: 1 Column) */
+			.products-grid.cols-1 {
+				grid-template-columns: 1fr !important;
+				gap: 16px;
+			}
+			.products-grid.cols-1 .product-card {
+				flex-direction: row;
+				align-items: center;
+				padding: 14px;
+				gap: 18px;
+			}
+			.products-grid.cols-1 .card-img-wrap {
+				width: 160px;
+				min-width: 160px;
+				height: 160px;
+				border-radius: 12px;
+			}
+			.products-grid.cols-1 .card-body {
+				flex: 1;
+				padding: 0;
+				display: flex;
+				flex-direction: column;
+				justify-content: center;
+			}
+			.products-grid.cols-1 .card-title {
+				font-size: 1.1rem;
+				height: auto;
+				margin-bottom: 8px;
+			}
+			.products-grid.cols-1 .card-actions {
+				max-width: 320px;
+				margin-top: 10px;
+			}
+
+			.products-grid.cols-2 {
+				grid-template-columns: repeat(2, 1fr) !important;
+				gap: 16px;
+			}
+			.products-grid.cols-2 .product-card {
+				flex-direction: column;
+			}
+			.products-grid.cols-2 .card-img-wrap {
+				width: 100%;
+				height: 200px;
+			}
+
+			.products-grid.cols-3 {
+				grid-template-columns: repeat(3, 1fr) !important;
+				gap: 18px;
+			}
+			.products-grid.cols-3 .product-card {
+				flex-direction: column;
+			}
+			.products-grid.cols-3 .card-img-wrap {
+				width: 100%;
+				height: 200px;
+			}
+
+			.products-grid.cols-4 {
+				grid-template-columns: repeat(4, 1fr) !important;
+				gap: 18px;
+			}
+			.products-grid.cols-4 .product-card {
+				flex-direction: column;
+			}
+			.products-grid.cols-4 .card-img-wrap {
+				width: 100%;
+				height: 180px;
+			}
+
+			/* Products Toolbar (View Switcher & Info) */
+			.shop-toolbar {
+				background: #ffffff;
+				border: 1px solid var(--sp-border);
+				border-radius: 14px;
+				padding: 12px 18px;
+				margin-bottom: 22px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				flex-wrap: wrap;
+				gap: 12px;
+				box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+			}
+			.toolbar-info {
+				font-size: 0.92rem;
+				font-weight: 700;
+				color: #334155;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.toolbar-info .count-badge {
+				background: #eff6ff;
+				color: var(--sp-accent, #2563eb);
+				padding: 3px 10px;
+				border-radius: 20px;
+				font-size: 0.82rem;
+			}
+			.toolbar-view-switcher {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+			}
+			.switcher-label {
+				font-size: 0.85rem;
+				color: #64748b;
+				margin-left: 6px;
+				font-weight: 600;
+			}
+			.col-switch-btn {
+				background: #f8fafc;
+				border: 1px solid #e2e8f0;
+				border-radius: 8px;
+				padding: 6px 12px;
+				font-family: inherit;
+				font-size: 0.82rem;
+				font-weight: 700;
+				color: #475569;
+				cursor: pointer;
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				transition: all 0.2s ease;
+			}
+			.col-switch-btn:hover {
+				background: #f1f5f9;
+				color: #0f172a;
+			}
+			.col-switch-btn.active {
+				background: var(--sp-accent, #2563eb);
+				color: #ffffff;
+				border-color: var(--sp-accent, #2563eb);
+				box-shadow: 0 3px 10px rgba(37, 99, 235, 0.3);
+			}
+			.col-switch-btn svg {
+				width: 16px;
+				height: 16px;
+			}
+
+			/* Pagination Controls (صفحه‌بندی ۲۰ تایی) */
+			.shop-pagination-wrap {
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				gap: 8px;
+				margin-top: 35px;
+				margin-bottom: 25px;
+				flex-wrap: wrap;
+			}
+			.page-btn {
+				min-width: 40px;
+				height: 40px;
+				padding: 0 12px;
+				border-radius: 10px;
+				border: 1px solid #e2e8f0;
+				background: #ffffff;
+				color: #334155;
+				font-family: inherit;
+				font-size: 0.9rem;
+				font-weight: 700;
+				cursor: pointer;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				transition: all 0.2s ease;
+				box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+			}
+			.page-btn:hover:not(:disabled) {
+				background: #f8fafc;
+				border-color: #cbd5e1;
+				color: #0f172a;
+			}
+			.page-btn.active {
+				background: var(--sp-accent, #2563eb);
+				color: #ffffff;
+				border-color: var(--sp-accent, #2563eb);
+				box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+			}
+			.page-btn:disabled {
+				opacity: 0.4;
+				cursor: not-allowed;
 			}
 			.product-card {
 				background: var(--sp-bg-card);
@@ -2325,9 +2892,32 @@ class Scraper_Auto_Shop_Plugin {
 				.modern-shop-hero { padding: 30px 18px; }
 				.modern-shop-hero h1 { font-size: 1.7rem; }
 				.modern-shop-hero p { font-size: 0.92rem; }
-				.products-grid {
-					grid-template-columns: repeat(2, 1fr);
-					gap: 12px;
+				.desktop-only {
+					display: none !important;
+				}
+				.products-grid.cols-1 .product-card {
+					flex-direction: column;
+					padding: 0;
+					gap: 0;
+				}
+				.products-grid.cols-1 .card-img-wrap {
+					width: 100%;
+					min-width: 100%;
+					height: 220px;
+					border-radius: 0;
+				}
+				.products-grid.cols-1 .card-body {
+					padding: 12px;
+				}
+				.products-grid.cols-1 .card-actions {
+					max-width: 100%;
+				}
+				.products-grid.cols-2 {
+					grid-template-columns: repeat(2, 1fr) !important;
+					gap: 10px;
+				}
+				.products-grid.cols-2 .card-img-wrap {
+					height: 160px;
 				}
 				.card-body { padding: 12px; }
 				.card-title { font-size: 0.85rem; height: 38px; line-height: 1.45; }
@@ -2535,8 +3125,50 @@ class Scraper_Auto_Shop_Plugin {
 					<?php endforeach; ?>
 				</div>
 
-				<!-- Products Grid -->
-				<div class="products-grid" id="productsGrid">
+				<!-- Products Section Toolbar (تعداد ستون‌ها و شمارش) -->
+				<div class="shop-toolbar" id="shopToolbar">
+					<div class="toolbar-info">
+						<span id="productCounter">نمایش کالاها...</span>
+						<span class="count-badge">صفحه‌بندی ۲۰ تایی</span>
+					</div>
+					<div class="toolbar-view-switcher">
+						<span class="switcher-label">چیدمان ستون‌ها:</span>
+						<button type="button" class="col-switch-btn active" data-cols="1" title="تک ستونه (پیش‌فرض)">
+							<svg viewBox="0 0 24 24" fill="currentColor">
+								<rect x="3" y="4" width="18" height="6" rx="2"></rect>
+								<rect x="3" y="14" width="18" height="6" rx="2"></rect>
+							</svg>
+							<span>تک ستون</span>
+						</button>
+						<button type="button" class="col-switch-btn" data-cols="2" title="دو ستونه">
+							<svg viewBox="0 0 24 24" fill="currentColor">
+								<rect x="3" y="4" width="8" height="16" rx="2"></rect>
+								<rect x="13" y="4" width="8" height="16" rx="2"></rect>
+							</svg>
+							<span>۲ ستون</span>
+						</button>
+						<button type="button" class="col-switch-btn desktop-only" data-cols="3" title="سه ستونه">
+							<svg viewBox="0 0 24 24" fill="currentColor">
+								<rect x="2" y="4" width="5.5" height="16" rx="1.5"></rect>
+								<rect x="9.25" y="4" width="5.5" height="16" rx="1.5"></rect>
+								<rect x="16.5" y="4" width="5.5" height="16" rx="1.5"></rect>
+							</svg>
+							<span>۳ ستون</span>
+						</button>
+						<button type="button" class="col-switch-btn desktop-only" data-cols="4" title="چهار ستونه">
+							<svg viewBox="0 0 24 24" fill="currentColor">
+								<rect x="2" y="4" width="4" height="16" rx="1"></rect>
+								<rect x="7.33" y="4" width="4" height="16" rx="1"></rect>
+								<rect x="12.66" y="4" width="4" height="16" rx="1"></rect>
+								<rect x="18" y="4" width="4" height="16" rx="1"></rect>
+							</svg>
+							<span>۴ ستون</span>
+						</button>
+					</div>
+				</div>
+
+				<!-- Products Grid (Default cols-1) -->
+				<div class="products-grid cols-1" id="productsGrid">
 					<?php foreach ( $products as $p ) : ?>
 						<div class="product-card" 
 							data-id="<?php echo esc_attr( $p['id'] ); ?>"
@@ -2616,6 +3248,9 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
+				<!-- Pagination Controls (صفحه‌بندی ۲۰ تایی) -->
+				<div class="shop-pagination-wrap" id="shopPaginationWrap"></div>
+
 			<?php endif; ?>
 
 			<!-- Quick View Modal -->
@@ -2689,10 +3324,14 @@ class Scraper_Auto_Shop_Plugin {
 						<span id="cartTotalPrice" style="color:#059669;">۰ <?php echo esc_html( $settings['currency_symbol'] ); ?></span>
 					</div>
 					<?php
-					$checkout_url = function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : '#';
+					$checkout_url  = function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : '#';
+					$cart_page_url = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : '#';
 					?>
-					<a href="<?php echo esc_url( $checkout_url ); ?>" class="btn-card-buy" style="display:block; width:100%; text-align:center; padding:14px; font-size:1.05rem;">
-						تکمیل سفارش و تسویه حساب
+					<a href="<?php echo esc_url( $checkout_url ); ?>" class="btn-card-buy" id="btnGoToCheckout" style="display:block; width:100%; text-align:center; padding:14px; font-size:1.05rem; text-decoration:none; font-weight:800;">
+						تکمیل سفارش و تسویه حساب ➔
+					</a>
+					<a href="<?php echo esc_url( $cart_page_url ); ?>" style="display:block; text-align:center; margin-top:10px; font-size:0.82rem; color:#64748b; text-decoration:underline;">
+						مشاهده و ویرایش سبد خرید ووکامرس
 					</a>
 				</div>
 			</div>
@@ -2894,7 +3533,16 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
-			// Filtering & Searching Logic
+			// WooCommerce Cart Configuration
+			const scraperCartConfig = {
+				ajaxUrl: '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>',
+				nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_cart_nonce' ) ); ?>',
+				checkoutUrl: '<?php echo esc_url( function_exists( 'wc_get_checkout_url' ) ? wc_get_checkout_url() : '#' ); ?>'
+			};
+
+			// Pagination and Column Layout Configuration
+			const PAGE_SIZE = 20; // صفحه‌بندی ۲۰ تایی
+			let currentPage = 1;
 			let currentCat = 'all';
 			let searchQuery = '';
 
@@ -2902,34 +3550,123 @@ class Scraper_Auto_Shop_Plugin {
 			const clearBtn = document.getElementById('searchClearBtn');
 			const noResults = document.getElementById('searchNoResults');
 			const resetBtn = document.getElementById('resetSearchBtn');
+			const paginationWrap = document.getElementById('shopPaginationWrap');
+			const productsGrid = document.getElementById('productsGrid');
+			const colSwitchBtns = app.querySelectorAll('.col-switch-btn');
 
-			function applyFilters() {
-				const cards = app.querySelectorAll('.product-card');
-				let visibleCount = 0;
+			// Column Switcher Logic (Default: cols-1)
+			function setColumns(cols) {
+				colSwitchBtns.forEach(btn => {
+					btn.classList.toggle('active', btn.getAttribute('data-cols') === String(cols));
+				});
+				if (productsGrid) {
+					productsGrid.className = 'products-grid cols-' + cols;
+				}
+				try {
+					localStorage.setItem('scraped_shop_cols', cols);
+				} catch(e) {}
+			}
 
-				cards.forEach(card => {
+			colSwitchBtns.forEach(btn => {
+				btn.addEventListener('click', () => {
+					const cols = btn.getAttribute('data-cols') || '1';
+					setColumns(cols);
+				});
+			});
+
+			// Load preferred columns or default to 1
+			let initialCols = '1';
+			try {
+				initialCols = localStorage.getItem('scraped_shop_cols') || '1';
+			} catch(e) {}
+			setColumns(initialCols);
+
+			// Render Pagination Navigation (صفحه‌بندی ۲۰ تایی)
+			function renderPagination(totalPages, page) {
+				if (!paginationWrap) return;
+				if (totalPages <= 1) {
+					paginationWrap.innerHTML = '';
+					paginationWrap.style.display = 'none';
+					return;
+				}
+
+				paginationWrap.style.display = 'flex';
+				let html = '';
+
+				// Prev Button
+				html += `<button type="button" class="page-btn page-prev" ${page === 1 ? 'disabled' : ''} data-page="${page - 1}">« قبلی</button>`;
+
+				// Page Numbers
+				for (let p = 1; p <= totalPages; p++) {
+					if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+						html += `<button type="button" class="page-btn ${p === page ? 'active' : ''}" data-page="${p}">${toFa(p)}</button>`;
+					} else if (p === page - 3 || p === page + 3) {
+						html += `<span style="padding:0 6px; color:#94a3b8; font-weight:700;">...</span>`;
+					}
+				}
+
+				// Next Button
+				html += `<button type="button" class="page-btn page-next" ${page === totalPages ? 'disabled' : ''} data-page="${page + 1}">بعدی »</button>`;
+
+				paginationWrap.innerHTML = html;
+
+				// Attach events to pagination buttons
+				paginationWrap.querySelectorAll('.page-btn').forEach(btn => {
+					btn.addEventListener('click', () => {
+						const targetPage = parseInt(btn.getAttribute('data-page'));
+						if (targetPage && targetPage !== currentPage && targetPage >= 1 && targetPage <= totalPages) {
+							applyFilters(targetPage);
+							const toolbar = document.getElementById('shopToolbar');
+							if (toolbar) {
+								toolbar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+							}
+						}
+					});
+				});
+			}
+
+			function applyFilters(page = 1) {
+				const allCards = Array.from(app.querySelectorAll('.product-card'));
+				const matchedCards = allCards.filter(card => {
 					const cat = card.getAttribute('data-cat');
 					const title = card.getAttribute('data-title');
-
 					const matchCat = (currentCat === 'all' || cat === currentCat);
 					const matchSearch = (!searchQuery || title.includes(searchQuery));
-
-					if (matchCat && matchSearch) {
-						card.style.display = 'flex';
-						visibleCount++;
-					} else {
-						card.style.display = 'none';
-					}
+					return matchCat && matchSearch;
 				});
+
+				const totalMatched = matchedCards.length;
+				const totalPages = Math.ceil(totalMatched / PAGE_SIZE) || 1;
+
+				if (page > totalPages) page = totalPages;
+				if (page < 1) page = 1;
+				currentPage = page;
+
+				const startIdx = (currentPage - 1) * PAGE_SIZE;
+				const endIdx = startIdx + PAGE_SIZE;
+
+				// Hide all cards first, then show current page slice
+				allCards.forEach(card => card.style.display = 'none');
+				const pageCards = matchedCards.slice(startIdx, endIdx);
+				pageCards.forEach(card => card.style.display = 'flex');
 
 				const counter = document.getElementById('productCounter');
 				if (counter) {
-					counter.textContent = 'نمایش ' + toFa(visibleCount) + ' محصول فعال';
+					if (totalMatched === 0) {
+						counter.textContent = 'هیچ کالایی یافت نشد';
+					} else {
+						const fromNum = toFa(startIdx + 1);
+						const toNum = toFa(Math.min(endIdx, totalMatched));
+						const totalNum = toFa(totalMatched);
+						counter.textContent = `نمایش ${fromNum} تا ${toNum} از ${totalNum} کالا (صفحه ${toFa(currentPage)} از ${toFa(totalPages)})`;
+					}
 				}
 
 				if (noResults) {
-					noResults.style.display = (visibleCount === 0 && cards.length > 0) ? 'block' : 'none';
+					noResults.style.display = (totalMatched === 0 && allCards.length > 0) ? 'block' : 'none';
 				}
+
+				renderPagination(totalPages, currentPage);
 			}
 
 			function onSearch(val) {
@@ -3097,29 +3834,42 @@ class Scraper_Auto_Shop_Plugin {
 						listEl.querySelectorAll('.cart-qty-plus').forEach(btn => {
 							btn.addEventListener('click', () => {
 								const idx = parseInt(btn.getAttribute('data-idx'));
-								cart[idx].qty++;
-								saveCart();
+								if (cart[idx]) {
+									cart[idx].qty++;
+									saveCart();
+									syncUpdateQtyWoo(cart[idx].id, cart[idx].qty);
+								}
 							});
 						});
 
 						listEl.querySelectorAll('.cart-qty-minus').forEach(btn => {
 							btn.addEventListener('click', () => {
 								const idx = parseInt(btn.getAttribute('data-idx'));
-								if (cart[idx].qty > 1) {
-									cart[idx].qty--;
-								} else {
-									cart.splice(idx, 1);
+								if (cart[idx]) {
+									if (cart[idx].qty > 1) {
+										cart[idx].qty--;
+										saveCart();
+										syncUpdateQtyWoo(cart[idx].id, cart[idx].qty);
+									} else {
+										const removedId = cart[idx].id;
+										cart.splice(idx, 1);
+										saveCart();
+										syncRemoveItemWoo(removedId);
+									}
 								}
-								saveCart();
 							});
 						});
 
 						listEl.querySelectorAll('.cart-item-del').forEach(btn => {
 							btn.addEventListener('click', () => {
 								const idx = parseInt(btn.getAttribute('data-idx'));
-								cart.splice(idx, 1);
-								saveCart();
-								showToast('کالا از سبد خرید حذف شد');
+								if (cart[idx]) {
+									const removedId = cart[idx].id;
+									cart.splice(idx, 1);
+									saveCart();
+									syncRemoveItemWoo(removedId);
+									showToast('🗑️ کالا از سبد خرید حذف شد');
+								}
 							});
 						});
 					}
@@ -3131,6 +3881,93 @@ class Scraper_Auto_Shop_Plugin {
 					localStorage.setItem('modern_shop_cart', JSON.stringify(cart));
 				} catch(e) {}
 				updateCartUI();
+			}
+
+			// Synchronize Add to Cart with WooCommerce Real Cart Session
+			function syncAddToCartWoo(prod, qty) {
+				const fd = new FormData();
+				fd.append('action', 'scraper_wc_add_to_cart');
+				fd.append('nonce', scraperCartConfig.nonce);
+				fd.append('id', prod.id || '');
+				fd.append('title', prod.title || '');
+				fd.append('price', prod.price || 0);
+				fd.append('image', prod.img || '');
+				fd.append('qty', qty || 1);
+
+				fetch(scraperCartConfig.ajaxUrl, {
+					method: 'POST',
+					body: fd
+				})
+				.then(r => r.json())
+				.then(res => {
+					if (res.success && res.data && Array.isArray(res.data.items)) {
+						cart = res.data.items;
+						saveCart();
+					}
+				})
+				.catch(err => console.warn('WC Cart sync warning:', err));
+			}
+
+			// Synchronize Quantity changes with WooCommerce
+			function syncUpdateQtyWoo(id, qty) {
+				const fd = new FormData();
+				fd.append('action', 'scraper_wc_update_cart_qty');
+				fd.append('nonce', scraperCartConfig.nonce);
+				fd.append('id', id);
+				fd.append('qty', qty);
+
+				fetch(scraperCartConfig.ajaxUrl, {
+					method: 'POST',
+					body: fd
+				})
+				.then(r => r.json())
+				.then(res => {
+					if (res.success && res.data && Array.isArray(res.data.items)) {
+						cart = res.data.items;
+						saveCart();
+					}
+				})
+				.catch(err => console.warn('WC Cart qty sync warning:', err));
+			}
+
+			// Synchronize Item Removal with WooCommerce
+			function syncRemoveItemWoo(id) {
+				const fd = new FormData();
+				fd.append('action', 'scraper_wc_remove_cart_item');
+				fd.append('nonce', scraperCartConfig.nonce);
+				fd.append('id', id);
+
+				fetch(scraperCartConfig.ajaxUrl, {
+					method: 'POST',
+					body: fd
+				})
+				.then(r => r.json())
+				.then(res => {
+					if (res.success && res.data && Array.isArray(res.data.items)) {
+						cart = res.data.items;
+						saveCart();
+					}
+				})
+				.catch(err => console.warn('WC Cart remove sync warning:', err));
+			}
+
+			// Pull items from WooCommerce on page load to keep in sync
+			function syncLoadWooCart() {
+				const fd = new FormData();
+				fd.append('action', 'scraper_wc_get_cart');
+
+				fetch(scraperCartConfig.ajaxUrl, {
+					method: 'POST',
+					body: fd
+				})
+				.then(r => r.json())
+				.then(res => {
+					if (res.success && res.data && Array.isArray(res.data.items) && res.data.items.length > 0) {
+						cart = res.data.items;
+						saveCart();
+					}
+				})
+				.catch(e => {});
 			}
 
 			function addToCart(prod, qty = 1) {
@@ -3149,6 +3986,9 @@ class Scraper_Auto_Shop_Plugin {
 				}
 				saveCart();
 				showToast('✅ «' + prod.title.substring(0, 24) + '...» به سبد خرید اضافه شد');
+
+				// Sync with real WooCommerce Cart
+				syncAddToCartWoo(prod, qty);
 			}
 
 			// Add to cart buttons on product cards
@@ -3414,8 +4254,24 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			}
 
-			// Initialize cart view
+			// Initialize cart view & pull WooCommerce active session
 			updateCartUI();
+			syncLoadWooCart();
+
+			// Checkout button click safeguard
+			const checkoutBtnEl = document.getElementById('btnGoToCheckout');
+			if (checkoutBtnEl) {
+				checkoutBtnEl.addEventListener('click', (e) => {
+					if (!cart || cart.length === 0) {
+						e.preventDefault();
+						showToast('سبد خرید شما خالی است! لطفاً ابتدا محصولی اضافه کنید.', 'error');
+						return;
+					}
+					checkoutBtnEl.innerHTML = 'در حال انتقال به درگاه و تسویه حساب... ⏳';
+					checkoutBtnEl.style.pointerEvents = 'none';
+					checkoutBtnEl.style.opacity = '0.85';
+				});
+			}
 		})();
 		</script>
 		<?php

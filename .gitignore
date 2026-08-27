@@ -2,3 +2,11 @@
 _site
 vendor
 Gemfile.lock
+store/data/
+store/plugins/
+store/uploads/
+store/__pycache__/
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-journal

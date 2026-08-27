@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>نِکسا | NEXA — بوتیک لوکس</title>
+<meta name="description" content="فروشگاه لوکس نِکسا — عطر، مد، دیجیتال و زندگی. ارسال سریع، ضمانت اصالت، پشتیبانی آنلاین.">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&display=swap">
+<style>
+:root{
+  --navy:#0b1220;--navy2:#121a2c;--ink:#16130f;--muted:#7a7268;--gold:#c6a46a;--gold2:#e8d5a8;
+  --cream:#f3eee6;--paper:#fbf8f2;--white:#fff;--line:#e8dfd2;--rose:#c48978;--ok:#2c7a57;--err:#b33b3b;
+  --shadow:0 24px 60px rgba(11,18,32,.14);--r:22px;--font:Vazirmatn,Tahoma,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--cream);color:var(--ink);font-family:var(--font);min-height:100%}
+a{color:inherit;text-decoration:none}
+button,input,select,textarea{font-family:inherit}
+img{max-width:100%;display:block}
+.serif{font-family:"Times New Roman",Georgia,serif;letter-spacing:.04em}
+.wrap{width:min(1240px,calc(100% - 32px));margin-inline:auto}
+.gold{color:var(--gold)}
+.hide{display:none!important}
+.row{display:flex;gap:12px;align-items:center}
+.splash{position:fixed;inset:0;z-index:200;background:var(--navy);display:grid;place-items:center;transition:opacity .7s}
+.splash.off{opacity:0;pointer-events:none}
+.mark{width:78px;height:78px;border:1px solid var(--gold);border-radius:50%;display:grid;place-items:center;animation:pulse 1.8s infinite}
+.mark span{color:var(--gold2);font-size:22px;font-weight:700}
+@keyframes pulse{50%{transform:scale(1.06);box-shadow:0 0 0 12px rgba(198,164,106,.08)}}
+.topbar{background:var(--navy);color:var(--gold2);font-size:13px;padding:9px 0;overflow:hidden}
+.topbar .wrap{display:flex;justify-content:space-between;gap:16px}
+.ticker{white-space:nowrap;opacity:.9}
+header.nav{position:sticky;top:0;z-index:50;background:rgba(251,248,242,.86);backdrop-filter:blur(16px);border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;padding:14px 0;gap:16px}
+.logo{display:flex;align-items:center;gap:10px;cursor:pointer}
+.logo-mark{width:42px;height:42px;border-radius:50%;border:1px solid var(--gold);display:grid;place-items:center;color:var(--gold);font-weight:800}
+.logo b{display:block;font-size:20px;line-height:1}
+.logo small{color:var(--muted);font-size:11px;letter-spacing:.18em}
+.menu{display:flex;gap:22px;font-size:14.5px;font-weight:500}
+.menu a{position:relative;opacity:.82}
+.menu a:hover,.menu a.on{opacity:1}
+.menu a.on:after{content:"";position:absolute;right:0;left:0;bottom:-8px;height:2px;background:var(--gold)}
+.nav-act{display:flex;gap:8px}
+.icon-btn{width:44px;height:44px;border:1px solid var(--line);background:#fff;border-radius:14px;display:grid;place-items:center;cursor:pointer;position:relative}
+.icon-btn:hover{border-color:var(--gold)}
+.badge{position:absolute;top:-6px;left:-6px;background:var(--navy);color:var(--gold2);font-size:10px;min-width:18px;height:18px;border-radius:99px;display:grid;place-items:center;padding:0 5px}
+.hero{position:relative;min-height:78vh;border-radius:0 0 40px 40px;overflow:hidden;background:#0b1220 center/cover no-repeat}
+.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(11,18,32,.88) 8%,rgba(11,18,32,.28) 70%)}
+.hero-in{position:relative;z-index:1;padding:90px 0 80px;color:#fff;width:min(1240px,calc(100% - 32px));margin:auto}
+.kicker{color:var(--gold2);letter-spacing:.28em;font-size:12px}
+.hero h1{font-size:clamp(36px,6vw,74px);line-height:1.15;margin:14px 0 18px;font-weight:800;font-family:var(--serif)}
+.sec h2,.pdp h1,footer h4{font-family:var(--serif)}
+.hero p{max-width:520px;color:#e8e0d4;line-height:1.9;font-size:16px}
+.cta{display:flex;gap:12px;margin-top:28px;flex-wrap:wrap}
+.btn{border:0;cursor:pointer;border-radius:999px;padding:13px 22px;font-weight:600;font-size:14px}
+.btn-gold{background:linear-gradient(90deg,var(--gold),var(--gold2));color:var(--navy)}
+.btn-ghost{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3)}
+.btn-navy{background:var(--navy);color:var(--gold2)}
+.btn-line{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.stats{display:flex;gap:28px;margin-top:48px;color:var(--gold2);font-size:13px}
+.stats b{display:block;color:#fff;font-size:22px}
+.sec{padding:72px 0}
+.sec h2{font-size:32px;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 28px}
+.cats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+.cat{background:#fff;border-radius:20px;padding:22px 16px;text-align:center;border:1px solid var(--line);cursor:pointer;transition:.25s}
+.cat:hover{transform:translateY(-6px);border-color:var(--gold);box-shadow:var(--shadow)}
+.cat i{font-style:normal;font-size:26px;display:block;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.card{background:#fff;border-radius:var(--r);overflow:hidden;border:1px solid transparent;transition:.3s;position:relative}
+.card:hover{transform:translateY(-8px);box-shadow:var(--shadow)}
+.card .ph{aspect-ratio:1;background:#ddd center/cover;position:relative}
+.card .wish{position:absolute;top:12px;left:12px;width:38px;height:38px;border:0;border-radius:50%;background:rgba(255,255,255,.92);cursor:pointer}
+.sale{position:absolute;top:12px;right:12px;background:var(--rose);color:#fff;font-size:11px;padding:4px 8px;border-radius:999px}
+.card .bd{padding:14px 16px 18px}
+.card .c{color:var(--muted);font-size:12px}
+.card h3{margin:6px 0 10px;font-size:16px;font-weight:650}
+.price{display:flex;gap:8px;align-items:baseline}
+.price b{color:var(--navy)}
+.price s{color:#b3aaa0;font-size:12px}
+.add{margin-top:12px;width:100%}
+.banner{display:grid;grid-template-columns:1.3fr .7fr;gap:18px}
+.banner>div{border-radius:28px;min-height:240px;padding:36px;color:#fff;background:var(--navy) center/cover;position:relative;overflow:hidden}
+.banner h3{font-size:28px;margin:8px 0 12px}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px}
+.filters input,.filters select,.field{border:1px solid var(--line);background:#fff;border-radius:12px;padding:11px 12px;font-size:14px}
+.pdp{display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:start}
+.gallery{background:#fff;border-radius:28px;overflow:hidden;aspect-ratio:1;background-size:cover;background-position:center}
+.stars{color:var(--gold);letter-spacing:2px}
+.qty{display:flex;align-items:center;border:1px solid var(--line);border-radius:999px;overflow:hidden;width:max-content}
+.qty button{width:42px;height:42px;border:0;background:#fff;cursor:pointer}
+.qty span{min-width:36px;text-align:center}
+.cart-table{width:100%;border-collapse:collapse;background:#fff;border-radius:20px;overflow:hidden}
+.cart-table td,.cart-table th{padding:14px;border-bottom:1px solid var(--line);text-align:right}
+.side{background:#fff;border-radius:24px;padding:22px;border:1px solid var(--line)}
+.chk{display:grid;grid-template-columns:1.2fr .8fr;gap:22px}
+.field{width:100%;margin:0 0 10px}
+label.l{display:block;font-size:12px;color:var(--muted);margin:10px 0 6px}
+.pay{display:flex;flex-direction:column;gap:8px}
+.pay label{display:flex;gap:10px;align-items:center;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:12px;cursor:pointer}
+.acc,.admin{display:grid;grid-template-columns:240px 1fr;gap:22px;min-height:60vh}
+.sidemenu a,.sidemenu button{display:block;width:100%;text-align:right;background:transparent;border:0;padding:11px 14px;border-radius:12px;cursor:pointer;color:inherit;font-size:14px}
+.sidemenu a.on,.sidemenu button.on,.sidemenu a:hover,.sidemenu button:hover{background:#fff}
+.dark .sidemenu a,.dark .sidemenu button{color:#e8e0d4}
+.dark .sidemenu a.on,.dark .sidemenu button.on{background:rgba(255,255,255,.06);color:var(--gold2)}
+.admin{background:var(--navy);color:#e8e0d4;margin:18px auto 40px;border-radius:28px;padding:18px;width:min(1240px,calc(100% - 24px))}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:rgba(255,255,255,.04);border:1px solid rgba(198,164,106,.2);border-radius:18px;padding:16px}
+.kpi b{display:block;font-size:26px;color:var(--gold2);margin-top:6px}
+table.data{width:100%;border-collapse:collapse;font-size:13px}
+table.data th,table.data td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08);text-align:right}
+.modal{position:fixed;inset:0;background:rgba(11,18,32,.45);z-index:80;display:grid;place-items:center;padding:20px}
+.modal .box{background:#fff;color:var(--ink);width:min(420px,100%);border-radius:24px;padding:26px}
+.drawer{position:fixed;inset:0;background:rgba(11,18,32,.35);z-index:70;display:flex;justify-content:flex-start}
+.drawer .panel{width:min(420px,100%);background:#fff;height:100%;padding:20px;overflow:auto}
+.chat-fab{position:fixed;bottom:22px;left:22px;z-index:60;width:62px;height:62px;border-radius:50%;border:0;background:linear-gradient(180deg,var(--gold2),var(--gold));color:var(--navy);cursor:pointer;box-shadow:0 12px 30px rgba(198,164,106,.45);font-size:22px}
+.chat-box{position:fixed;bottom:96px;left:22px;z-index:60;width:min(360px,calc(100% - 24px));height:480px;background:#fff;border-radius:24px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line)}
+.chat-h{background:var(--navy);color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+.chat-m{flex:1;overflow:auto;padding:12px;background:var(--paper)}
+.bubble{max-width:80%;padding:10px 12px;border-radius:16px;margin:8px 0;font-size:13px;line-height:1.7;white-space:pre-wrap}
+.me{background:var(--navy);color:#fff;margin-right:auto;border-bottom-left-radius:4px}
+.them{background:#fff;border:1px solid var(--line);margin-left:auto;border-bottom-right-radius:4px}
+.chat-i{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
+.chat-i input{flex:1;border:1px solid var(--line);border-radius:999px;padding:10px 14px}
+.toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 16px;border-radius:999px;z-index:120;font-size:13px}
+footer{background:var(--navy);color:#d9d0c4;padding:48px 0 24px;margin-top:40px}
+.ft{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:24px}
+footer h4{color:var(--gold2);margin:0 0 12px}
+.rev{background:#fff;border-radius:18px;padding:16px;border:1px solid var(--line);margin:10px 0}
+.empty{text-align:center;padding:50px 16px;color:var(--muted)}
+.searchbar{flex:1;max-width:360px;position:relative}
+.searchbar input{width:100%;border:1px solid var(--line);border-radius:999px;padding:11px 16px;background:#fff}
+@media(max-width:980px){
+  .cats,.grid{grid-template-columns:repeat(2,1fr)}
+  .pdp,.chk,.banner,.acc,.admin,.ft,.kpis{grid-template-columns:1fr}
+  .menu{display:none}
+  .hero{min-height:70vh;border-radius:0 0 24px 24px}
+}
+</style>
+</head>
+<body>
+<div class="splash" id="splash"><div class="mark"><span>نِ</span></div></div>
+<div class="topbar"><div class="wrap"><span class="ticker" id="ticker">ارسال رایگان سفارش‌های بالای ۲ میلیون تومان  ·  ضمانت اصالت کالا  ·  پشتیبانی ۲۴ ساعته در بله، تلگرام و روبیکا</span><span>تماس: ۰۲۱-۹۱۰۹۰۰۰۰</span></div></div>
+<header class="nav">
+  <div class="wrap nav-in">
+    <div class="logo" data-go="/">
+      <div class="logo-mark">N</div>
+      <div><b>نِکسا</b><small>NEXA ATELIER</small></div>
+    </div>
+    <nav class="menu" id="menu">
+      <a data-go="/" class="on">خانه</a>
+      <a data-go="/shop">فروشگاه</a>
+      <a data-go="/shop?cat=perfume">عطر</a>
+      <a data-go="/shop?cat=fashion">مد</a>
+      <a data-go="/shop?cat=tech">دیجیتال</a>
+      <a data-go="/about">درباره</a>
+    </nav>
+    <div class="searchbar"><input id="q" placeholder="جستجوی محصول، برند، دسته..." onkeydown="if(event.key==='Enter')go('/shop?q='+encodeURIComponent(this.value))"></div>
+    <div class="nav-act">
+      <button class="icon-btn" title="حساب" onclick="go(S.user?'/account':'/auth')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="3.2"/><path d="M5 19c1.5-3.2 4-5 7-5s5.5 1.8 7 5"/></svg>
+      </button>
+      <button class="icon-btn" title="سبد" onclick="openCart()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 7h15l-1.5 9h-12z"/><path d="M6 7 5 4H2"/><circle cx="9" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/></svg>
+        <span class="badge" id="cartBadge">0</span>
+      </button>
+    </div>
+  </div>
+</header>
+<main id="app"></main>
+<footer>
+  <div class="wrap ft">
+    <div>
+      <div class="logo"><div class="logo-mark">N</div><div><b style="color:#fff">نِکسا</b><small>LUXURY BOUTIQUE</small></div></div>
+      <p style="line-height:1.9;margin-top:14px">بوتیک نِکسا مجموعه‌ای از ابژه‌های منتخب زندگی است؛ از عطر و ابریشم تا فناوری آرام و زیورهای ماندگار.</p>
+    </div>
+    <div><h4>خرید</h4><div><a data-go="/shop">همه محصولات</a><br><a data-go="/track">پیگیری سفارش</a><br><a data-go="/account">حساب کاربری</a></div></div>
+    <div><h4>خدمات</h4><div>ضمانت اصالت<br>بازگشت ۷ روزه<br>ارسال اکسپرس</div></div>
+    <div><h4>ارتباط</h4><div>تهران، خیابان ولیعصر<br>پشتیبانی آنلاین در سایت<br>اعلان‌ها: بله · تلگرام · روبیکا</div></div>
+  </div>
+  <div class="wrap" style="opacity:.55;margin-top:28px;font-size:12px">© <span id="y"></span> NEXA Shop — تک‌فایل PHP با هسته ووکامرس‌گونه</div>
+</footer>
+<button class="chat-fab" id="chatFab" title="پشتیبانی آنلاین" onclick="toggleChat()">💬</button>
+<div class="chat-box hide" id="chatBox">
+  <div class="chat-h"><div>پشتیبانی نِکسا<br><small style="opacity:.7">آنلاین — پاسخگویی سریع</small></div><button class="btn btn-ghost" onclick="toggleChat()">بستن</button></div>
+  <div class="chat-m" id="chatM"></div>
+  <div class="chat-i"><input id="chatIn" placeholder="پیام شما..." onkeydown="if(event.key==='Enter')sendChat()"><button class="btn btn-gold" onclick="sendChat()">ارسال</button></div>
+</div>
+<div id="overlay"></div>
+<script>
+const $ = (s,el=document)=>el.querySelector(s);
+const $$ = (s,el=document)=>[...el.querySelectorAll(s)];
+function fa(n){const s=String(Math.round(+n||0)).replace(/\B(?=(\d{3})+(?!\d))/g,'٬');return s.replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d])}
+const money = n => fa(n)+' تومان';
+const S = {user:null,cart:[],cats:[],settings:{},csrf:'',products:[],wish:[]};
+document.getElementById('y').textContent = new Date().getFullYear();
+function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.appendChild(e);setTimeout(()=>e.remove(),2400)}
+function path(){const h=location.hash.slice(1)||'/'; const [p,q]=h.split('?'); return {p:p||'/', q:Object.fromEntries(new URLSearchParams(q||''))} }
+function go(u){location.hash=u; }
+window.addEventListener('hashchange', render);
+document.body.addEventListener('click',e=>{const a=e.target.closest('[data-go]'); if(a){e.preventDefault(); go(a.dataset.go)}});
+async function api(url, opt={}){
+  const r = await fetch(url, {credentials:'include', headers:{'Content-Type':'application/json',...(opt.headers||{})}, ...opt, body: opt.body && typeof opt.body!=='string' ? JSON.stringify(opt.body): opt.body});
+  const j = await r.json().catch(()=>({ok:false,error:'پاسخ نامعتبر'}));
+  if(!r.ok && !j.error) j.error='خطا';
+  return j;
+}
+async function boot(){
+  const st = await api('/api/state');
+  Object.assign(S, st);
+  $('#cartBadge').textContent = fa(S.cart.reduce((a,c)=>a+c.qty,0));
+  $('#splash').classList.add('off');
+  if(S.settings.topbar) $('#ticker').textContent = S.settings.topbar;
+  render();
+  pollChat();
+}
+function openCart(){
+  const items = S.cart;
+  const total = items.reduce((a,c)=>a+c.qty*(c.product.sale_price||c.product.price),0);
+  $('#overlay').innerHTML = `<div class="drawer" onclick="if(event.target===this)closeOv()"><div class="panel">
+    <div class="row" style="justify-content:space-between"><h3>سبد خرید</h3><button class="btn btn-line" onclick="closeOv()">بستن</button></div>
+    ${items.length? items.map(i=>`<div class="row" style="margin:14px 0">
+      <div style="width:64px;height:64px;border-radius:12px;background:#eee center/cover url('${i.product.image}')"></div>
+      <div style="flex:1"><b>${i.product.title}</b><div class="sub">${money(i.product.sale_price||i.product.price)} × ${fa(i.qty)}</div></div>
+      <button class="btn btn-line" onclick="cart('remove',${i.product.id})">حذف</button>
+    </div>`).join('') : '<div class="empty">سبد خالی است</div>'}
+    <div class="side" style="margin-top:16px"><div class="row" style="justify-content:space-between"><span>جمع</span><b>${money(total)}</b></div>
+    <button class="btn btn-gold" style="width:100%;margin-top:12px" onclick="closeOv();go('/checkout')">تسویه حساب</button>
+    <button class="btn btn-line" style="width:100%;margin-top:8px" onclick="closeOv();go('/cart')">مشاهده سبد</button></div>
+  </div></div>`;
+}
+function closeOv(){$('#overlay').innerHTML=''}
+async function cart(action,id,qty=1){
+  const j = await api('/api/cart',{method:'POST',body:{action,id,qty}});
+  if(j.ok){S.cart=j.cart; $('#cartBadge').textContent=fa(S.cart.reduce((a,c)=>a+c.qty,0)); toast(j.message||'سبد به‌روز شد'); if($('.drawer')) openCart(); if(path().p==='/cart'||path().p==='/checkout') render();}
+  else toast(j.error||'خطا');
+}
+async function render(){
+  const {p,q} = path();
+  $$('#menu a').forEach(a=>a.classList.toggle('on', a.getAttribute('data-go')===p || (p==='/'&&a.getAttribute('data-go')==='/')));
+  const app = $('#app');
+  if(p==='/') app.innerHTML = await viewHome();
+  else if(p==='/shop') app.innerHTML = await viewShop(q);
+  else if(p.startsWith('/product/')) app.innerHTML = await viewProduct(p.split('/')[2]);
+  else if(p==='/cart') app.innerHTML = viewCart();
+  else if(p==='/checkout') app.innerHTML = viewCheckout();
+  else if(p==='/auth') app.innerHTML = viewAuth();
+  else if(p==='/account') app.innerHTML = await viewAccount(q);
+  else if(p==='/admin') app.innerHTML = await viewAdmin(q);
+  else if(p==='/track') app.innerHTML = viewTrack();
+  else if(p==='/about') app.innerHTML = viewAbout();
+  else app.innerHTML = `<div class="wrap empty"><h2>صفحه پیدا نشد</h2><button class="btn btn-gold" data-go="/">بازگشت</button></div>`;
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+async function viewHome(){
+  const feat = (S.featured||S.products||[]).slice(0,8);
+  const prods = feat.length? feat : (await api('/api/products?featured=1')).items||[];
+  return `<section class="hero" style="background-image:url('assets/hero.jpg')">
+    <div class="hero-in">
+      <div class="kicker">NEXA ATELIER  ·  EST. ۱۴۰۳</div>
+      <h1>زیبایی،<br>با دقت انتخاب شده.</h1>
+      <p>مجموعه‌ای محدود از عطر، ابریشم، فناوری و زیور؛ برای کسانی که کیفیت را با سکوت تشخیص می‌دهند.</p>
+      <div class="cta"><button class="btn btn-gold" data-go="/shop">ورود به فروشگاه</button><button class="btn btn-ghost" data-go="/shop?cat=perfume">عطرهای امضا</button></div>
+      <div class="stats"><div><b>+${fa(1200)}</b>مشتری راضی</div><div><b>${fa(48)}</b>ساعت ارسال</div><div><b>${fa(7)}</b>روز ضمانت بازگشت</div></div>
+    </div></section>
+    <section class="sec"><div class="wrap">
+      <h2>دسته‌بندی‌ها</h2><p class="sub">آنچه برای یک زندگی آرام و لوکس لازم است</p>
+      <div class="cats">${(S.categories||[]).map(c=>`<div class="cat" data-go="/shop?cat=${c.slug}"><i>${c.icon||'◆'}</i><b>${c.name}</b></div>`).join('')}</div>
+    </div></section>
+    <section class="sec" style="padding-top:0"><div class="wrap">
+      <h2>منتخب سردبیر</h2><p class="sub">آثار و ابژه‌هایی که این فصل در نِکسا می‌درخشند</p>
+      <div class="grid">${prods.map(card).join('')}</div>
+    </div></section>
+    <section class="sec" style="padding-top:0"><div class="wrap banner">
+      <div style="background-image:linear-gradient(180deg,rgba(11,18,32,.45),rgba(11,18,32,.7)),url('assets/p2.jpg')">
+        <div class="kicker">SILK EDIT</div><h3>ابریشم شامپاین</h3><p>لمس نور، بافت سکوت.</p><button class="btn btn-gold" data-go="/shop?cat=fashion">مشاهده کالکشن</button>
+      </div>
+      <div style="background-image:linear-gradient(180deg,rgba(11,18,32,.5),rgba(11,18,32,.75)),url('assets/p1.jpg')">
+        <div class="kicker">SIGNATURE</div><h3>عطر امپریال</h3><button class="btn btn-ghost" data-go="/shop?cat=perfume">کشف عطر</button>
+      </div>
+    </div></section>`;
+}
+function card(p){
+  const price = p.sale_price||p.price;
+  const off = p.sale_price ? Math.round(100-(p.sale_price/p.price)*100) : 0;
+  return `<article class="card">
+    <div class="ph" style="background-image:url('${p.image}')" data-go="/product/${p.slug}">
+      ${off?`<span class="sale">${fa(off)}٪</span>`:''}
+      <button class="wish" onclick="event.stopPropagation();wish(${p.id})">♡</button>
+    </div>
+    <div class="bd">
+      <div class="c">${p.cat_name||''}</div>
+      <h3 data-go="/product/${p.slug}">${p.title}</h3>
+      <div class="price"><b>${money(price)}</b>${p.sale_price?`<s>${money(p.price)}</s>`:''}</div>
+      <button class="btn btn-navy add" onclick="cart('add',${p.id},1)">افزودن به سبد</button>
+    </div></article>`;
+}
+async function viewShop(q){
+  const qs = new URLSearchParams(q).toString();
+  const d = await api('/api/products?'+qs);
+  const items = d.items||[];
+  return `<div class="wrap sec">
+    <h2>${q.cat ? (S.categories.find(c=>c.slug===q.cat)||{}).name || 'فروشگاه' : (q.q? 'نتایج «'+q.q+'»':'فروشگاه')}</h2>
+    <p class="sub">${fa(items.length)} محصول</p>
+    <div class="filters">
+      <input value="${q.q||''}" placeholder="جستجو" onchange="go('/shop?q='+encodeURIComponent(this.value))">
+      <select onchange="go('/shop?cat='+this.value)">
+        <option value="">همه دسته‌ها</option>
+        ${(S.categories||[]).map(c=>`<option value="${c.slug}" ${q.cat===c.slug?'selected':''}>${c.name}</option>`).join('')}
+      </select>
+      <select onchange="go('/shop?sort='+this.value+'&cat=${q.cat||''}')">
+        <option value="">جدیدترین</option>
+        <option value="price_asc" ${q.sort==='price_asc'?'selected':''}>ارزان‌ترین</option>
+        <option value="price_desc" ${q.sort==='price_desc'?'selected':''}>گران‌ترین</option>
+        <option value="sale" ${q.sort==='sale'?'selected':''}>تخفیف‌دار</option>
+      </select>
+    </div>
+    <div class="grid">${items.map(card).join('')||'<div class="empty">محصولی یافت نشد</div>'}</div>
+  </div>`;
+}
+async function viewProduct(slug){
+  const d = await api('/api/product/'+slug);
+  if(!d.ok) return `<div class="wrap empty">محصول یافت نشد</div>`;
+  const p=d.item, revs=d.reviews||[], rel=d.related||[];
+  window._qty=1; window._pid=p.id;
+  return `<div class="wrap sec pdp">
+    <div class="gallery" style="background-image:url('${p.image}')"></div>
+    <div>
+      <div class="c">${p.cat_name} · SKU ${p.sku}</div>
+      <h1 style="font-size:36px;margin:8px 0">${p.title}</h1>
+      <div class="stars">${'★'.repeat(Math.round(p.rating||5))}${'☆'.repeat(5-Math.round(p.rating||5))} <span class="c">${fa(revs.length)} دیدگاه</span></div>
+      <div class="price" style="margin:18px 0;font-size:22px"><b>${money(p.sale_price||p.price)}</b>${p.sale_price?`<s>${money(p.price)}</s>`:''}</div>
+      <p style="line-height:2;color:#4a453f">${p.description}</p>
+      <div class="c">موجودی: ${fa(p.stock)} عدد</div>
+      <div class="row" style="margin:18px 0">
+        <div class="qty"><button onclick="_qty=Math.max(1,_qty-1);$('#qv').textContent=_qty">−</button><span id="qv">1</span><button onclick="_qty++;$('#qv').textContent=_qty">+</button></div>
+        <button class="btn btn-gold" onclick="cart('add',_pid,_qty)">افزودن به سبد</button>
+        <button class="btn btn-line" onclick="wish(_pid)">علاقه‌مندی</button>
+      </div>
+      <div class="side" style="margin-top:18px;font-size:13px;line-height:2">ارسال ۲۴ تا ۴۸ ساعته · پرداخت در محل یا کارت‌به‌کارت · ضمانت اصالت نِکسا</div>
+      <h3 style="margin-top:28px">دیدگاه‌ها</h3>
+      ${revs.map(r=>`<div class="rev"><b>${r.name}</b> <span class="stars">${'★'.repeat(r.rating)}</span><p>${r.text}</p></div>`).join('')||'<p class="c">هنوز دیدگاهی نیست.</p>'}
+      ${S.user?`<div class="side" style="margin-top:12px"><label class="l">نظر شما</label><textarea id="rv" class="field" rows="3"></textarea>
+        <select id="rr" class="field"><option value="5">۵ ستاره</option><option value="4">۴</option><option value="3">۳</option></select>
+        <button class="btn btn-navy" onclick="sendReview(${p.id})">ثبت دیدگاه</button></div>`:'<p class="c">برای ثبت نظر وارد شوید.</p>'}
+    </div></div>
+    <div class="wrap"><h2>ممکن است بپسندید</h2><div class="grid">${rel.map(card).join('')}</div></div>`;
+}
+function viewCart(){
+  const items=S.cart; const sub=items.reduce((a,c)=>a+c.qty*(c.product.sale_price||c.product.price),0);
+  return `<div class="wrap sec"><h2>سبد خرید</h2>
+    ${items.length? `<table class="cart-table"><thead><tr><th>کالا</th><th>قیمت</th><th>تعداد</th><th></th></tr></thead><tbody>
+    ${items.map(i=>`<tr><td><b>${i.product.title}</b></td><td>${money(i.product.sale_price||i.product.price)}</td>
+    <td><div class="qty"><button onclick="cart('set',${i.product.id},${i.qty-1})">−</button><span>${fa(i.qty)}</span><button onclick="cart('set',${i.product.id},${i.qty+1})">+</button></div></td>
+    <td><button class="btn btn-line" onclick="cart('remove',${i.product.id})">حذف</button></td></tr>`).join('')}
+    </tbody></table>
+    <div class="side" style="max-width:360px;margin-top:18px">
+      <div class="row" style="justify-content:space-between"><span>جمع جزء</span><b>${money(sub)}</b></div>
+      <input class="field" id="cpn" placeholder="کد تخفیف">
+      <button class="btn btn-line" onclick="applyCpn()">اعمال کوپن</button>
+      <button class="btn btn-gold" style="width:100%;margin-top:10px" data-go="/checkout">ادامه تسویه</button>
+    </div>` : '<div class="empty">سبد شما خالی است<br><button class="btn btn-gold" data-go="/shop">فروشگاه</button></div>'}</div>`;
+}
+async function applyCpn(){const j=await api('/api/coupon',{method:'POST',body:{code:$('#cpn').value}}); toast(j.message||j.error); if(j.ok){S.coupon=j.coupon;}}
+function viewCheckout(){
+  if(!S.cart.length) return `<div class="wrap empty">سبد خالی است</div>`;
+  const sub=S.cart.reduce((a,c)=>a+c.qty*(c.product.sale_price||c.product.price),0);
+  const ship=45000; const disc=S.coupon? (S.coupon.type==='percent'? sub*S.coupon.amount/100 : S.coupon.amount):0;
+  const total=Math.max(0,sub+ship-disc);
+  return `<div class="wrap sec"><h2>تسویه حساب</h2><div class="chk">
+    <div class="side">
+      <h3>اطلاعات ارسال</h3>
+      <label class="l">نام و نام خانوادگی</label><input class="field" id="nm" value="${S.user?S.user.name:''}">
+      <label class="l">موبایل</label><input class="field" id="ph" value="${S.user?S.user.phone||'':''}">
+      <label class="l">استان / شهر</label><input class="field" id="ct" placeholder="تهران، تهران">
+      <label class="l">آدرس</label><textarea class="field" id="ad" rows="3"></textarea>
+      <label class="l">کد پستی</label><input class="field" id="zp">
+      <label class="l">یادداشت سفارش</label><textarea class="field" id="nt" rows="2"></textarea>
+      <h3>پرداخت</h3>
+      <div class="pay">
+        <label><input type="radio" name="pay" value="cod" checked> پرداخت در محل</label>
+        <label><input type="radio" name="pay" value="card"> کارت به کارت — ${S.settings.card_number||'۶۲۱۹-****'}</label>
+        <label><input type="radio" name="pay" value="online"> درگاه آنلاین (زرین‌پال / آزمایشی)</label>
+      </div>
+    </div>
+    <div class="side">
+      <h3>خلاصه سفارش</h3>
+      ${S.cart.map(i=>`<div class="row" style="justify-content:space-between;margin:8px 0"><span>${i.product.title} × ${fa(i.qty)}</span><span>${money((i.product.sale_price||i.product.price)*i.qty)}</span></div>`).join('')}
+      <hr style="border:0;border-top:1px solid var(--line)">
+      <div class="row" style="justify-content:space-between"><span>ارسال</span><span>${money(ship)}</span></div>
+      <div class="row" style="justify-content:space-between"><span>تخفیف</span><span>${money(disc)}</span></div>
+      <div class="row" style="justify-content:space-between;font-size:18px"><b>قابل پرداخت</b><b>${money(total)}</b></div>
+      <button class="btn btn-gold" style="width:100%;margin-top:16px" onclick="placeOrder()">ثبت سفارش</button>
+      <p class="c" style="margin-top:10px">با ثبت سفارش، رویداد به بله، تلگرام و روبیکا ارسال می‌شود.</p>
+    </div>
+  </div></div>`;
+}
+async function placeOrder(){
+  const pay=$$('[name=pay]').find(x=>x.checked).value;
+  const j=await api('/api/checkout',{method:'POST',body:{name:$('#nm').value,phone:$('#ph').value,city:$('#ct').value,address:$('#ad').value,zip:$('#zp').value,note:$('#nt').value,pay,coupon:S.coupon&&S.coupon.code}});
+  if(!j.ok) return toast(j.error||'خطا در ثبت');
+  S.cart=[]; $('#cartBadge').textContent='۰';
+  $('#app').innerHTML = `<div class="wrap sec" style="text-align:center"><div class="side" style="max-width:520px;margin:auto">
+    <div class="stars">✦</div><h2>سفارش ثبت شد</h2><p>شماره سفارش: <b>${j.number}</b></p>
+    <p>مبلغ: ${money(j.total)}</p>
+    ${j.pay==='card'?`<p>مبلغ را به کارت <b dir="ltr">${S.settings.card_number||''}</b> واریز و فیش را در چت پشتیبانی بفرستید.</p>`:''}
+    <button class="btn btn-gold" data-go="/track">پیگیری</button>
+  </div></div>`;
+}
+function viewAuth(){
+  return `<div class="wrap sec" style="max-width:480px"><div class="side">
+    <h2>ورود / عضویت</h2>
+    <div class="row"><button class="btn btn-navy" onclick="$('#lg').classList.remove('hide');$('#rg').classList.add('hide')">ورود</button>
+    <button class="btn btn-line" onclick="$('#rg').classList.remove('hide');$('#lg').classList.add('hide')">ثبت‌نام</button></div>
+    <div id="lg">
+      <label class="l">ایمیل</label><input class="field" id="le">
+      <label class="l">رمز</label><input class="field" id="lp" type="password">
+      <button class="btn btn-gold" style="width:100%" onclick="login()">ورود</button>
+      <p class="c">مدیر نمونه: admin@nexa.shop / admin123</p>
+    </div>
+    <div id="rg" class="hide">
+      <label class="l">نام</label><input class="field" id="rn">
+      <label class="l">ایمیل</label><input class="field" id="re">
+      <label class="l">موبایل</label><input class="field" id="rp">
+      <label class="l">رمز</label><input class="field" id="rw" type="password">
+      <button class="btn btn-gold" style="width:100%" onclick="register()">ایجاد حساب</button>
+    </div>
+  </div></div>`;
+}
+async function login(){const j=await api('/api/auth/login',{method:'POST',body:{email:$('#le').value,password:$('#lp').value}}); if(!j.ok) return toast(j.error); S.user=j.user; toast('خوش آمدید'); go(j.user.role==='admin'?'/admin':'/account')}
+async function register(){const j=await api('/api/auth/register',{method:'POST',body:{name:$('#rn').value,email:$('#re').value,phone:$('#rp').value,password:$('#rw').value}}); if(!j.ok) return toast(j.error); S.user=j.user; go('/account')}
+async function viewAccount(){
+  if(!S.user) return viewAuth();
+  const d=await api('/api/orders');
+  return `<div class="wrap sec acc">
+    <div class="side sidemenu">
+      <h3>${S.user.name}</h3>
+      <a class="on">سفارش‌ها</a>
+      ${S.user.role==='admin'?`<a data-go="/admin">پنل مدیریت</a>`:''}
+      <button onclick="logout()">خروج</button>
+    </div>
+    <div>${(d.items||[]).map(o=>`<div class="side" style="margin-bottom:12px"><b>${o.number}</b> · ${o.status_fa}<div class="c">${money(o.total)} · ${o.created}</div></div>`).join('')||'<div class="empty">سفارشی ندارید</div>'}</div>
+  </div>`;
+}
+async function logout(){await api('/api/auth/logout',{method:'POST',body:{}}); S.user=null; go('/');}
+function viewTrack(){return `<div class="wrap sec" style="max-width:520px"><div class="side"><h2>پیگیری سفارش</h2>
+  <input class="field" id="tn" placeholder="شماره سفارش مثل NXA-1403-1001">
+  <button class="btn btn-gold" onclick="doTrack()">پیگیری</button><div id="tr"></div></div></div>`}
+async function doTrack(){const j=await api('/api/track/'+encodeURIComponent($('#tn').value)); $('#tr').innerHTML=j.ok?`<p><b>${j.item.number}</b> — ${j.item.status_fa}<br>${money(j.item.total)}</p>`:`<p class="c">${j.error}</p>`}
+function viewAbout(){return `<div class="wrap sec"><h2>درباره نِکسا</h2><p class="sub" style="max-width:640px;line-height:2">نِکسا یک بوتیک انتخاب‌گر است. هر رویداد فروشگاه — از سفارش تا پیام پشتیبانی — به‌صورت زنده به پیام‌رسان‌های بله، تلگرام و روبیکا فرستاده می‌شود. هسته فروشگاه ووکامرس‌گونه است و افزونه‌های وردپرس با لایه سازگاری قابل نصب‌اند.</p></div>`}
+async function viewAdmin(q){
+  if(!S.user||S.user.role!=='admin') return viewAuth();
+  const tab=q.tab||'dash';
+  const nav=(id,t)=>`<button class="${tab===id?'on':''}" onclick="go('/admin?tab=${id}')">${t}</button>`;
+  let body='';
+  if(tab==='dash'){const s=await api('/api/admin/stats'); body=`<div class="kpis">
+    <div class="kpi">سفارش‌ها<b>${fa(s.orders)}</b></div><div class="kpi">فروش<b>${money(s.revenue)}</b></div>
+    <div class="kpi">مشتری<b>${fa(s.customers)}</b></div><div class="kpi">چت باز<b>${fa(s.chats)}</b></div></div>
+    <h3 style="margin-top:22px">سفارش‌های اخیر</h3><div id="ao"></div>`; setTimeout(()=>adminTable('orders'),0);}
+  if(tab==='products'){body=`<div class="row" style="justify-content:space-between"><h3>محصولات</h3><button class="btn btn-gold" onclick="editProduct()">محصول جدید</button></div><div id="ao"></div>`; setTimeout(()=>adminTable('products'),0);}
+  if(tab==='orders'){body=`<h3>سفارش‌ها</h3><div id="ao"></div>`; setTimeout(()=>adminTable('orders'),0);}
+  if(tab==='coupons'){body=`<div class="row" style="justify-content:space-between"><h3>کوپن‌ها</h3><button class="btn btn-gold" onclick="newCoupon()">کوپن جدید</button></div><div id="ao"></div>`; setTimeout(()=>adminTable('coupons'),0);}
+  if(tab==='chat'){body=`<h3>صندوق پشتیبانی</h3><div id="ao"></div>`; setTimeout(()=>adminChat(),0);}
+  if(tab==='plugins'){body=`<h3>افزونه‌های وردپرس</h3>
+    <p class="c">فایل PHP یا ZIP افزونه وردپرس را نصب کنید. لایه سازگاری شامل add_action، add_filter، $wpdb، options و هوک‌های ووکامرس است.</p>
+    <input type="file" id="plf" accept=".php,.zip">
+    <button class="btn btn-gold" onclick="upPlugin()">نصب افزونه</button>
+    <button class="btn btn-line" onclick="installSamples()">نصب افزونه‌های نمونه نِکسا</button>
+    <div id="ao"></div>`; setTimeout(()=>adminTable('plugins'),0);}
+  if(tab==='settings'){const s=S.settings; body=`<h3>تنظیمات و پیام‌رسان‌ها</h3>
+    <div class="chk">
+      <div>
+        <label class="l">نام فروشگاه</label><input class="field" id="s_shop_name" value="${s.shop_name||'نِکسا'}">
+        <label class="l">نوار بالا</label><input class="field" id="s_topbar" value="${s.topbar||''}">
+        <label class="l">شماره کارت</label><input class="field" id="s_card_number" value="${s.card_number||''}">
+        <label class="l">تلگرام Bot Token</label><input class="field" id="s_tg_token" value="${s.tg_token||''}" dir="ltr">
+        <label class="l">تلگرام Chat ID</label><input class="field" id="s_tg_chat" value="${s.tg_chat||''}" dir="ltr">
+        <label class="l">بله Bot Token</label><input class="field" id="s_bale_token" value="${s.bale_token||''}" dir="ltr">
+        <label class="l">بله Chat ID</label><input class="field" id="s_bale_chat" value="${s.bale_chat||''}" dir="ltr">
+        <label class="l">روبیکا Bot Token</label><input class="field" id="s_rb_token" value="${s.rb_token||''}" dir="ltr">
+        <label class="l">روبیکا Chat ID</label><input class="field" id="s_rb_chat" value="${s.rb_chat||''}" dir="ltr">
+        <button class="btn btn-gold" onclick="saveSet()">ذخیره</button>
+        <button class="btn btn-line" onclick="testMsg()">ارسال پیام آزمایشی</button>
+      </div>
+      <div class="side" style="background:rgba(255,255,255,.03);color:#e8e0d4">
+        <h4 style="color:var(--gold2)">وب‌هوک‌ها</h4>
+        <p class="c" style="color:#cfc6b8">این آدرس‌ها را در ربات‌ها setWebhook کنید تا پاسخ چت از پیام‌رسان به سایت برگردد:</p>
+        <code style="display:block;direction:ltr;font-size:12px;line-height:1.8" id="hooks"></code>
+        <p class="c" style="color:#cfc6b8;margin-top:12px">رویدادهای ارسالی: سفارش جدید، ثبت‌نام، پیام چت، دیدگاه، موجودی کم، نصب افزونه، تغییر وضعیت سفارش.</p>
+      </div>
+    </div>`; setTimeout(()=>{$('#hooks').textContent = location.origin+'/hook/telegram\n'+location.origin+'/hook/bale\n'+location.origin+'/hook/rubika'},0);}
+  return `<div class="admin">
+    <div class="sidemenu">${nav('dash','داشبورد')}${nav('products','محصولات')}${nav('orders','سفارش‌ها')}${nav('coupons','کوپن')}${nav('chat','چت پشتیبانی')}${nav('plugins','افزونه‌ها')}${nav('settings','پیام‌رسان و تنظیمات')}<button data-go="/">بازگشت به فروشگاه</button></div>
+    <div>${body}</div>
+  </div>`;
+}
+async function adminTable(kind){
+  const d=await api('/api/admin/'+kind);
+  const el=$('#ao'); if(!el) return;
+  if(kind==='products') el.innerHTML=`<table class="data"><tr><th>کالا</th><th>قیمت</th><th>موجودی</th><th></th></tr>${(d.items||[]).map(p=>`<tr><td>${p.title}</td><td>${money(p.price)}</td><td>${fa(p.stock)}</td><td><button class="btn btn-line" onclick='editProduct(${JSON.stringify(p).replace(/'/g,"&#39;")})'>ویرایش</button></td></tr>`).join('')}</table>`;
+  if(kind==='orders') el.innerHTML=`<table class="data"><tr><th>شماره</th><th>مبلغ</th><th>وضعیت</th><th></th></tr>${(d.items||[]).map(o=>`<tr><td>${o.number}</td><td>${money(o.total)}</td><td>${o.status_fa}</td><td>
+    <select onchange="setOrder(${o.id},this.value)">
+      ${['pending','processing','shipped','completed','cancelled'].map(s=>`<option value="${s}" ${o.status===s?'selected':''}>${s}</option>`).join('')}
+    </select></td></tr>`).join('')}</table>`;
+  if(kind==='coupons') el.innerHTML=`<table class="data"><tr><th>کد</th><th>مقدار</th><th>فعال</th></tr>${(d.items||[]).map(c=>`<tr><td>${c.code}</td><td>${c.type==='percent'?c.amount+'٪':money(c.amount)}</td><td>${c.active?'بله':'خیر'}</td></tr>`).join('')}</table>`;
+  if(kind==='plugins') el.innerHTML=`<table class="data"><tr><th>افزونه</th><th>نسخه</th><th></th></tr>${(d.items||[]).map(p=>`<tr><td><b>${p.name}</b><div class="c">${p.description||''}</div></td><td>${p.version}</td><td>
+    <button class="btn ${p.active?'btn-line':'btn-gold'}" onclick="togglePl(${p.id})">${p.active?'غیرفعال':'فعال'}</button>
+  </td></tr>`).join('')||'<p>افزونه‌ای نصب نشده</p>'}</table>`;
+}
+async function adminChat(){
+  const d=await api('/api/admin/chats');
+  $('#ao').innerHTML = (d.items||[]).map(t=>`<div class="side" style="background:rgba(255,255,255,.04);margin-bottom:10px">
+    <b>${t.name}</b> · ${t.thread}<div class="c">${t.last}</div>
+    <input class="field" id="r${t.thread}" placeholder="پاسخ"><button class="btn btn-gold" onclick="adminReply('${t.thread}')">ارسال</button>
+  </div>`).join('')||'<p>گفتگویی نیست</p>';
+}
+async function adminReply(th){const t=$('#r'+th).value; await api('/api/admin/chat',{method:'POST',body:{thread:th,message:t}}); toast('ارسال شد'); adminChat();}
+async function setOrder(id,status){await api('/api/admin/orders',{method:'POST',body:{id,status}}); toast('وضعیت به‌روز شد');}
+function editProduct(p={}){
+  $('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOv()"><div class="box" style="width:min(560px,100%)">
+    <h3>${p.id?'ویرایش':'محصول جدید'}</h3>
+    <input class="field" id="pt" placeholder="عنوان" value="${p.title||''}">
+    <input class="field" id="pp" placeholder="قیمت" value="${p.price||''}">
+    <input class="field" id="ps" placeholder="قیمت فروش" value="${p.sale_price||''}">
+    <input class="field" id="pk" placeholder="موجودی" value="${p.stock||10}">
+    <input class="field" id="pc" placeholder="دسته slug مثل perfume" value="${p.cat||''}">
+    <input class="field" id="pi" placeholder="آدرس تصویر" value="${p.image||'assets/p1.jpg'}">
+    <textarea class="field" id="pd" rows="4" placeholder="توضیح">${p.description||''}</textarea>
+    <button class="btn btn-gold" onclick="saveProd(${p.id||0})">ذخیره</button>
+  </div></div>`;
+}
+async function saveProd(id){const j=await api('/api/admin/products',{method:'POST',body:{id,title:$('#pt').value,price:+$('#pp').value,sale_price:+$('#ps').value||0,stock:+$('#pk').value,cat:$('#pc').value,image:$('#pi').value,description:$('#pd').value}}); toast(j.ok?'ذخیره شد':j.error); closeOv(); render();}
+function newCoupon(){
+  $('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOv()"><div class="box">
+    <h3>کوپن</h3><input class="field" id="cc" placeholder="کد مثل NEXA10">
+    <select class="field" id="cty"><option value="percent">درصد</option><option value="fixed">مبلغی</option></select>
+    <input class="field" id="ca" placeholder="مقدار">
+    <button class="btn btn-gold" onclick="saveCpn()">ذخیره</button></div></div>`;
+}
+async function saveCpn(){await api('/api/admin/coupons',{method:'POST',body:{code:$('#cc').value,type:$('#cty').value,amount:+$('#ca').value}}); closeOv(); render();}
+async function saveSet(){
+  const body={};
+  $$('[id^=s_]').forEach(i=>body[i.id.slice(2)]=i.value);
+  const j=await api('/api/admin/settings',{method:'POST',body}); if(j.ok){S.settings=j.settings; toast('ذخیره شد')}
+}
+async function testMsg(){const j=await api('/api/admin/test-notify',{method:'POST',body:{}}); toast(j.message||j.error)}
+async function upPlugin(){
+  const f=$('#plf').files[0]; if(!f) return toast('فایل را انتخاب کنید');
+  const fd=new FormData(); fd.append('plugin', f);
+  const r=await fetch('/api/admin/plugins/upload',{method:'POST',body:fd,credentials:'include'});
+  const j=await r.json(); toast(j.message||j.error); render();
+}
+async function installSamples(){const j=await api('/api/admin/plugins/samples',{method:'POST',body:{}}); toast(j.message||j.error); render();}
+async function togglePl(id){await api('/api/admin/plugins',{method:'POST',body:{id,toggle:1}}); render();}
+async function wish(id){const j=await api('/api/wishlist',{method:'POST',body:{id}}); toast(j.message||j.error||'افزوده شد')}
+async function sendReview(id){const j=await api('/api/review',{method:'POST',body:{product_id:id,text:$('#rv').value,rating:+$('#rr').value}}); toast(j.message||j.error); if(j.ok) render();}
+let chatOpen=false, chatThread=localStorage.getItem('nexa_thread')||('t'+Math.random().toString(36).slice(2,10));
+localStorage.setItem('nexa_thread', chatThread);
+function toggleChat(){chatOpen=!chatOpen; $('#chatBox').classList.toggle('hide', !chatOpen); if(chatOpen) loadChat()}
+async function loadChat(){
+  const d=await api('/api/chat?thread='+chatThread);
+  $('#chatM').innerHTML=(d.items||[]).map(m=>`<div class="bubble ${m.role==='user'?'me':'them'}">${m.message}<div style="opacity:.5;font-size:10px">${m.name||''}</div></div>`).join('')||'<div class="c">سلام، چطور کمک کنیم؟</div>';
+  $('#chatM').scrollTop=9999;
+}
+async function sendChat(){
+  const t=$('#chatIn').value.trim(); if(!t) return;
+  $('#chatIn').value='';
+  await api('/api/chat',{method:'POST',body:{thread:chatThread,message:t,name:S.user?S.user.name:'مهمان'}});
+  loadChat();
+}
+async function pollChat(){ if(chatOpen) await loadChat(); setTimeout(pollChat, 4000); }
+boot();
+</script>
+</body>
+</html>

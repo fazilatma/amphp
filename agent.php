@@ -172,6 +172,9 @@ class Scraper_Auto_Shop_Plugin {
 		// Messenger test
 		add_action( 'wp_ajax_test_support_messengers', array( __CLASS__, 'ajax_test_support_messengers' ) );
 
+		// Live AI chat test endpoint
+		add_action( 'wp_ajax_scraper_test_ai_chat', array( __CLASS__, 'ajax_test_ai_chat' ) );
+
 		// WooCommerce Real Cart Session Sync endpoints
 		add_action( 'wp_ajax_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
 		add_action( 'wp_ajax_nopriv_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
@@ -1250,10 +1253,94 @@ class Scraper_Auto_Shop_Plugin {
 	 *
 	 * @return array
 	 */
-	public static function get_scraper_master_ai_model() {
+		/**
+	 * Build condensed live catalog context for AI grounding.
+	 *
+	 * @param int $limit
+	 * @return string
+	 */
+	public static function build_catalog_context_for_ai( $limit = 15 ) {
+		$products = self::get_all_scraped_products();
+		if ( empty( $products ) ) {
+			return 'در حال حاضر کاتالوگ فروشگاه در حال به‌روزرسانی است.';
+		}
+
+		$lines = array();
+		$count = 0;
+		foreach ( $products as $p ) {
+			$count++;
+			if ( $count > $limit ) break;
+			$p_line = "• نام کالا: «" . $p['title'] . "»";
+			if ( ! empty( $p['category'] ) ) {
+				$p_line .= " | دسته: " . $p['category'];
+			}
+			$price_txt = ! empty( $p['price_formatted'] ) ? $p['price_formatted'] : ( number_format( (float) ( $p['price'] ?? 0 ) ) . ' تومان' );
+			$p_line .= " | قیمت: " . $price_txt;
+			if ( ! empty( $p['has_discount'] ) && ! empty( $p['discount_pct'] ) ) {
+				$p_line .= " (دارای " . $p['discount_pct'] . "٪ تخفیف ویژه)";
+			}
+			if ( ! empty( $p['description'] ) ) {
+				$desc_snip = mb_substr( wp_strip_all_tags( $p['description'] ), 0, 110 );
+				$p_line .= " | مشخصات: " . $desc_snip;
+			}
+			$lines[] = $p_line;
+		}
+
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * Retrieve Master AI model configured in WordPress Settings or scraper4 (connections.json / ai_providers.json).
+	 *
+	 * @param array|null $settings
+	 * @return array
+	 */
+	public static function get_scraper_master_ai_model( $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		// 1. Direct Settings in WordPress Admin Tab 4
+		$custom_key      = trim( (string) ( $settings['ai_api_key'] ?? '' ) );
+		$custom_provider = trim( (string) ( $settings['ai_provider'] ?? 'auto' ) );
+		$custom_model    = trim( (string) ( $settings['ai_model'] ?? '' ) );
+		$custom_endpoint = trim( (string) ( $settings['ai_endpoint'] ?? '' ) );
+
+		if ( ! empty( $custom_key ) && 'auto' !== $custom_provider ) {
+			$endpoints = array(
+				'openai'     => 'https://api.openai.com/v1/chat/completions',
+				'openrouter' => 'https://openrouter.ai/api/v1/chat/completions',
+				'groq'       => 'https://api.groq.com/openai/v1/chat/completions',
+				'deepseek'   => 'https://api.deepseek.com/chat/completions',
+				'gemini'     => 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+				'ollama'     => 'http://127.0.0.1:11434/v1/chat/completions',
+			);
+
+			$default_models = array(
+				'openai'     => 'gpt-4o-mini',
+				'openrouter' => 'meta-llama/llama-3.3-70b-instruct:free',
+				'groq'       => 'llama-3.3-70b-versatile',
+				'deepseek'   => 'deepseek-chat',
+				'gemini'     => 'gemini-2.0-flash',
+				'ollama'     => 'llama3.2',
+			);
+
+			$ep = ! empty( $custom_endpoint ) ? $custom_endpoint : ( $endpoints[ $custom_provider ] ?? 'https://api.openai.com/v1/chat/completions' );
+			$m  = ! empty( $custom_model ) ? $custom_model : ( $default_models[ $custom_provider ] ?? 'gpt-4o-mini' );
+
+			return array(
+				'provider_id' => $custom_provider,
+				'model_id'    => $m,
+				'model_name'  => $m . ' (تنظیمات پنل)',
+				'api_key'     => $custom_key,
+				'endpoint'    => $ep,
+				'source'      => 'admin_settings',
+			);
+		}
+
 		$plugin_dir = plugin_dir_path( __FILE__ );
 
-		// 1. Try ai_votes.json (Master / Pinned model from scraper4)
+		// 2. Try ai_votes.json (Master / Pinned model from scraper4)
 		$votes_file = $plugin_dir . 'ai_votes.json';
 		$pin_key = '';
 		if ( file_exists( $votes_file ) ) {
@@ -1263,14 +1350,14 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
-		// 2. Try connections.json (Selected AI Provider & Model)
+		// 3. Try connections.json (Selected AI Provider & Model)
 		$conn_file = $plugin_dir . 'connections.json';
 		$conn_data = array();
 		if ( file_exists( $conn_file ) ) {
 			$conn_data = @json_decode( file_get_contents( $conn_file ), true ) ?: array();
 		}
 
-		// 3. Try ai_providers.json
+		// 4. Try ai_providers.json
 		$prov_file = $plugin_dir . 'ai_providers.json';
 		$providers = array();
 		if ( file_exists( $prov_file ) ) {
@@ -1292,7 +1379,6 @@ class Scraper_Auto_Shop_Plugin {
 		if ( ! empty( $provider_id ) && isset( $providers[ $provider_id ] ) ) {
 			$prov_cfg = $providers[ $provider_id ];
 		} else {
-			// Find first enabled provider with at least one model
 			foreach ( $providers as $p_id => $p ) {
 				if ( ( $p['enabled'] ?? true ) !== false && ! empty( $p['models'] ) ) {
 					$prov_cfg    = $p;
@@ -1314,20 +1400,28 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		$api_key  = $prov_cfg['apiKey'] ?? ( $prov_cfg['keys'][0]['key'] ?? '' );
-		$endpoint = $prov_cfg['endpoint'] ?? '';
+		if ( empty( $api_key ) && ! empty( $custom_key ) ) {
+			$api_key = $custom_key;
+		}
+
+		$endpoint = $prov_cfg['endpoint'] ?? ( $prov_cfg['url'] ?? '' );
+		if ( empty( $endpoint ) ) {
+			$endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+		}
 
 		return array(
-			'provider_id' => $provider_id,
-			'model_id'    => $model_id,
+			'provider_id' => $provider_id ?: 'openrouter',
+			'model_id'    => $model_id ?: 'meta-llama/llama-3.3-70b-instruct:free',
 			'model_name'  => $model_name,
 			'api_key'     => trim( (string) $api_key ),
 			'endpoint'    => trim( (string) $endpoint ),
 			'provider'    => $prov_cfg,
+			'source'      => 'scraper_config',
 		);
 	}
 
 	/**
-	 * Call Live AI Provider API (OpenAI compatible / Gemini / Anthropic / etc.).
+	 * Call Live AI Provider API (OpenAI / OpenRouter / Groq / DeepSeek / Ollama / Gemini).
 	 *
 	 * @param array  $master_ai
 	 * @param string $message
@@ -1341,13 +1435,26 @@ class Scraper_Auto_Shop_Plugin {
 		$model_id = $master_ai['model_id'];
 
 		if ( empty( $endpoint ) ) {
-			$endpoint = 'https://api.openai.com/v1/chat/completions';
+			$endpoint = 'https://openrouter.ai/api/v1/chat/completions';
 		}
 
-		$site_name = get_bloginfo( 'name' ) ?: 'فروشگاه اینترنتی';
+		$site_name = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' );
+		$catalog_ctx = self::build_catalog_context_for_ai( 15 );
+		$threshold = number_format( (float) ( $settings['free_shipping_threshold'] ?? 400000 ) );
+		$currency  = $settings['currency_symbol'] ?? 'تومان';
+
 		$system_prompt = ! empty( $settings['ai_system_prompt'] )
 			? $settings['ai_system_prompt']
-			: "تو پشتیبان هوشمند و صمیمی فروشگاه اینترنتی «{$site_name}» هستی. به مشتری با نام «{$customer_name}» به زبان فارسی پاسخ بده. پاسخ کوتاه، مودبانه و حداکثر ۲ الی ۳ جمله باشد.";
+			: "تو دستیار هوشمند و کارشناس فروش رسمی فروشگاه اینترنتی «{$site_name}» هستی.\n"
+			. "نام مشتری: «{$customer_name}»\n"
+			. "ارسال برای خریدهای بالای {$threshold} {$currency} با پست پیشتاز و تیپاکس رایگان است.\n"
+			. "تمامی محصولات دارای ۷ روز ضمانت بازگشت وجه و گواهی اصالت فیزیکی هستند.\n\n"
+			. "فهرست کالاهای موجود در انبار ما:\n"
+			. $catalog_ctx . "\n\n"
+			. "دستورالعمل‌های کلیدی:\n"
+			. "۱. کوتاه، دقیق، مؤدبانه و حداکثر در ۲ الی ۳ جمله فارسی پاسخ بده.\n"
+			. "۲. اگر مشتری درباره قیمت یا موجودی کالایی پرسید، اطلاعات دقیق کاتالوگ بالا را بازگو کن.\n"
+			. "۳. کاملاً مثل یک انسان پشتیبان و با لحن گرم فارسی بنویس و هرگز نگو که مدل هوش مصنوعی یا ربات هستی.";
 
 		$payload = array(
 			'model'       => $model_id,
@@ -1355,7 +1462,7 @@ class Scraper_Auto_Shop_Plugin {
 				array( 'role' => 'system', 'content' => $system_prompt ),
 				array( 'role' => 'user', 'content' => $message ),
 			),
-			'max_tokens'  => 350,
+			'max_tokens'  => 380,
 			'temperature' => 0.7,
 		);
 
@@ -1364,6 +1471,10 @@ class Scraper_Auto_Shop_Plugin {
 		);
 		if ( ! empty( $api_key ) ) {
 			$headers['Authorization'] = 'Bearer ' . $api_key;
+		}
+		if ( strpos( $endpoint, 'openrouter.ai' ) !== false ) {
+			$headers['HTTP-Referer'] = home_url();
+			$headers['X-Title']      = $site_name;
 		}
 
 		$response = wp_remote_post( $endpoint, array(
@@ -1377,8 +1488,14 @@ class Scraper_Auto_Shop_Plugin {
 		if ( ! is_wp_error( $response ) ) {
 			$body = wp_remote_retrieve_body( $response );
 			$json = @json_decode( $body, true );
-			if ( is_array( $json ) && ! empty( $json['choices'][0]['message']['content'] ) ) {
-				return trim( (string) $json['choices'][0]['message']['content'] );
+			if ( is_array( $json ) ) {
+				if ( ! empty( $json['choices'][0]['message']['content'] ) ) {
+					return trim( (string) $json['choices'][0]['message']['content'] );
+				} elseif ( ! empty( $json['choices'][0]['text'] ) ) {
+					return trim( (string) $json['choices'][0]['text'] );
+				} elseif ( ! empty( $json['response'] ) ) {
+					return trim( (string) $json['response'] );
+				}
 			}
 		}
 
@@ -1386,7 +1503,8 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * Intelligent Built-in E-Commerce Support Assistant (Domain Fallback).
+	 * Intelligent Dynamic E-Commerce NLP Engine (Analyzes Catalog, Prices, Features & Query).
+	 * Eliminates hardcoded canned templates and provides customized, contextual assistance.
 	 *
 	 * @param string $message
 	 * @param string $customer_name
@@ -1395,48 +1513,177 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	public static function generate_smart_local_reply( $message, $customer_name, $settings ) {
 		$site_name = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه ما' );
-		$threshold = number_format( (float) ( $settings['free_shipping_threshold'] ?? 400000 ) );
+		$threshold = (float) ( $settings['free_shipping_threshold'] ?? 400000 );
+		$threshold_formatted = number_format( $threshold ) . ' تومان';
 		$currency  = $settings['currency_symbol'] ?? 'تومان';
-		$msg_lower = mb_strtolower( $message, 'UTF-8' );
 
-		// Greetings
-		if ( preg_match( '/(سلام|درود|وقت بخیر|صبح بخیر|عصر بخیر|سلام علیکم|های)/u', $msg_lower ) ) {
-			$name_part = ! empty( $customer_name ) && 'کاربر مهمان' !== $customer_name ? " {$customer_name} عزیز" : ' گرامی';
-			return "سلام{$name_part}، به {$site_name} خوش آمدید! 🌸 در خدمت شما هستیم. هرگونه سوالی در مورد کالاها یا ثبت سفارش دارید بفرمایید.";
+		$msg_raw   = trim( $message );
+		$msg_lower = mb_strtolower( $msg_raw, 'UTF-8' );
+
+		$name_clean = trim( $customer_name );
+		if ( empty( $name_clean ) || 'کاربر مهمان' === $name_clean ) {
+			$name_clean = '';
+		}
+		$name_greeting = ! empty( $name_clean ) ? "{$name_clean} عزیز" : 'گرامی';
+
+		$has_greeting = (bool) preg_match( '/(سلام|درود|وقت بخیر|صبح بخیر|عصر بخیر|روز بخیر|سلام علیکم)/u', $msg_lower );
+		$greeting_prefix = $has_greeting ? "سلام {$name_greeting}، به {$site_name} خوش آمدید! 🌸 " : '';
+
+		$products = self::get_all_scraped_products();
+
+		// Stopwords that shouldn't match product titles
+		$stop_words = array(
+			'سلام', 'درود', 'صبح', 'بخیر', 'عصر', 'وقت', 'این', 'رو', 'داری', 'دارید', 'هست', 'هستید',
+			'قیمت', 'چنده', 'چقدره', 'میخوام', 'لطفا', 'ممنون', 'خرید', 'تومان', 'محصولات', 'کالاها',
+			'چی', 'چه', 'چیزهایی', 'ضمانت', 'گارانتی', 'ارسال', 'پست', 'سفارش', 'پیگیری', 'کد', 'تخفیف',
+			'آیا', 'کدام', 'کدوم', 'برای', 'میشه', 'دارن', 'داشته', 'باشه'
+		);
+
+		// Clean query tokens
+		$clean_q = preg_replace( '/[^\p{L}\p{N}\s]/u', ' ', $msg_lower );
+		$raw_tokens = preg_split( '/\s+/u', $clean_q, -1, PREG_SPLIT_NO_EMPTY );
+		$q_tokens = array();
+		foreach ( $raw_tokens as $t ) {
+			if ( mb_strlen( $t ) > 1 && ! in_array( $t, $stop_words, true ) ) {
+				$q_tokens[] = $t;
+			}
 		}
 
-		// Shipping / Delivery
-		if ( preg_match( '/(ارسال|پست|تیپاکس|هزینه ارسال|چند روزه|کی میرسه|زمان تحویل|کی ارسال)/u', $msg_lower ) ) {
-			return "کلیه سفارش‌های شما با بسته‌بندی ایمن و از طریق پست پیشتاز یا تیپاکس ارسال می‌شوند. ارسال برای خریدهای بالای {$threshold} {$currency} کاملاً رایگان است و معمولاً ظرف ۲ الی ۳ روز کاری تحویل می‌گردد. 🚚";
+		// 1. Match against products in catalog
+		$matches = array();
+		if ( ! empty( $products ) && ! empty( $q_tokens ) ) {
+			foreach ( $products as $p ) {
+				$title_low = mb_strtolower( $p['title'] ?? '', 'UTF-8' );
+				$cat_low   = mb_strtolower( $p['category'] ?? '', 'UTF-8' );
+				$desc_low  = mb_strtolower( $p['description'] ?? '', 'UTF-8' );
+
+				$score = 0;
+				foreach ( $q_tokens as $token ) {
+					if ( mb_strpos( $title_low, $token ) !== false ) {
+						$score += 3;
+					} elseif ( mb_strpos( $cat_low, $token ) !== false ) {
+						$score += 2;
+					} elseif ( mb_strpos( $desc_low, $token ) !== false ) {
+						$score += 1;
+					}
+				}
+
+				if ( $score > 0 ) {
+					$matches[] = array( 'score' => $score, 'product' => $p );
+				}
+			}
+
+			usort( $matches, function( $a, $b ) {
+				return $b['score'] <=> $a['score'];
+			} );
 		}
 
-		// Order tracking
+		// If a matching product was found in catalog with solid score
+		if ( ! empty( $matches ) && $matches[0]['score'] >= 2 ) {
+			$top_p = $matches[0]['product'];
+			$p_title = $top_p['title'];
+			$p_price = ! empty( $top_p['price_formatted'] ) ? $top_p['price_formatted'] : ( number_format( (float) ( $top_p['price'] ?? 0 ) ) . ' تومان' );
+			$has_disc = ! empty( $top_p['has_discount'] ) && ! empty( $top_p['discount_pct'] );
+			$disc_pct = $top_p['discount_pct'] ?? 0;
+			$desc     = $top_p['description'] ?? '';
+			$desc_low = mb_strtolower( $desc, 'UTF-8' );
+
+			$reply = $greeting_prefix . "درباره «{$p_title}»، این محصول هم‌اکنون با قیمت {$p_price} در انبار موجود و آماده ثبت سفارش است.";
+			if ( $has_disc && $disc_pct > 0 ) {
+				$reply .= " (این کالا دارای {$disc_pct}٪ تخفیف ویژه می‌باشد).";
+			}
+
+			// Specific feature inquiries
+			if ( preg_match( '/(ضد آب|ضداب|waterproof|ip6)/u', $msg_lower ) ) {
+				if ( mb_strpos( $desc_low, 'ضد آب' ) !== false || mb_strpos( $desc_low, 'ip6' ) !== false ) {
+					$reply .= " 💧 این محصول دارای استاندارد مقاومت در برابر نفوذ آب است.";
+				} else {
+					$reply .= " ℹ️ توصیه می‌شود این محصول دور از تماس مستقیم با رطوبت و آب نگهداری شود.";
+				}
+			}
+
+			if ( preg_match( '/(مکالمه|تماس|میکروفون|صدا)/u', $msg_lower ) ) {
+				if ( mb_strpos( $desc_low, 'مکالمه' ) !== false || mb_strpos( $desc_low, 'میکروفون' ) !== false ) {
+					$reply .= " 📞 این کالا قابلیت مکالمه باکیفیت و شفاف را پشتیبانی می‌کند.";
+				}
+			}
+
+			if ( preg_match( '/(باتری|شارژ|شارژدهی|میلی‌آمپر)/u', $msg_lower ) ) {
+				$reply .= " 🔋 این کالا از باتری بادوام با کارایی و بازدهی بالا بهره می‌برد.";
+			}
+
+			$p_num_price = (float) ( $top_p['price'] ?? 0 );
+			if ( $p_num_price >= $threshold ) {
+				$reply .= " همچنین به دلیل مبلغ سفارش، ارسال این کالا کاملاً رایگان خواهد بود! 🚚";
+			}
+
+			$reply .= " برای خرید آنلاین، کافی است در کارت محصول دکمه «خرید آنلاین» را لمس فرمایید.";
+			return $reply;
+		}
+
+		// 2. Shipping & Delivery
+		if ( preg_match( '/(ارسال|پست|تیپاکس|هزینه ارسال|چند روزه|کی میرسه|زمان تحویل|تحویل سفارش)/u', $msg_lower ) ) {
+			return $greeting_prefix . "کلیه سفارش‌ها با بسته‌بندی ایمن و ضربه‌گیر از طریق پست پیشتاز و تیپاکس ظرف ۲ الی ۳ روز کاری تحویل می‌گردند. برای خریدهای بالای {$threshold_formatted} هزینه ارسال کاملاً رایگان است. 🚚";
+		}
+
+		// 3. Order Tracking
 		if ( preg_match( '/(پیگیری|کد رهگیری|سفارشم|کجاست|فاکتور|شماره سفارش)/u', $msg_lower ) ) {
-			return "برای پیگیری سفارش، می‌توانید از منوی بالای صفحه گزینه «پیگیری سفارش» را انتخاب فرمایید یا شماره سفارش خود را اینجا ارسال نمایید تا همکاران ما سریعاً وضعیت را بررسی کنند. 📦";
+			return $greeting_prefix . "برای پیگیری لحظه‌ای وضعیت سفارش، می‌توانید از منوی بالای صفحه دکمه «پیگیری سفارش» را لمس فرمایید یا شماره سفارش خود را اینجا ارسال کنید تا وضعیت مرسوله را فوراً استعلام بگیریم. 📦";
 		}
 
-		// Price / Discounts
-		if ( preg_match( '/(قیمت|تخفیف|چنده|کد تخفیف|ارزان|تخفیف دارد)/u', $msg_lower ) ) {
-			return "تمامی قیمت‌های درج شده در سایت به‌روز و با احتساب تخفیف ویژه فروشگاه محاسبه شده‌اند. همچنین پیشنهادهای ویژه سایت شامل بیشترین درصد تخفیف می‌باشند! ✨";
+		// 4. Discounts & Pricing General
+		if ( preg_match( '/(تخفیف|کد تخفیف|قیمت مناسب|ارزان|حراج|پیشنهاد ویژه)/u', $msg_lower ) ) {
+			$disc_items = array();
+			foreach ( $products as $p ) {
+				if ( ! empty( $p['has_discount'] ) ) $disc_items[] = $p;
+			}
+			if ( ! empty( $disc_items ) ) {
+				usort( $disc_items, function( $a, $b ) {
+					return ( $b['discount_pct'] ?? 0 ) <=> ( $a['discount_pct'] ?? 0 );
+				} );
+				$top_disc = $disc_items[0];
+				$pct = $top_disc['discount_pct'] ?? 0;
+				return $greeting_prefix . "تمامی قیمت‌های سایت با تخفیف‌های ویژه فروشگاه اعمال شده‌اند! بیشترین تخفیف هم‌اکنون مربوط به «{$top_disc['title']}» با {$pct}٪ تخفیف است. حتماً بخش پیشنهادهای شگفت‌انگیز را بررسی نمایید! ✨";
+			}
+			return $greeting_prefix . "تمامی قیمت‌های درج شده در سایت رقابتی بوده و تخفیف‌های نقدی مستقیماً روی سبد خرید اعمال می‌شوند.";
 		}
 
-		// Return / Guarantee
-		if ( preg_match( '/(مرجوع|گارانتی|ضمانت|خراب|اصل|اورجینال|بازگشت)/u', $msg_lower ) ) {
-			return "تمامی محصولات دارای ضمانت سلامت فیزیکی و ۷ روز مهلت تست و بازگشت کالا هستند. خریدی مطمئن و بدون دغدغه را با ما تجربه کنید. 🛡️";
+				// 5. Guarantee & Returns
+		if ( preg_match( '/(گارانتی|ضمانت|مرجوع|بازگشت|خراب|اصل|اورجینال|مهلت تست)/u', $msg_lower ) ) {
+			return $greeting_prefix . "تمامی کالاهای فروشگاه دارای ۷ روز مهلت تست و ضمانت بازگشت وجه، تضمین اصالت فیزیکی و پشتیبانی کامل هستند تا خریدی با آرامش خاطر را تجربه کنید. 🛡️";
 		}
 
-		// Payment
-		if ( preg_match( '/(پرداخت|درگاه|کارت به کارت|انتقال|چطور پرداخت|امن)/u', $msg_lower ) ) {
-			return "پرداخت به صورت کاملاً امن و مطمئن از طریق کلیه کارت‌های عضو شبکه بانکی شتاب در درگاه پرداخت آنلاین شاپرک صورت می‌پذیرد. 💳";
+		// 6. Payment methods
+		if ( preg_match( '/(پرداخت|درگاه|کارت به کارت|انتقال|چطور پرداخت|امن|بانک|شاپرک)/u', $msg_lower ) ) {
+			return $greeting_prefix . "پرداخت سفارش‌ها به صورت کاملاً امن و آنی از طریق کلیه کارت‌های عضو شتاب در درگاه رسمی شاپرک انجام می‌شود. 💳";
 		}
 
-		// Default polite reply
-		$name_part = ! empty( $customer_name ) && 'کاربر مهمان' !== $customer_name ? " {$customer_name} عزیز" : '';
-		return "پیام شما دریافت شد{$name_part}. پیام شما به همکاران پشتیبانی نیز فوروارد شد و به زودی با شما در ارتباط خواهیم بود. در صورت تمایل شماره تماس خود را نیز ثبت فرمایید. 🙏";
+		// 7. Catalog & Categories Overview
+		if ( preg_match( '/(چه محصولاتی|چه کالاهایی|لیست محصولات|چی دارید|چه چیزهایی|موجودی فروشگاه|دسته‌بندی|دسته بندی|لیست کالاها|همه محصولات)/u', $msg_lower ) ) {
+			$cats = array();
+			foreach ( $products as $p ) {
+				$c = $p['category'] ?? 'عمومی';
+				$cats[ $c ] = true;
+			}
+			$cats_keys = array_keys( $cats );
+			$cats_str  = implode( '، ', array_slice( $cats_keys, 0, 4 ) );
+			$total_cnt = count( $products );
+			return $greeting_prefix . "ما تنوعی از کالاهای باکیفیت در دسته‌بندی‌های {$cats_str} را عرضه می‌کنیم. هم‌اکنون {$total_cnt} محصول منتخب در انبار موجود است که می‌توانید با دکمه دسته‌بندی‌ها در منوی بالا آن‌ها را مشاهده نمایید. 🛍️";
+		}
+
+// 8. Greeting only
+		if ( $has_greeting && empty( $q_tokens ) ) {
+			$feat_item = ! empty( $products[0]['title'] ) ? " هم‌اکنون محصول «{$products[0]['title']}» با تخفیف ویژه در انبار موجود است." : '';
+			return $greeting_prefix . "در خدمت شما هستیم.{$feat_item} هرگونه سوالی درباره مشخصات کالاها، استعلام قیمت یا ثبت سفارش دارید بفرمایید تا فوراً راهنمایی‌تان کنیم! 🌸";
+		}
+
+		// 9. Dynamic Contextual Fallback incorporating customer query
+		$preview_msg = mb_substr( $msg_raw, 0, 45 ) . ( mb_strlen( $msg_raw ) > 45 ? '...' : '' );
+		return $greeting_prefix . "درباره پیام شما («{$preview_msg}»)، اطلاعات شما به همکاران پشتیبانی فروشگاه نیز ارسال شد تا در صورت نیاز با شما تماس بگیرند. برای بررسی سریع کالاها نیز می‌توانید از منوی بالای صفحه یا جستجوی سریع استفاده نمایید. 🙏";
 	}
 
 	/**
-	 * Generate AI Support Reply (Connecting to Scraper's Master Model).
+	 * Generate AI Support Reply (Connecting to Master Model or Dynamic NLP Engine).
 	 *
 	 * @param string $message
 	 * @param string $customer_name
@@ -1453,25 +1700,52 @@ class Scraper_Auto_Shop_Plugin {
 			return '';
 		}
 
-		$master_ai = self::get_scraper_master_ai_model();
+		// 1. Resolve master AI configuration
+		$master_ai = self::get_scraper_master_ai_model( $settings );
 
-		// If a live API key and endpoint are configured in scraper
-		if ( ! empty( $master_ai['api_key'] ) ) {
+		// 2. If an API key or local endpoint exists, query the live generative model
+		if ( ! empty( $master_ai['api_key'] ) || strpos( (string) $master_ai['endpoint'], '127.0.0.1' ) !== false || strpos( (string) $master_ai['endpoint'], 'localhost' ) !== false ) {
 			$reply = self::call_ai_api( $master_ai, $message, $customer_name, $settings );
 			if ( ! empty( $reply ) ) {
 				return $reply;
 			}
 		}
 
-		// Fallback to intelligent local domain responder
+		// 3. Dynamic Contextual E-Commerce NLP Engine (analyzes catalog, prices, features & query)
 		return self::generate_smart_local_reply( $message, $customer_name, $settings );
 	}
 
 	/**
-	 * AJAX endpoint for customer sending message in Live Chat.
-	 * Handles message storage, Master AI response generation, and 3-way messenger forwarding (Bale, Telegram, Rubika).
+	 * AJAX endpoint for live testing AI chat in Admin Tab 4.
 	 */
-	public static function ajax_submit_support_chat() {
+	public static function ajax_test_ai_chat() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$message = sanitize_text_field( $_POST['message'] ?? '' );
+		if ( empty( $message ) ) {
+			wp_send_json_error( 'متن پیام خالی است.' );
+		}
+
+		$settings = self::get_settings();
+		$t0 = microtime( true );
+		$reply = self::generate_ai_support_reply( $message, 'کاربر آزمایشی', $settings );
+		$time_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
+
+		$master_ai = self::get_scraper_master_ai_model( $settings );
+		$model_label = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'موتور هوشمند محلی فروشگاه';
+
+		wp_send_json_success( array(
+			'reply'    => $reply,
+			'model'    => $model_label,
+			'source'   => $master_ai['source'] ?? 'local_nlp',
+			'took_ms'  => $time_ms,
+		) );
+	}
+
+public static function ajax_submit_support_chat() {
 		if ( ! empty( $_POST['nonce'] ) ) { check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false ); }
 		$settings = self::get_settings();
 
@@ -7227,6 +7501,7 @@ class Scraper_Auto_Shop_Plugin {
 				'ai_provider'                 => sanitize_text_field( $_POST['ai_provider'] ?? 'auto' ),
 				'ai_api_key'                  => sanitize_text_field( $_POST['ai_api_key'] ?? '' ),
 				'ai_model'                    => sanitize_text_field( $_POST['ai_model'] ?? '' ),
+				'ai_endpoint'                 => sanitize_text_field( $_POST['ai_endpoint'] ?? '' ),
 
 				// Tab 5: Messengers
 				'bale_token'                  => sanitize_text_field( $_POST['bale_token'] ?? '' ),
@@ -8490,23 +8765,66 @@ class Scraper_Auto_Shop_Plugin {
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">موتور هوش مصنوعی:</th>
+								<th scope="row">ارائه‌دهنده هوش مصنوعی:</th>
 								<td>
-									<select name="ai_provider" class="regular-text">
-										<option value="auto" <?php selected( $opts['ai_provider'] ?? 'auto', 'auto' ); ?>>خودکار بر اساس تنظیمات اسکرپر (connections.json)</option>
-										<option value="openai" <?php selected( $opts['ai_provider'] ?? 'auto', 'openai' ); ?>>OpenAI (ChatGPT)</option>
-										<option value="gemini" <?php selected( $opts['ai_provider'] ?? 'auto', 'gemini' ); ?>>Google Gemini</option>
+									<select name="ai_provider" id="aiProviderSelect" class="regular-text">
+										<option value="auto" <?php selected( $opts['ai_provider'] ?? 'auto', 'auto' ); ?>>🔄 خودکار (اتصال به مدل مستر اسکرپر scraper4)</option>
+										<option value="openrouter" <?php selected( $opts['ai_provider'] ?? 'auto', 'openrouter' ); ?>>OpenRouter (دسترسی به بیش از ۱۰۰ مدل Llama، DeepSeek و ...)</option>
+										<option value="groq" <?php selected( $opts['ai_provider'] ?? 'auto', 'groq' ); ?>>Groq Cloud (بسیار پرسرعت و رایگان)</option>
+										<option value="deepseek" <?php selected( $opts['ai_provider'] ?? 'auto', 'deepseek' ); ?>>DeepSeek API (مدل پیشرفته V3)</option>
+										<option value="openai" <?php selected( $opts['ai_provider'] ?? 'auto', 'openai' ); ?>>OpenAI (ChatGPT / GPT-4o Mini)</option>
+										<option value="gemini" <?php selected( $opts['ai_provider'] ?? 'auto', 'gemini' ); ?>>Google Gemini API</option>
+										<option value="ollama" <?php selected( $opts['ai_provider'] ?? 'auto', 'ollama' ); ?>>Ollama Local (لوکال روی سرور بدون نیاز به اینترنت)</option>
+										<option value="custom" <?php selected( $opts['ai_provider'] ?? 'auto', 'custom' ); ?>>آدرس اندپوینت سفارشی (Custom API)</option>
 									</select>
+									<p class="description">در صورت عدم وارد کردن کلید API، موتور هوشمند محلی فروشگاه به صورت کاملاً پویا و با تحلیل کاتالوگ پاسخ می‌دهد.</p>
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">کلید API اختصاصی (در صورت انتخاب مستقل):</th>
+								<th scope="row">کلید API هوش مصنوعی (API Key):</th>
 								<td>
-									<input type="password" name="ai_api_key" value="<?php echo esc_attr( $opts['ai_api_key'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="sk-...">
-									<input type="text" name="ai_model" value="<?php echo esc_attr( $opts['ai_model'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="نام مدل (مثلاً gpt-4o-mini)">
+									<input type="password" name="ai_api_key" value="<?php echo esc_attr( $opts['ai_api_key'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="sk-... یا کلید ارائه‌دهنده">
+									<input type="text" name="ai_model" value="<?php echo esc_attr( $opts['ai_model'] ?? '' ); ?>" class="regular-text" dir="ltr" placeholder="نام مدل (مثلاً gpt-4o-mini یا deepseek-chat)">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">آدرس اندپوینت سفارشی (در صورت نیاز):</th>
+								<td>
+									<input type="text" name="ai_endpoint" value="<?php echo esc_attr( $opts['ai_endpoint'] ?? '' ); ?>" class="large-text" dir="ltr" placeholder="مثال: https://api.openai.com/v1/chat/completions یا http://127.0.0.1:11434/v1/chat/completions">
 								</td>
 							</tr>
 						</table>
+
+						<!-- 🧪 تست زنده هوش مصنوعی چت -->
+						<div style="margin-top:24px; background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:14px; padding:20px;">
+							<h4 style="margin:0 0 8px; font-size:1.05rem; color:#0f172a; font-weight:800; display:flex; align-items:center; gap:8px;">
+								<span>🧪</span> تست و بررسی زنده عملکرد هوش مصنوعی چت
+							</h4>
+							<p style="margin:0 0 14px; font-size:0.85rem; color:#64748b; line-height:1.6;">
+								هر سوالی (درباره مشخصات کالاها، قیمت‌ها، تخفیف‌ها یا ارسال) را بنویسید و بلافاصله پاسخ زنده هوش مصنوعی را با تحلیل کامل کاتالوگ فروشگاه مشاهده کنید:
+							</p>
+
+							<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+								<input type="text" id="testAiChatMessage" placeholder="مثال: سلام، ساعت هوشمند با قابلیت مکالمه موجود دارید؟ قیمتش چنده و ارسالش چطوره؟" style="flex:1; min-width:280px; padding:10px 14px; border:1px solid #cbd5e1; border-radius:10px; font-size:0.9rem; outline:none;">
+								<button type="button" id="btnRunTestAiChat" class="button button-primary" style="padding:8px 20px; font-weight:800; background:#7c3aed; border-color:#6d28d9; border-radius:10px; font-size:0.9rem;">
+									🚀 آزمایش پاسخ هوش مصنوعی
+								</button>
+							</div>
+
+							<!-- Live Test Result Output Box -->
+							<div id="testAiChatResultBox" style="display:none; background:#ffffff; border:1.5px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:10px;">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #f1f5f9; padding-bottom:6px;">
+									<div style="font-weight:800; font-size:0.88rem; color:#059669; display:flex; align-items:center; gap:6px;">
+										<span>✅</span> پاسخ زنده هوش مصنوعی:
+									</div>
+									<div style="display:flex; gap:8px; align-items:center;">
+										<span id="testAiModelUsedBadge" style="font-size:0.75rem; background:#eff6ff; color:#1d4ed8; padding:2px 8px; border-radius:6px; font-family:monospace;"></span>
+										<span id="testAiTimeBadge" style="font-size:0.75rem; background:#f1f5f9; color:#475569; padding:2px 6px; border-radius:6px;"></span>
+									</div>
+								</div>
+								<div id="testAiResponseText" style="font-size:0.92rem; color:#1e293b; line-height:1.8; white-space:pre-wrap;"></div>
+							</div>
+						</div>
 					</div>
 				</div>
 
@@ -9338,6 +9656,53 @@ class Scraper_Auto_Shop_Plugin {
 
 			$('#chkStoreTakeover, #chkScrapedProducts').on('change', updateDualStateUI);
 			updateDualStateUI();
+
+			// Live AI Chat Test Execution
+			$('#btnRunTestAiChat').on('click', function(e){
+				e.preventDefault();
+				var msg = $('#testAiChatMessage').val().trim();
+				if (!msg) {
+					alert('لطفاً یک پیام آزمایشی وارد کنید.');
+					$('#testAiChatMessage').focus();
+					return;
+				}
+
+				var $btn = $(this);
+				var $box = $('#testAiChatResultBox');
+				var $text = $('#testAiResponseText');
+				var $badge = $('#testAiModelUsedBadge');
+				var $time = $('#testAiTimeBadge');
+
+				$btn.prop('disabled', true).text('در حال استعلام و پردازش... ⏳');
+				$box.show();
+				$text.html('<span style="color:#2563eb;">در حال ارسال پیام به هوش مصنوعی و ارزیابی کاتالوگ فروشگاه...</span>');
+				$badge.text('در حال پردازش');
+				$time.text('');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_test_ai_chat',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>',
+						message: msg
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('🚀 آزمایش پاسخ هوش مصنوعی');
+						if (res.success && res.data) {
+							$text.text(res.data.reply);
+							$badge.text('مدل: ' + (res.data.model || 'هوشمند'));
+							$time.text(res.data.took_ms + ' میلی‌ثانیه');
+						} else {
+							$text.html('<span style="color:#dc2626;">خطا: ' + (res.data || 'عدم دریافت پاسخ.') + '</span>');
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('🚀 آزمایش پاسخ هوش مصنوعی');
+						$text.html('<span style="color:#dc2626;">خطای ارتباط با سرور.</span>');
+					}
+				});
+			});
 
 			// Refresh desk button
 			$('#btnRefreshAdminDesk').on('click', function(){

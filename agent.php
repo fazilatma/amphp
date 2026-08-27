@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.0.0
+ * Version: 12.5.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -55,11 +55,13 @@ class Scraper_Auto_Shop_Plugin {
 			'default_fallback_price'      => 150000, // Fallback base price
 			'fallback_price_behavior'     => 'use_fallback', // 'use_fallback' or 'call_for_price'
 
-			// Support Chat & Fields
+			// Support Chat Settings & Themes
 			'enable_support_chat'         => true,
+			'chat_theme'                  => 'royal-blue', // 12 themes available
+			'chat_button_style'           => 'pill-label', // 6 button designs
 			'chat_button_position'        => 'left', // 'left' or 'right'
 			'chat_window_title'           => 'پشتیبانی آنلاین فروشگاه',
-			'chat_welcome_message'        => 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا سریعاً پاسخ دهیم.',
+			'chat_welcome_message'        => 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا همکاران ما سریعاً پاسخ دهند.',
 			'chat_field_name_enable'      => true,
 			'chat_field_name_required'    => false,
 			'chat_field_phone_enable'     => true,
@@ -134,9 +136,18 @@ class Scraper_Auto_Shop_Plugin {
 		// AJAX actions for syncing to WooCommerce
 		add_action( 'wp_ajax_scraper_sync_to_woo', array( __CLASS__, 'ajax_sync_to_woo' ) );
 
-		// Support chat AJAX endpoints
+		// Support chat AJAX endpoints (Customer & AI thread)
 		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
 		add_action( 'wp_ajax_nopriv_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
+		add_action( 'wp_ajax_scraper_customer_get_thread', array( __CLASS__, 'ajax_customer_get_thread' ) );
+		add_action( 'wp_ajax_nopriv_scraper_customer_get_thread', array( __CLASS__, 'ajax_customer_get_thread' ) );
+
+		// Admin Live Chat Reply Desk endpoints
+		add_action( 'wp_ajax_scraper_admin_send_chat_reply', array( __CLASS__, 'ajax_admin_send_chat_reply' ) );
+		add_action( 'wp_ajax_scraper_admin_get_thread', array( __CLASS__, 'ajax_admin_get_thread' ) );
+		add_action( 'wp_ajax_scraper_admin_delete_thread', array( __CLASS__, 'ajax_admin_delete_thread' ) );
+
+		// Messenger test
 		add_action( 'wp_ajax_test_support_messengers', array( __CLASS__, 'ajax_test_support_messengers' ) );
 
 		// WooCommerce Real Cart Session Sync endpoints
@@ -839,70 +850,52 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * AJAX endpoint for customer support chat submission.
-	 */
-		/**
-	 * Generate AI support reply based on customer question and configured coordination mode.
+	 * Retrieve all support chat threads from WordPress database.
 	 *
-	 * @param string $message
-	 * @param string $name
-	 * @param array|null $settings
-	 * @return string|null
+	 * @return array
 	 */
-	public static function generate_ai_support_reply( $message, $name = 'کاربر', $settings = null ) {
-		if ( null === $settings ) {
-			$settings = self::get_settings();
+	public static function get_chat_threads() {
+		$threads = get_option( 'scraper_chat_threads', array() );
+		return is_array( $threads ) ? $threads : array();
+	}
+
+	/**
+	 * Save support chat threads (persisting the latest 150 conversations).
+	 *
+	 * @param array $threads
+	 */
+	public static function save_chat_threads( $threads ) {
+		if ( ! is_array( $threads ) ) {
+			$threads = array();
 		}
-
-		$mode = $settings['ai_coordination_mode'] ?? 'ai_first';
-		if ( 'human_only' === $mode ) {
-			return null;
+		if ( count( $threads ) > 150 ) {
+			$threads = array_slice( $threads, 0, 150, true );
 		}
-
-		$msg = mb_strtolower( trim( $message ) );
-		$greeting_name = ( $name && 'کاربر مهمان' !== $name ) ? esc_html( $name ) . ' عزیز' : 'دوست گرامی';
-
-		// Shipping / Delivery queries
-		if ( preg_match( '/(ارسال|پست|تیپاکس|تحویل|کی میرسه|کی بدستم میرسه|هزینه ارسال|کرایه|چند روز|زمان ارسال)/u', $msg ) ) {
-			return "سلام {$greeting_name} 🚚
-سفارش‌ها با بسته‌بندی ایمن ظرف ۲۴ الی ۴۸ ساعت کاری از طریق پست پیشتاز یا تیپاکس ارسال می‌گردند. برای خریدهای بالای سقف ارسال رایگان، هزینه ارسال صفر محاسبه می‌شود. پس از ارسال، کد پیگیری برای شما پیامک خواهد شد.";
-		}
-
-		// Pricing & Discounts
-		if ( preg_match( '/(قیمت|تخفیف|کد تخفیف|تخفیف ویژه|ارزان|آفر|پیشنهاد)/u', $msg ) ) {
-			return "سلام {$greeting_name} ✨
-کلیه قیمت‌های محصولات در فروشگاه با احتساب بیشترین تخفیف ممکن و سود منصفانه درج گردیده‌اند. همچنین در سفارش‌های بالاتر تخفیف هزینه ارسال به صورت خودکار لحاظ می‌شود.";
-		}
-
-		// Order Tracking & Inquiries
-		if ( preg_match( '/(پیگیری|سفارشم|کد رهگیری|فاکتور|ثبت سفارش|شماره سفارش)/u', $msg ) ) {
-			return "سلام {$greeting_name} 📦
-پیام شما به همراه اطلاعات تماس ثبت شد. کارشناس پیگیری سفارشات تا دقایقی دیگر وضعیت را بررسی کرده و جهت هماهنگی با شماره شما ارتباط برقرار خواهد نمود.";
-		}
-
-		// Greetings
-		if ( preg_match( '/^(سلام|درود|خسته نباشید|صبح بخیر|عصر بخیر|روز بخیر)/u', $msg ) && mb_strlen( $msg ) < 30 ) {
-			return "سلام {$greeting_name}، روزتون بخیر! 🌸
-به پشتیبانی آنلاین خوش آمدید. چطور می‌توانم در انتخاب کالا، مشخصات محصولات یا نحوه خرید به شما کمک کنم؟";
-		}
-
-		// General smart answer
-		return "سلام {$greeting_name} 🌺
-پیام شما دریافت و در سامانه پشتیبانی ثبت گردید. کارشناسان ما اطلاعات را بررسی کرده و در صورت نیاز به هماهنگی تکمیلی، سریعاً با شما تماس خواهند گرفت.";
+		update_option( 'scraper_chat_threads', $threads, false );
 	}
 
 	/**
 	 * AJAX endpoint for customer support chat submission.
+	 * Supports continuous messenger thread, AI automatic answers, and persistent conversation.
 	 */
 	public static function ajax_submit_support_chat() {
 		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
 		$settings = self::get_settings();
+
+		$session_id = sanitize_text_field( $_POST['session_id'] ?? '' );
+		if ( empty( $session_id ) ) {
+			$session_id = 'sess_' . wp_generate_password( 16, false );
+		}
 
 		$name    = sanitize_text_field( $_POST['name'] ?? '' );
 		$phone   = sanitize_text_field( $_POST['phone'] ?? '' );
 		$email   = sanitize_email( $_POST['email'] ?? '' );
 		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
+
+		if ( empty( $message ) ) {
+			wp_send_json_error( 'لطفاً متن پیام یا سوال خود را بنویسید.' );
+		}
 
 		// Validate required fields based on admin settings
 		if ( ! empty( $settings['chat_field_name_enable'] ) && ! empty( $settings['chat_field_name_required'] ) && empty( $name ) ) {
@@ -924,71 +917,144 @@ class Scraper_Auto_Shop_Plugin {
 			wp_send_json_error( 'لطفاً موضوع پیام خود را وارد نمایید.' );
 		}
 
-		if ( empty( $message ) ) {
-			wp_send_json_error( 'لطفاً متن پیام خود را بنویسید.' );
+		$threads   = self::get_chat_threads();
+		$thread_id = 'th_' . substr( md5( $session_id ), 0, 12 );
+		$now_time  = current_time( 'timestamp' );
+		$time_str  = date_i18n( 'H:i' );
+		$full_time = date_i18n( 'Y/m/d - H:i' );
+
+		// Find existing thread or initialize new
+		$thread = null;
+		$thread_key = $thread_id;
+		if ( isset( $threads[ $thread_id ] ) ) {
+			$thread = $threads[ $thread_id ];
+		} else {
+			foreach ( $threads as $k => $t ) {
+				if ( ( $t['session_id'] ?? '' ) === $session_id ) {
+					$thread     = $t;
+					$thread_key = $k;
+					break;
+				}
+			}
 		}
 
-		$time_str  = date_i18n( 'Y/m/d - H:i' );
-		$site_name = get_bloginfo( 'name' );
+		if ( ! $thread ) {
+			$thread = array(
+				'id'           => $thread_id,
+				'session_id'   => $session_id,
+				'name'         => $name,
+				'phone'        => $phone,
+				'email'        => $email,
+				'subject'      => $subject,
+				'status'       => 'pending',
+				'unread_admin' => true,
+				'created_at'   => $full_time,
+				'updated_at'   => $now_time,
+				'messages'     => array(),
+			);
+		} else {
+			if ( ! empty( $name ) && 'کاربر مهمان' !== $name ) {
+				$thread['name'] = $name;
+			}
+			if ( ! empty( $phone ) ) {
+				$thread['phone'] = $phone;
+			}
+			if ( ! empty( $email ) ) {
+				$thread['email'] = $email;
+			}
+			if ( ! empty( $subject ) ) {
+				$thread['subject'] = $subject;
+			}
+			$thread['status']       = 'pending';
+			$thread['unread_admin'] = true;
+			$thread['updated_at']   = $now_time;
+		}
 
-		// Generate AI Reply if AI mode is active
-		$ai_reply = self::generate_ai_support_reply( $message, $name, $settings );
+		// 1. Customer Message
+		$customer_msg = array(
+			'id'          => 'msg_' . $now_time . '_' . rand( 100, 999 ),
+			'sender'      => 'customer',
+			'sender_name' => ( ! empty( $thread['name'] ) && 'کاربر مهمان' !== $thread['name'] ) ? $thread['name'] : 'شما',
+			'text'        => $message,
+			'time'        => $time_str,
+			'timestamp'   => $now_time,
+		);
+		$thread['messages'][] = $customer_msg;
 
+		// 2. Generate AI Reply if enabled
+		$ai_reply = self::generate_ai_support_reply( $message, $thread['name'], $settings );
+		if ( ! empty( $ai_reply ) ) {
+			$ai_msg = array(
+				'id'          => 'msg_' . ( $now_time + 1 ) . '_' . rand( 100, 999 ),
+				'sender'      => 'ai',
+				'sender_name' => $settings['ai_support_name'] ?? 'پشتیبان هوشمند فروشگاه',
+				'text'        => $ai_reply,
+				'time'        => $time_str,
+				'timestamp'   => $now_time + 1,
+			);
+			$thread['messages'][] = $ai_msg;
+		}
+
+		// Save updated thread at the front of the list
+		unset( $threads[ $thread_key ] );
+		$threads = array( $thread_key => $thread ) + $threads;
+		self::save_chat_threads( $threads );
+
+		// Forward notification to messengers
+		$site_name      = get_bloginfo( 'name' );
 		$formatted_text = "💬 پیام جدید از چت آنلاین فروشگاه
 
 "
-			. "👤 نام مشتری: {$name}
+			. "👤 نام مشتری: {$thread['name']}
 ";
-		if ( ! empty( $phone ) ) {
-			$formatted_text .= "📱 شماره تماس: {$phone}
-";
-		}
-		if ( ! empty( $email ) ) {
-			$formatted_text .= "📧 ایمیل: {$email}
+		if ( ! empty( $thread['phone'] ) ) {
+			$formatted_text .= "📱 شماره تماس: {$thread['phone']}
 ";
 		}
-		if ( ! empty( $subject ) ) {
-			$formatted_text .= "📌 موضوع: {$subject}
+		if ( ! empty( $thread['email'] ) ) {
+			$formatted_text .= "📧 ایمیل: {$thread['email']}
 ";
 		}
-		$formatted_text .= "🕒 زمان: {$time_str}
+		if ( ! empty( $thread['subject'] ) ) {
+			$formatted_text .= "📌 موضوع: {$thread['subject']}
+";
+		}
+		$formatted_text .= "🕒 زمان: {$full_time}
 "
 			. "🏢 فروشگاه: {$site_name}
 
 "
-			. "📝 متن پیام یا سوال مشتری:
-"
-			. "{$message}
+			. "📝 متن پیام مشتری:
+{$message}
 ";
 
 		if ( ! empty( $ai_reply ) ) {
 			$formatted_text .= "
-🤖 پاسخ اولیه هوش مصنوعی به مشتری:
-"
-				. "«{$ai_reply}»
+🤖 پاسخ اولیه هوش مصنوعی:
+«{$ai_reply}»
 
 "
-				. "⚡ وضعیت هماهنگی: پاسخ هوشمند فوراً به مشتری داده شد. در صورت نیاز می‌توانید مستقیماً با مشتری تماس بگیرید.";
+				. "⚡ وضعیت: پاسخ هوشمند فوراً به مشتری داده شد. جهت پاسخ مستقیم انسانی، به پیشخوان وردپرس > تنظیمات اسکرپر > تب ۳ (میز پاسخگویی) مراجعه فرمایید.";
 		} else {
 			$formatted_text .= "
-⚡ وضعیت هماهنگی: منتظر پاسخ ادمین انسانی";
+⚡ وضعیت: در انتظار پاسخ مستقیم ادمین در پیشخوان وردپرس (تب ۳ میز پاسخگویی)";
 		}
 
 		$send_result = self::send_message_to_messengers( $formatted_text );
 
-		// Save in chat logs
+		// Legacy logs update
 		$logs = get_option( 'scraper_support_chat_logs', array() );
 		if ( ! is_array( $logs ) ) {
 			$logs = array();
 		}
 		array_unshift( $logs, array(
-			'name'     => $name,
-			'phone'    => $phone,
-			'email'    => $email,
-			'subject'  => $subject,
+			'name'     => $thread['name'],
+			'phone'    => $thread['phone'],
+			'email'    => $thread['email'],
+			'subject'  => $thread['subject'],
 			'message'  => $message,
 			'ai_reply' => $ai_reply,
-			'time'     => $time_str,
+			'time'     => $full_time,
 			'sent_ok'  => $send_result['ok'],
 			'sent_to'  => $send_result['sent'],
 		) );
@@ -996,10 +1062,168 @@ class Scraper_Auto_Shop_Plugin {
 		update_option( 'scraper_support_chat_logs', $logs, false );
 
 		wp_send_json_success( array(
-			'message'  => 'پیام شما با موفقیت ثبت و ارسال شد.',
-			'ai_reply' => $ai_reply,
-			'status'   => $send_result,
+			'message'    => 'پیام شما با موفقیت ثبت شد.',
+			'session_id' => $session_id,
+			'thread_id'  => $thread_id,
+			'ai_reply'   => $ai_reply,
+			'thread'     => $thread,
+			'status'     => $send_result,
 		) );
+	}
+
+	/**
+	 * AJAX endpoint for customer live polling their chat thread.
+	 */
+	public static function ajax_customer_get_thread() {
+		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
+		$session_id = sanitize_text_field( $_POST['session_id'] ?? '' );
+		if ( empty( $session_id ) ) {
+			wp_send_json_error( 'شناسه جلسه ارسال نشده است.' );
+		}
+
+		$threads = self::get_chat_threads();
+		$thread  = null;
+		foreach ( $threads as $t ) {
+			if ( ( $t['session_id'] ?? '' ) === $session_id ) {
+				$thread = $t;
+				break;
+			}
+		}
+
+		if ( ! $thread ) {
+			wp_send_json_success( array(
+				'found'    => false,
+				'messages' => array(),
+			) );
+		}
+
+		wp_send_json_success( array(
+			'found'     => true,
+			'thread_id' => $thread['id'] ?? '',
+			'status'    => $thread['status'] ?? 'pending',
+			'customer'  => array(
+				'name'  => $thread['name'] ?? '',
+				'phone' => $thread['phone'] ?? '',
+				'email' => $thread['email'] ?? '',
+			),
+			'messages'  => $thread['messages'] ?? array(),
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for Admin sending a live reply to a customer's chat thread.
+	 */
+	public static function ajax_admin_send_chat_reply() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$thread_id  = sanitize_text_field( $_POST['thread_id'] ?? '' );
+		$reply_text = sanitize_textarea_field( $_POST['reply_text'] ?? '' );
+
+		if ( empty( $thread_id ) || empty( $reply_text ) ) {
+			wp_send_json_error( 'شناسه گفتگو یا متن پاسخ نمی‌تواند خالی باشد.' );
+		}
+
+		$threads = self::get_chat_threads();
+		$key     = null;
+		if ( isset( $threads[ $thread_id ] ) ) {
+			$key = $thread_id;
+		} else {
+			foreach ( $threads as $k => $t ) {
+				if ( ( $t['id'] ?? '' ) === $thread_id || ( $t['session_id'] ?? '' ) === $thread_id ) {
+					$key = $k;
+					break;
+				}
+			}
+		}
+
+		if ( null === $key || ! isset( $threads[ $key ] ) ) {
+			wp_send_json_error( 'گفتگوی مورد نظر یافت نشد.' );
+		}
+
+		$current_user = wp_get_current_user();
+		$admin_name   = $current_user->display_name ?: 'مدیریت فروشگاه';
+		$now_time     = current_time( 'timestamp' );
+		$time_str     = date_i18n( 'H:i' );
+
+		$admin_msg = array(
+			'id'          => 'msg_' . $now_time . '_' . rand( 100, 999 ),
+			'sender'      => 'admin',
+			'sender_name' => $admin_name,
+			'text'        => $reply_text,
+			'time'        => $time_str,
+			'timestamp'   => $now_time,
+		);
+
+		$threads[ $key ]['messages'][]   = $admin_msg;
+		$threads[ $key ]['status']       = 'replied';
+		$threads[ $key ]['unread_admin'] = false;
+		$threads[ $key ]['updated_at']   = $now_time;
+
+		self::save_chat_threads( $threads );
+
+		wp_send_json_success( array(
+			'message' => 'پاسخ شما با موفقیت برای مشتری ارسال شد و در چت او نمایش داده خواهد شد.',
+			'thread'  => $threads[ $key ],
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for admin retrieving all threads or a specific thread.
+	 */
+	public static function ajax_admin_get_thread() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$threads   = self::get_chat_threads();
+		$thread_id = sanitize_text_field( $_POST['thread_id'] ?? '' );
+
+		if ( ! empty( $thread_id ) ) {
+			foreach ( $threads as $t ) {
+				if ( ( $t['id'] ?? '' ) === $thread_id || ( $t['session_id'] ?? '' ) === $thread_id ) {
+					wp_send_json_success( array( 'thread' => $t ) );
+				}
+			}
+			wp_send_json_error( 'گفتگو پیدا نشد.' );
+		}
+
+		wp_send_json_success( array( 'threads' => array_values( $threads ) ) );
+	}
+
+	/**
+	 * AJAX endpoint for admin deleting a chat thread.
+	 */
+	public static function ajax_admin_delete_thread() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$thread_id = sanitize_text_field( $_POST['thread_id'] ?? '' );
+		if ( empty( $thread_id ) ) {
+			wp_send_json_error( 'شناسه گفتگو ارسال نشده است.' );
+		}
+
+		$threads = self::get_chat_threads();
+		$found   = false;
+		foreach ( $threads as $k => $t ) {
+			if ( ( $t['id'] ?? '' ) === $thread_id || ( $t['session_id'] ?? '' ) === $thread_id ) {
+				unset( $threads[ $k ] );
+				$found = true;
+				break;
+			}
+		}
+
+		if ( $found ) {
+			self::save_chat_threads( $threads );
+			wp_send_json_success( array( 'message' => 'گفتگو با موفقیت حذف گردید.' ) );
+		} else {
+			wp_send_json_error( 'گفتگو یافت نشد.' );
+		}
 	}
 
 	/**
@@ -2692,7 +2916,276 @@ class Scraper_Auto_Shop_Plugin {
 				box-shadow: 0 -4px 15px rgba(0,0,0,0.06);
 			}
 
-			/* Online Support Chat Button & Window */
+			/* Online Support Chat System: 12 Visual Themes, 6 Button Styles & Live Thread */
+			:root {
+				--chat-primary: #2563eb;
+				--chat-primary-rgb: 37, 99, 235;
+				--chat-hdr-bg: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-window-bg: #ffffff;
+				--chat-body-bg: #f8fafc;
+				--chat-user-bg: linear-gradient(135deg, #2563eb, #1d4ed8);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #e2e8f0;
+				--chat-ai-text: #0f172a;
+				--chat-ai-badge: #7c3aed;
+				--chat-admin-bg: #ecfdf5;
+				--chat-admin-border: #a7f3d0;
+				--chat-admin-text: #065f46;
+				--chat-admin-badge: #059669;
+				--chat-btn-bg: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+				--chat-btn-text: #ffffff;
+				--chat-radius: 20px;
+				--chat-backdrop: none;
+			}
+
+			/* 12 Color Schemes & Themes */
+			.support-chat-wrapper.theme-royal-blue {
+				--chat-primary: #2563eb;
+				--chat-primary-rgb: 37, 99, 235;
+				--chat-hdr-bg: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #f8fafc;
+				--chat-user-bg: linear-gradient(135deg, #2563eb, #1d4ed8);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #e2e8f0;
+				--chat-ai-text: #0f172a;
+				--chat-ai-badge: #7c3aed;
+				--chat-admin-bg: #ecfdf5;
+				--chat-admin-border: #a7f3d0;
+				--chat-admin-text: #065f46;
+				--chat-admin-badge: #059669;
+				--chat-btn-bg: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-cyberpunk-dark {
+				--chat-primary: #a855f7;
+				--chat-primary-rgb: 168, 85, 247;
+				--chat-hdr-bg: linear-gradient(135deg, #090514 0%, #2e1065 100%);
+				--chat-hdr-text: #f3e8ff;
+				--chat-window-bg: #0f172a;
+				--chat-body-bg: #0b1120;
+				--chat-user-bg: linear-gradient(135deg, #7c3aed, #a855f7);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #1e293b;
+				--chat-ai-border: #475569;
+				--chat-ai-text: #e2e8f0;
+				--chat-ai-badge: #c084fc;
+				--chat-admin-bg: #064e3b;
+				--chat-admin-border: #10b981;
+				--chat-admin-text: #a7f3d0;
+				--chat-admin-badge: #34d399;
+				--chat-btn-bg: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-emerald-whatsapp {
+				--chat-primary: #059669;
+				--chat-primary-rgb: 5, 150, 105;
+				--chat-hdr-bg: linear-gradient(135deg, #064e3b 0%, #059669 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #efeae2;
+				--chat-user-bg: #d9fdd3;
+				--chat-user-text: #111827;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #e5e7eb;
+				--chat-ai-text: #111827;
+				--chat-ai-badge: #059669;
+				--chat-admin-bg: #e0f2fe;
+				--chat-admin-border: #bae6fd;
+				--chat-admin-text: #075985;
+				--chat-admin-badge: #0284c7;
+				--chat-btn-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-magenta-rose {
+				--chat-primary: #db2777;
+				--chat-primary-rgb: 219, 39, 119;
+				--chat-hdr-bg: linear-gradient(135deg, #831843 0%, #db2777 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #fff1f2;
+				--chat-user-bg: linear-gradient(135deg, #db2777, #f43f5e);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #fecdd3;
+				--chat-ai-text: #881337;
+				--chat-ai-badge: #e11d48;
+				--chat-admin-bg: #f0fdf4;
+				--chat-admin-border: #bbf7d0;
+				--chat-admin-text: #166534;
+				--chat-admin-badge: #15803d;
+				--chat-btn-bg: linear-gradient(135deg, #db2777 0%, #f43f5e 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-gold-vip {
+				--chat-primary: #d97706;
+				--chat-primary-rgb: 217, 119, 6;
+				--chat-hdr-bg: linear-gradient(135deg, #09090b 0%, #1c1917 100%);
+				--chat-hdr-text: #fef08a;
+				--chat-window-bg: #18181b;
+				--chat-body-bg: #111113;
+				--chat-user-bg: linear-gradient(135deg, #b45309, #d97706);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #27272a;
+				--chat-ai-border: #78350f;
+				--chat-ai-text: #fef3c7;
+				--chat-ai-badge: #f59e0b;
+				--chat-admin-bg: #292524;
+				--chat-admin-border: #f59e0b;
+				--chat-admin-text: #fef9c3;
+				--chat-admin-badge: #fbbf24;
+				--chat-btn-bg: linear-gradient(135deg, #b45309 0%, #f59e0b 100%);
+				--chat-btn-text: #09090b;
+			}
+
+			.support-chat-wrapper.theme-minimal-slate {
+				--chat-primary: #334155;
+				--chat-primary-rgb: 51, 65, 85;
+				--chat-hdr-bg: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #f8fafc;
+				--chat-user-bg: #334155;
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #cbd5e1;
+				--chat-ai-text: #0f172a;
+				--chat-ai-badge: #475569;
+				--chat-admin-bg: #f1f5f9;
+				--chat-admin-border: #94a3b8;
+				--chat-admin-text: #0f172a;
+				--chat-admin-badge: #0f172a;
+				--chat-btn-bg: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-aurora-gradient {
+				--chat-primary: #6366f1;
+				--chat-primary-rgb: 99, 102, 241;
+				--chat-hdr-bg: linear-gradient(135deg, #4338ca 0%, #06b6d4 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #f5f3ff;
+				--chat-user-bg: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #c7d2fe;
+				--chat-ai-text: #312e81;
+				--chat-ai-badge: #4f46e5;
+				--chat-admin-bg: #ecfeff;
+				--chat-admin-border: #a5f3fc;
+				--chat-admin-text: #164e63;
+				--chat-admin-badge: #0891b2;
+				--chat-btn-bg: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-sunset-coral {
+				--chat-primary: #ea580c;
+				--chat-primary-rgb: 234, 88, 12;
+				--chat-hdr-bg: linear-gradient(135deg, #9a3412 0%, #ea580c 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #fff7ed;
+				--chat-user-bg: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #fed7aa;
+				--chat-ai-text: #7c2d12;
+				--chat-ai-badge: #c2410c;
+				--chat-admin-bg: #fef2f2;
+				--chat-admin-border: #fecaca;
+				--chat-admin-text: #991b1b;
+				--chat-admin-badge: #b91c1c;
+				--chat-btn-bg: linear-gradient(135deg, #ea580c 0%, #f97316 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-telegram-ocean {
+				--chat-primary: #0284c7;
+				--chat-primary-rgb: 2, 132, 199;
+				--chat-hdr-bg: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #f0f9ff;
+				--chat-user-bg: #e0f2fe;
+				--chat-user-text: #0369a1;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #bae6fd;
+				--chat-ai-text: #0c4a6e;
+				--chat-ai-badge: #0284c7;
+				--chat-admin-bg: #f0fdf4;
+				--chat-admin-border: #bbf7d0;
+				--chat-admin-text: #14532d;
+				--chat-admin-badge: #16a34a;
+				--chat-btn-bg: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-warm-caramel {
+				--chat-primary: #92400e;
+				--chat-primary-rgb: 146, 64, 14;
+				--chat-hdr-bg: linear-gradient(135deg, #451a03 0%, #92400e 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #fffbeb;
+				--chat-user-bg: linear-gradient(135deg, #b45309 0%, #92400e 100%);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #fde68a;
+				--chat-ai-text: #78350f;
+				--chat-ai-badge: #b45309;
+				--chat-admin-bg: #fef3c7;
+				--chat-admin-border: #f59e0b;
+				--chat-admin-text: #78350f;
+				--chat-admin-badge: #d97706;
+				--chat-btn-bg: linear-gradient(135deg, #78350f 0%, #b45309 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-mint-pastel {
+				--chat-primary: #0d9488;
+				--chat-primary-rgb: 13, 148, 136;
+				--chat-hdr-bg: linear-gradient(135deg, #115e59 0%, #0d9488 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-body-bg: #f0fdfa;
+				--chat-user-bg: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: #ffffff;
+				--chat-ai-border: #ccfbf1;
+				--chat-ai-text: #134e4a;
+				--chat-ai-badge: #0d9488;
+				--chat-admin-bg: #ecfdf5;
+				--chat-admin-border: #a7f3d0;
+				--chat-admin-text: #065f46;
+				--chat-admin-badge: #059669;
+				--chat-btn-bg: linear-gradient(135deg, #0d9488 0%, #2dd4bf 100%);
+				--chat-btn-text: #ffffff;
+			}
+
+			.support-chat-wrapper.theme-frosted-glass {
+				--chat-primary: #2563eb;
+				--chat-primary-rgb: 37, 99, 235;
+				--chat-hdr-bg: linear-gradient(135deg, rgba(30, 41, 59, 0.92) 0%, rgba(37, 99, 235, 0.88) 100%);
+				--chat-hdr-text: #ffffff;
+				--chat-window-bg: rgba(255, 255, 255, 0.92);
+				--chat-body-bg: rgba(248, 250, 252, 0.82);
+				--chat-backdrop: blur(18px);
+				--chat-user-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(59, 130, 246, 0.9));
+				--chat-user-text: #ffffff;
+				--chat-ai-bg: rgba(255, 255, 255, 0.95);
+				--chat-ai-border: rgba(203, 213, 225, 0.8);
+				--chat-ai-text: #0f172a;
+				--chat-ai-badge: #4f46e5;
+				--chat-admin-bg: rgba(236, 253, 245, 0.95);
+				--chat-admin-border: rgba(167, 243, 208, 0.8);
+				--chat-admin-text: #065f46;
+				--chat-admin-badge: #059669;
+				--chat-btn-bg: rgba(255, 255, 255, 0.92);
+				--chat-btn-text: #0f172a;
+			}
+
+			/* Chat Wrapper Positioning */
 			.support-chat-wrapper {
 				position: fixed;
 				bottom: 25px;
@@ -2705,32 +3198,180 @@ class Scraper_Auto_Shop_Plugin {
 			.support-chat-wrapper.pos-right {
 				right: 25px;
 			}
-			.support-chat-btn {
-				display: flex;
+
+			/* ================= 6 Button Styles ================= */
+			/* 1. Pill with Label (Default) */
+			.support-chat-wrapper.btn-pill-label .support-chat-btn {
+				display: inline-flex;
 				align-items: center;
 				gap: 10px;
-				background: linear-gradient(135deg, var(--sp-accent, #2563eb) 0%, #7c3aed 100%);
-				color: #fff;
+				background: var(--chat-btn-bg);
+				color: var(--chat-btn-text);
 				border: none;
 				border-radius: 50px;
-				padding: 12px 20px;
+				padding: 12px 22px;
 				cursor: pointer;
-				box-shadow: 0 10px 25px rgba(37, 99, 235, 0.4);
-				transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+				box-shadow: 0 10px 25px rgba(var(--chat-primary-rgb), 0.38);
+				transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 				position: relative;
 				font-size: 0.95rem;
-				font-weight: 700;
+				font-weight: 800;
 			}
-			.support-chat-btn:hover {
+			.support-chat-wrapper.btn-pill-label .support-chat-btn:hover {
 				transform: translateY(-3px) scale(1.03);
-				box-shadow: 0 14px 30px rgba(37, 99, 235, 0.5);
+				box-shadow: 0 14px 30px rgba(var(--chat-primary-rgb), 0.5);
 			}
+
+			/* 2. Modern Glowing Circle */
+			.support-chat-wrapper.btn-circle-glow .support-chat-btn {
+				width: 60px;
+				height: 60px;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: var(--chat-btn-bg);
+				color: var(--chat-btn-text);
+				border: none;
+				cursor: pointer;
+				box-shadow: 0 0 25px rgba(var(--chat-primary-rgb), 0.65), 0 10px 20px rgba(0,0,0,0.15);
+				transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+				position: relative;
+			}
+			.support-chat-wrapper.btn-circle-glow .support-chat-btn .support-chat-label {
+				display: none;
+			}
+			.support-chat-wrapper.btn-circle-glow .support-chat-btn:hover {
+				transform: translateY(-4px) scale(1.08);
+				box-shadow: 0 0 35px rgba(var(--chat-primary-rgb), 0.85), 0 15px 25px rgba(0,0,0,0.2);
+			}
+
+			/* 3. Live Support Avatar with Ring */
+			.support-chat-wrapper.btn-avatar-ring .support-chat-btn {
+				width: 62px;
+				height: 62px;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: #ffffff;
+				color: #1e293b;
+				border: 3px solid var(--chat-primary);
+				cursor: pointer;
+				box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+				position: relative;
+				transition: all 0.3s ease;
+				font-size: 1.7rem;
+			}
+			.support-chat-wrapper.btn-avatar-ring .support-chat-btn .support-chat-label {
+				display: none;
+			}
+			.support-chat-wrapper.btn-avatar-ring .support-chat-btn:hover {
+				transform: scale(1.08);
+			}
+
+			/* 4. Frosted Glassmorphism Floating Bubble */
+			.support-chat-wrapper.btn-frosted-glass .support-chat-btn {
+				display: inline-flex;
+				align-items: center;
+				gap: 10px;
+				background: rgba(255, 255, 255, 0.85);
+				backdrop-filter: blur(14px);
+				-webkit-backdrop-filter: blur(14px);
+				border: 1.5px solid rgba(255, 255, 255, 0.7);
+				color: #0f172a;
+				border-radius: 50px;
+				padding: 12px 22px;
+				cursor: pointer;
+				box-shadow: 0 12px 35px rgba(0, 0, 0, 0.12);
+				font-size: 0.95rem;
+				font-weight: 800;
+				transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+				position: relative;
+			}
+			.support-chat-wrapper.btn-frosted-glass .support-chat-btn:hover {
+				background: rgba(255, 255, 255, 0.95);
+				transform: translateY(-3px);
+				box-shadow: 0 16px 40px rgba(0,0,0,0.16);
+			}
+
+			/* 5. Edge Tab Ribbon */
+			.support-chat-wrapper.btn-edge-tab.pos-left {
+				left: 0 !important;
+				bottom: 50% !important;
+				transform: translateY(50%);
+			}
+			.support-chat-wrapper.btn-edge-tab.pos-right {
+				right: 0 !important;
+				bottom: 50% !important;
+				transform: translateY(50%);
+			}
+			.support-chat-wrapper.btn-edge-tab .support-chat-btn {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				background: var(--chat-btn-bg);
+				color: var(--chat-btn-text);
+				border: none;
+				padding: 14px 18px;
+				cursor: pointer;
+				font-size: 0.92rem;
+				font-weight: 800;
+				box-shadow: 0 8px 25px rgba(0,0,0,0.18);
+				transition: all 0.2s ease;
+			}
+			.support-chat-wrapper.btn-edge-tab.pos-left .support-chat-btn {
+				border-radius: 0 16px 16px 0;
+			}
+			.support-chat-wrapper.btn-edge-tab.pos-right .support-chat-btn {
+				border-radius: 16px 0 0 16px;
+			}
+
+			/* 6. Sonar / Radar Double Wave */
+			.support-chat-wrapper.btn-radar-pulse .support-chat-btn {
+				width: 60px;
+				height: 60px;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: var(--chat-btn-bg);
+				color: var(--chat-btn-text);
+				border: none;
+				cursor: pointer;
+				position: relative;
+				box-shadow: 0 10px 25px rgba(var(--chat-primary-rgb), 0.4);
+				transition: transform 0.3s;
+			}
+			.support-chat-wrapper.btn-radar-pulse .support-chat-btn .support-chat-label {
+				display: none;
+			}
+			.support-chat-wrapper.btn-radar-pulse .support-chat-btn::before,
+			.support-chat-wrapper.btn-radar-pulse .support-chat-btn::after {
+				content: "";
+				position: absolute;
+				top: 0; left: 0; right: 0; bottom: 0;
+				border-radius: 50%;
+				border: 2px solid var(--chat-primary);
+				animation: radarPulse 2.4s infinite cubic-bezier(0.25, 1, 0.5, 1);
+				pointer-events: none;
+			}
+			.support-chat-wrapper.btn-radar-pulse .support-chat-btn::after {
+				animation-delay: 1.2s;
+			}
+			@keyframes radarPulse {
+				0% { transform: scale(1); opacity: 0.9; }
+				100% { transform: scale(1.85); opacity: 0; }
+			}
+
+			/* Common Button SVGs and Badges */
 			.support-chat-btn svg {
 				width: 24px;
 				height: 24px;
 				fill: none;
 				stroke: currentColor;
 				stroke-width: 2;
+				flex-shrink: 0;
 			}
 			.support-chat-badge {
 				position: absolute;
@@ -2755,12 +3396,14 @@ class Scraper_Auto_Shop_Plugin {
 				display: none;
 				position: fixed;
 				bottom: 90px;
-				width: 370px;
+				width: 380px;
 				max-width: calc(100vw - 30px);
-				background: #ffffff;
-				border-radius: 20px;
-				box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22);
-				border: 1px solid rgba(226, 232, 240, 0.9);
+				background: var(--chat-window-bg);
+				backdrop-filter: var(--chat-backdrop);
+				-webkit-backdrop-filter: var(--chat-backdrop);
+				border-radius: var(--chat-radius);
+				box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+				border: 1px solid rgba(226, 232, 240, 0.85);
 				z-index: 9999;
 				overflow: hidden;
 				flex-direction: column;
@@ -2772,6 +3415,14 @@ class Scraper_Auto_Shop_Plugin {
 			.support-chat-wrapper.pos-right .support-chat-window {
 				right: 25px;
 			}
+			.support-chat-wrapper.btn-edge-tab.pos-left .support-chat-window {
+				left: 25px;
+				bottom: 80px;
+			}
+			.support-chat-wrapper.btn-edge-tab.pos-right .support-chat-window {
+				right: 25px;
+				bottom: 80px;
+			}
 			.support-chat-window.open {
 				display: flex;
 			}
@@ -2782,8 +3433,8 @@ class Scraper_Auto_Shop_Plugin {
 
 			/* Chat Header */
 			.chat-hdr {
-				background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-				color: #ffffff;
+				background: var(--chat-hdr-bg);
+				color: var(--chat-hdr-text);
 				padding: 16px 20px;
 				display: flex;
 				justify-content: space-between;
@@ -2798,19 +3449,19 @@ class Scraper_Auto_Shop_Plugin {
 				width: 44px;
 				height: 44px;
 				border-radius: 50%;
-				background: linear-gradient(135deg, #2563eb, #7c3aed);
+				background: rgba(255, 255, 255, 0.2);
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				font-size: 1.3rem;
+				font-size: 1.4rem;
 				position: relative;
-				box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+				box-shadow: 0 4px 10px rgba(0,0,0,0.15);
 			}
 			.chat-agent-avatar::after {
 				content: '';
 				position: absolute;
-				bottom: 0;
-				left: 0;
+				bottom: 1px;
+				left: 1px;
 				width: 11px;
 				height: 11px;
 				background: #10b981;
@@ -2821,17 +3472,17 @@ class Scraper_Auto_Shop_Plugin {
 				margin: 0 0 3px;
 				font-size: 1.05rem;
 				font-weight: 800;
-				color: #fff;
+				color: var(--chat-hdr-text);
 			}
 			.chat-hdr-info span {
 				font-size: 0.78rem;
-				color: #94a3b8;
+				opacity: 0.85;
 				display: flex;
 				align-items: center;
 				gap: 4px;
 			}
 			.chat-close-btn {
-				background: rgba(255, 255, 255, 0.12);
+				background: rgba(255, 255, 255, 0.16);
 				border: none;
 				color: #fff;
 				width: 32px;
@@ -2845,63 +3496,175 @@ class Scraper_Auto_Shop_Plugin {
 				transition: background 0.2s;
 			}
 			.chat-close-btn:hover {
-				background: rgba(255, 255, 255, 0.25);
+				background: rgba(255, 255, 255, 0.32);
 			}
 
-			/* Chat Body */
+			/* Chat User Mini-Bar (Shows when user identity is known) */
+			.chat-user-bar {
+				background: #f1f5f9;
+				border-bottom: 1px solid #e2e8f0;
+				padding: 6px 16px;
+				font-size: 0.8rem;
+				color: #475569;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			.chat-user-bar strong {
+				color: #1e293b;
+			}
+			.chat-user-edit-btn {
+				background: none;
+				border: none;
+				color: var(--chat-primary);
+				cursor: pointer;
+				font-size: 0.78rem;
+				font-weight: 700;
+				padding: 2px 6px;
+			}
+
+			/* Chat Body & Continuous Stream */
 			.chat-body-scroll {
 				padding: 16px 18px;
-				max-height: 280px;
-				min-height: 150px;
+				height: 320px;
+				max-height: 50vh;
 				overflow-y: auto;
-				background: #f8fafc;
+				background: var(--chat-body-bg);
 				display: flex;
 				flex-direction: column;
 				gap: 12px;
+				scroll-behavior: smooth;
 			}
 			.chat-msg-bubble {
-				max-width: 85%;
-				padding: 12px 15px;
-				border-radius: 14px;
+				max-width: 86%;
+				padding: 11px 15px;
+				border-radius: 16px;
 				font-size: 0.9rem;
-				line-height: 1.5;
+				line-height: 1.55;
 				position: relative;
 				word-break: break-word;
+				animation: msgPop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 			}
-			.chat-msg-bubble.incoming {
-				align-self: flex-start;
-				background: #ffffff;
-				color: #1e293b;
-				border-bottom-right-radius: 4px;
-				box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-				border: 1px solid #e2e8f0;
+			@keyframes msgPop {
+				from { opacity: 0; transform: translateY(8px) scale(0.96); }
+				to { opacity: 1; transform: translateY(0) scale(1); }
 			}
 			.chat-msg-bubble.outgoing {
 				align-self: flex-end;
-				background: #2563eb;
-				color: #ffffff;
+				background: var(--chat-user-bg);
+				color: var(--chat-user-text);
 				border-bottom-left-radius: 4px;
-				box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+				box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+			}
+			.chat-msg-bubble.incoming {
+				align-self: flex-start;
+				border-bottom-right-radius: 4px;
+				box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+			}
+			.chat-msg-bubble.incoming.ai-bubble {
+				background: var(--chat-ai-bg);
+				color: var(--chat-ai-text);
+				border: 1px solid var(--chat-ai-border);
+			}
+			.chat-msg-bubble.incoming.admin-bubble {
+				background: var(--chat-admin-bg);
+				color: var(--chat-admin-text);
+				border: 1px solid var(--chat-admin-border);
+				border-left: 3px solid var(--chat-admin-badge);
+			}
+			.chat-msg-bubble.incoming.welcome-bubble {
+				background: var(--chat-ai-bg);
+				color: var(--chat-ai-text);
+				border: 1px solid var(--chat-ai-border);
+			}
+			.chat-msg-sender-badge {
+				font-size: 0.78rem;
+				font-weight: 800;
+				margin-bottom: 4px;
+				display: flex;
+				align-items: center;
+				gap: 4px;
+			}
+			.chat-msg-bubble.incoming.ai-bubble .chat-msg-sender-badge {
+				color: var(--chat-ai-badge);
+			}
+			.chat-msg-bubble.incoming.admin-bubble .chat-msg-sender-badge {
+				color: var(--chat-admin-badge);
 			}
 			.chat-msg-time {
-				font-size: 0.7rem;
-				margin-top: 4px;
-				opacity: 0.7;
+				font-size: 0.68rem;
+				margin-top: 5px;
+				opacity: 0.75;
 				text-align: left;
+				direction: ltr;
 			}
 
-			/* Chat Footer Form */
+			/* Typing Indicator Animation */
+			.chat-typing-bubble {
+				align-self: flex-start;
+				background: #ffffff;
+				border: 1px solid #e2e8f0;
+				padding: 10px 16px;
+				border-radius: 14px;
+				border-bottom-right-radius: 4px;
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+			}
+			.chat-typing-dots {
+				display: inline-flex;
+				gap: 4px;
+			}
+			.chat-typing-dots span {
+				width: 7px;
+				height: 7px;
+				background: var(--chat-primary);
+				border-radius: 50%;
+				animation: dotPulse 1.2s infinite ease-in-out;
+			}
+			.chat-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+			.chat-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+			@keyframes dotPulse {
+				0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+				40% { transform: scale(1); opacity: 1; }
+			}
+
+			/* Chat Footer & Inputs */
 			.chat-footer {
-				padding: 16px 18px;
+				padding: 14px 16px;
 				background: #ffffff;
 				border-top: 1px solid #f1f5f9;
 			}
-			.chat-input-group {
-				margin-bottom: 10px;
+			.chat-contact-fields {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				margin-bottom: 8px;
+				transition: all 0.3s ease;
 			}
-			.chat-input-group input,
-			.chat-input-group textarea {
+			.chat-contact-fields.collapsed {
+				display: none;
+			}
+			.chat-input-row {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+			}
+			.chat-input-row input,
+			.chat-contact-fields input {
 				width: 100%;
+				box-sizing: border-box;
+				border: 1.5px solid #e2e8f0;
+				border-radius: 10px;
+				padding: 8px 12px;
+				font-family: inherit;
+				font-size: 0.85rem;
+				color: #1e293b;
+				background: #f8fafc;
+				transition: all 0.2s ease;
+			}
+			.chat-msg-textarea {
+				flex: 1;
 				box-sizing: border-box;
 				border: 1.5px solid #e2e8f0;
 				border-radius: 10px;
@@ -2910,44 +3673,50 @@ class Scraper_Auto_Shop_Plugin {
 				font-size: 0.88rem;
 				color: #1e293b;
 				background: #f8fafc;
+				resize: none;
+				min-height: 44px;
+				max-height: 100px;
 				transition: all 0.2s ease;
 			}
-			.chat-input-group input:focus,
-			.chat-input-group textarea:focus {
+			.chat-input-row input:focus,
+			.chat-contact-fields input:focus,
+			.chat-msg-textarea:focus {
 				outline: none;
-				border-color: #2563eb;
+				border-color: var(--chat-primary);
 				background: #fff;
-				box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+				box-shadow: 0 0 0 3px rgba(var(--chat-primary-rgb), 0.12);
 			}
-			.chat-submit-btn {
-				width: 100%;
-				background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+			.chat-send-btn {
+				background: var(--chat-primary);
 				color: #fff;
 				border: none;
 				border-radius: 10px;
-				padding: 11px;
-				font-family: inherit;
-				font-size: 0.95rem;
-				font-weight: 700;
+				width: 44px;
+				height: 44px;
+				flex-shrink: 0;
 				cursor: pointer;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				gap: 8px;
 				transition: all 0.2s;
-				box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+				box-shadow: 0 4px 12px rgba(var(--chat-primary-rgb), 0.3);
 			}
-			.chat-submit-btn:hover {
+			.chat-send-btn svg {
+				width: 20px;
+				height: 20px;
+				fill: currentColor;
+			}
+			.chat-send-btn:hover {
 				opacity: 0.95;
-				transform: translateY(-1px);
+				transform: scale(1.04);
 			}
-			.chat-submit-btn:disabled {
-				opacity: 0.6;
+			.chat-send-btn:disabled {
+				opacity: 0.5;
 				cursor: not-allowed;
 				transform: none;
 			}
 
-			/* Mobile Responsiveness */
+			/* Mobile Responsiveness for Storefront Chat */
 			@media (max-width: 768px) {
 				.support-chat-wrapper {
 					bottom: 75px !important;
@@ -2959,17 +3728,21 @@ class Scraper_Auto_Shop_Plugin {
 					right: 15px !important;
 				}
 				.support-chat-btn .support-chat-label {
-					display: none;
+					display: none !important;
 				}
 				.support-chat-btn {
-					padding: 12px;
-					border-radius: 50%;
+					padding: 14px !important;
+					border-radius: 50% !important;
 				}
 				.support-chat-window {
 					bottom: 140px !important;
 					left: 15px !important;
 					right: 15px !important;
 					width: auto !important;
+					max-height: calc(100vh - 160px) !important;
+				}
+				.chat-body-scroll {
+					height: 260px !important;
 				}
 			}
 			.mob-bar-item {
@@ -3547,72 +4320,94 @@ class Scraper_Auto_Shop_Plugin {
 
 			<?php if ( ! empty( $settings['enable_support_chat'] ) ) : ?>
 			<!-- Floating Online Support Chat Widget -->
-			<div class="support-chat-wrapper <?php echo 'right' === ( $settings['chat_button_position'] ?? 'left' ) ? 'pos-right' : 'pos-left'; ?>" id="supportChatWrap">
+			<div class="support-chat-wrapper <?php echo 'right' === ( $settings['chat_button_position'] ?? 'left' ) ? 'pos-right' : 'pos-left'; ?> theme-<?php echo esc_attr( $settings['chat_theme'] ?? 'royal-blue' ); ?> btn-<?php echo esc_attr( $settings['chat_button_style'] ?? 'pill-label' ); ?>" id="supportChatWrap">
+				
+				<!-- Trigger Button (Custom styled per selected design) -->
 				<button type="button" class="support-chat-btn" id="supportChatTrigger" aria-label="پشتیبانی آنلاین">
 					<span class="support-chat-badge"></span>
-					<svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+					<?php if ( ( $settings['chat_button_style'] ?? 'pill-label' ) === 'avatar-ring' ) : ?>
+						<span style="font-size:1.6rem; line-height:1;">👩‍💼</span>
+					<?php else : ?>
+						<svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+					<?php endif; ?>
 					<span class="support-chat-label">پشتیبانی آنلاین</span>
 				</button>
 
+				<!-- Popup Chat Window Box -->
 				<div class="support-chat-window" id="supportChatBox">
+					<!-- Header Bar -->
 					<div class="chat-hdr">
 						<div class="chat-hdr-agent">
 							<div class="chat-agent-avatar">👩‍💼</div>
 							<div class="chat-hdr-info">
 								<h4><?php echo esc_html( $settings['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?></h4>
-								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی سریع</span>
+								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند</span>
 							</div>
 						</div>
 						<button type="button" class="chat-close-btn" id="supportChatClose" aria-label="بستن">✕</button>
 					</div>
 
+					<!-- Customer Mini Bar (Collapsed view when customer info is saved) -->
+					<div class="chat-user-bar" id="chatUserBar" style="display:none;">
+						<div>👤 گفتگو با: <strong id="chatUserBarName">مشتری</strong> <span id="chatUserBarPhone" dir="ltr" style="font-weight:700;"></span></div>
+						<button type="button" class="chat-user-edit-btn" id="chatUserEditBtn">ویرایش مشخصات</button>
+					</div>
+
+					<!-- Continuous Messenger Scroll Area -->
 					<div class="chat-body-scroll" id="supportChatBody">
-						<div class="chat-msg-bubble incoming">
-							<div style="font-weight:700; font-size:0.8rem; color:#2563eb; margin-bottom:4px;">پشتیبانی فروشگاه</div>
-							<div><?php echo nl2br( esc_html( $settings['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.' ) ); ?></div>
+						<div class="chat-msg-bubble incoming welcome-bubble">
+							<div class="chat-msg-sender-badge">🌸 پشتیبانی فروشگاه</div>
+							<div><?php echo nl2br( esc_html( $settings['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید بنویسید تا همکاران ما سریعاً پاسخ دهند.' ) ); ?></div>
 							<div class="chat-msg-time"><?php echo esc_html( date_i18n( 'H:i' ) ); ?></div>
 						</div>
 					</div>
 
+					<!-- Typing Indicator Animation -->
+					<div id="chatTypingIndicator" style="display:none; padding:0 18px 8px;">
+						<div class="chat-typing-bubble">
+							<span style="font-size:0.78rem; font-weight:700; color:var(--chat-primary);" id="chatTypingText">🤖 در حال نگارش پاسخ...</span>
+							<div class="chat-typing-dots"><span></span><span></span><span></span></div>
+						</div>
+					</div>
+
+					<!-- Message Composer Footer -->
 					<div class="chat-footer">
 						<form id="supportChatForm" onsubmit="return false;">
-							<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
-								<div class="chat-input-group">
-									<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_name_required'] ) ? 'required' : ''; ?> maxlength="60">
-								</div>
-							<?php endif; ?>
+							<!-- Contact inputs (Name, Phone, Email, Subject) shown if not filled -->
+							<div class="chat-contact-fields" id="chatContactFields">
+								<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
+									<div>
+										<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_name_required'] ) ? 'required' : ''; ?> maxlength="60">
+									</div>
+								<?php endif; ?>
 
-							<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
-								<div class="chat-input-group">
-									<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_phone_required'] ) ? 'required' : ''; ?> maxlength="20" dir="ltr">
-								</div>
-							<?php endif; ?>
+								<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
+									<div>
+										<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_phone_required'] ) ? 'required' : ''; ?> maxlength="20" dir="ltr">
+									</div>
+								<?php endif; ?>
 
-							<?php if ( ! empty( $settings['chat_field_email_enable'] ) ) : ?>
-								<div class="chat-input-group">
-									<input type="email" id="chatEmailInput" placeholder="آدرس ایمیل <?php echo ! empty( $settings['chat_field_email_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_email_required'] ) ? 'required' : ''; ?> maxlength="80" dir="ltr">
-								</div>
-							<?php endif; ?>
+								<?php if ( ! empty( $settings['chat_field_email_enable'] ) ) : ?>
+									<div>
+										<input type="email" id="chatEmailInput" placeholder="آدرس ایمیل <?php echo ! empty( $settings['chat_field_email_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_email_required'] ) ? 'required' : ''; ?> maxlength="80" dir="ltr">
+									</div>
+								<?php endif; ?>
 
-							<?php if ( ! empty( $settings['chat_field_subject_enable'] ) ) : ?>
-								<div class="chat-input-group">
-									<input type="text" id="chatSubjectInput" placeholder="موضوع سوال <?php echo ! empty( $settings['chat_field_subject_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_subject_required'] ) ? 'required' : ''; ?> maxlength="100">
-								</div>
-							<?php endif; ?>
-
-							<div class="chat-input-group">
-								<textarea id="chatMsgInput" placeholder="پیام یا سوال شما... (الزامی)*" rows="2" required maxlength="1000"></textarea>
+								<?php if ( ! empty( $settings['chat_field_subject_enable'] ) ) : ?>
+									<div>
+										<input type="text" id="chatSubjectInput" placeholder="موضوع سوال <?php echo ! empty( $settings['chat_field_subject_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_subject_required'] ) ? 'required' : ''; ?> maxlength="100">
+									</div>
+								<?php endif; ?>
 							</div>
-							<button type="submit" id="chatSendBtn" class="chat-submit-btn">
-								<span>ارسال پیام به پشتیبانی 🚀</span>
-							</button>
+
+							<!-- Continuous Message Textarea & Send Button -->
+							<div class="chat-input-row">
+								<textarea id="chatMsgInput" class="chat-msg-textarea" placeholder="پیام یا سوال شما... (Enter)" rows="1" required maxlength="1200"></textarea>
+								<button type="submit" id="chatSendBtn" class="chat-send-btn" aria-label="ارسال">
+									<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+								</button>
+							</div>
 						</form>
-						<div id="chatSuccessCard" style="display:none; text-align:center; padding:15px 5px;">
-							<div style="font-size:2.2rem; margin-bottom:8px;">✅</div>
-							<div style="font-weight:800; color:#059669; font-size:1rem; margin-bottom:6px;">پیام شما ارسال شد!</div>
-							<div style="font-size:0.85rem; color:#64748b; line-height:1.5;">کارشناسان پشتیبانی پیام شما را دریافت کردند و به زودی از طریق پیام‌رسان یا تماس پاسخ خواهند داد.</div>
-							<button type="button" id="chatAskAnotherBtn" style="margin-top:12px; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:8px; padding:6px 14px; font-family:inherit; font-size:0.85rem; cursor:pointer; color:#334155; font-weight:700;">ارسال پیام جدید</button>
-						</div>
 					</div>
 				</div>
 			</div>
@@ -4349,24 +5144,78 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
-			// Support Chat Widget Logic
-			const chatTrigger = document.getElementById('supportChatTrigger');
-			const chatBox = document.getElementById('supportChatBox');
-			const chatClose = document.getElementById('supportChatClose');
-			const chatForm = document.getElementById('supportChatForm');
-			const chatSendBtn = document.getElementById('chatSendBtn');
-			const chatBody = document.getElementById('supportChatBody');
-			const chatSuccessCard = document.getElementById('chatSuccessCard');
-			const chatAskAnotherBtn = document.getElementById('chatAskAnotherBtn');
+			// Support Chat Widget Continuous Messenger Logic
+			(function(){
+				const chatTrigger = document.getElementById('supportChatTrigger');
+				const chatBox = document.getElementById('supportChatBox');
+				const chatClose = document.getElementById('supportChatClose');
+				const chatForm = document.getElementById('supportChatForm');
+				const chatSendBtn = document.getElementById('chatSendBtn');
+				const chatBody = document.getElementById('supportChatBody');
+				const chatMsgInput = document.getElementById('chatMsgInput');
+				const chatContactFields = document.getElementById('chatContactFields');
+				const chatUserBar = document.getElementById('chatUserBar');
+				const chatUserBarName = document.getElementById('chatUserBarName');
+				const chatUserBarPhone = document.getElementById('chatUserBarPhone');
+				const chatUserEditBtn = document.getElementById('chatUserEditBtn');
+				const chatTypingIndicator = document.getElementById('chatTypingIndicator');
+				const chatTypingText = document.getElementById('chatTypingText');
 
-			if (chatTrigger && chatBox) {
+				if (!chatTrigger || !chatBox) return;
+
+				// Session ID management
+				let sessionId = localStorage.getItem('scraper_chat_session_id');
+				if (!sessionId) {
+					sessionId = 'sess_' + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+					localStorage.setItem('scraper_chat_session_id', sessionId);
+				}
+
+				// Restore saved customer info
+				const savedName = localStorage.getItem('scraper_chat_customer_name') || '';
+				const savedPhone = localStorage.getItem('scraper_chat_customer_phone') || '';
+				const savedEmail = localStorage.getItem('scraper_chat_customer_email') || '';
+
+				const nameInput = document.getElementById('chatNameInput');
+				const phoneInput = document.getElementById('chatPhoneInput');
+				const emailInput = document.getElementById('chatEmailInput');
+
+				if (nameInput && savedName) nameInput.value = savedName;
+				if (phoneInput && savedPhone) phoneInput.value = savedPhone;
+				if (emailInput && savedEmail) emailInput.value = savedEmail;
+
+				function updateCustomerBar() {
+					const curName = (nameInput ? nameInput.value.trim() : '') || savedName;
+					const curPhone = (phoneInput ? phoneInput.value.trim() : '') || savedPhone;
+					if (curName || curPhone) {
+						if (chatUserBarName) chatUserBarName.textContent = curName || 'کاربر';
+						if (chatUserBarPhone) chatUserBarPhone.textContent = curPhone ? ' • ' + curPhone : '';
+						if (chatUserBar) chatUserBar.style.display = 'flex';
+						if (chatContactFields) chatContactFields.classList.add('collapsed');
+					}
+				}
+
+				if (savedName || savedPhone) {
+					updateCustomerBar();
+				}
+
+				if (chatUserEditBtn) {
+					chatUserEditBtn.addEventListener('click', () => {
+						if (chatContactFields) {
+							chatContactFields.classList.toggle('collapsed');
+							if (!chatContactFields.classList.contains('collapsed')) {
+								if (phoneInput) phoneInput.focus();
+							}
+						}
+					});
+				}
+
+				// Toggle Chat Window
 				chatTrigger.addEventListener('click', () => {
 					chatBox.classList.toggle('open');
 					if (chatBox.classList.contains('open')) {
-						setTimeout(() => {
-							const phoneInput = document.getElementById('chatPhoneInput');
-							if (phoneInput) phoneInput.focus();
-						}, 150);
+						chatBody.scrollTop = chatBody.scrollHeight;
+						pollThreadMessages();
+						if (chatMsgInput) chatMsgInput.focus();
 					}
 				});
 
@@ -4376,13 +5225,87 @@ class Scraper_Auto_Shop_Plugin {
 					});
 				}
 
-				// Close chat if clicked outside
+				// Close on click outside
 				document.addEventListener('click', (e) => {
 					if (chatBox.classList.contains('open') && !chatBox.contains(e.target) && !chatTrigger.contains(e.target)) {
 						chatBox.classList.remove('open');
 					}
 				});
 
+				// Auto-expand textarea on Enter (Shift+Enter for newline)
+				if (chatMsgInput) {
+					chatMsgInput.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter' && !e.shiftKey) {
+							e.preventDefault();
+							if (chatForm) {
+								const submitEvent = new Event('submit', { cancelable: true, bubbles: true });
+								chatForm.dispatchEvent(submitEvent);
+							}
+						}
+					});
+				}
+
+				// Track rendered message IDs to avoid duplicates
+				const renderedMsgIds = new Set();
+
+				function renderMessageBubble(msg) {
+					if (!msg || !msg.id || renderedMsgIds.has(msg.id)) return;
+					renderedMsgIds.add(msg.id);
+
+					const bubble = document.createElement('div');
+					const timeStr = msg.time || '';
+
+					if (msg.sender === 'customer') {
+						bubble.className = 'chat-msg-bubble outgoing';
+						bubble.innerHTML = `<div>${escapeHtml(msg.text)}</div><div class="chat-msg-time">${escapeHtml(timeStr)} ✓✓</div>`;
+					} else if (msg.sender === 'ai') {
+						bubble.className = 'chat-msg-bubble incoming ai-bubble';
+						bubble.innerHTML = `<div class="chat-msg-sender-badge">🤖 ${escapeHtml(msg.sender_name || 'پشتیبان هوشمند')}</div><div>${escapeHtml(msg.text).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">${escapeHtml(timeStr)}</div>`;
+					} else if (msg.sender === 'admin') {
+						bubble.className = 'chat-msg-bubble incoming admin-bubble';
+						bubble.innerHTML = `<div class="chat-msg-sender-badge">👨‍💼 ${escapeHtml(msg.sender_name || 'مدیریت فروشگاه (پاسخ ادمین)')}</div><div>${escapeHtml(msg.text).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">${escapeHtml(timeStr)}</div>`;
+					}
+
+					chatBody.appendChild(bubble);
+					chatBody.scrollTop = chatBody.scrollHeight;
+				}
+
+				// Polling thread messages from server
+				let isPolling = false;
+				function pollThreadMessages() {
+					if (isPolling) return;
+					isPolling = true;
+
+					const formData = new FormData();
+					formData.append('action', 'scraper_customer_get_thread');
+					formData.append('nonce', '<?php echo esc_js( wp_create_nonce( 'scraper_support_chat_nonce' ) ); ?>');
+					formData.append('session_id', sessionId);
+
+					fetch('<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>', {
+						method: 'POST',
+						body: formData
+					})
+					.then(r => r.json())
+					.then(res => {
+						isPolling = false;
+						if (res.success && res.data && res.data.messages) {
+							res.data.messages.forEach(msg => renderMessageBubble(msg));
+						}
+					})
+					.catch(() => { isPolling = false; });
+				}
+
+				// Initial poll to load existing conversation
+				pollThreadMessages();
+
+				// Periodic polling every 4 seconds when chat is open
+				setInterval(() => {
+					if (chatBox.classList.contains('open')) {
+						pollThreadMessages();
+					}
+				}, 4000);
+
+				// Chat Form Submit (Continuous Sending)
 				if (chatForm) {
 					chatForm.addEventListener('submit', (e) => {
 						e.preventDefault();
@@ -4392,39 +5315,67 @@ class Scraper_Auto_Shop_Plugin {
 						const subjectEl = document.getElementById('chatSubjectInput');
 						const msgEl = document.getElementById('chatMsgInput');
 
-						const name = nameEl ? nameEl.value.trim() : '';
-						const phone = phoneEl ? phoneEl.value.trim() : '';
-						const email = emailEl ? emailEl.value.trim() : '';
+						const name = nameEl ? nameEl.value.trim() : (savedName || '');
+						const phone = phoneEl ? phoneEl.value.trim() : (savedPhone || '');
+						const email = emailEl ? emailEl.value.trim() : (savedEmail || '');
 						const subject = subjectEl ? subjectEl.value.trim() : '';
 						const message = msgEl ? msgEl.value.trim() : '';
 
 						if (phoneEl && phoneEl.hasAttribute('required') && !phone) {
 							showToast('لطفاً شماره تماس خود را وارد نمایید.', 'error');
+							if (chatContactFields) chatContactFields.classList.remove('collapsed');
 							phoneEl.focus();
 							return;
 						}
 						if (emailEl && emailEl.hasAttribute('required') && !email) {
-							showToast('لطفاً آدرس ایمیل خود را وارد نمایید.', 'error');
+							showToast('لطفاً آدرس ایمیل معتبر وارد نمایید.', 'error');
+							if (chatContactFields) chatContactFields.classList.remove('collapsed');
 							emailEl.focus();
 							return;
 						}
 						if (nameEl && nameEl.hasAttribute('required') && !name) {
 							showToast('لطفاً نام و نام خانوادگی خود را وارد نمایید.', 'error');
+							if (chatContactFields) chatContactFields.classList.remove('collapsed');
 							nameEl.focus();
 							return;
 						}
 						if (!message) {
-							showToast('لطفاً متن پیام خود را بنویسید.', 'error');
 							if (msgEl) msgEl.focus();
 							return;
 						}
 
+						// Save to localStorage
+						if (name) localStorage.setItem('scraper_chat_customer_name', name);
+						if (phone) localStorage.setItem('scraper_chat_customer_phone', phone);
+						if (email) localStorage.setItem('scraper_chat_customer_email', email);
+
+						updateCustomerBar();
+
+						// Clear message input immediately & show temporary customer bubble
+						const tempMsgId = 'msg_temp_' + Date.now();
+						const currentTimeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+						renderMessageBubble({
+							id: tempMsgId,
+							sender: 'customer',
+							sender_name: name || 'شما',
+							text: message,
+							time: currentTimeStr
+						});
+
+						if (msgEl) msgEl.value = '';
+
+						// Show Typing indicator for AI
+						if (chatTypingIndicator) {
+							chatTypingIndicator.style.display = 'block';
+							chatBody.scrollTop = chatBody.scrollHeight;
+						}
+
 						chatSendBtn.disabled = true;
-						chatSendBtn.innerHTML = '<span>در حال ارسال پیام... ⏳</span>';
 
 						const formData = new FormData();
 						formData.append('action', 'submit_support_chat');
 						formData.append('nonce', '<?php echo esc_js( wp_create_nonce( 'scraper_support_chat_nonce' ) ); ?>');
+						formData.append('session_id', sessionId);
 						formData.append('name', name);
 						formData.append('phone', phone);
 						formData.append('email', email);
@@ -4435,67 +5386,28 @@ class Scraper_Auto_Shop_Plugin {
 							method: 'POST',
 							body: formData
 						})
-						.then(res => res.json())
+						.then(r => r.json())
 						.then(res => {
 							chatSendBtn.disabled = false;
-							chatSendBtn.innerHTML = '<span>ارسال پیام به پشتیبانی 🚀</span>';
+							if (chatTypingIndicator) chatTypingIndicator.style.display = 'none';
 
-							if (res.success) {
-								// Add outgoing bubble to chat
-								const userBubble = document.createElement('div');
-								userBubble.className = 'chat-msg-bubble outgoing';
-								userBubble.innerHTML = `<div style="font-weight:700; font-size:0.8rem; margin-bottom:3px;">شما (${escapeHtml(name || 'مشتری')})</div><div>${escapeHtml(message)}</div><div class="chat-msg-time">ارسال شد ✓✓</div>`;
-								chatBody.appendChild(userBubble);
-								chatBody.scrollTop = chatBody.scrollHeight;
-
-								// Check if AI generated an instant response
-								if (res.data && res.data.ai_reply) {
-									const aiTyping = document.createElement('div');
-									aiTyping.className = 'chat-msg-bubble incoming';
-									aiTyping.id = 'aiTypingIndicator';
-									aiTyping.innerHTML = `<div style="font-size:0.8rem; color:#7c3aed; font-weight:700;">🤖 پشتیبان هوشمند در حال پاسخگویی... ⏳</div>`;
-									chatBody.appendChild(aiTyping);
-									chatBody.scrollTop = chatBody.scrollHeight;
-
-									setTimeout(() => {
-										const typingEl = document.getElementById('aiTypingIndicator');
-										if (typingEl) typingEl.remove();
-
-										const aiBubble = document.createElement('div');
-										aiBubble.className = 'chat-msg-bubble incoming';
-										aiBubble.style.borderColor = '#c4b5fd';
-										aiBubble.style.background = '#faf5ff';
-										aiBubble.innerHTML = `<div style="font-weight:800; font-size:0.8rem; color:#7c3aed; margin-bottom:4px;">🤖 پشتیبان هوشمند فروشگاه</div><div style="color:#1e1b4b;">${escapeHtml(res.data.ai_reply).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">پاسخ هوشمند</div>`;
-										chatBody.appendChild(aiBubble);
-										chatBody.scrollTop = chatBody.scrollHeight;
-									}, 900);
+							if (res.success && res.data) {
+								if (res.data.thread && res.data.thread.messages) {
+									res.data.thread.messages.forEach(msg => renderMessageBubble(msg));
 								}
-
-								// Show success card
-								chatForm.style.display = 'none';
-								chatSuccessCard.style.display = 'block';
-								showToast('✅ پیام شما ثبت و ارسال گردید.');
+								if (msgEl) msgEl.focus();
 							} else {
 								showToast(res.data || 'خطا در ثبت پیام.', 'error');
 							}
 						})
 						.catch(err => {
 							chatSendBtn.disabled = false;
-							chatSendBtn.innerHTML = '<span>ارسال پیام به پشتیبانی 🚀</span>';
-							showToast('خطای ارتباط با سرور. لطفاً دوباره تلاش کنید.', 'error');
+							if (chatTypingIndicator) chatTypingIndicator.style.display = 'none';
+							showToast('خطای اتصال به سرور.', 'error');
 						});
 					});
 				}
-
-				if (chatAskAnotherBtn) {
-					chatAskAnotherBtn.addEventListener('click', () => {
-						document.getElementById('chatMsgInput').value = '';
-						chatSuccessCard.style.display = 'none';
-						chatForm.style.display = 'block';
-						document.getElementById('chatMsgInput').focus();
-					});
-				}
-			}
+			})();
 
 			// Initialize cart view & pull WooCommerce active session
 			updateCartUI();
@@ -4578,8 +5490,10 @@ class Scraper_Auto_Shop_Plugin {
 				'price_rounding'              => sanitize_text_field( $_POST['price_rounding'] ?? '1000' ),
 				'currency_symbol'             => sanitize_text_field( $_POST['currency_symbol'] ?? 'تومان' ),
 
-				// Tab 3: Chat Settings & Fields
+				// Tab 3: Chat Settings & Themes
 				'enable_support_chat'         => ! empty( $_POST['enable_support_chat'] ),
+				'chat_theme'                  => sanitize_text_field( $_POST['chat_theme'] ?? 'royal-blue' ),
+				'chat_button_style'           => sanitize_text_field( $_POST['chat_button_style'] ?? 'pill-label' ),
 				'chat_button_position'        => in_array( $_POST['chat_button_position'] ?? '', array( 'left', 'right' ), true ) ? $_POST['chat_button_position'] : 'left',
 				'chat_window_title'           => sanitize_text_field( $_POST['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ),
 				'chat_welcome_message'        => sanitize_textarea_field( $_POST['chat_welcome_message'] ?? '' ),
@@ -4617,6 +5531,7 @@ class Scraper_Auto_Shop_Plugin {
 		$profiles_summary = self::get_profiles_summary();
 		$active_msgrs     = self::get_active_messengers( $opts );
 		$chat_logs        = get_option( 'scraper_support_chat_logs', array() );
+		$chat_threads     = self::get_chat_threads();
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
@@ -4653,47 +5568,52 @@ class Scraper_Auto_Shop_Plugin {
 			<style>
 				.scraper-tab-nav {
 					display: flex;
-					gap: 6px;
+					gap: 8px;
 					border-bottom: 2px solid #e2e8f0;
 					margin-bottom: 24px;
-					flex-wrap: wrap;
+					overflow-x: auto;
+					white-space: nowrap;
+					-webkit-overflow-scrolling: touch;
+					scrollbar-width: none;
+					padding-bottom: 6px;
+				}
+				.scraper-tab-nav::-webkit-scrollbar {
+					display: none;
 				}
 				.scraper-tab-link {
 					display: inline-flex;
 					align-items: center;
 					gap: 8px;
-					padding: 12px 20px;
+					padding: 11px 18px;
 					font-size: 0.95rem;
 					font-weight: 800;
 					color: #64748b;
 					text-decoration: none;
-					border-radius: 12px 12px 0 0;
+					border-radius: 12px;
 					border: 1px solid transparent;
-					border-bottom: none;
-					background: transparent;
+					background: #f1f5f9;
 					transition: all 0.2s ease;
 					cursor: pointer;
+					flex-shrink: 0;
 				}
 				.scraper-tab-link:hover {
 					color: #0f172a;
-					background: #f1f5f9;
+					background: #e2e8f0;
 				}
 				.scraper-tab-link.active {
-					color: #2563eb;
-					background: #ffffff;
-					border-color: #e2e8f0;
-					border-bottom: 2px solid #ffffff;
-					margin-bottom: -2px;
-					box-shadow: 0 -4px 12px rgba(0,0,0,0.03);
+					color: #ffffff;
+					background: #2563eb;
+					border-color: #2563eb;
+					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28);
 				}
 				.scraper-tab-panel {
 					display: none;
-					animation: tabFadeIn 0.2s ease;
 				}
 				.scraper-tab-panel.active {
 					display: block;
+					animation: fadeInTab 0.25s ease;
 				}
-				@keyframes tabFadeIn {
+				@keyframes fadeInTab {
 					from { opacity: 0; transform: translateY(6px); }
 					to { opacity: 1; transform: translateY(0); }
 				}
@@ -4701,17 +5621,17 @@ class Scraper_Auto_Shop_Plugin {
 					background: #ffffff;
 					border: 1px solid #e2e8f0;
 					border-radius: 16px;
-					padding: 24px 28px;
-					margin-bottom: 22px;
-					box-shadow: 0 4px 14px rgba(0,0,0,0.03);
+					padding: 24px;
+					margin-bottom: 24px;
+					box-shadow: 0 4px 20px rgba(0,0,0,0.03);
 				}
 				.admin-card-header {
 					display: flex;
 					justify-content: space-between;
 					align-items: center;
+					margin-bottom: 20px;
 					border-bottom: 1px solid #f1f5f9;
 					padding-bottom: 14px;
-					margin-bottom: 18px;
 				}
 				.admin-card-header h3 {
 					margin: 0;
@@ -4731,13 +5651,121 @@ class Scraper_Auto_Shop_Plugin {
 				.field-badge-blue { background: #eff6ff; color: #2563eb; }
 				.field-badge-green { background: #ecfdf5; color: #059669; }
 				.field-badge-purple { background: #faf5ff; color: #7c3aed; }
-			</style>
+
+				/* Support Desk Styling */
+				.desk-thread-item:hover {
+					background: #f1f5f9;
+				}
+				.desk-thread-item.active {
+					background: #eff6ff !important;
+					border-right: 4px solid #2563eb !important;
+				}
+				.desk-canned-chip {
+					background: #f1f5f9;
+					border: 1px solid #cbd5e1;
+					border-radius: 20px;
+					padding: 4px 12px;
+					font-family: inherit;
+					font-size: 0.78rem;
+					font-weight: 700;
+					color: #334155;
+					cursor: pointer;
+					transition: all 0.15s ease;
+				}
+				.desk-canned-chip:hover {
+					background: #e2e8f0;
+					color: #0f172a;
+					border-color: #94a3b8;
+				}
+				.desk-bubble {
+					max-width: 82%;
+					padding: 10px 14px;
+					border-radius: 14px;
+					font-size: 0.88rem;
+					line-height: 1.5;
+					word-break: break-word;
+				}
+				.desk-bubble.customer {
+					align-self: flex-start;
+					background: #ffffff;
+					border: 1px solid #cbd5e1;
+					color: #0f172a;
+					border-bottom-right-radius: 2px;
+				}
+				.desk-bubble.ai {
+					align-self: flex-start;
+					background: #faf5ff;
+					border: 1px solid #e9d5ff;
+					color: #581c87;
+					border-bottom-right-radius: 2px;
+				}
+				.desk-bubble.admin {
+					align-self: flex-end;
+					background: #2563eb;
+					color: #ffffff;
+					border-bottom-left-radius: 2px;
+					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+				}
+
+				/* Mobile Admin Optimizations */
+				@media (max-width: 782px) {
+					.wrap.scraper-admin-dashboard {
+						padding: 8px !important;
+						margin-top: 10px !important;
+					}
+					.scraper-support-desk {
+						flex-direction: column !important;
+						min-height: auto !important;
+					}
+					.desk-threads-col {
+						width: 100% !important;
+						max-height: 340px !important;
+						border-left: none !important;
+						border-bottom: 1px solid #e2e8f0 !important;
+					}
+					.desk-threads-col.mobile-hide {
+						display: none !important;
+					}
+					.desk-view-col.mobile-fullscreen {
+						width: 100% !important;
+					}
+					.chat-themes-grid,
+					.chat-btn-styles-grid {
+						grid-template-columns: 1fr !important;
+					}
+					.form-table th,
+					.form-table td {
+						display: block !important;
+						width: 100% !important;
+						padding: 8px 0 !important;
+					}
+					.form-table input[type="text"],
+					.form-table input[type="password"],
+					.form-table select,
+					.form-table textarea {
+						width: 100% !important;
+						max-width: 100% !important;
+						font-size: 16px !important;
+						min-height: 44px !important;
+					}
+					.scraper-save-bar {
+						position: sticky !important;
+						bottom: 0 !important;
+						z-index: 999 !important;
+						background: rgba(255,255,255,0.96) !important;
+						backdrop-filter: blur(12px) !important;
+						padding: 12px 16px !important;
+						border-top: 1px solid #cbd5e1 !important;
+						box-shadow: 0 -4px 20px rgba(0,0,0,0.08) !important;
+					}
+				}
+				</style>
 
 			<!-- Modern Tab Navigation -->
 			<div class="scraper-tab-nav" id="scraperAdminTabs">
 				<button type="button" class="scraper-tab-link active" data-tab="tab-storefront">🎨 ۱. ویترین و ظاهر فروشگاه</button>
 				<button type="button" class="scraper-tab-link" data-tab="tab-pricing">💰 ۲. قیمت‌گذاری و سود</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت آنلاین و فیلدها</button>
+				<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت آنلاین و میز پاسخگویی</button>
 				<button type="button" class="scraper-tab-link" data-tab="tab-ai">🤖 ۴. هوش مصنوعی و هماهنگی</button>
 				<button type="button" class="scraper-tab-link" data-tab="tab-messengers">📡 ۵. پیام‌رسان‌ها (بله/تلگرام/روبیکا)</button>
 				<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🔄 ۶. ووکامرس و اسکرپر</button>
@@ -4914,11 +5942,504 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
-				<!-- ================= TAB 3: CHAT SETTINGS & FIELDS ================= -->
+				<!-- ================= TAB 3: CHAT & ADMIN LIVE SUPPORT DESK ================= -->
 				<div id="tab-chat" class="scraper-tab-panel">
-					<div class="admin-card">
+					
+					<!-- 1. ADMIN LIVE CHAT SUPPORT DESK -->
+					<div class="admin-card" style="border-top: 4px solid #2563eb;">
+						<div class="admin-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+							<div>
+								<h3 style="margin:0; display:flex; align-items:center; gap:8px;">
+									<span>📬</span> میز کار و کنسول پاسخگویی زنده به گفتگوهای مشتریان
+								</h3>
+								<p style="margin:4px 0 0; color:#64748b; font-size:0.88rem;">
+									پاسخ شما به صورت زنده و دوطرفه مانند پیام‌رسان در پنجره چت مشتری نمایش داده خواهد شد.
+								</p>
+							</div>
+							<div style="display:flex; align-items:center; gap:10px;">
+								<span class="field-badge field-badge-blue" id="deskThreadsCountBadge"><?php echo count( $chat_threads ); ?> گفتگو</span>
+								<button type="button" class="button button-secondary" id="btnRefreshAdminDesk" style="font-weight:700;">🔄 به‌روزرسانی زنده</button>
+							</div>
+						</div>
+
+						<!-- Two-Column Desk Console -->
+						<div class="scraper-support-desk" style="display:flex; gap:18px; margin-top:16px; min-height:540px; border:1px solid #e2e8f0; border-radius:14px; overflow:hidden; background:#ffffff;">
+							
+							<!-- Column 1: Conversations List -->
+							<div class="desk-threads-col" style="width:340px; border-left:1px solid #e2e8f0; display:flex; flex-direction:column; background:#f8fafc;">
+								<!-- Search & Filter Bar -->
+								<div style="padding:12px 14px; border-bottom:1px solid #e2e8f0; background:#ffffff;">
+									<input type="text" id="deskSearchInput" placeholder="🔍 جستجو در نام، شماره یا پیام..." style="width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:7px 10px; font-size:0.85rem;">
+									<div style="display:flex; gap:6px; margin-top:8px;">
+										<button type="button" class="desk-filter-btn active" data-filter="all" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer;">همه</button>
+										<button type="button" class="desk-filter-btn" data-filter="pending" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer; color:#d97706;">در انتظار</button>
+										<button type="button" class="desk-filter-btn" data-filter="replied" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer; color:#059669;">پاسخ‌داده</button>
+									</div>
+								</div>
+
+								<!-- Threads Scroll List -->
+								<div class="desk-threads-scroll" id="deskThreadsList" style="flex:1; overflow-y:auto; max-height:480px;">
+									<?php if ( empty( $chat_threads ) ) : ?>
+										<div style="text-align:center; padding:40px 15px; color:#94a3b8; font-size:0.88rem;">
+											💬 هنوز پیامی از سمت مشتریان ارسال نشده است.
+										</div>
+									<?php else : ?>
+										<?php foreach ( $chat_threads as $t_id => $t ) : 
+											$msgs = $t['messages'] ?? array();
+											$last_msg = ! empty( $msgs ) ? end( $msgs ) : null;
+											$is_unread = ! empty( $t['unread_admin'] ) || ( ( $t['status'] ?? '' ) === 'pending' );
+										?>
+											<div class="desk-thread-item <?php echo $is_unread ? 'unread' : ''; ?>" 
+												data-id="<?php echo esc_attr( $t['id'] ?? $t_id ); ?>" 
+												data-session="<?php echo esc_attr( $t['session_id'] ?? '' ); ?>"
+												data-name="<?php echo esc_attr( $t['name'] ?? 'مشتری' ); ?>"
+												data-phone="<?php echo esc_attr( $t['phone'] ?? '' ); ?>"
+												data-email="<?php echo esc_attr( $t['email'] ?? '' ); ?>"
+												data-subject="<?php echo esc_attr( $t['subject'] ?? '' ); ?>"
+												data-status="<?php echo esc_attr( $t['status'] ?? 'pending' ); ?>"
+												style="padding:12px 14px; border-bottom:1px solid #f1f5f9; cursor:pointer; transition:background 0.2s;">
+												<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+													<strong style="color:#0f172a; font-size:0.9rem;"><?php echo esc_html( $t['name'] ?? 'مشتری مهمان' ); ?></strong>
+													<span style="font-size:0.72rem; color:#64748b;"><?php echo esc_html( $last_msg['time'] ?? '' ); ?></span>
+												</div>
+												<?php if ( ! empty( $t['phone'] ) ) : ?>
+													<div style="font-size:0.78rem; color:#2563eb; font-weight:700; direction:ltr; text-align:right; margin-bottom:4px;"><?php echo esc_html( $t['phone'] ); ?></div>
+												<?php endif; ?>
+												<div style="font-size:0.8rem; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+													<?php echo esc_html( mb_substr( $last_msg['text'] ?? 'بدون پیام', 0, 50 ) ); ?>
+												</div>
+												<div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+													<?php if ( $is_unread ) : ?>
+														<span style="font-size:0.7rem; font-weight:800; background:#fef3c7; color:#b45309; padding:2px 8px; border-radius:10px;">⏳ نیاز به پاسخ</span>
+													<?php else : ?>
+														<span style="font-size:0.7rem; font-weight:800; background:#ecfdf5; color:#047857; padding:2px 8px; border-radius:10px;">✅ پاسخ داده شد</span>
+													<?php endif; ?>
+													<span style="font-size:0.72rem; color:#94a3b8;"><?php echo count( $msgs ); ?> پیام</span>
+												</div>
+											</div>
+										<?php endforeach; ?>
+									<?php endif; ?>
+								</div>
+							</div>
+
+							<!-- Column 2: Active Conversation & Reply Pane -->
+							<div class="desk-view-col" style="flex:1; display:flex; flex-direction:column; background:#ffffff;">
+								
+								<!-- Empty State -->
+								<div id="deskEmptyState" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px; color:#94a3b8; text-align:center;">
+									<div style="font-size:3rem; margin-bottom:12px;">👈</div>
+									<h4 style="margin:0 0 6px; font-size:1.1rem; color:#475569;">گفتگویی انتخاب نشده است</h4>
+									<p style="margin:0; font-size:0.88rem;">جهت مشاهده پیام‌ها، اطلاعات تماس و ارسال پاسخ زنده، یک گفتگو را از ستون کناری انتخاب کنید.</p>
+								</div>
+
+								<!-- Active Conversation Box -->
+								<div id="deskActiveBox" style="display:none; flex-direction:column; height:100%;">
+									
+									<!-- Customer Card Header -->
+									<div style="padding:14px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+										<div>
+											<div style="display:flex; align-items:center; gap:8px;">
+												<button type="button" id="btnDeskBackToList" class="button button-small" style="display:none;">◀ لیست</button>
+												<h4 style="margin:0; font-size:1.05rem; font-weight:800; color:#0f172a;" id="deskHeaderName">نام مشتری</h4>
+												<span id="deskHeaderStatus" style="font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:10px; background:#fef3c7; color:#b45309;">در انتظار پاسخ</span>
+											</div>
+											<div style="font-size:0.82rem; color:#64748b; margin-top:4px; display:flex; gap:14px; flex-wrap:wrap;">
+												<span id="deskHeaderPhone"></span>
+												<span id="deskHeaderEmail"></span>
+												<span id="deskHeaderSubject"></span>
+											</div>
+										</div>
+
+										<!-- Quick Action Buttons for Customer -->
+										<div style="display:flex; gap:8px; align-items:center;">
+											<a href="#" id="deskDirectCallBtn" class="button button-secondary button-small" style="font-weight:700;">📞 تماس تلفنی</a>
+											<a href="#" id="deskDirectWaBtn" target="_blank" class="button button-small" style="background:#25D366; color:#fff; border-color:#25D366; font-weight:700;">💬 واتساپ</a>
+											<button type="button" id="deskDeleteBtn" class="button button-small" style="color:#dc2626; border-color:#fca5a5; font-weight:700;">🗑️ حذف</button>
+										</div>
+									</div>
+
+									<!-- Messages Stream Area -->
+									<div class="desk-msg-stream" id="deskMsgStream" style="flex:1; overflow-y:auto; padding:20px; background:#f8fafc; display:flex; flex-direction:column; gap:12px; max-height:360px;">
+										<!-- Dynamic Bubbles appended here -->
+									</div>
+
+									<!-- Canned Responses Quick Chips -->
+									<div style="padding:8px 16px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; gap:6px; overflow-x:auto; white-space:nowrap; align-items:center;">
+										<span style="font-size:0.75rem; color:#64748b; font-weight:700; flex-shrink:0;">⚡ پاسخ‌های آماده:</span>
+										<button type="button" class="desk-canned-chip" data-text="سلام و درود، سفارش شما در حال آماده‌سازی و بسته‌بندی است.">📦 در حال آماده‌سازی</button>
+										<button type="button" class="desk-canned-chip" data-text="کد رهگیری مرسوله پستی تا ساعاتی دیگر به همین شماره پیامک خواهد شد.">🚚 ارسال کد پیگیری</button>
+										<button type="button" class="desk-canned-chip" data-text="کالای مورد نظر شما در انبار موجود و با گارانتی اصالت کالا آماده تحویل است.">🛍️ موجودی و اصالت</button>
+										<button type="button" class="desk-canned-chip" data-text="جهت هماهنگی سریع‌تر لطفاً با شماره پشتیبانی تلفنی فروشگاه تماس حاصل فرمایید.">📞 تماس تکمیلی</button>
+									</div>
+
+									<!-- Live Reply Composer -->
+									<div style="padding:14px 18px; border-top:1px solid #e2e8f0; background:#ffffff;">
+										<div style="display:flex; gap:10px;">
+											<textarea id="deskReplyInput" rows="2" placeholder="متن پاسخ خود را به این مشتری بنویسید (فوراً در چت مشتری نمایش داده خواهد شد)..." style="flex:1; border:1.5px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:0.9rem; resize:none;"></textarea>
+											<button type="button" id="deskSendReplyBtn" class="button button-primary button-large" style="background:#2563eb; font-weight:800; padding:0 24px; border-radius:10px; align-self:stretch;">
+												ارسال پاسخ زنده 🚀
+											</button>
+										</div>
+										<div id="deskReplyFeedback" style="font-size:0.8rem; margin-top:6px; font-weight:700;"></div>
+									</div>
+
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- 2. VISUAL CHAT THEMES (12 THEMES WITH LARGE PREVIEW CARDS) -->
+					<div class="admin-card" style="margin-top:24px;">
 						<div class="admin-card-header">
-							<h3><span>💬</span> تنظیمات ویجت چت آنلاین و سفارشی‌سازی فیلدهای فرم</h3>
+							<h3><span>🎨</span> تم‌های رنگی و ظاهری پنجره چت آنلاین (۱۲ تم متنوع و لوکس)</h3>
+							<span class="field-badge field-badge-purple">طراحی مدرن سال ۲۰۲۶</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
+							می‌توانید تم گرافیکی مورد نظر خود را از طریق دراپ‌داون زیر یا با کلیک بر روی هر یک از پیش‌نمایش‌های بزرگ انتخاب کنید. پنجره چت فروشگاه بلافاصله به رنگ‌بندی و هویت انتخابی شما درخواهد آمد:
+						</p>
+
+						<!-- Large Theme Selector Dropdown -->
+						<div style="background:#f8fafc; padding:18px 22px; border-radius:14px; border:1px solid #e2e8f0; margin-bottom:24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+							<label for="chat_theme_selector" style="font-weight:800; font-size:1rem; color:#0f172a;">
+								انتخاب تم چت آنلاین:
+							</label>
+							<select name="chat_theme" id="chat_theme_selector" style="font-size:1.05rem; padding:10px 16px; border-radius:10px; border:2px solid #2563eb; min-width:320px; font-weight:700; color:#1e293b; background:#ffffff;">
+								<option value="royal-blue" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'royal-blue' ); ?>>۱. آبی رویال و کریستالی (Royal Modern Blue - پیش‌فرض شیک)</option>
+								<option value="cyberpunk-dark" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'cyberpunk-dark' ); ?>>۲. دارک نئونی و بنفش سایبرپانک (Cyberpunk Dark Violet)</option>
+								<option value="emerald-whatsapp" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'emerald-whatsapp' ); ?>>۳. سبز زمردی و واتساپی (Emerald WhatsApp Pro)</option>
+								<option value="magenta-rose" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'magenta-rose' ); ?>>۴. صورتی نئونی و سرخابی لوکس (Luxury Magenta Rose)</option>
+								<option value="gold-vip" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'gold-vip' ); ?>>۵. مشکی طلایی VIP لاکچری (Luxury Gold & Obsidian VIP)</option>
+								<option value="minimal-slate" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'minimal-slate' ); ?>>۶. مینیمال خنثی و تمیز (Minimalist Slate & Clean)</option>
+								<option value="aurora-gradient" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'aurora-gradient' ); ?>>۷. گرادینت شفق قطبی (Aurora Borealis Gradient)</option>
+								<option value="sunset-coral" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'sunset-coral' ); ?>>۸. غروب آفتاب کالیفرنیا (Sunset Coral & Warm Orange)</option>
+								<option value="telegram-ocean" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'telegram-ocean' ); ?>>۹. چت تلگرامی اقیانوسی (Telegram Ocean Blue)</option>
+								<option value="warm-caramel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'warm-caramel' ); ?>>۱۰. شکلاتی و کاراملی کافه‌ای (Warm Caramel & Mocha)</option>
+								<option value="mint-pastel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'mint-pastel' ); ?>>۱۱. نعنایی و فیروزه‌ای پاستلی (Mint & Pastel Turquoise)</option>
+								<option value="frosted-glass" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'frosted-glass' ); ?>>۱۲. شیشه‌ای نیمه‌شفاف گلس‌مورفیسم (Frosted Glassmorphism)</option>
+							</select>
+							<span style="color:#64748b; font-size:0.85rem;">(با تغییر منو یا کلیک روی کارت‌های زیر، تم بلافاصله تغییر می‌کند)</span>
+						</div>
+
+						<!-- Large Visual Preview Cards Grid (12 Distinct Mockups) -->
+						<div class="chat-themes-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(330px, 1fr)); gap:20px;">
+							
+							<?php
+							$themes_catalog = array(
+								'royal-blue' => array(
+									'num'     => '۱',
+									'title'   => 'آبی رویال و کریستالی',
+									'badge'   => 'پیش‌فرض رسمی',
+									'hdr_bg'  => 'linear-gradient(135deg, #1e3a8a, #2563eb)',
+									'body_bg' => '#f8fafc',
+									'user_bg' => 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#e2e8f0',
+									'ai_c'    => '#0f172a',
+									'adm_bg'  => '#ecfdf5',
+									'adm_b'   => '#a7f3d0',
+									'adm_c'   => '#065f46',
+									'dots'    => array('#1e3a8a', '#2563eb', '#60a5fa'),
+								),
+								'cyberpunk-dark' => array(
+									'num'     => '۲',
+									'title'   => 'دارک نئونی و بنفش سایبرپانک',
+									'badge'   => 'OLED Dark Mode',
+									'hdr_bg'  => 'linear-gradient(135deg, #090514, #2e1065)',
+									'body_bg' => '#0f172a',
+									'user_bg' => 'linear-gradient(135deg, #7c3aed, #a855f7)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#1e293b',
+									'ai_b'    => '#475569',
+									'ai_c'    => '#f1f5f9',
+									'adm_bg'  => '#064e3b',
+									'adm_b'   => '#10b981',
+									'adm_c'   => '#a7f3d0',
+									'dots'    => array('#090514', '#7c3aed', '#a855f7'),
+								),
+								'emerald-whatsapp' => array(
+									'num'     => '۳',
+									'title'   => 'سبز زمردی و واتساپی',
+									'badge'   => 'پیام‌رسان محبوب',
+									'hdr_bg'  => 'linear-gradient(135deg, #064e3b, #059669)',
+									'body_bg' => '#efeae2',
+									'user_bg' => '#d9fdd3',
+									'user_c'  => '#111827',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#e5e7eb',
+									'ai_c'    => '#111827',
+									'adm_bg'  => '#e0f2fe',
+									'adm_b'   => '#bae6fd',
+									'adm_c'   => '#075985',
+									'dots'    => array('#064e3b', '#059669', '#25D366'),
+								),
+								'magenta-rose' => array(
+									'num'     => '۴',
+									'title'   => 'صورتی نئونی و سرخابی لوکس',
+									'badge'   => 'بیوتی و فشن',
+									'hdr_bg'  => 'linear-gradient(135deg, #831843, #db2777)',
+									'body_bg' => '#fff1f2',
+									'user_bg' => 'linear-gradient(135deg, #db2777, #f43f5e)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#fecdd3',
+									'ai_c'    => '#881337',
+									'adm_bg'  => '#f0fdf4',
+									'adm_b'   => '#bbf7d0',
+									'adm_c'   => '#166534',
+									'dots'    => array('#831843', '#db2777', '#fb7185'),
+								),
+								'gold-vip' => array(
+									'num'     => '۵',
+									'title'   => 'مشکی طلایی VIP لاکچری',
+									'badge'   => 'طلا و اکسسوری VIP',
+									'hdr_bg'  => 'linear-gradient(135deg, #09090b, #1c1917)',
+									'body_bg' => '#18181b',
+									'user_bg' => 'linear-gradient(135deg, #b45309, #d97706)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#27272a',
+									'ai_b'    => '#78350f',
+									'ai_c'    => '#fef3c7',
+									'adm_bg'  => '#292524',
+									'adm_b'   => '#f59e0b',
+									'adm_c'   => '#fef9c3',
+									'dots'    => array('#09090b', '#d97706', '#fbbf24'),
+								),
+								'minimal-slate' => array(
+									'num'     => '۶',
+									'title'   => 'مینیمال خنثی و تمیز',
+									'badge'   => 'طراحی اسکاندیناوی',
+									'hdr_bg'  => 'linear-gradient(135deg, #1e293b, #334155)',
+									'body_bg' => '#f8fafc',
+									'user_bg' => '#334155',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#cbd5e1',
+									'ai_c'    => '#0f172a',
+									'adm_bg'  => '#f1f5f9',
+									'adm_b'   => '#94a3b8',
+									'adm_c'   => '#0f172a',
+									'dots'    => array('#1e293b', '#475569', '#94a3b8'),
+								),
+								'aurora-gradient' => array(
+									'num'     => '۷',
+									'title'   => 'گرادینت شفق قطبی',
+									'badge'   => 'ارغوانی و فیروزه‌ای',
+									'hdr_bg'  => 'linear-gradient(135deg, #4338ca, #06b6d4)',
+									'body_bg' => '#f5f3ff',
+									'user_bg' => 'linear-gradient(135deg, #4f46e5, #06b6d4)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#c7d2fe',
+									'ai_c'    => '#312e81',
+									'adm_bg'  => '#ecfeff',
+									'adm_b'   => '#a5f3fc',
+									'adm_c'   => '#164e63',
+									'dots'    => array('#4338ca', '#6366f1', '#06b6d4'),
+								),
+								'sunset-coral' => array(
+									'num'     => '۸',
+									'title'   => 'غروب آفتاب کالیفرنیا',
+									'badge'   => 'مرجانی و صمیمی',
+									'hdr_bg'  => 'linear-gradient(135deg, #9a3412, #ea580c)',
+									'body_bg' => '#fff7ed',
+									'user_bg' => 'linear-gradient(135deg, #f97316, #ea580c)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#fed7aa',
+									'ai_c'    => '#7c2d12',
+									'adm_bg'  => '#fef2f2',
+									'adm_b'   => '#fecaca',
+									'adm_c'   => '#991b1b',
+									'dots'    => array('#9a3412', '#ea580c', '#fb923c'),
+								),
+								'telegram-ocean' => array(
+									'num'     => '۹',
+									'title'   => 'چت تلگرامی اقیانوسی',
+									'badge'   => 'آبی تلگرامی',
+									'hdr_bg'  => 'linear-gradient(135deg, #0369a1, #0284c7)',
+									'body_bg' => '#f0f9ff',
+									'user_bg' => '#e0f2fe',
+									'user_c'  => '#0369a1',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#bae6fd',
+									'ai_c'    => '#0c4a6e',
+									'adm_bg'  => '#f0fdf4',
+									'adm_b'   => '#bbf7d0',
+									'adm_c'   => '#14532d',
+									'dots'    => array('#0369a1', '#0284c7', '#38bdf8'),
+								),
+								'warm-caramel' => array(
+									'num'     => '۱۰',
+									'title'   => 'شکلاتی و کاراملی کافه‌ای',
+									'badge'   => 'گرم و نوستالژیک',
+									'hdr_bg'  => 'linear-gradient(135deg, #451a03, #92400e)',
+									'body_bg' => '#fffbeb',
+									'user_bg' => 'linear-gradient(135deg, #b45309, #92400e)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#fde68a',
+									'ai_c'    => '#78350f',
+									'adm_bg'  => '#fef3c7',
+									'adm_b'   => '#f59e0b',
+									'adm_c'   => '#78350f',
+									'dots'    => array('#451a03', '#92400e', '#f59e0b'),
+								),
+								'mint-pastel' => array(
+									'num'     => '۱۱',
+									'title'   => 'نعنایی و فیروزه‌ای پاستلی',
+									'badge'   => 'آرامش‌بخش و بهداشتی',
+									'hdr_bg'  => 'linear-gradient(135deg, #115e59, #0d9488)',
+									'body_bg' => '#f0fdfa',
+									'user_bg' => 'linear-gradient(135deg, #0d9488, #14b8a6)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#ccfbf1',
+									'ai_c'    => '#134e4a',
+									'adm_bg'  => '#ecfdf5',
+									'adm_b'   => '#a7f3d0',
+									'adm_c'   => '#065f46',
+									'dots'    => array('#115e59', '#0d9488', '#2dd4bf'),
+								),
+								'frosted-glass' => array(
+									'num'     => '۱۲',
+									'title'   => 'شیشه‌ای نیمه‌شفاف گلس‌مورفیسم',
+									'badge'   => 'کریستالی شفاف',
+									'hdr_bg'  => 'linear-gradient(135deg, #1e293b, #2563eb)',
+									'body_bg' => '#f1f5f9',
+									'user_bg' => 'linear-gradient(135deg, #2563eb, #3b82f6)',
+									'user_c'  => '#ffffff',
+									'ai_bg'   => '#ffffff',
+									'ai_b'    => '#cbd5e1',
+									'ai_c'    => '#0f172a',
+									'adm_bg'  => '#ecfdf5',
+									'adm_b'   => '#a7f3d0',
+									'adm_c'   => '#065f46',
+									'dots'    => array('#1e293b', '#2563eb', '#e2e8f0'),
+								),
+							);
+
+							$selected_theme = $opts['chat_theme'] ?? 'royal-blue';
+
+							foreach ( $themes_catalog as $t_slug => $t_info ) :
+								$is_active = ( $selected_theme === $t_slug );
+							?>
+								<div class="chat-theme-card <?php echo $is_active ? 'active' : ''; ?>" data-theme="<?php echo esc_attr( $t_slug ); ?>" style="border:2px solid <?php echo $is_active ? '#2563eb' : '#e2e8f0'; ?>; border-radius:16px; overflow:hidden; background:#ffffff; box-shadow:0 6px 18px rgba(0,0,0,0.05); transition:all 0.25s ease; cursor:pointer; position:relative;">
+									
+									<!-- Card Header Bar -->
+									<div style="padding:10px 14px; background:#f8fafc; border-bottom:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
+										<div>
+											<strong style="font-size:0.9rem; color:#0f172a;"><?php echo esc_html( $t_info['num'] . '. ' . $t_info['title'] ); ?></strong>
+										</div>
+										<span style="font-size:0.72rem; font-weight:800; background:#e0f2fe; color:#0284c7; padding:2px 8px; border-radius:8px;"><?php echo esc_html( $t_info['badge'] ); ?></span>
+									</div>
+
+									<!-- Mini Mockup Chat Window -->
+									<div style="padding:12px; background:<?php echo esc_attr( $t_info['body_bg'] ); ?>;">
+										<!-- Mockup Header -->
+										<div style="background:<?php echo esc_attr( $t_info['hdr_bg'] ); ?>; color:#fff; border-radius:10px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+											<div style="display:flex; align-items:center; gap:8px;">
+												<span style="font-size:1.1rem;">👩‍💼</span>
+												<span style="font-size:0.8rem; font-weight:700;">پشتیبانی فروشگاه</span>
+											</div>
+											<span style="font-size:0.68rem; opacity:0.85;">🟢 آنلاین</span>
+										</div>
+
+										<!-- Mockup Bubbles -->
+										<div style="display:flex; flex-direction:column; gap:8px; font-size:0.78rem;">
+											<!-- Customer Bubble -->
+											<div style="align-self:flex-end; background:<?php echo esc_attr( $t_info['user_bg'] ); ?>; color:<?php echo esc_attr( $t_info['user_c'] ); ?>; border-radius:10px; border-bottom-left-radius:2px; padding:6px 10px; max-width:82%;">
+												سلام، ارسال فوری دارید؟
+											</div>
+											<!-- AI Bubble -->
+											<div style="align-self:flex-start; background:<?php echo esc_attr( $t_info['ai_bg'] ); ?>; border:1px solid <?php echo esc_attr( $t_info['ai_b'] ); ?>; color:<?php echo esc_attr( $t_info['ai_c'] ); ?>; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
+												<div style="font-size:0.68rem; font-weight:800; margin-bottom:2px;">🤖 پشتیبان هوشمند</div>
+												بله، کلیه سفارشات ثبت‌شده تا ۱۲ همان روز ارسال می‌شوند.
+											</div>
+											<!-- Admin Bubble -->
+											<div style="align-self:flex-start; background:<?php echo esc_attr( $t_info['adm_bg'] ); ?>; border:1px solid <?php echo esc_attr( $t_info['adm_b'] ); ?>; color:<?php echo esc_attr( $t_info['adm_c'] ); ?>; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
+												<div style="font-size:0.68rem; font-weight:800; margin-bottom:2px;">👨‍💼 پاسخ ادمین</div>
+												همچنین بسته‌بندی ویژه کادویی هم فعال است.
+											</div>
+										</div>
+									</div>
+
+									<!-- Card Footer with Color Dots & Select Button -->
+									<div style="padding:10px 14px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; gap:6px;">
+											<?php foreach ( $t_info['dots'] as $dot_color ) : ?>
+												<span style="width:14px; height:14px; border-radius:50%; background:<?php echo esc_attr( $dot_color ); ?>; display:inline-block; border:1px solid rgba(0,0,0,0.1);"></span>
+											<?php endforeach; ?>
+										</div>
+										<button type="button" class="button button-small btn-pick-theme" data-theme="<?php echo esc_attr( $t_slug ); ?>" style="font-weight:800; font-size:0.78rem;">
+											<?php echo $is_active ? '✅ تم فعال' : 'انتخاب این تم'; ?>
+										</button>
+									</div>
+								</div>
+							<?php endforeach; ?>
+						</div>
+					</div>
+
+					<!-- 3. CHAT BUTTON DESIGNS ON STOREFRONT (6 BUTTON STYLES) -->
+					<div class="admin-card" style="margin-top:24px;">
+						<div class="admin-card-header">
+							<h3><span>🔘</span> طرح‌های مختلف دکمه شناور چت در صفحه فروشگاه</h3>
+							<span class="field-badge field-badge-blue">۶ طرح مدرن و جذاب</span>
+						</div>
+
+						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
+							طرح دکمه شناور گوشه صفحه فروشگاه را تعیین کنید تا مشتریان با بهترین جلوه بصری به بخش پشتیبانی هدایت شوند:
+						</p>
+
+						<!-- Large Button Style Selector Dropdown -->
+						<div style="background:#f8fafc; padding:18px 22px; border-radius:14px; border:1px solid #e2e8f0; margin-bottom:24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+							<label for="chat_button_style_selector" style="font-weight:800; font-size:1rem; color:#0f172a;">
+								انتخاب طرح دکمه چت:
+							</label>
+							<select name="chat_button_style" id="chat_button_style_selector" style="font-size:1.05rem; padding:10px 16px; border-radius:10px; border:2px solid #2563eb; min-width:320px; font-weight:700; color:#1e293b; background:#ffffff;">
+								<option value="pill-label" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'pill-label' ); ?>>۱. کپسولی با متن «پشتیبانی آنلاین» و آیکون (Pill with Label - پیش‌فرض)</option>
+								<option value="circle-glow" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'circle-glow' ); ?>>۲. دایره مدرن نئونی با نور رنگی متناسب با تم (Glowing Circle)</option>
+								<option value="avatar-ring" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'avatar-ring' ); ?>>۳. آواتار پشتیبان انسانی با حلقه وضعیت آنلاین (Avatar Ring)</option>
+								<option value="frosted-glass" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'frosted-glass' ); ?>>۴. شیشه‌ای مات فلوتینگ با افکت بلور گلس‌مورفیک (Frosted Glass)</option>
+								<option value="edge-tab" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'edge-tab' ); ?>>۵. زبانه چسبان لبه صفحه بدون اشغال فضای محتوا (Edge Tab)</option>
+								<option value="radar-pulse" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'radar-pulse' ); ?>>۶. رادار پالس امواج صوتی متحرک دوگانه (Radar Wave Pulse)</option>
+							</select>
+						</div>
+
+						<!-- Visual Button Style Cards Grid -->
+						<div class="chat-btn-styles-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:18px;">
+							<?php
+							$btn_styles = array(
+								'pill-label'    => array('name' => '۱. کپسولی با برچسب و نشانگر زنده', 'desc' => 'حالت استاندارد با بالاترین نرخ کلیک'),
+								'circle-glow'   => array('name' => '۲. دایره مدرن نئونی با نور پالس', 'desc' => 'دایره مینیمال با نور رنگی درخشان'),
+								'avatar-ring'   => array('name' => '۳. آواتار پشتیبان با حلقه آنلاین', 'desc' => 'حس گفتگوی رودررو با یک انسان واقعی'),
+								'frosted-glass' => array('name' => '۴. حباب شیشه‌ای مات گلس‌مورفیسم', 'desc' => 'طراحی شفاف کریستالی با بلور لوکس'),
+								'edge-tab'      => array('name' => '۵. زبانه چسبان لبه کناری اسکرین', 'desc' => 'چسبیده به لبه صفحه، عالی برای موبایل'),
+								'radar-pulse'   => array('name' => '۶. رادار صوتی با امواج دوگانه', 'desc' => 'امواج پیوسته رادار برای جلب توجه فوری'),
+							);
+							$selected_btn = $opts['chat_button_style'] ?? 'pill-label';
+							foreach ( $btn_styles as $b_slug => $b_data ) :
+								$is_active_btn = ( $selected_btn === $b_slug );
+							?>
+								<div class="chat-btn-card <?php echo $is_active_btn ? 'active' : ''; ?>" data-btn-style="<?php echo esc_attr( $b_slug ); ?>" style="border:2px solid <?php echo $is_active_btn ? '#2563eb' : '#e2e8f0'; ?>; border-radius:14px; padding:18px; background:#ffffff; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.04); transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+										<strong style="color:#0f172a; font-size:0.92rem;"><?php echo esc_html( $b_data['name'] ); ?></strong>
+										<span style="font-size:0.75rem; color:#64748b;"><?php echo $is_active_btn ? '✅ فعال' : ''; ?></span>
+									</div>
+									<p style="margin:0 0 14px; font-size:0.82rem; color:#64748b;"><?php echo esc_html( $b_data['desc'] ); ?></p>
+									<button type="button" class="button button-small btn-pick-btn-style" data-btn-style="<?php echo esc_attr( $b_slug ); ?>" style="font-weight:700; width:100%;">
+										<?php echo $is_active_btn ? '✅ این طرح انتخاب شده' : 'انتخاب این طرح دکمه'; ?>
+									</button>
+								</div>
+							<?php endforeach; ?>
+						</div>
+					</div>
+
+					<!-- 4. CHAT FORM FIELDS & GENERAL SETTINGS -->
+					<div class="admin-card" style="margin-top:24px;">
+						<div class="admin-card-header">
+							<h3><span>⚙️</span> تنظیمات عمومی پنجره چت و سفارشی‌سازی فیلدهای ورودی</h3>
 							<span class="field-badge field-badge-purple">امکان حذف و اضافه فیلدها</span>
 						</div>
 
@@ -5048,6 +6569,7 @@ class Scraper_Auto_Shop_Plugin {
 							</table>
 						</div>
 					</div>
+
 				</div>
 
 				<!-- ================= TAB 4: AI & COORDINATION ================= -->
@@ -5355,7 +6877,7 @@ class Scraper_Auto_Shop_Plugin {
 				</div>
 
 				<!-- Fixed Save Settings Bar -->
-				<div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; margin-top:20px; box-shadow:0 4px 14px rgba(0,0,0,0.04);">
+				<div class="scraper-save-bar" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; margin-top:20px; box-shadow:0 4px 14px rgba(0,0,0,0.04);">
 					<div style="font-size:0.92rem; color:#64748b; font-weight:600;">
 						💡 تغییرات اعمال‌شده در هر یک از زبانه‌ها با زدن کلید زیر ذخیره خواهند شد.
 					</div>
@@ -5387,6 +6909,309 @@ class Scraper_Auto_Shop_Plugin {
 					$('#scraperAdminTabs .scraper-tab-link[data-tab="' + savedTab + '"]').click();
 				}
 			} catch(err){}
+
+			// Support Desk: Interactive Thread Selection & Live Conversation
+			var activeThreadData = null;
+
+			function escapeHtml(text) {
+				if (!text) return '';
+				return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+			}
+
+			function selectThreadItem($item) {
+				$('.desk-thread-item').removeClass('active');
+				$item.addClass('active');
+
+				var threadId = $item.attr('data-id');
+				var threadSession = $item.attr('data-session');
+				var name = $item.attr('data-name') || 'مشتری';
+				var phone = $item.attr('data-phone') || '';
+				var email = $item.attr('data-email') || '';
+				var subject = $item.attr('data-subject') || '';
+				var status = $item.attr('data-status') || 'pending';
+
+				activeThreadData = {
+					id: threadId,
+					session: threadSession,
+					name: name,
+					phone: phone,
+					email: email,
+					subject: subject,
+					status: status,
+					element: $item
+				};
+
+				// Mobile responsiveness: switch to full conversation view
+				if ($(window).width() <= 782) {
+					$('.desk-threads-col').addClass('mobile-hide');
+					$('#btnDeskBackToList').show();
+				}
+
+				// Populate header card
+				$('#deskEmptyState').hide();
+				$('#deskActiveBox').css('display', 'flex');
+				$('#deskHeaderName').text(name);
+				$('#deskHeaderPhone').html(phone ? '📱 <strong>' + escapeHtml(phone) + '</strong>' : '');
+				$('#deskHeaderEmail').html(email ? '📧 ' + escapeHtml(email) : '');
+				$('#deskHeaderSubject').html(subject ? '📌 ' + escapeHtml(subject) : '');
+
+				if (status === 'replied') {
+					$('#deskHeaderStatus').css({background: '#ecfdf5', color: '#047857'}).text('✅ پاسخ داده شد');
+				} else {
+					$('#deskHeaderStatus').css({background: '#fef3c7', color: '#b45309'}).text('⏳ در انتظار پاسخ');
+				}
+
+				// Action buttons
+				if (phone) {
+					$('#deskDirectCallBtn').attr('href', 'tel:' + phone).show();
+					var cleanPhone = phone.replace(/[^0-9]/g, '');
+					if (cleanPhone.startsWith('0')) cleanPhone = '98' + cleanPhone.substring(1);
+					$('#deskDirectWaBtn').attr('href', 'https://wa.me/' + cleanPhone).show();
+				} else {
+					$('#deskDirectCallBtn').hide();
+					$('#deskDirectWaBtn').hide();
+				}
+
+				// Fetch full thread history via AJAX
+				$('#deskMsgStream').html('<div style="text-align:center; padding:30px; color:#64748b;">در حال دریافت تاریخچه پیام‌ها... ⏳</div>');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_admin_get_thread',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>',
+						thread_id: threadId
+					},
+					success: function(res){
+						if (res.success && res.data && res.data.thread) {
+							renderDeskStream(res.data.thread.messages || []);
+						} else {
+							$('#deskMsgStream').html('<div style="color:#dc2626; text-align:center; padding:20px;">خطا در بارگذاری پیام‌ها.</div>');
+						}
+					},
+					error: function(){
+						$('#deskMsgStream').html('<div style="color:#dc2626; text-align:center; padding:20px;">خطای ارتباط با سرور.</div>');
+					}
+				});
+
+				$('#deskReplyInput').focus();
+			}
+
+			function renderDeskStream(messages) {
+				var $stream = $('#deskMsgStream');
+				$stream.empty();
+
+				if (!messages || messages.length === 0) {
+					$stream.html('<div style="text-align:center; padding:30px; color:#94a3b8;">هنوز پیامی در این گفتگو وجود ندارد.</div>');
+					return;
+				}
+
+				messages.forEach(function(msg){
+					var $b = $('<div>').addClass('desk-bubble');
+					var timeStr = msg.time || '';
+
+					if (msg.sender === 'customer') {
+						$b.addClass('customer');
+						$b.html('<div style="font-size:0.75rem; font-weight:800; color:#2563eb; margin-bottom:3px;">👤 ' + escapeHtml(msg.sender_name || 'مشتری') + '</div><div>' + escapeHtml(msg.text) + '</div><div style="font-size:0.68rem; color:#94a3b8; margin-top:4px; text-align:left; direction:ltr;">' + escapeHtml(timeStr) + '</div>');
+					} else if (msg.sender === 'ai') {
+						$b.addClass('ai');
+						$b.html('<div style="font-size:0.75rem; font-weight:800; color:#7c3aed; margin-bottom:3px;">🤖 ' + escapeHtml(msg.sender_name || 'پشتیبان هوشمند') + '</div><div>' + escapeHtml(msg.text).replace(/\n/g, '<br>') + '</div><div style="font-size:0.68rem; color:#94a3b8; margin-top:4px; text-align:left; direction:ltr;">' + escapeHtml(timeStr) + '</div>');
+					} else if (msg.sender === 'admin') {
+						$b.addClass('admin');
+						$b.html('<div style="font-size:0.75rem; font-weight:800; color:#fef08a; margin-bottom:3px;">👨‍💼 ' + escapeHtml(msg.sender_name || 'مدیریت فروشگاه (پاسخ شما)') + '</div><div>' + escapeHtml(msg.text).replace(/\n/g, '<br>') + '</div><div style="font-size:0.68rem; opacity:0.8; margin-top:4px; text-align:left; direction:ltr;">' + escapeHtml(timeStr) + '</div>');
+					}
+
+					$stream.append($b);
+				});
+
+				$stream.scrollTop($stream[0].scrollHeight);
+			}
+
+			// Click thread item
+			$(document).on('click', '.desk-thread-item', function(){
+				selectThreadItem($(this));
+			});
+
+			// Mobile back button to list
+			$('#btnDeskBackToList').on('click', function(){
+				$('.desk-threads-col').removeClass('mobile-hide');
+				$('#btnDeskBackToList').hide();
+			});
+
+			// Canned response quick insert
+			$(document).on('click', '.desk-canned-chip', function(){
+				var text = $(this).attr('data-text');
+				var cur = $('#deskReplyInput').val();
+				if (cur) {
+					$('#deskReplyInput').val(cur + ' ' + text);
+				} else {
+					$('#deskReplyInput').val(text);
+				}
+				$('#deskReplyInput').focus();
+			});
+
+			// Send Admin Reply via AJAX
+			$('#deskSendReplyBtn').on('click', function(){
+				if (!activeThreadData || !activeThreadData.id) {
+					alert('لطفاً ابتدا یک گفتگو را انتخاب نمایید.');
+					return;
+				}
+
+				var replyText = $('#deskReplyInput').val().trim();
+				if (!replyText) {
+					alert('لطفاً متن پاسخ را بنویسید.');
+					$('#deskReplyInput').focus();
+					return;
+				}
+
+				var $btn = $(this);
+				var $feedback = $('#deskReplyFeedback');
+				$btn.prop('disabled', true).text('در حال ارسال... ⏳');
+				$feedback.html('<span style="color:#2563eb;">ارسال پاسخ به چت مشتری...</span>');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_admin_send_chat_reply',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>',
+						thread_id: activeThreadData.id,
+						reply_text: replyText
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('ارسال پاسخ زنده 🚀');
+						if (res.success && res.data && res.data.thread) {
+							$('#deskReplyInput').val('');
+							$feedback.html('<span style="color:#059669;">✅ پاسخ ارسال شد و بلافاصله در چت مشتری نمایش داده شد.</span>');
+							setTimeout(function(){ $feedback.empty(); }, 4000);
+
+							// Update stream
+							renderDeskStream(res.data.thread.messages || []);
+
+							// Update thread item in list
+							if (activeThreadData.element) {
+								activeThreadData.element.attr('data-status', 'replied').removeClass('unread');
+								activeThreadData.element.find('span:contains("نیاز به پاسخ")')
+									.removeClass('field-badge-orange')
+									.css({background:'#ecfdf5', color:'#047857'})
+									.text('✅ پاسخ داده شد');
+							}
+							$('#deskHeaderStatus').css({background: '#ecfdf5', color: '#047857'}).text('✅ پاسخ داده شد');
+						} else {
+							$feedback.html('<span style="color:#dc2626;">❌ ' + (res.data || 'خطا در ارسال پاسخ.') + '</span>');
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('ارسال پاسخ زنده 🚀');
+						$feedback.html('<span style="color:#dc2626;">❌ خطای ارتباط با سرور.</span>');
+					}
+				});
+			});
+
+			// Delete Thread Button
+			$('#deskDeleteBtn').on('click', function(){
+				if (!activeThreadData || !activeThreadData.id) return;
+				if (!confirm('آیا از حذف کامل این گفتگو اطمینان دارید؟')) return;
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_admin_delete_thread',
+						nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>',
+						thread_id: activeThreadData.id
+					},
+					success: function(res){
+						if (res.success) {
+							if (activeThreadData.element) {
+								activeThreadData.element.slideUp(function(){ $(this).remove(); });
+							}
+							$('#deskActiveBox').hide();
+							$('#deskEmptyState').show();
+							activeThreadData = null;
+							if ($(window).width() <= 782) {
+								$('.desk-threads-col').removeClass('mobile-hide');
+								$('#btnDeskBackToList').hide();
+							}
+						} else {
+							alert(res.data || 'خطا در حذف گفتگو.');
+						}
+					}
+				});
+			});
+
+			// Search input filter
+			$('#deskSearchInput').on('input', function(){
+				var q = $(this).val().toLowerCase().trim();
+				$('.desk-thread-item').each(function(){
+					var name = ($(this).attr('data-name') || '').toLowerCase();
+					var phone = ($(this).attr('data-phone') || '').toLowerCase();
+					var text = $(this).text().toLowerCase();
+					if (!q || name.indexOf(q) > -1 || phone.indexOf(q) > -1 || text.indexOf(q) > -1) {
+						$(this).show();
+					} else {
+						$(this).hide();
+					}
+				});
+			});
+
+			// Filter buttons (all / pending / replied)
+			$('.desk-filter-btn').on('click', function(){
+				$('.desk-filter-btn').removeClass('active').css({background:'#ffffff', borderColor:'#cbd5e1'});
+				$(this).addClass('active').css({background:'#e2e8f0', borderColor:'#94a3b8'});
+				var filter = $(this).attr('data-filter');
+
+				$('.desk-thread-item').each(function(){
+					var st = $(this).attr('data-status') || 'pending';
+					if (filter === 'all') {
+						$(this).show();
+					} else if (filter === 'pending' && st === 'pending') {
+						$(this).show();
+					} else if (filter === 'replied' && st === 'replied') {
+						$(this).show();
+					} else {
+						$(this).hide();
+					}
+				});
+			});
+
+			// Refresh desk button
+			$('#btnRefreshAdminDesk').on('click', function(){
+				location.reload();
+			});
+
+			// 12 Visual Themes Selector Sync
+			$('#chat_theme_selector').on('change', function(){
+				var selected = $(this).val();
+				$('.chat-theme-card').removeClass('active').css('borderColor', '#e2e8f0');
+				$('.chat-theme-card[data-theme="' + selected + '"]').addClass('active').css('borderColor', '#2563eb');
+				$('.btn-pick-theme').text('انتخاب این تم');
+				$('.btn-pick-theme[data-theme="' + selected + '"]').text('✅ تم فعال');
+			});
+
+			$('.chat-theme-card, .btn-pick-theme').on('click', function(e){
+				var theme = $(this).attr('data-theme');
+				if (theme) {
+					$('#chat_theme_selector').val(theme).trigger('change');
+				}
+			});
+
+			// 6 Button Styles Selector Sync
+			$('#chat_button_style_selector').on('change', function(){
+				var selected = $(this).val();
+				$('.chat-btn-card').removeClass('active').css('borderColor', '#e2e8f0');
+				$('.chat-btn-card[data-btn-style="' + selected + '"]').addClass('active').css('borderColor', '#2563eb');
+				$('.btn-pick-btn-style').text('انتخاب این طرح دکمه');
+				$('.btn-pick-btn-style[data-btn-style="' + selected + '"]').text('✅ این طرح انتخاب شده');
+			});
+
+			$('.chat-btn-card, .btn-pick-btn-style').on('click', function(e){
+				var btnStyle = $(this).attr('data-btn-style');
+				if (btnStyle) {
+					$('#chat_button_style_selector').val(btnStyle).trigger('change');
+				}
+			});
 
 			// Test Messengers Button
 			$('#btnTestMessengers').on('click', function(e){

@@ -5704,7 +5704,11 @@ class Scraper_Auto_Shop_Plugin {
 				.field-badge-green { background: #ecfdf5; color: #059669; }
 				.field-badge-purple { background: #faf5ff; color: #7c3aed; }
 
-				/* Support Desk Styling */
+				/* Support Desk Styling (Clean & Organized) */
+				.scraper-support-desk {
+					box-sizing: border-box;
+					max-width: 100%;
+				}
 				.desk-thread-item:hover {
 					background: #f1f5f9;
 				}
@@ -5715,10 +5719,10 @@ class Scraper_Auto_Shop_Plugin {
 				.desk-canned-chip {
 					background: #f1f5f9;
 					border: 1px solid #cbd5e1;
-					border-radius: 20px;
-					padding: 4px 12px;
+					border-radius: 16px;
+					padding: 3px 10px;
 					font-family: inherit;
-					font-size: 0.78rem;
+					font-size: 0.75rem;
 					font-weight: 700;
 					color: #334155;
 					cursor: pointer;
@@ -5731,10 +5735,10 @@ class Scraper_Auto_Shop_Plugin {
 				}
 				.desk-bubble {
 					max-width: 82%;
-					padding: 10px 14px;
-					border-radius: 14px;
-					font-size: 0.88rem;
-					line-height: 1.5;
+					padding: 8px 12px;
+					border-radius: 12px;
+					font-size: 0.85rem;
+					line-height: 1.45;
 					word-break: break-word;
 				}
 				.desk-bubble.customer {
@@ -5759,6 +5763,22 @@ class Scraper_Auto_Shop_Plugin {
 					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 				}
 
+				/* Card Dropdown Menu Styling */
+				.theme-menu-card-item:hover {
+					background: #f1f5f9 !important;
+				}
+				.theme-menu-card-item.active {
+					background: #eff6ff !important;
+					border-right: 3px solid #2563eb !important;
+				}
+				#themeCardDropdownMenu::-webkit-scrollbar {
+					width: 6px;
+				}
+				#themeCardDropdownMenu::-webkit-scrollbar-thumb {
+					background: #cbd5e1;
+					border-radius: 4px;
+				}
+
 				/* Mobile Admin Optimizations */
 				@media (max-width: 782px) {
 					.wrap.scraper-admin-dashboard {
@@ -5767,23 +5787,23 @@ class Scraper_Auto_Shop_Plugin {
 					}
 					.scraper-support-desk {
 						flex-direction: column !important;
-						min-height: auto !important;
+						height: auto !important;
 					}
 					.desk-threads-col {
 						width: 100% !important;
-						max-height: 340px !important;
+						height: 300px !important;
 						border-left: none !important;
 						border-bottom: 1px solid #e2e8f0 !important;
 					}
 					.desk-threads-col.mobile-hide {
 						display: none !important;
 					}
-					.desk-view-col.mobile-fullscreen {
+					.desk-view-col {
 						width: 100% !important;
+						height: 440px !important;
 					}
-					.chat-themes-grid,
-					.chat-btn-styles-grid {
-						grid-template-columns: 1fr !important;
+					#btnDeskBackToList {
+						display: inline-block !important;
 					}
 					.form-table th,
 					.form-table td {
@@ -5815,7 +5835,7 @@ class Scraper_Auto_Shop_Plugin {
 						width: 100% !important;
 					}
 					.scraper-tab-link {
-						padding: 10px 6px !important;
+						padding: 9px 4px !important;
 						font-size: 0.8rem !important;
 						width: 100% !important;
 						box-sizing: border-box !important;
@@ -5840,6 +5860,12 @@ class Scraper_Auto_Shop_Plugin {
 						box-sizing: border-box !important;
 						padding: 12px !important;
 						font-size: 1rem !important;
+					}
+					.wp-list-table {
+						display: block !important;
+						width: 100% !important;
+						overflow-x: auto !important;
+						-webkit-overflow-scrolling: touch !important;
 					}
 				}
 				</style>
@@ -6050,41 +6076,41 @@ class Scraper_Auto_Shop_Plugin {
 				<div id="tab-chat" class="scraper-tab-panel">
 					
 					<!-- 1. ADMIN LIVE CHAT SUPPORT DESK -->
-					<div class="admin-card" style="border-top: 4px solid #2563eb;">
-						<div class="admin-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+					<div class="admin-card" style="border-top: 4px solid #2563eb; padding: 20px;">
+						<div class="admin-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px; padding-bottom:12px;">
 							<div>
-								<h3 style="margin:0; display:flex; align-items:center; gap:8px;">
-									<span>📬</span> میز کار و کنسول پاسخگویی زنده به گفتگوهای مشتریان
+								<h3 style="margin:0; display:flex; align-items:center; gap:8px; font-size:1.15rem; font-weight:800; color:#0f172a;">
+									<span>📬</span> میز کار و کنسول پاسخگویی زنده به مشتریان
 								</h3>
-								<p style="margin:4px 0 0; color:#64748b; font-size:0.88rem;">
-									پاسخ شما به صورت زنده و دوطرفه مانند پیام‌رسان در پنجره چت مشتری نمایش داده خواهد شد.
+								<p style="margin:4px 0 0; color:#64748b; font-size:0.85rem;">
+									پاسخ شما به صورت زنده در پنجره چت مشتری نمایش داده می‌شود و رشته گفتگو دوطرفه ادامه می‌یابد.
 								</p>
 							</div>
 							<div style="display:flex; align-items:center; gap:10px;">
 								<span class="field-badge field-badge-blue" id="deskThreadsCountBadge"><?php echo count( $chat_threads ); ?> گفتگو</span>
-								<button type="button" class="button button-secondary" id="btnRefreshAdminDesk" style="font-weight:700;">🔄 به‌روزرسانی زنده</button>
+								<button type="button" class="button button-secondary button-small" id="btnRefreshAdminDesk" style="font-weight:700;">🔄 به‌روزرسانی زنده</button>
 							</div>
 						</div>
 
-						<!-- Two-Column Desk Console -->
-						<div class="scraper-support-desk" style="display:flex; gap:18px; margin-top:16px; min-height:540px; border:1px solid #e2e8f0; border-radius:14px; overflow:hidden; background:#ffffff;">
+						<!-- Two-Column Desk Console (Organized & Responsive) -->
+						<div class="scraper-support-desk" style="display:flex; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; background:#ffffff; height:500px;">
 							
-							<!-- Column 1: Conversations List -->
-							<div class="desk-threads-col" style="width:340px; border-left:1px solid #e2e8f0; display:flex; flex-direction:column; background:#f8fafc;">
+							<!-- Column 1: Conversations List (Right Column in RTL) -->
+							<div class="desk-threads-col" style="width:310px; border-left:1px solid #e2e8f0; display:flex; flex-direction:column; background:#f8fafc; height:100%; flex-shrink:0;">
 								<!-- Search & Filter Bar -->
-								<div style="padding:12px 14px; border-bottom:1px solid #e2e8f0; background:#ffffff;">
-									<input type="text" id="deskSearchInput" placeholder="🔍 جستجو در نام، شماره یا پیام..." style="width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:7px 10px; font-size:0.85rem;">
-									<div style="display:flex; gap:6px; margin-top:8px;">
-										<button type="button" class="desk-filter-btn active" data-filter="all" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer;">همه</button>
-										<button type="button" class="desk-filter-btn" data-filter="pending" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer; color:#d97706;">در انتظار</button>
-										<button type="button" class="desk-filter-btn" data-filter="replied" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px; font-size:0.75rem; font-weight:700; cursor:pointer; color:#059669;">پاسخ‌داده</button>
+								<div style="padding:10px 12px; border-bottom:1px solid #e2e8f0; background:#ffffff;">
+									<input type="text" id="deskSearchInput" placeholder="🔍 جستجو در نام، شماره یا پیام..." style="width:100%; border:1px solid #cbd5e1; border-radius:8px; padding:6px 10px; font-size:0.82rem; box-sizing:border-box;">
+									<div style="display:flex; gap:4px; margin-top:8px;">
+										<button type="button" class="desk-filter-btn active" data-filter="all" style="flex:1; border:1px solid #cbd5e1; background:#2563eb; color:#fff; border-radius:6px; padding:4px 2px; font-size:0.72rem; font-weight:700; cursor:pointer;">همه</button>
+										<button type="button" class="desk-filter-btn" data-filter="pending" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px 2px; font-size:0.72rem; font-weight:700; cursor:pointer; color:#d97706;">در انتظار</button>
+										<button type="button" class="desk-filter-btn" data-filter="replied" style="flex:1; border:1px solid #cbd5e1; background:#ffffff; border-radius:6px; padding:4px 2px; font-size:0.72rem; font-weight:700; cursor:pointer; color:#059669;">پاسخ‌داده</button>
 									</div>
 								</div>
 
 								<!-- Threads Scroll List -->
-								<div class="desk-threads-scroll" id="deskThreadsList" style="flex:1; overflow-y:auto; max-height:480px;">
+								<div class="desk-threads-scroll" id="deskThreadsList" style="flex:1; overflow-y:auto; padding:0;">
 									<?php if ( empty( $chat_threads ) ) : ?>
-										<div style="text-align:center; padding:40px 15px; color:#94a3b8; font-size:0.88rem;">
+										<div style="text-align:center; padding:35px 15px; color:#94a3b8; font-size:0.85rem;">
 											💬 هنوز پیامی از سمت مشتریان ارسال نشده است.
 										</div>
 									<?php else : ?>
@@ -6101,24 +6127,24 @@ class Scraper_Auto_Shop_Plugin {
 												data-email="<?php echo esc_attr( $t['email'] ?? '' ); ?>"
 												data-subject="<?php echo esc_attr( $t['subject'] ?? '' ); ?>"
 												data-status="<?php echo esc_attr( $t['status'] ?? 'pending' ); ?>"
-												style="padding:12px 14px; border-bottom:1px solid #f1f5f9; cursor:pointer; transition:background 0.2s;">
-												<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-													<strong style="color:#0f172a; font-size:0.9rem;"><?php echo esc_html( $t['name'] ?? 'مشتری مهمان' ); ?></strong>
-													<span style="font-size:0.72rem; color:#64748b;"><?php echo esc_html( $last_msg['time'] ?? '' ); ?></span>
+												style="padding:10px 12px; border-bottom:1px solid #f1f5f9; cursor:pointer; transition:background 0.15s; position:relative;">
+												<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
+													<strong style="color:#0f172a; font-size:0.88rem;"><?php echo esc_html( $t['name'] ?? 'مشتری مهمان' ); ?></strong>
+													<span style="font-size:0.7rem; color:#94a3b8;"><?php echo esc_html( $last_msg['time'] ?? '' ); ?></span>
 												</div>
 												<?php if ( ! empty( $t['phone'] ) ) : ?>
-													<div style="font-size:0.78rem; color:#2563eb; font-weight:700; direction:ltr; text-align:right; margin-bottom:4px;"><?php echo esc_html( $t['phone'] ); ?></div>
+													<div style="font-size:0.75rem; color:#2563eb; font-weight:700; direction:ltr; text-align:right; margin-bottom:3px;"><?php echo esc_html( $t['phone'] ); ?></div>
 												<?php endif; ?>
-												<div style="font-size:0.8rem; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-													<?php echo esc_html( mb_substr( $last_msg['text'] ?? 'بدون پیام', 0, 50 ) ); ?>
+												<div style="font-size:0.78rem; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+													<?php echo esc_html( mb_substr( $last_msg['text'] ?? 'بدون متن', 0, 45 ) ); ?>
 												</div>
-												<div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+												<div style="display:flex; justify-content:space-between; align-items:center; margin-top:5px;">
 													<?php if ( $is_unread ) : ?>
-														<span style="font-size:0.7rem; font-weight:800; background:#fef3c7; color:#b45309; padding:2px 8px; border-radius:10px;">⏳ نیاز به پاسخ</span>
+														<span style="font-size:0.68rem; font-weight:800; background:#fef3c7; color:#b45309; padding:2px 6px; border-radius:6px;">⏳ نیاز به پاسخ</span>
 													<?php else : ?>
-														<span style="font-size:0.7rem; font-weight:800; background:#ecfdf5; color:#047857; padding:2px 8px; border-radius:10px;">✅ پاسخ داده شد</span>
+														<span style="font-size:0.68rem; font-weight:800; background:#ecfdf5; color:#047857; padding:2px 6px; border-radius:6px;">✅ پاسخ داده شد</span>
 													<?php endif; ?>
-													<span style="font-size:0.72rem; color:#94a3b8;"><?php echo count( $msgs ); ?> پیام</span>
+													<span style="font-size:0.7rem; color:#94a3b8;"><?php echo count( $msgs ); ?> پیام</span>
 												</div>
 											</div>
 										<?php endforeach; ?>
@@ -6126,65 +6152,65 @@ class Scraper_Auto_Shop_Plugin {
 								</div>
 							</div>
 
-							<!-- Column 2: Active Conversation & Reply Pane -->
-							<div class="desk-view-col" style="flex:1; display:flex; flex-direction:column; background:#ffffff;">
+							<!-- Column 2: Conversation View & Reply (Left Column in RTL) -->
+							<div class="desk-view-col" style="flex:1; display:flex; flex-direction:column; background:#ffffff; height:100%; min-width:0;">
 								
-								<!-- Empty State -->
-								<div id="deskEmptyState" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px; color:#94a3b8; text-align:center;">
-									<div style="font-size:3rem; margin-bottom:12px;">👈</div>
-									<h4 style="margin:0 0 6px; font-size:1.1rem; color:#475569;">گفتگویی انتخاب نشده است</h4>
-									<p style="margin:0; font-size:0.88rem;">جهت مشاهده پیام‌ها، اطلاعات تماس و ارسال پاسخ زنده، یک گفتگو را از ستون کناری انتخاب کنید.</p>
+								<!-- Empty State (Shown before a thread is selected) -->
+								<div id="deskEmptyState" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:30px; color:#94a3b8; text-align:center;">
+									<div style="font-size:2.8rem; margin-bottom:10px;">💬</div>
+									<h4 style="margin:0 0 6px; font-size:1.05rem; color:#475569; font-weight:800;">گفتگویی انتخاب نشده است</h4>
+									<p style="margin:0; font-size:0.85rem; max-width:320px; line-height:1.5;">جهت مشاهده مکالمه و پاسخ به مشتری، یک گفتگو را از ستون کناری انتخاب نمایید.</p>
 								</div>
 
 								<!-- Active Conversation Box -->
-								<div id="deskActiveBox" style="display:none; flex-direction:column; height:100%;">
+								<div id="deskActiveBox" style="display:none; flex-direction:column; height:100%; min-width:0;">
 									
 									<!-- Customer Card Header -->
-									<div style="padding:14px 20px; border-bottom:1px solid #e2e8f0; background:#f8fafc; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+									<div style="padding:10px 16px; border-bottom:1px solid #e2e8f0; background:#f8fafc; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
 										<div>
 											<div style="display:flex; align-items:center; gap:8px;">
 												<button type="button" id="btnDeskBackToList" class="button button-small" style="display:none;">◀ لیست</button>
-												<h4 style="margin:0; font-size:1.05rem; font-weight:800; color:#0f172a;" id="deskHeaderName">نام مشتری</h4>
-												<span id="deskHeaderStatus" style="font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:10px; background:#fef3c7; color:#b45309;">در انتظار پاسخ</span>
+												<h4 style="margin:0; font-size:0.98rem; font-weight:800; color:#0f172a;" id="deskHeaderName">نام مشتری</h4>
+												<span id="deskHeaderStatus" style="font-size:0.7rem; font-weight:800; padding:2px 6px; border-radius:6px; background:#fef3c7; color:#b45309;">در انتظار پاسخ</span>
 											</div>
-											<div style="font-size:0.82rem; color:#64748b; margin-top:4px; display:flex; gap:14px; flex-wrap:wrap;">
+											<div style="font-size:0.78rem; color:#64748b; margin-top:3px; display:flex; gap:12px; flex-wrap:wrap;">
 												<span id="deskHeaderPhone"></span>
 												<span id="deskHeaderEmail"></span>
 												<span id="deskHeaderSubject"></span>
 											</div>
 										</div>
 
-										<!-- Quick Action Buttons for Customer -->
-										<div style="display:flex; gap:8px; align-items:center;">
-											<a href="#" id="deskDirectCallBtn" class="button button-secondary button-small" style="font-weight:700;">📞 تماس تلفنی</a>
-											<a href="#" id="deskDirectWaBtn" target="_blank" class="button button-small" style="background:#25D366; color:#fff; border-color:#25D366; font-weight:700;">💬 واتساپ</a>
-											<button type="button" id="deskDeleteBtn" class="button button-small" style="color:#dc2626; border-color:#fca5a5; font-weight:700;">🗑️ حذف</button>
+										<!-- Action Buttons (Call / WhatsApp / Delete) -->
+										<div style="display:flex; gap:6px; align-items:center;">
+											<a href="#" id="deskDirectCallBtn" class="button button-secondary button-small" style="font-weight:700; font-size:0.78rem; padding:2px 8px;">📞 تماس</a>
+											<a href="#" id="deskDirectWaBtn" target="_blank" class="button button-small" style="background:#25D366; color:#fff; border-color:#25D366; font-weight:700; font-size:0.78rem; padding:2px 8px;">💬 واتساپ</a>
+											<button type="button" id="deskDeleteBtn" class="button button-small" style="color:#dc2626; border-color:#fca5a5; font-weight:700; font-size:0.78rem; padding:2px 8px;">🗑️ حذف</button>
 										</div>
 									</div>
 
-									<!-- Messages Stream Area -->
-									<div class="desk-msg-stream" id="deskMsgStream" style="flex:1; overflow-y:auto; padding:20px; background:#f8fafc; display:flex; flex-direction:column; gap:12px; max-height:360px;">
-										<!-- Dynamic Bubbles appended here -->
+									<!-- Messages Stream Scroll Area -->
+									<div class="desk-msg-stream" id="deskMsgStream" style="flex:1; overflow-y:auto; padding:14px 16px; background:#f8fafc; display:flex; flex-direction:column; gap:10px;">
+										<!-- Dynamic Bubbles Rendered Here -->
 									</div>
 
-									<!-- Canned Responses Quick Chips -->
-									<div style="padding:8px 16px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; gap:6px; overflow-x:auto; white-space:nowrap; align-items:center;">
-										<span style="font-size:0.75rem; color:#64748b; font-weight:700; flex-shrink:0;">⚡ پاسخ‌های آماده:</span>
-										<button type="button" class="desk-canned-chip" data-text="سلام و درود، سفارش شما در حال آماده‌سازی و بسته‌بندی است.">📦 در حال آماده‌سازی</button>
-										<button type="button" class="desk-canned-chip" data-text="کد رهگیری مرسوله پستی تا ساعاتی دیگر به همین شماره پیامک خواهد شد.">🚚 ارسال کد پیگیری</button>
-										<button type="button" class="desk-canned-chip" data-text="کالای مورد نظر شما در انبار موجود و با گارانتی اصالت کالا آماده تحویل است.">🛍️ موجودی و اصالت</button>
-										<button type="button" class="desk-canned-chip" data-text="جهت هماهنگی سریع‌تر لطفاً با شماره پشتیبانی تلفنی فروشگاه تماس حاصل فرمایید.">📞 تماس تکمیلی</button>
+									<!-- Quick Canned Replies Row -->
+									<div style="padding:6px 12px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; gap:6px; overflow-x:auto; white-space:nowrap; align-items:center;">
+										<span style="font-size:0.72rem; color:#64748b; font-weight:700; flex-shrink:0;">⚡ پاسخ آماده:</span>
+										<button type="button" class="desk-canned-chip" data-text="سلام و درود، سفارش شما در حال آماده‌سازی و ارسال است.">📦 آماده‌سازی</button>
+										<button type="button" class="desk-canned-chip" data-text="کد پیگیری مرسوله پستی تا ساعاتی دیگر پیامک خواهد شد.">🚚 ارسال کد پیگیری</button>
+										<button type="button" class="desk-canned-chip" data-text="کالای مورد نظر شما در انبار موجود و آماده تحویل است.">🛍️ استعلام موجودی</button>
+										<button type="button" class="desk-canned-chip" data-text="جهت هماهنگی سریع‌تر لطفاً با تلفن پشتیبانی تماس حاصل فرمایید.">📞 تماس تکمیلی</button>
 									</div>
 
-									<!-- Live Reply Composer -->
-									<div style="padding:14px 18px; border-top:1px solid #e2e8f0; background:#ffffff;">
-										<div style="display:flex; gap:10px;">
-											<textarea id="deskReplyInput" rows="2" placeholder="متن پاسخ خود را به این مشتری بنویسید (فوراً در چت مشتری نمایش داده خواهد شد)..." style="flex:1; border:1.5px solid #cbd5e1; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:0.9rem; resize:none;"></textarea>
-											<button type="button" id="deskSendReplyBtn" class="button button-primary button-large" style="background:#2563eb; font-weight:800; padding:0 24px; border-radius:10px; align-self:stretch;">
-												ارسال پاسخ زنده 🚀
+									<!-- Reply Composer Form -->
+									<div style="padding:10px 14px; border-top:1px solid #e2e8f0; background:#ffffff;">
+										<div style="display:flex; gap:8px;">
+											<textarea id="deskReplyInput" rows="2" placeholder="متن پاسخ خود را به این مشتری بنویسید (فوراً در چت مشتری نمایش داده می‌شود)..." style="flex:1; border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:0.85rem; resize:none;"></textarea>
+											<button type="button" id="deskSendReplyBtn" class="button button-primary" style="background:#2563eb; font-weight:800; padding:0 18px; border-radius:8px; align-self:stretch; font-size:0.88rem;">
+												ارسال پاسخ 🚀
 											</button>
 										</div>
-										<div id="deskReplyFeedback" style="font-size:0.8rem; margin-top:6px; font-weight:700;"></div>
+										<div id="deskReplyFeedback" style="font-size:0.78rem; margin-top:4px; font-weight:700;"></div>
 									</div>
 
 								</div>
@@ -6192,410 +6218,241 @@ class Scraper_Auto_Shop_Plugin {
 						</div>
 					</div>
 
-					<!-- 2. VISUAL CHAT THEMES (12 THEMES WITH LARGE PREVIEW CARDS) -->
-					<div class="admin-card" style="margin-top:24px;">
-						<div class="admin-card-header">
-							<h3><span>🎨</span> تم‌های رنگی و ظاهری پنجره چت آنلاین (۱۲ تم متنوع و لوکس)</h3>
-							<span class="field-badge field-badge-purple">طراحی مدرن سال ۲۰۲۶</span>
+					<!-- 2. CARD DROPDOWN THEME SELECTOR WITH LIVE PREVIEW (NO MORE ENDLESS LIST!) -->
+					<div class="admin-card" style="margin-top:20px; padding:20px;">
+						<div class="admin-card-header" style="margin-bottom:16px; padding-bottom:12px;">
+							<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a;">
+								<span>🎨</span> انتخاب تم گرافیکی پنجره چت (۱۲ تم با دراپ‌داون کارتی و پیش‌نمایش زنده)
+							</h3>
+							<span class="field-badge field-badge-purple">دراپ‌داون کارتی مدرن</span>
 						</div>
 
-						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
-							می‌توانید تم گرافیکی مورد نظر خود را از طریق دراپ‌داون زیر یا با کلیک بر روی هر یک از پیش‌نمایش‌های بزرگ انتخاب کنید. پنجره چت فروشگاه بلافاصله به رنگ‌بندی و هویت انتخابی شما درخواهد آمد:
+						<p style="color:#64748b; font-size:0.88rem; line-height:1.5; margin:0 0 16px;">
+							تم مورد نظر خود را از منوی کارتی زیر انتخاب نمایید. پیش‌نمایش زنده در کنار آن بلافاصله ظاهر جدید چت را نشان می‌دهد:
 						</p>
 
-						<!-- Large Theme Selector Dropdown -->
-						<div style="background:#f8fafc; padding:18px 22px; border-radius:14px; border:1px solid #e2e8f0; margin-bottom:24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-							<label for="chat_theme_selector" style="font-weight:800; font-size:1rem; color:#0f172a;">
-								انتخاب تم چت آنلاین:
-							</label>
-							<select name="chat_theme" id="chat_theme_selector" style="font-size:1.05rem; padding:10px 16px; border-radius:10px; border:2px solid #2563eb; min-width:320px; font-weight:700; color:#1e293b; background:#ffffff;">
-								<option value="royal-blue" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'royal-blue' ); ?>>۱. آبی رویال و کریستالی (Royal Modern Blue - پیش‌فرض شیک)</option>
-								<option value="cyberpunk-dark" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'cyberpunk-dark' ); ?>>۲. دارک نئونی و بنفش سایبرپانک (Cyberpunk Dark Violet)</option>
-								<option value="emerald-whatsapp" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'emerald-whatsapp' ); ?>>۳. سبز زمردی و واتساپی (Emerald WhatsApp Pro)</option>
-								<option value="magenta-rose" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'magenta-rose' ); ?>>۴. صورتی نئونی و سرخابی لوکس (Luxury Magenta Rose)</option>
-								<option value="gold-vip" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'gold-vip' ); ?>>۵. مشکی طلایی VIP لاکچری (Luxury Gold & Obsidian VIP)</option>
-								<option value="minimal-slate" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'minimal-slate' ); ?>>۶. مینیمال خنثی و تمیز (Minimalist Slate & Clean)</option>
-								<option value="aurora-gradient" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'aurora-gradient' ); ?>>۷. گرادینت شفق قطبی (Aurora Borealis Gradient)</option>
-								<option value="sunset-coral" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'sunset-coral' ); ?>>۸. غروب آفتاب کالیفرنیا (Sunset Coral & Warm Orange)</option>
-								<option value="telegram-ocean" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'telegram-ocean' ); ?>>۹. چت تلگرامی اقیانوسی (Telegram Ocean Blue)</option>
-								<option value="warm-caramel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'warm-caramel' ); ?>>۱۰. شکلاتی و کاراملی کافه‌ای (Warm Caramel & Mocha)</option>
-								<option value="mint-pastel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'mint-pastel' ); ?>>۱۱. نعنایی و فیروزه‌ای پاستلی (Mint & Pastel Turquoise)</option>
-								<option value="frosted-glass" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'frosted-glass' ); ?>>۱۲. شیشه‌ای نیمه‌شفاف گلس‌مورفیسم (Frosted Glassmorphism)</option>
-							</select>
-							<span style="color:#64748b; font-size:0.85rem;">(با تغییر منو یا کلیک روی کارت‌های زیر، تم بلافاصله تغییر می‌کند)</span>
-						</div>
+						<!-- Hidden Native Select (for form submission) -->
+						<select name="chat_theme" id="chat_theme_selector" style="display:none;">
+							<option value="royal-blue" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'royal-blue' ); ?>>royal-blue</option>
+							<option value="cyberpunk-dark" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'cyberpunk-dark' ); ?>>cyberpunk-dark</option>
+							<option value="emerald-whatsapp" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'emerald-whatsapp' ); ?>>emerald-whatsapp</option>
+							<option value="magenta-rose" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'magenta-rose' ); ?>>magenta-rose</option>
+							<option value="gold-vip" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'gold-vip' ); ?>>gold-vip</option>
+							<option value="minimal-slate" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'minimal-slate' ); ?>>minimal-slate</option>
+							<option value="aurora-gradient" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'aurora-gradient' ); ?>>aurora-gradient</option>
+							<option value="sunset-coral" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'sunset-coral' ); ?>>sunset-coral</option>
+							<option value="telegram-ocean" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'telegram-ocean' ); ?>>telegram-ocean</option>
+							<option value="warm-caramel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'warm-caramel' ); ?>>warm-caramel</option>
+							<option value="mint-pastel" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'mint-pastel' ); ?>>mint-pastel</option>
+							<option value="frosted-glass" <?php selected( $opts['chat_theme'] ?? 'royal-blue', 'frosted-glass' ); ?>>frosted-glass</option>
+						</select>
 
-						<!-- Large Visual Preview Cards Grid (12 Distinct Mockups) -->
-						<div class="chat-themes-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(330px, 1fr)); gap:20px;">
+						<!-- Two-Column Layout: Card Dropdown on Right, Single Live Preview on Left -->
+						<div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">
 							
-							<?php
-							$themes_catalog = array(
-								'royal-blue' => array(
-									'num'     => '۱',
-									'title'   => 'آبی رویال و کریستالی',
-									'badge'   => 'پیش‌فرض رسمی',
-									'hdr_bg'  => 'linear-gradient(135deg, #1e3a8a, #2563eb)',
-									'body_bg' => '#f8fafc',
-									'user_bg' => 'linear-gradient(135deg, #2563eb, #1d4ed8)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#e2e8f0',
-									'ai_c'    => '#0f172a',
-									'adm_bg'  => '#ecfdf5',
-									'adm_b'   => '#a7f3d0',
-									'adm_c'   => '#065f46',
-									'dots'    => array('#1e3a8a', '#2563eb', '#60a5fa'),
-								),
-								'cyberpunk-dark' => array(
-									'num'     => '۲',
-									'title'   => 'دارک نئونی و بنفش سایبرپانک',
-									'badge'   => 'OLED Dark Mode',
-									'hdr_bg'  => 'linear-gradient(135deg, #090514, #2e1065)',
-									'body_bg' => '#0f172a',
-									'user_bg' => 'linear-gradient(135deg, #7c3aed, #a855f7)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#1e293b',
-									'ai_b'    => '#475569',
-									'ai_c'    => '#f1f5f9',
-									'adm_bg'  => '#064e3b',
-									'adm_b'   => '#10b981',
-									'adm_c'   => '#a7f3d0',
-									'dots'    => array('#090514', '#7c3aed', '#a855f7'),
-								),
-								'emerald-whatsapp' => array(
-									'num'     => '۳',
-									'title'   => 'سبز زمردی و واتساپی',
-									'badge'   => 'پیام‌رسان محبوب',
-									'hdr_bg'  => 'linear-gradient(135deg, #064e3b, #059669)',
-									'body_bg' => '#efeae2',
-									'user_bg' => '#d9fdd3',
-									'user_c'  => '#111827',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#e5e7eb',
-									'ai_c'    => '#111827',
-									'adm_bg'  => '#e0f2fe',
-									'adm_b'   => '#bae6fd',
-									'adm_c'   => '#075985',
-									'dots'    => array('#064e3b', '#059669', '#25D366'),
-								),
-								'magenta-rose' => array(
-									'num'     => '۴',
-									'title'   => 'صورتی نئونی و سرخابی لوکس',
-									'badge'   => 'بیوتی و فشن',
-									'hdr_bg'  => 'linear-gradient(135deg, #831843, #db2777)',
-									'body_bg' => '#fff1f2',
-									'user_bg' => 'linear-gradient(135deg, #db2777, #f43f5e)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#fecdd3',
-									'ai_c'    => '#881337',
-									'adm_bg'  => '#f0fdf4',
-									'adm_b'   => '#bbf7d0',
-									'adm_c'   => '#166534',
-									'dots'    => array('#831843', '#db2777', '#fb7185'),
-								),
-								'gold-vip' => array(
-									'num'     => '۵',
-									'title'   => 'مشکی طلایی VIP لاکچری',
-									'badge'   => 'طلا و اکسسوری VIP',
-									'hdr_bg'  => 'linear-gradient(135deg, #09090b, #1c1917)',
-									'body_bg' => '#18181b',
-									'user_bg' => 'linear-gradient(135deg, #b45309, #d97706)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#27272a',
-									'ai_b'    => '#78350f',
-									'ai_c'    => '#fef3c7',
-									'adm_bg'  => '#292524',
-									'adm_b'   => '#f59e0b',
-									'adm_c'   => '#fef9c3',
-									'dots'    => array('#09090b', '#d97706', '#fbbf24'),
-								),
-								'minimal-slate' => array(
-									'num'     => '۶',
-									'title'   => 'مینیمال خنثی و تمیز',
-									'badge'   => 'طراحی اسکاندیناوی',
-									'hdr_bg'  => 'linear-gradient(135deg, #1e293b, #334155)',
-									'body_bg' => '#f8fafc',
-									'user_bg' => '#334155',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#cbd5e1',
-									'ai_c'    => '#0f172a',
-									'adm_bg'  => '#f1f5f9',
-									'adm_b'   => '#94a3b8',
-									'adm_c'   => '#0f172a',
-									'dots'    => array('#1e293b', '#475569', '#94a3b8'),
-								),
-								'aurora-gradient' => array(
-									'num'     => '۷',
-									'title'   => 'گرادینت شفق قطبی',
-									'badge'   => 'ارغوانی و فیروزه‌ای',
-									'hdr_bg'  => 'linear-gradient(135deg, #4338ca, #06b6d4)',
-									'body_bg' => '#f5f3ff',
-									'user_bg' => 'linear-gradient(135deg, #4f46e5, #06b6d4)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#c7d2fe',
-									'ai_c'    => '#312e81',
-									'adm_bg'  => '#ecfeff',
-									'adm_b'   => '#a5f3fc',
-									'adm_c'   => '#164e63',
-									'dots'    => array('#4338ca', '#6366f1', '#06b6d4'),
-								),
-								'sunset-coral' => array(
-									'num'     => '۸',
-									'title'   => 'غروب آفتاب کالیفرنیا',
-									'badge'   => 'مرجانی و صمیمی',
-									'hdr_bg'  => 'linear-gradient(135deg, #9a3412, #ea580c)',
-									'body_bg' => '#fff7ed',
-									'user_bg' => 'linear-gradient(135deg, #f97316, #ea580c)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#fed7aa',
-									'ai_c'    => '#7c2d12',
-									'adm_bg'  => '#fef2f2',
-									'adm_b'   => '#fecaca',
-									'adm_c'   => '#991b1b',
-									'dots'    => array('#9a3412', '#ea580c', '#fb923c'),
-								),
-								'telegram-ocean' => array(
-									'num'     => '۹',
-									'title'   => 'چت تلگرامی اقیانوسی',
-									'badge'   => 'آبی تلگرامی',
-									'hdr_bg'  => 'linear-gradient(135deg, #0369a1, #0284c7)',
-									'body_bg' => '#f0f9ff',
-									'user_bg' => '#e0f2fe',
-									'user_c'  => '#0369a1',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#bae6fd',
-									'ai_c'    => '#0c4a6e',
-									'adm_bg'  => '#f0fdf4',
-									'adm_b'   => '#bbf7d0',
-									'adm_c'   => '#14532d',
-									'dots'    => array('#0369a1', '#0284c7', '#38bdf8'),
-								),
-								'warm-caramel' => array(
-									'num'     => '۱۰',
-									'title'   => 'شکلاتی و کاراملی کافه‌ای',
-									'badge'   => 'گرم و نوستالژیک',
-									'hdr_bg'  => 'linear-gradient(135deg, #451a03, #92400e)',
-									'body_bg' => '#fffbeb',
-									'user_bg' => 'linear-gradient(135deg, #b45309, #92400e)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#fde68a',
-									'ai_c'    => '#78350f',
-									'adm_bg'  => '#fef3c7',
-									'adm_b'   => '#f59e0b',
-									'adm_c'   => '#78350f',
-									'dots'    => array('#451a03', '#92400e', '#f59e0b'),
-								),
-								'mint-pastel' => array(
-									'num'     => '۱۱',
-									'title'   => 'نعنایی و فیروزه‌ای پاستلی',
-									'badge'   => 'آرامش‌بخش و بهداشتی',
-									'hdr_bg'  => 'linear-gradient(135deg, #115e59, #0d9488)',
-									'body_bg' => '#f0fdfa',
-									'user_bg' => 'linear-gradient(135deg, #0d9488, #14b8a6)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#ccfbf1',
-									'ai_c'    => '#134e4a',
-									'adm_bg'  => '#ecfdf5',
-									'adm_b'   => '#a7f3d0',
-									'adm_c'   => '#065f46',
-									'dots'    => array('#115e59', '#0d9488', '#2dd4bf'),
-								),
-								'frosted-glass' => array(
-									'num'     => '۱۲',
-									'title'   => 'شیشه‌ای نیمه‌شفاف گلس‌مورفیسم',
-									'badge'   => 'کریستالی شفاف',
-									'hdr_bg'  => 'linear-gradient(135deg, #1e293b, #2563eb)',
-									'body_bg' => '#f1f5f9',
-									'user_bg' => 'linear-gradient(135deg, #2563eb, #3b82f6)',
-									'user_c'  => '#ffffff',
-									'ai_bg'   => '#ffffff',
-									'ai_b'    => '#cbd5e1',
-									'ai_c'    => '#0f172a',
-									'adm_bg'  => '#ecfdf5',
-									'adm_b'   => '#a7f3d0',
-									'adm_c'   => '#065f46',
-									'dots'    => array('#1e293b', '#2563eb', '#e2e8f0'),
-								),
-							);
-
-							$selected_theme = $opts['chat_theme'] ?? 'royal-blue';
-
-							foreach ( $themes_catalog as $t_slug => $t_info ) :
-								$is_active = ( $selected_theme === $t_slug );
-							?>
-								<div class="chat-theme-card <?php echo $is_active ? 'active' : ''; ?>" data-theme="<?php echo esc_attr( $t_slug ); ?>" style="border:2px solid <?php echo $is_active ? '#2563eb' : '#e2e8f0'; ?>; border-radius:16px; overflow:hidden; background:#ffffff; box-shadow:0 6px 18px rgba(0,0,0,0.05); transition:all 0.25s ease; cursor:pointer; position:relative;">
-									
-									<!-- Card Header Bar -->
-									<div style="padding:10px 14px; background:#f8fafc; border-bottom:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
-										<div>
-											<strong style="font-size:0.9rem; color:#0f172a;"><?php echo esc_html( $t_info['num'] . '. ' . $t_info['title'] ); ?></strong>
+							<!-- Right Column: Interactive Card Dropdown Component -->
+							<div style="flex:1; min-width:280px; max-width:460px;">
+								<label style="display:block; font-weight:800; font-size:0.92rem; color:#0f172a; margin-bottom:8px;">
+									کلیک روی کارت برای انتخاب تم:
+								</label>
+								
+								<div class="card-dropdown-wrap" style="position:relative;">
+									<!-- Dropdown Trigger Card Button -->
+									<div id="themeCardDropdownBtn" style="background:#ffffff; border:2px solid #2563eb; border-radius:12px; padding:12px 16px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; box-shadow:0 4px 12px rgba(37,99,235,0.08); user-select:none; transition:all 0.2s;">
+										<div style="display:flex; align-items:center; gap:12px;">
+											<div id="themeActiveDots" style="display:flex; gap:4px;">
+												<span style="width:14px; height:14px; border-radius:50%; background:#1e3a8a; display:inline-block;"></span>
+												<span style="width:14px; height:14px; border-radius:50%; background:#2563eb; display:inline-block;"></span>
+												<span style="width:14px; height:14px; border-radius:50%; background:#60a5fa; display:inline-block;"></span>
+											</div>
+											<div>
+												<strong id="themeActiveTitle" style="font-size:0.95rem; color:#0f172a; display:block;">آبی رویال و کریستالی</strong>
+												<span id="themeActiveBadge" style="font-size:0.75rem; color:#2563eb; font-weight:700;">پیش‌فرض رسمی</span>
+											</div>
 										</div>
-										<span style="font-size:0.72rem; font-weight:800; background:#e0f2fe; color:#0284c7; padding:2px 8px; border-radius:8px;"><?php echo esc_html( $t_info['badge'] ); ?></span>
-									</div>
-
-									<!-- Mini Mockup Chat Window -->
-									<div style="padding:12px; background:<?php echo esc_attr( $t_info['body_bg'] ); ?>;">
-										<!-- Mockup Header -->
-										<div style="background:<?php echo esc_attr( $t_info['hdr_bg'] ); ?>; color:#fff; border-radius:10px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-											<div style="display:flex; align-items:center; gap:8px;">
-												<span style="font-size:1.1rem;">👩‍💼</span>
-												<span style="font-size:0.8rem; font-weight:700;">پشتیبانی فروشگاه</span>
-											</div>
-											<span style="font-size:0.68rem; opacity:0.85;">🟢 آنلاین</span>
-										</div>
-
-										<!-- Mockup Bubbles -->
-										<div style="display:flex; flex-direction:column; gap:8px; font-size:0.78rem;">
-											<!-- Customer Bubble -->
-											<div style="align-self:flex-end; background:<?php echo esc_attr( $t_info['user_bg'] ); ?>; color:<?php echo esc_attr( $t_info['user_c'] ); ?>; border-radius:10px; border-bottom-left-radius:2px; padding:6px 10px; max-width:82%;">
-												سلام، ارسال فوری دارید؟
-											</div>
-											<!-- AI Bubble -->
-											<div style="align-self:flex-start; background:<?php echo esc_attr( $t_info['ai_bg'] ); ?>; border:1px solid <?php echo esc_attr( $t_info['ai_b'] ); ?>; color:<?php echo esc_attr( $t_info['ai_c'] ); ?>; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
-												<div style="font-size:0.68rem; font-weight:800; margin-bottom:2px;">🤖 پشتیبان هوشمند</div>
-												بله، کلیه سفارشات ثبت‌شده تا ۱۲ همان روز ارسال می‌شوند.
-											</div>
-											<!-- Admin Bubble -->
-											<div style="align-self:flex-start; background:<?php echo esc_attr( $t_info['adm_bg'] ); ?>; border:1px solid <?php echo esc_attr( $t_info['adm_b'] ); ?>; color:<?php echo esc_attr( $t_info['adm_c'] ); ?>; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
-												<div style="font-size:0.68rem; font-weight:800; margin-bottom:2px;">👨‍💼 پاسخ ادمین</div>
-												همچنین بسته‌بندی ویژه کادویی هم فعال است.
-											</div>
+										<div style="color:#2563eb; font-size:0.9rem; font-weight:800; display:flex; align-items:center; gap:6px;">
+											<span>انتخاب تم</span>
+											<span id="themeDropdownArrow" style="transition:transform 0.2s;">▾</span>
 										</div>
 									</div>
 
-									<!-- Card Footer with Color Dots & Select Button -->
-									<div style="padding:10px 14px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; justify-content:space-between; align-items:center;">
-										<div style="display:flex; gap:6px;">
-											<?php foreach ( $t_info['dots'] as $dot_color ) : ?>
-												<span style="width:14px; height:14px; border-radius:50%; background:<?php echo esc_attr( $dot_color ); ?>; display:inline-block; border:1px solid rgba(0,0,0,0.1);"></span>
-											<?php endforeach; ?>
-										</div>
-										<button type="button" class="button button-small btn-pick-theme" data-theme="<?php echo esc_attr( $t_slug ); ?>" style="font-weight:800; font-size:0.78rem;">
-											<?php echo $is_active ? '✅ تم فعال' : 'انتخاب این تم'; ?>
-										</button>
+									<!-- Dropdown Menu List Popup (12 Clean Cards) -->
+									<div id="themeCardDropdownMenu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; left:0; background:#ffffff; border:1px solid #cbd5e1; border-radius:12px; box-shadow:0 12px 30px rgba(0,0,0,0.15); z-index:100; max-height:360px; overflow-y:auto; padding:6px;">
+										
+										<?php
+										$themes_data = array(
+											'royal-blue'       => array('name' => '۱. آبی رویال و کریستالی', 'badge' => 'پیش‌فرض رسمی', 'dots' => array('#1e3a8a', '#2563eb', '#60a5fa')),
+											'cyberpunk-dark'   => array('name' => '۲. دارک نئونی و بنفش', 'badge' => 'OLED Dark Mode', 'dots' => array('#090514', '#7c3aed', '#a855f7')),
+											'emerald-whatsapp' => array('name' => '۳. سبز زمردی و واتساپی', 'badge' => 'پیام‌رسان محبوب', 'dots' => array('#064e3b', '#059669', '#25D366')),
+											'magenta-rose'     => array('name' => '۴. صورتی نئونی و سرخابی', 'badge' => 'بیوتی و فشن', 'dots' => array('#831843', '#db2777', '#fb7185')),
+											'gold-vip'         => array('name' => '۵. مشکی طلایی VIP', 'badge' => 'طلا و اکسسوری VIP', 'dots' => array('#09090b', '#d97706', '#fbbf24')),
+											'minimal-slate'    => array('name' => '۶. مینیمال خنثی و تمیز', 'badge' => 'طراحی اسکاندیناوی', 'dots' => array('#1e293b', '#475569', '#94a3b8')),
+											'aurora-gradient'  => array('name' => '۷. گرادینت شفق قطبی', 'badge' => 'ارغوانی و فیروزه‌ای', 'dots' => array('#4338ca', '#6366f1', '#06b6d4')),
+											'sunset-coral'     => array('name' => '۸. غروب آفتاب کالیفرنیا', 'badge' => 'مرجانی و صمیمی', 'dots' => array('#9a3412', '#ea580c', '#fb923c')),
+											'telegram-ocean'   => array('name' => '۹. چت تلگرامی اقیانوسی', 'badge' => 'آبی تلگرامی', 'dots' => array('#0369a1', '#0284c7', '#38bdf8')),
+											'warm-caramel'     => array('name' => '۱۰. شکلاتی و کاراملی', 'badge' => 'گرم و نوستالژیک', 'dots' => array('#451a03', '#92400e', '#f59e0b')),
+											'mint-pastel'      => array('name' => '۱۱. نعنایی و فیروزه‌ای', 'badge' => 'آرامش‌بخش و سلامت', 'dots' => array('#115e59', '#0d9488', '#2dd4bf')),
+											'frosted-glass'    => array('name' => '۱۲. شیشه‌ای گلس‌مورفیسم', 'badge' => 'کریستالی شفاف ۲۰۲۶', 'dots' => array('#1e293b', '#2563eb', '#cbd5e1')),
+										);
+
+										$cur_theme = $opts['chat_theme'] ?? 'royal-blue';
+
+										foreach ( $themes_data as $slug => $th ) :
+											$is_sel = ( $cur_theme === $slug );
+										?>
+											<div class="theme-menu-card-item <?php echo $is_sel ? 'active' : ''; ?>" data-theme="<?php echo esc_attr( $slug ); ?>" style="padding:10px 12px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; margin-bottom:4px; transition:background 0.15s; <?php echo $is_sel ? 'background:#eff6ff;' : ''; ?>">
+												<div style="display:flex; align-items:center; gap:10px;">
+													<div style="display:flex; gap:3px;">
+														<?php foreach ( $th['dots'] as $d ) : ?>
+															<span style="width:12px; height:12px; border-radius:50%; background:<?php echo esc_attr( $d ); ?>; display:inline-block;"></span>
+														<?php endforeach; ?>
+													</div>
+													<span style="font-weight:700; font-size:0.88rem; color:#0f172a;"><?php echo esc_html( $th['name'] ); ?></span>
+												</div>
+												<span style="font-size:0.72rem; color:#64748b; font-weight:700; background:#f1f5f9; padding:2px 8px; border-radius:6px;"><?php echo esc_html( $th['badge'] ); ?></span>
+											</div>
+										<?php endforeach; ?>
 									</div>
 								</div>
-							<?php endforeach; ?>
+								<div style="margin-top:10px; font-size:0.8rem; color:#64748b;">
+									💡 با انتخاب هر تم از منوی بالا، پیش‌نمایش سمت چپ فوراً تغییر می‌کند.
+								</div>
+							</div>
+
+							<!-- Left Column: Single Live Mockup Preview Card (Clean & Compact) -->
+							<div style="flex:1; min-width:280px; max-width:440px;">
+								<label style="display:block; font-weight:800; font-size:0.92rem; color:#0f172a; margin-bottom:8px;">
+									پیش‌نمایش زنده تم انتخابی:
+								</label>
+								
+								<div id="liveThemePreviewCard" style="border:1px solid #cbd5e1; border-radius:16px; overflow:hidden; box-shadow:0 8px 25px rgba(0,0,0,0.06); background:#ffffff;">
+									<!-- Mockup Top Bar -->
+									<div id="mockHdr" style="background:linear-gradient(135deg, #1e3a8a, #2563eb); color:#ffffff; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<span style="font-size:1.2rem;">👩‍💼</span>
+											<strong style="font-size:0.88rem;">پشتیبانی آنلاین فروشگاه</strong>
+										</div>
+										<span style="font-size:0.7rem; opacity:0.9;">🟢 آنلاین</span>
+									</div>
+
+									<!-- Mockup Chat Stream -->
+									<div id="mockBody" style="padding:14px; background:#f8fafc; display:flex; flex-direction:column; gap:8px; font-size:0.8rem;">
+										<!-- Customer Bubble -->
+										<div id="mockUserBubble" style="align-self:flex-end; background:linear-gradient(135deg, #2563eb, #1d4ed8); color:#ffffff; border-radius:10px; border-bottom-left-radius:2px; padding:6px 10px; max-width:80%;">
+											سلام، ارسال فوری دارید؟
+										</div>
+										<!-- AI Bubble -->
+										<div id="mockAiBubble" style="align-self:flex-start; background:#ffffff; border:1px solid #e2e8f0; color:#0f172a; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
+											<div style="font-size:0.68rem; font-weight:800; color:#7c3aed; margin-bottom:2px;">🤖 پشتیبان هوشمند</div>
+											بله، کلیه سفارشات ثبت‌شده تا ۱۲ همان روز ارسال می‌شوند.
+										</div>
+										<!-- Admin Bubble -->
+										<div id="mockAdminBubble" style="align-self:flex-start; background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; border-radius:10px; border-bottom-right-radius:2px; padding:6px 10px; max-width:85%;">
+											<div style="font-size:0.68rem; font-weight:800; color:#059669; margin-bottom:2px;">👨‍💼 کارشناس پشتیبانی</div>
+											همچنین بسته‌بندی ویژه اکسپرس نیز فعال است.
+										</div>
+									</div>
+
+									<!-- Mockup Palette Strip -->
+									<div id="mockPaletteStrip" style="padding:8px 14px; background:#ffffff; border-top:1px solid #f1f5f9; display:flex; justify-content:space-between; align-items:center;">
+										<span style="font-size:0.75rem; color:#64748b; font-weight:700;">پالت رنگی تم:</span>
+										<div id="mockPaletteDots" style="display:flex; gap:6px;">
+											<span style="width:14px; height:14px; border-radius:50%; background:#1e3a8a; display:inline-block;"></span>
+											<span style="width:14px; height:14px; border-radius:50%; background:#2563eb; display:inline-block;"></span>
+											<span style="width:14px; height:14px; border-radius:50%; background:#60a5fa; display:inline-block;"></span>
+										</div>
+									</div>
+								</div>
+							</div>
+
 						</div>
 					</div>
 
-					<!-- 3. CHAT BUTTON DESIGNS ON STOREFRONT (6 BUTTON STYLES) -->
-					<div class="admin-card" style="margin-top:24px;">
-						<div class="admin-card-header">
-							<h3><span>🔘</span> طرح‌های مختلف دکمه شناور چت در صفحه فروشگاه</h3>
-							<span class="field-badge field-badge-blue">۶ طرح مدرن و جذاب</span>
+					<!-- 3. BUTTON STYLE CARD DROPDOWN WITH LIVE PREVIEW -->
+					<div class="admin-card" style="margin-top:20px; padding:20px;">
+						<div class="admin-card-header" style="margin-bottom:16px; padding-bottom:12px;">
+							<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a;">
+								<span>🔘</span> طرح دکمه شناور چت در صفحه فروشگاه (۶ طرح با دراپ‌داون کارتی)
+							</h3>
+							<span class="field-badge field-badge-blue">انتخاب سریع</span>
 						</div>
 
-						<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0;">
-							طرح دکمه شناور گوشه صفحه فروشگاه را تعیین کنید تا مشتریان با بهترین جلوه بصری به بخش پشتیبانی هدایت شوند:
+						<p style="color:#64748b; font-size:0.88rem; line-height:1.5; margin:0 0 16px;">
+							طرح دکمه گوشه صفحه فروشگاه را انتخاب کنید:
 						</p>
 
-						<!-- Large Button Style Selector Dropdown -->
-						<div style="background:#f8fafc; padding:18px 22px; border-radius:14px; border:1px solid #e2e8f0; margin-bottom:24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-							<label for="chat_button_style_selector" style="font-weight:800; font-size:1rem; color:#0f172a;">
-								انتخاب طرح دکمه چت:
-							</label>
-							<select name="chat_button_style" id="chat_button_style_selector" style="font-size:1.05rem; padding:10px 16px; border-radius:10px; border:2px solid #2563eb; min-width:320px; font-weight:700; color:#1e293b; background:#ffffff;">
-								<option value="pill-label" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'pill-label' ); ?>>۱. کپسولی با متن «پشتیبانی آنلاین» و آیکون (Pill with Label - پیش‌فرض)</option>
-								<option value="circle-glow" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'circle-glow' ); ?>>۲. دایره مدرن نئونی با نور رنگی متناسب با تم (Glowing Circle)</option>
-								<option value="avatar-ring" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'avatar-ring' ); ?>>۳. آواتار پشتیبان انسانی با حلقه وضعیت آنلاین (Avatar Ring)</option>
-								<option value="frosted-glass" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'frosted-glass' ); ?>>۴. شیشه‌ای مات فلوتینگ با افکت بلور گلس‌مورفیک (Frosted Glass)</option>
-								<option value="edge-tab" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'edge-tab' ); ?>>۵. زبانه چسبان لبه صفحه بدون اشغال فضای محتوا (Edge Tab)</option>
-								<option value="radar-pulse" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'radar-pulse' ); ?>>۶. رادار پالس امواج صوتی متحرک دوگانه (Radar Wave Pulse)</option>
-							</select>
-						</div>
-
-						<!-- Visual Button Style Cards Grid -->
-						<div class="chat-btn-styles-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:18px;">
-							<?php
-							$btn_styles = array(
-								'pill-label'    => array('name' => '۱. کپسولی با برچسب و نشانگر زنده', 'desc' => 'حالت استاندارد با بالاترین نرخ کلیک'),
-								'circle-glow'   => array('name' => '۲. دایره مدرن نئونی با نور پالس', 'desc' => 'دایره مینیمال با نور رنگی درخشان'),
-								'avatar-ring'   => array('name' => '۳. آواتار پشتیبان با حلقه آنلاین', 'desc' => 'حس گفتگوی رودررو با یک انسان واقعی'),
-								'frosted-glass' => array('name' => '۴. حباب شیشه‌ای مات گلس‌مورفیسم', 'desc' => 'طراحی شفاف کریستالی با بلور لوکس'),
-								'edge-tab'      => array('name' => '۵. زبانه چسبان لبه کناری اسکرین', 'desc' => 'چسبیده به لبه صفحه، عالی برای موبایل'),
-								'radar-pulse'   => array('name' => '۶. رادار صوتی با امواج دوگانه', 'desc' => 'امواج پیوسته رادار برای جلب توجه فوری'),
-							);
-							$selected_btn = $opts['chat_button_style'] ?? 'pill-label';
-							foreach ( $btn_styles as $b_slug => $b_data ) :
-								$is_active_btn = ( $selected_btn === $b_slug );
-							?>
-								<div class="chat-btn-card <?php echo $is_active_btn ? 'active' : ''; ?>" data-btn-style="<?php echo esc_attr( $b_slug ); ?>" style="border:2px solid <?php echo $is_active_btn ? '#2563eb' : '#e2e8f0'; ?>; border-radius:14px; padding:18px; background:#ffffff; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,0.04); transition:all 0.2s;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-										<strong style="color:#0f172a; font-size:0.92rem;"><?php echo esc_html( $b_data['name'] ); ?></strong>
-										<span style="font-size:0.75rem; color:#64748b;"><?php echo $is_active_btn ? '✅ فعال' : ''; ?></span>
-									</div>
-									<p style="margin:0 0 14px; font-size:0.82rem; color:#64748b;"><?php echo esc_html( $b_data['desc'] ); ?></p>
-									<button type="button" class="button button-small btn-pick-btn-style" data-btn-style="<?php echo esc_attr( $b_slug ); ?>" style="font-weight:700; width:100%;">
-										<?php echo $is_active_btn ? '✅ این طرح انتخاب شده' : 'انتخاب این طرح دکمه'; ?>
-									</button>
-								</div>
-							<?php endforeach; ?>
+						<div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center;">
+							<div style="flex:1; min-width:280px; max-width:460px;">
+								<select name="chat_button_style" id="chat_button_style_selector" style="width:100%; font-size:0.95rem; font-weight:700; padding:10px 14px; border-radius:10px; border:2px solid #2563eb; color:#0f172a; background:#ffffff;">
+									<option value="pill-label" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'pill-label' ); ?>>۱. کپسولی با متن «پشتیبانی آنلاین» و آیکون (پیش‌فرض)</option>
+									<option value="circle-glow" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'circle-glow' ); ?>>۲. دایره مدرن نئونی با نور رنگی (Glowing Circle)</option>
+									<option value="avatar-ring" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'avatar-ring' ); ?>>۳. آواتار پشتیبان انسانی با حلقه آنلاین (Avatar Ring)</option>
+									<option value="frosted-glass" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'frosted-glass' ); ?>>۴. شیشه‌ای مات فلوتینگ بلورین (Frosted Glass)</option>
+									<option value="edge-tab" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'edge-tab' ); ?>>۵. زبانه چسبان لبه صفحه بدون اشغال فضا (Edge Tab)</option>
+									<option value="radar-pulse" <?php selected( $opts['chat_button_style'] ?? 'pill-label', 'radar-pulse' ); ?>>۶. رادار صوتی با امواج دوگانه متحرک (Radar Wave)</option>
+								</select>
+							</div>
+							<div style="font-size:0.85rem; color:#64748b;">
+								(دکمه شناور در گوشه پایین صفحه با موقعیت و طرح انتخابی شما نمایش داده خواهد شد)
+							</div>
 						</div>
 					</div>
 
-					<!-- 4. CHAT FORM FIELDS & GENERAL SETTINGS -->
-					<div class="admin-card" style="margin-top:24px;">
-						<div class="admin-card-header">
-							<h3><span>⚙️</span> تنظیمات عمومی پنجره چت و سفارشی‌سازی فیلدهای ورودی</h3>
-							<span class="field-badge field-badge-purple">امکان حذف و اضافه فیلدها</span>
+					<!-- 4. CHAT FORM FIELDS & GENERAL SETTINGS (CLEAN RESPONSIVE TABLE) -->
+					<div class="admin-card" style="margin-top:20px; padding:20px;">
+						<div class="admin-card-header" style="margin-bottom:16px; padding-bottom:12px;">
+							<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a;">
+								<span>⚙️</span> تنظیمات فیلدهای ورودی فرم چت و عناوین پنجره
+							</h3>
+							<span class="field-badge field-badge-purple">سفارشی‌سازی فرم</span>
 						</div>
 
-						<table class="form-table">
+						<table class="form-table" style="margin-top:0;">
 							<tr>
-								<th scope="row">فعال‌سازی دکمه چت آنلاین:</th>
+								<th scope="row" style="width:220px; font-weight:700;">فعال‌سازی چت آنلاین:</th>
 								<td>
 									<label>
 										<input type="checkbox" name="enable_support_chat" value="1" <?php checked( ! empty( $opts['enable_support_chat'] ) ); ?>>
-										دکمه شناور چت آنلاین و پنجره گفتگو در فروشگاه نمایش داده شود.
+										دکمه چت آنلاین و پنجره گفتگو در فروشگاه فعال باشد.
 									</label>
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">موقعیت دکمه چت در صفحه:</th>
+								<th scope="row" style="font-weight:700;">موقعیت دکمه چت:</th>
 								<td>
-									<select name="chat_button_position" class="regular-text">
+									<select name="chat_button_position" class="regular-text" style="border-radius:8px;">
 										<option value="left" <?php selected( $opts['chat_button_position'] ?? 'left', 'left' ); ?>>پایین سمت چپ (توصیه شده)</option>
 										<option value="right" <?php selected( $opts['chat_button_position'] ?? 'left', 'right' ); ?>>پایین سمت راست</option>
 									</select>
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">عنوان سربرگ پنجره چت:</th>
+								<th scope="row" style="font-weight:700;">عنوان پنجره چت:</th>
 								<td>
-									<input type="text" name="chat_window_title" value="<?php echo esc_attr( $opts['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?>" class="large-text">
+									<input type="text" name="chat_window_title" value="<?php echo esc_attr( $opts['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?>" class="large-text" style="border-radius:8px;">
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">پیام خوش‌آمدگویی اولیه:</th>
+								<th scope="row" style="font-weight:700;">پیام خوش‌آمدگویی اولیه:</th>
 								<td>
-									<textarea name="chat_welcome_message" rows="3" class="large-text"><?php echo esc_textarea( $opts['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا سریعاً پاسخ دهیم.' ); ?></textarea>
+									<textarea name="chat_welcome_message" rows="2" class="large-text" style="border-radius:8px;"><?php echo esc_textarea( $opts['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا همکاران ما سریعاً پاسخ دهند.' ); ?></textarea>
 								</td>
 							</tr>
 						</table>
 
 						<!-- Field Customization Table -->
-						<div style="margin-top:20px; border-top:1px solid #f1f5f9; padding-top:20px;">
-							<h4 style="margin:0 0 12px; font-size:1.05rem; font-weight:800; color:#1e293b;">
-								📋 تنظیم فیلدهای ورودی در فرم چت پشتیبانی (حذف/اضافه و تیک‌های الزامی بودن)
+						<div style="margin-top:16px; border-top:1px solid #f1f5f9; padding-top:16px;">
+							<h4 style="margin:0 0 10px; font-size:0.95rem; font-weight:800; color:#1e293b;">
+								📋 تنظیم فیلدهای ورودی (امکان فعال/غیرفعال‌سازی و اجباری بودن):
 							</h4>
-							<p style="color:#64748b; font-size:0.88rem; margin:0 0 16px;">
-								می‌توانید هر فیلد را در فرم چت فعال یا غیرفعال کنید و با تیک الزامی مشخص نمایید که پر کردن آن برای مشتری اجباری است یا اختیاری:
-							</p>
 
-							<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
+							<table class="wp-list-table widefat fixed striped" style="border-radius:8px; overflow:hidden;">
 								<thead>
 									<tr>
-										<th style="font-weight:800; width:180px;">عنوان فیلد</th>
-										<th style="font-weight:800; width:140px;">نمایش در فرم چت</th>
-										<th style="font-weight:800; width:140px;">الزامی بودن فیلد</th>
-										<th style="font-weight:800;">توضیحات و کاربرد</th>
+										<th style="font-weight:800; width:160px;">عنوان فیلد</th>
+										<th style="font-weight:800; width:130px;">نمایش در فرم</th>
+										<th style="font-weight:800; width:130px;">الزامی بودن</th>
+										<th style="font-weight:800;">توضیحات کاربردی</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -6613,7 +6470,7 @@ class Scraper_Auto_Shop_Plugin {
 												الزامی باشد
 											</label>
 										</td>
-										<td style="color:#64748b; font-size:0.85rem;">در پیام ارسالی به ادمین و پاسخ هوش مصنوعی جهت خطاب قرار دادن مشتری استفاده می‌شود.</td>
+										<td style="color:#64748b; font-size:0.82rem;">خطاب قرار دادن مشتری در پاسخ‌ها.</td>
 									</tr>
 									<tr>
 										<td><strong>📱 شماره تماس / موبایل</strong></td>
@@ -6629,7 +6486,7 @@ class Scraper_Auto_Shop_Plugin {
 												الزامی باشد
 											</label>
 										</td>
-										<td style="color:#64748b; font-size:0.85rem;">شماره موبایل مشتری برای تماس مستقیم پشتیبان یا ارسال پیام در پیام‌رسان‌ها (توصیه: الزامی).</td>
+										<td style="color:#64748b; font-size:0.82rem;">امکان تماس تلفنی یا واتساپ مستقیم با مشتری (توصیه: الزامی).</td>
 									</tr>
 									<tr>
 										<td><strong>📧 آدرس ایمیل</strong></td>
@@ -6645,7 +6502,7 @@ class Scraper_Auto_Shop_Plugin {
 												الزامی باشد
 											</label>
 										</td>
-										<td style="color:#64748b; font-size:0.85rem;">ارسال پاسخ رسمی فاکتور یا پیگیری برای مشتریان ایمیلی.</td>
+										<td style="color:#64748b; font-size:0.82rem;">ارسال پاسخ رسمی به ایمیل مشتری.</td>
 									</tr>
 									<tr>
 										<td><strong>📌 موضوع سوال / سفارش</strong></td>
@@ -6661,13 +6518,13 @@ class Scraper_Auto_Shop_Plugin {
 												الزامی باشد
 											</label>
 										</td>
-										<td style="color:#64748b; font-size:0.85rem;">مشتری موضوع پیام را وارد می‌کند (مثلاً استعلام موجودی، پیگیری مرسوله، درخواست تخفیف).</td>
+										<td style="color:#64748b; font-size:0.82rem;">دسته‌بندی موضوع پیام (استعلام، پیگیری و ...).</td>
 									</tr>
 									<tr>
 										<td><strong>📝 متن پیام یا سوال</strong></td>
 										<td><span style="color:#059669; font-weight:700;">همیشه فعال</span></td>
 										<td><span style="color:#dc2626; font-weight:700;">همیشه الزامی</span></td>
-										<td style="color:#64748b; font-size:0.85rem;">متن اصلی سوال مشتری از فروشگاه.</td>
+										<td style="color:#64748b; font-size:0.82rem;">متن پیام اصلی مشتری.</td>
 									</tr>
 								</tbody>
 							</table>
@@ -6995,7 +6852,6 @@ class Scraper_Auto_Shop_Plugin {
 		<script>
 		jQuery(document).ready(function($){
 			// Tab switching logic
-			// Mobile Tab Selector Sync
 			$('#mobileTabSelector').on('change', function(){
 				var targetTab = $(this).val();
 				$('#scraperAdminTabs .scraper-tab-link[data-tab="' + targetTab + '"]').click();
@@ -7023,7 +6879,273 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			} catch(err){}
 
-			// Support Desk: Interactive Thread Selection & Live Conversation
+			// ================= CARD DROPDOWN THEME SELECTOR =================
+			var themesCatalog = {
+				'royal-blue': {
+					name: '۱. آبی رویال و کریستالی',
+					title: 'آبی رویال و کریستالی',
+					badge: 'پیش‌فرض رسمی',
+					hdr_bg: 'linear-gradient(135deg, #1e3a8a, #2563eb)',
+					body_bg: '#f8fafc',
+					user_bg: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#e2e8f0',
+					ai_c: '#0f172a',
+					adm_bg: '#ecfdf5',
+					adm_b: '#a7f3d0',
+					adm_c: '#065f46',
+					dots: ['#1e3a8a', '#2563eb', '#60a5fa']
+				},
+				'cyberpunk-dark': {
+					name: '۲. دارک نئونی و بنفش',
+					title: 'دارک نئونی و بنفش سایبرپانک',
+					badge: 'OLED Dark Mode',
+					hdr_bg: 'linear-gradient(135deg, #090514, #2e1065)',
+					body_bg: '#0f172a',
+					user_bg: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+					user_c: '#ffffff',
+					ai_bg: '#1e293b',
+					ai_b: '#475569',
+					ai_c: '#f1f5f9',
+					adm_bg: '#064e3b',
+					adm_b: '#10b981',
+					adm_c: '#a7f3d0',
+					dots: ['#090514', '#7c3aed', '#a855f7']
+				},
+				'emerald-whatsapp': {
+					name: '۳. سبز زمردی و واتساپی',
+					title: 'سبز زمردی و واتساپی',
+					badge: 'پیام‌رسان محبوب',
+					hdr_bg: 'linear-gradient(135deg, #064e3b, #059669)',
+					body_bg: '#efeae2',
+					user_bg: '#d9fdd3',
+					user_c: '#111827',
+					ai_bg: '#ffffff',
+					ai_b: '#e5e7eb',
+					ai_c: '#111827',
+					adm_bg: '#e0f2fe',
+					adm_b: '#bae6fd',
+					adm_c: '#075985',
+					dots: ['#064e3b', '#059669', '#25D366']
+				},
+				'magenta-rose': {
+					name: '۴. صورتی نئونی و سرخابی',
+					title: 'صورتی نئونی و سرخابی لوکس',
+					badge: 'بیوتی و فشن',
+					hdr_bg: 'linear-gradient(135deg, #831843, #db2777)',
+					body_bg: '#fff1f2',
+					user_bg: 'linear-gradient(135deg, #db2777, #f43f5e)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#fecdd3',
+					ai_c: '#881337',
+					adm_bg: '#f0fdf4',
+					adm_b: '#bbf7d0',
+					adm_c: '#166534',
+					dots: ['#831843', '#db2777', '#fb7185']
+				},
+				'gold-vip': {
+					name: '۵. مشکی طلایی VIP',
+					title: 'مشکی طلایی VIP لاکچری',
+					badge: 'طلا و اکسسوری VIP',
+					hdr_bg: 'linear-gradient(135deg, #09090b, #1c1917)',
+					body_bg: '#18181b',
+					user_bg: 'linear-gradient(135deg, #b45309, #d97706)',
+					user_c: '#ffffff',
+					ai_bg: '#27272a',
+					ai_b: '#78350f',
+					ai_c: '#fef3c7',
+					adm_bg: '#292524',
+					adm_b: '#f59e0b',
+					adm_c: '#fef9c3',
+					dots: ['#09090b', '#d97706', '#fbbf24']
+				},
+				'minimal-slate': {
+					name: '۶. مینیمال خنثی و تمیز',
+					title: 'مینیمال خنثی و تمیز',
+					badge: 'طراحی اسکاندیناوی',
+					hdr_bg: 'linear-gradient(135deg, #1e293b, #334155)',
+					body_bg: '#f8fafc',
+					user_bg: '#334155',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#cbd5e1',
+					ai_c: '#0f172a',
+					adm_bg: '#f1f5f9',
+					adm_b: '#94a3b8',
+					adm_c: '#0f172a',
+					dots: ['#1e293b', '#475569', '#94a3b8']
+				},
+				'aurora-gradient': {
+					name: '۷. گرادینت شفق قطبی',
+					title: 'گرادینت شفق قطبی',
+					badge: 'ارغوانی و فیروزه‌ای',
+					hdr_bg: 'linear-gradient(135deg, #4338ca, #06b6d4)',
+					body_bg: '#f5f3ff',
+					user_bg: 'linear-gradient(135deg, #4f46e5, #06b6d4)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#c7d2fe',
+					ai_c: '#312e81',
+					adm_bg: '#ecfeff',
+					adm_b: '#a5f3fc',
+					adm_c: '#164e63',
+					dots: ['#4338ca', '#6366f1', '#06b6d4']
+				},
+				'sunset-coral': {
+					name: '۸. غروب آفتاب کالیفرنیا',
+					title: 'غروب آفتاب کالیفرنیا',
+					badge: 'مرجانی و صمیمی',
+					hdr_bg: 'linear-gradient(135deg, #9a3412, #ea580c)',
+					body_bg: '#fff7ed',
+					user_bg: 'linear-gradient(135deg, #f97316, #ea580c)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#fed7aa',
+					ai_c: '#7c2d12',
+					adm_bg: '#fef2f2',
+					adm_b: '#fecaca',
+					adm_c: '#991b1b',
+					dots: ['#9a3412', '#ea580c', '#fb923c']
+				},
+				'telegram-ocean': {
+					name: '۹. چت تلگرامی اقیانوسی',
+					title: 'چت تلگرامی اقیانوسی',
+					badge: 'آبی تلگرامی',
+					hdr_bg: 'linear-gradient(135deg, #0369a1, #0284c7)',
+					body_bg: '#f0f9ff',
+					user_bg: '#e0f2fe',
+					user_c: '#0369a1',
+					ai_bg: '#ffffff',
+					ai_b: '#bae6fd',
+					ai_c: '#0c4a6e',
+					adm_bg: '#f0fdf4',
+					adm_b: '#bbf7d0',
+					adm_c: '#14532d',
+					dots: ['#0369a1', '#0284c7', '#38bdf8']
+				},
+				'warm-caramel': {
+					name: '۱۰. شکلاتی و کاراملی',
+					title: 'شکلاتی و کاراملی کافه‌ای',
+					badge: 'گرم و نوستالژیک',
+					hdr_bg: 'linear-gradient(135deg, #451a03, #92400e)',
+					body_bg: '#fffbeb',
+					user_bg: 'linear-gradient(135deg, #b45309, #92400e)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#fde68a',
+					ai_c: '#78350f',
+					adm_bg: '#fef3c7',
+					adm_b: '#f59e0b',
+					adm_c: '#78350f',
+					dots: ['#451a03', '#92400e', '#f59e0b']
+				},
+				'mint-pastel': {
+					name: '۱۱. نعنایی و فیروزه‌ای',
+					title: 'نعنایی و فیروزه‌ای پاستلی',
+					badge: 'آرامش‌بخش و سلامت',
+					hdr_bg: 'linear-gradient(135deg, #115e59, #0d9488)',
+					body_bg: '#f0fdfa',
+					user_bg: 'linear-gradient(135deg, #0d9488, #14b8a6)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#ccfbf1',
+					ai_c: '#134e4a',
+					adm_bg: '#ecfdf5',
+					adm_b: '#a7f3d0',
+					adm_c: '#065f46',
+					dots: ['#115e59', '#0d9488', '#2dd4bf']
+				},
+				'frosted-glass': {
+					name: '۱۲. شیشه‌ای گلس‌مورفیسم',
+					title: 'شیشه‌ای نیمه‌شفاف گلس‌مورفیسم',
+					badge: 'کریستالی شفاف ۲۰۲۶',
+					hdr_bg: 'linear-gradient(135deg, #1e293b, #2563eb)',
+					body_bg: '#f1f5f9',
+					user_bg: 'linear-gradient(135deg, #2563eb, #3b82f6)',
+					user_c: '#ffffff',
+					ai_bg: '#ffffff',
+					ai_b: '#cbd5e1',
+					ai_c: '#0f172a',
+					adm_bg: '#ecfdf5',
+					adm_b: '#a7f3d0',
+					adm_c: '#065f46',
+					dots: ['#1e293b', '#2563eb', '#cbd5e1']
+				}
+			};
+
+			function applyThemeSelection(themeSlug) {
+				var info = themesCatalog[themeSlug] || themesCatalog['royal-blue'];
+
+				// Update select
+				$('#chat_theme_selector').val(themeSlug);
+
+				// Update Trigger Button
+				$('#themeActiveTitle').text(info.title || info.name);
+				$('#themeActiveBadge').text(info.badge);
+
+				var dotsHtml = '';
+				info.dots.forEach(function(d){
+					dotsHtml += '<span style="width:14px; height:14px; border-radius:50%; background:' + d + '; display:inline-block;"></span>';
+				});
+				$('#themeActiveDots').html(dotsHtml);
+
+				// Update active class in menu
+				$('.theme-menu-card-item').removeClass('active').css('background', 'transparent');
+				$('.theme-menu-card-item[data-theme="' + themeSlug + '"]').addClass('active').css('background', '#eff6ff');
+
+				// Update Live Mockup Preview Card
+				$('#mockHdr').css('background', info.hdr_bg);
+				$('#mockBody').css('background', info.body_bg);
+				$('#mockUserBubble').css({
+					background: info.user_bg,
+					color: info.user_c
+				});
+				$('#mockAiBubble').css({
+					background: info.ai_bg,
+					borderColor: info.ai_b,
+					color: info.ai_c
+				});
+				$('#mockAdminBubble').css({
+					background: info.adm_bg,
+					borderColor: info.adm_b,
+					color: info.adm_c
+				});
+				$('#mockPaletteDots').html(dotsHtml);
+			}
+
+			// Toggle theme card dropdown
+			$('#themeCardDropdownBtn').on('click', function(e){
+				e.stopPropagation();
+				var $menu = $('#themeCardDropdownMenu');
+				var isOpen = $menu.is(':visible');
+				$menu.toggle(!isOpen);
+				$('#themeDropdownArrow').css('transform', isOpen ? 'rotate(0deg)' : 'rotate(180deg)');
+			});
+
+			// Select theme item from dropdown
+			$(document).on('click', '.theme-menu-card-item', function(e){
+				e.stopPropagation();
+				var slug = $(this).attr('data-theme');
+				applyThemeSelection(slug);
+				$('#themeCardDropdownMenu').hide();
+				$('#themeDropdownArrow').css('transform', 'rotate(0deg)');
+			});
+
+			// Close dropdown when clicking outside
+			$(document).on('click', function(e){
+				if (!$(e.target).closest('.card-dropdown-wrap').length) {
+					$('#themeCardDropdownMenu').hide();
+					$('#themeDropdownArrow').css('transform', 'rotate(0deg)');
+				}
+			});
+
+			// Initialize theme preview on load
+			var initialTheme = $('#chat_theme_selector').val() || 'royal-blue';
+			applyThemeSelection(initialTheme);
+
+			// ================= SUPPORT DESK INTERACTION =================
 			var activeThreadData = null;
 
 			function escapeHtml(text) {
@@ -7193,7 +7315,7 @@ class Scraper_Auto_Shop_Plugin {
 						reply_text: replyText
 					},
 					success: function(res){
-						$btn.prop('disabled', false).text('ارسال پاسخ زنده 🚀');
+						$btn.prop('disabled', false).text('ارسال پاسخ 🚀');
 						if (res.success && res.data && res.data.thread) {
 							$('#deskReplyInput').val('');
 							$feedback.html('<span style="color:#059669;">✅ پاسخ ارسال شد و بلافاصله در چت مشتری نمایش داده شد.</span>');
@@ -7206,7 +7328,6 @@ class Scraper_Auto_Shop_Plugin {
 							if (activeThreadData.element) {
 								activeThreadData.element.attr('data-status', 'replied').removeClass('unread');
 								activeThreadData.element.find('span:contains("نیاز به پاسخ")')
-									.removeClass('field-badge-orange')
 									.css({background:'#ecfdf5', color:'#047857'})
 									.text('✅ پاسخ داده شد');
 							}
@@ -7216,7 +7337,7 @@ class Scraper_Auto_Shop_Plugin {
 						}
 					},
 					error: function(){
-						$btn.prop('disabled', false).text('ارسال پاسخ زنده 🚀');
+						$btn.prop('disabled', false).text('ارسال پاسخ 🚀');
 						$feedback.html('<span style="color:#dc2626;">❌ خطای ارتباط با سرور.</span>');
 					}
 				});
@@ -7271,8 +7392,8 @@ class Scraper_Auto_Shop_Plugin {
 
 			// Filter buttons (all / pending / replied)
 			$('.desk-filter-btn').on('click', function(){
-				$('.desk-filter-btn').removeClass('active').css({background:'#ffffff', borderColor:'#cbd5e1'});
-				$(this).addClass('active').css({background:'#e2e8f0', borderColor:'#94a3b8'});
+				$('.desk-filter-btn').removeClass('active').css({background:'#ffffff', color:'#334155'});
+				$(this).addClass('active').css({background:'#2563eb', color:'#ffffff'});
 				var filter = $(this).attr('data-filter');
 
 				$('.desk-thread-item').each(function(){
@@ -7292,38 +7413,6 @@ class Scraper_Auto_Shop_Plugin {
 			// Refresh desk button
 			$('#btnRefreshAdminDesk').on('click', function(){
 				location.reload();
-			});
-
-			// 12 Visual Themes Selector Sync
-			$('#chat_theme_selector').on('change', function(){
-				var selected = $(this).val();
-				$('.chat-theme-card').removeClass('active').css('borderColor', '#e2e8f0');
-				$('.chat-theme-card[data-theme="' + selected + '"]').addClass('active').css('borderColor', '#2563eb');
-				$('.btn-pick-theme').text('انتخاب این تم');
-				$('.btn-pick-theme[data-theme="' + selected + '"]').text('✅ تم فعال');
-			});
-
-			$('.chat-theme-card, .btn-pick-theme').on('click', function(e){
-				var theme = $(this).attr('data-theme');
-				if (theme) {
-					$('#chat_theme_selector').val(theme).trigger('change');
-				}
-			});
-
-			// 6 Button Styles Selector Sync
-			$('#chat_button_style_selector').on('change', function(){
-				var selected = $(this).val();
-				$('.chat-btn-card').removeClass('active').css('borderColor', '#e2e8f0');
-				$('.chat-btn-card[data-btn-style="' + selected + '"]').addClass('active').css('borderColor', '#2563eb');
-				$('.btn-pick-btn-style').text('انتخاب این طرح دکمه');
-				$('.btn-pick-btn-style[data-btn-style="' + selected + '"]').text('✅ این طرح انتخاب شده');
-			});
-
-			$('.chat-btn-card, .btn-pick-btn-style').on('click', function(e){
-				var btnStyle = $(this).attr('data-btn-style');
-				if (btnStyle) {
-					$('#chat_button_style_selector').val(btnStyle).trigger('change');
-				}
 			});
 
 			// Test Messengers Button

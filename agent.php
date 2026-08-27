@@ -6580,13 +6580,34 @@ class Scraper_Auto_Shop_Plugin {
 				const chatMsgInput = document.getElementById('chatMsgInput');
 				const typingIndicator = document.getElementById('chatTypingIndicator');
 
-								<span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-									<span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر
-									<span id="chatHeaderCustomerBadge" style="display:none; background:rgba(255,255,255,0.22); padding:1px 7px; border-radius:10px; font-size:0.72rem; align-items:center; gap:3px;">
-										<span id="chatHeaderCustomerName">مشتری</span>
-										<button type="button" id="btnEditCustomerName" style="background:none; border:none; color:#fff; cursor:pointer; font-size:0.75rem; padding:0;" title="ویرایش اطلاعات">✏️</button>
-									</span>
-								</span>
+				const chatContactChipBar = document.getElementById('chatContactChipBar');
+				const btnSaveContactChip = document.getElementById('btnSaveContactChip');
+				const chatHeaderCustomerBadge = document.getElementById('chatHeaderCustomerBadge');
+				const chatHeaderCustomerName = document.getElementById('chatHeaderCustomerName');
+				const btnEditCustomerName = document.getElementById('btnEditCustomerName');
+				const nameInput = document.getElementById('chatNameInput');
+				const phoneInput = document.getElementById('chatPhoneInput');
+
+				if (!chatBox) return;
+
+				// Dedicated Safe HTML Escape Helper
+				function escapeHtml(text) {
+					if (!text) return '';
+					return String(text)
+						.replace(/&/g, '&amp;')
+						.replace(/</g, '&lt;')
+						.replace(/>/g, '&gt;')
+						.replace(/"/g, '&quot;')
+						.replace(/'/g, '&#039;');
+				}
+
+				// Persistent Session ID
+				let sessionId = localStorage.getItem('scraper_chat_session_id');
+				if (!sessionId) {
+					sessionId = 'sess_' + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+					localStorage.setItem('scraper_chat_session_id', sessionId);
+				}
+
 				// Restore Contact Info
 				const savedName = localStorage.getItem('scraper_chat_customer_name') || '';
 				const savedPhone = localStorage.getItem('scraper_chat_customer_phone') || '';
@@ -6594,13 +6615,32 @@ class Scraper_Auto_Shop_Plugin {
 				if (nameInput && savedName) nameInput.value = savedName;
 				if (phoneInput && savedPhone) phoneInput.value = savedPhone;
 
-								<span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-									<span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر
-									<span id="chatHeaderCustomerBadge" style="display:none; background:rgba(255,255,255,0.22); padding:1px 7px; border-radius:10px; font-size:0.72rem; align-items:center; gap:3px;">
-										<span id="chatHeaderCustomerName">مشتری</span>
-										<button type="button" id="btnEditCustomerName" style="background:none; border:none; color:#fff; cursor:pointer; font-size:0.75rem; padding:0;" title="ویرایش اطلاعات">✏️</button>
-									</span>
-								</span>
+				function updateCustomerBadgeAndCleanUI() {
+					const curName = (nameInput ? nameInput.value.trim() : '') || savedName;
+					const curPhone = (phoneInput ? phoneInput.value.trim() : '') || savedPhone;
+					if (curName || curPhone) {
+						if (chatHeaderCustomerName) {
+							chatHeaderCustomerName.textContent = (curName || 'مشتری') + (curPhone ? ' (' + curPhone + ')' : '');
+						}
+						if (chatHeaderCustomerBadge) {
+							chatHeaderCustomerBadge.style.display = 'inline-flex';
+						}
+						// Completely remove the contact inputs and buttons to maximize room for messages!
+						if (chatContactChipBar) {
+							chatContactChipBar.style.display = 'none';
+						}
+					} else {
+						if (chatHeaderCustomerBadge) {
+							chatHeaderCustomerBadge.style.display = 'none';
+						}
+					}
+				}
+
+				// Check on load: if user already has saved details, remove bar immediately!
+				updateCustomerBadgeAndCleanUI();
+
+				// Save button click: saves and immediately removes the bar and textboxes!
+				if (btnSaveContactChip) {
 					btnSaveContactChip.addEventListener('click', (e) => {
 						e.preventDefault();
 						const curName = nameInput ? nameInput.value.trim() : '';
@@ -6625,8 +6665,6 @@ class Scraper_Auto_Shop_Plugin {
 							if (nameInput) nameInput.value = cleanN;
 							updateCustomerBadgeAndCleanUI();
 						}
-					});
-				}
 					});
 				}
 

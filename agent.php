@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 11.4.0
+ * Version: 11.5.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -50,6 +50,16 @@ class Scraper_Auto_Shop_Plugin {
 			'show_features_banner'        => true,
 			'show_special_badge'          => true,
 			'free_shipping_threshold'     => 400000,
+			'enable_support_chat'        => true,
+			'chat_button_position'       => 'left', // 'left' or 'right'
+			'chat_window_title'          => 'پشتیبانی آنلاین فروشگاه',
+			'chat_welcome_message'       => 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.',
+			'bale_token'                 => '',
+			'bale_chat_id'               => '',
+			'telegram_token'             => '',
+			'telegram_chat_id'           => '',
+			'rubika_token'               => '',
+			'rubika_chat_id'             => '',
 		);
 	}
 
@@ -99,6 +109,11 @@ class Scraper_Auto_Shop_Plugin {
 
 		// AJAX actions for syncing to WooCommerce
 		add_action( 'wp_ajax_scraper_sync_to_woo', array( __CLASS__, 'ajax_sync_to_woo' ) );
+
+		// Support chat AJAX endpoints
+		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
+		add_action( 'wp_ajax_nopriv_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
+		add_action( 'wp_ajax_test_support_messengers', array( __CLASS__, 'ajax_test_support_messengers' ) );
 
 		// Enqueue scripts & styles for storefront
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_front_assets' ) );
@@ -599,6 +614,269 @@ class Scraper_Auto_Shop_Plugin {
 			wp_send_json_success( $result );
 		} else {
 			wp_send_json_error( $result['message'] );
+		}
+	}
+
+	/**
+	 * Load connections configuration from scraper's connections.json.
+	 *
+	 * @return array
+	 */
+	public static function get_scraper_connections() {
+		$locations = array(
+			dirname( __FILE__ ) . '/connections.json',
+			plugin_dir_path( __FILE__ ) . 'connections.json',
+			defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR . '/uploads/connections.json' : '',
+		);
+
+		foreach ( $locations as $loc ) {
+			if ( ! empty( $loc ) && file_exists( $loc ) ) {
+				$json = @file_get_contents( $loc );
+				if ( ! empty( $json ) ) {
+					$data = @json_decode( $json, true );
+					if ( is_array( $data ) ) {
+						return $data;
+					}
+				}
+			}
+		}
+
+		return array();
+	}
+
+	/**
+	 * Determine active messengers based on scraper's connections.json and admin settings.
+	 *
+	 * @param array|null $settings
+	 * @return array
+	 */
+	public static function get_active_messengers( $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		$cn = self::get_scraper_connections();
+		$active = array();
+
+		// 1. Bale (بله)
+		$bale_token = ! empty( $settings['bale_token'] ) ? trim( $settings['bale_token'] ) : ( $cn['baleh']['token'] ?? $cn['bale']['token'] ?? '' );
+		$bale_chat  = ! empty( $settings['bale_chat_id'] ) ? trim( $settings['bale_chat_id'] ) : ( $cn['baleh']['chat_id'] ?? $cn['bale']['chat_id'] ?? '' );
+		if ( ! empty( $bale_token ) && ! empty( $bale_chat ) ) {
+			$source = ! empty( $settings['bale_token'] ) ? 'admin_settings' : 'scraper_connections';
+			$active['bale'] = array(
+				'title'   => 'پیام‌رسان بله (Bale)',
+				'token'   => $bale_token,
+				'chat_id' => $bale_chat,
+				'source'  => $source,
+				'url'     => 'https://tapi.bale.ai/bot' . $bale_token . '/sendMessage',
+			);
+		}
+
+		// 2. Telegram (تلگرام)
+		$tele_token = ! empty( $settings['telegram_token'] ) ? trim( $settings['telegram_token'] ) : ( $cn['telegram']['token'] ?? '' );
+		$tele_chat  = ! empty( $settings['telegram_chat_id'] ) ? trim( $settings['telegram_chat_id'] ) : ( $cn['telegram']['chat_id'] ?? '' );
+		if ( ! empty( $tele_token ) && ! empty( $tele_chat ) ) {
+			$source = ! empty( $settings['telegram_token'] ) ? 'admin_settings' : 'scraper_connections';
+			$active['telegram'] = array(
+				'title'   => 'تلگرام (Telegram)',
+				'token'   => $tele_token,
+				'chat_id' => $tele_chat,
+				'source'  => $source,
+				'url'     => 'https://api.telegram.org/bot' . $tele_token . '/sendMessage',
+			);
+		}
+
+		// 3. Rubika (روبیکا)
+		$rubi_token = ! empty( $settings['rubika_token'] ) ? trim( $settings['rubika_token'] ) : ( $cn['rubika']['token'] ?? '' );
+		$rubi_chat  = ! empty( $settings['rubika_chat_id'] ) ? trim( $settings['rubika_chat_id'] ) : ( $cn['rubika']['chat_id'] ?? '' );
+		if ( ! empty( $rubi_token ) && ! empty( $rubi_chat ) ) {
+			$source = ! empty( $settings['rubika_token'] ) ? 'admin_settings' : 'scraper_connections';
+			$active['rubika'] = array(
+				'title'   => 'روبیکا (Rubika)',
+				'token'   => $rubi_token,
+				'chat_id' => $rubi_chat,
+				'source'  => $source,
+				'url'     => 'https://api.rubika.ir/v1/bot' . $rubi_token . '/sendMessage',
+			);
+		}
+
+		return $active;
+	}
+
+	/**
+	 * Send formatted text message to all active messengers.
+	 *
+	 * @param string $message_text
+	 * @param array|null $settings
+	 * @return array
+	 */
+	public static function send_message_to_messengers( $message_text, $settings = null ) {
+		$messengers = self::get_active_messengers( $settings );
+		if ( empty( $messengers ) ) {
+			return array(
+				'ok'      => false,
+				'sent'    => 0,
+				'total'   => 0,
+				'message' => 'هیچ پیام‌رسانی در تنظیمات افزونه یا بخش اعلان‌های اسکرپر (connections.json) فعال نشده است.',
+				'details' => array(),
+			);
+		}
+
+		$sent_count = 0;
+		$details    = array();
+
+		foreach ( $messengers as $key => $m ) {
+			$body = array(
+				'chat_id' => $m['chat_id'],
+				'text'    => $message_text,
+			);
+			if ( 'telegram' === $key ) {
+				$body['disable_web_page_preview'] = true;
+			}
+
+			$args = array(
+				'method'      => 'POST',
+				'timeout'     => 15,
+				'redirection' => 5,
+				'httpversion' => '1.0',
+				'blocking'    => true,
+				'headers'     => array(
+					'Content-Type' => 'application/json; charset=utf-8',
+				),
+				'body'        => wp_json_encode( $body ),
+				'sslverify'   => false,
+			);
+
+			$response = wp_remote_post( $m['url'], $args );
+
+			if ( is_wp_error( $response ) ) {
+				$details[ $key ] = array(
+					'title' => $m['title'],
+					'ok'    => false,
+					'error' => $response->get_error_message(),
+				);
+			} else {
+				$code      = wp_remote_retrieve_response_code( $response );
+				$resp_body = wp_remote_retrieve_body( $response );
+				$json      = @json_decode( $resp_body, true );
+				$is_success = ( $code >= 200 && $code < 300 ) && ( ! isset( $json['ok'] ) || true === $json['ok'] );
+
+				if ( $is_success ) {
+					$sent_count++;
+					$details[ $key ] = array(
+						'title' => $m['title'],
+						'ok'    => true,
+						'code'  => $code,
+					);
+				} else {
+					$err_msg = 'HTTP ' . $code;
+					if ( is_array( $json ) && ! empty( $json['description'] ) ) {
+						$err_msg .= ': ' . $json['description'];
+					}
+					$details[ $key ] = array(
+						'title' => $m['title'],
+						'ok'    => false,
+						'error' => $err_msg,
+					);
+				}
+			}
+		}
+
+		$is_ok = ( $sent_count > 0 );
+		$summary = $is_ok
+			? "پیام با موفقیت به {$sent_count} پیام‌رسان ارسال شد."
+			: 'خطا در ارسال پیام به پیام‌رسان‌ها.';
+
+		return array(
+			'ok'      => $is_ok,
+			'sent'    => $sent_count,
+			'total'   => count( $messengers ),
+			'message' => $summary,
+			'details' => $details,
+		);
+	}
+
+	/**
+	 * AJAX endpoint for customer support chat submission.
+	 */
+	public static function ajax_submit_support_chat() {
+		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
+
+		$name    = sanitize_text_field( $_POST['name'] ?? '' );
+		$phone   = sanitize_text_field( $_POST['phone'] ?? '' );
+		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
+
+		if ( empty( $name ) ) {
+			$name = 'کاربر مهمان';
+		}
+
+		if ( empty( $phone ) ) {
+			wp_send_json_error( 'لطفاً شماره تماس یا موبایل خود را وارد نمایید.' );
+		}
+
+		if ( empty( $message ) ) {
+			wp_send_json_error( 'لطفاً متن پیام خود را بنویسید.' );
+		}
+
+		$time_str  = date_i18n( 'Y/m/d - H:i' );
+		$site_name = get_bloginfo( 'name' );
+
+		$formatted_text = "💬 پیام جدید از چت پشتیبانی آنلاین فروشگاه\n\n"
+			. "👤 نام مشتری: {$name}\n"
+			. "📱 شماره تماس: {$phone}\n"
+			. "🕒 زمان: {$time_str}\n"
+			. "🏢 فروشگاه: {$site_name}\n\n"
+			. "📝 متن پیام یا سوال:\n"
+			. "{$message}";
+
+		$send_result = self::send_message_to_messengers( $formatted_text );
+
+		// Save in chat logs
+		$logs = get_option( 'scraper_support_chat_logs', array() );
+		if ( ! is_array( $logs ) ) {
+			$logs = array();
+		}
+		array_unshift( $logs, array(
+			'name'    => $name,
+			'phone'   => $phone,
+			'message' => $message,
+			'time'    => $time_str,
+			'sent_ok' => $send_result['ok'],
+			'sent_to' => $send_result['sent'],
+		) );
+		$logs = array_slice( $logs, 0, 50 ); // keep last 50
+		update_option( 'scraper_support_chat_logs', $logs, false );
+
+		wp_send_json_success( array(
+			'message' => 'پیام شما با موفقیت ثبت و برای کارشناسان پشتیبانی ارسال شد. به زودی با شما تماس خواهیم گرفت.',
+			'status'  => $send_result,
+		) );
+	}
+
+	/**
+	 * AJAX endpoint for admin testing messenger connection.
+	 */
+	public static function ajax_test_support_messengers() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$time_str  = date_i18n( 'Y/m/d - H:i:s' );
+		$site_name = get_bloginfo( 'name' );
+
+		$test_text = "🔔 پیام آزمایشی سیستم پشتیبانی فروشگاه\n\n"
+			. "✅ این یک پیام تستی برای بررسی اتصال به پیام‌رسان‌های بخش اعلان اسکرپر است.\n"
+			. "🕒 زمان تست: {$time_str}\n"
+			. "🏢 فروشگاه: {$site_name}\n"
+			. "وضعیت: اتصال صحیح و بدون مشکل برقرار است.";
+
+		$result = self::send_message_to_messengers( $test_text );
+
+		if ( $result['ok'] ) {
+			wp_send_json_success( $result );
+		} else {
+			wp_send_json_error( $result );
 		}
 	}
 
@@ -1666,6 +1944,287 @@ class Scraper_Auto_Shop_Plugin {
 				align-items: center;
 				box-shadow: 0 -4px 15px rgba(0,0,0,0.06);
 			}
+
+			/* Online Support Chat Button & Window */
+			.support-chat-wrapper {
+				position: fixed;
+				bottom: 25px;
+				z-index: 9998;
+				font-family: inherit;
+			}
+			.support-chat-wrapper.pos-left {
+				left: 25px;
+			}
+			.support-chat-wrapper.pos-right {
+				right: 25px;
+			}
+			.support-chat-btn {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				background: linear-gradient(135deg, var(--sp-accent, #2563eb) 0%, #7c3aed 100%);
+				color: #fff;
+				border: none;
+				border-radius: 50px;
+				padding: 12px 20px;
+				cursor: pointer;
+				box-shadow: 0 10px 25px rgba(37, 99, 235, 0.4);
+				transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+				position: relative;
+				font-size: 0.95rem;
+				font-weight: 700;
+			}
+			.support-chat-btn:hover {
+				transform: translateY(-3px) scale(1.03);
+				box-shadow: 0 14px 30px rgba(37, 99, 235, 0.5);
+			}
+			.support-chat-btn svg {
+				width: 24px;
+				height: 24px;
+				fill: none;
+				stroke: currentColor;
+				stroke-width: 2;
+			}
+			.support-chat-badge {
+				position: absolute;
+				top: -2px;
+				right: -2px;
+				width: 13px;
+				height: 13px;
+				background: #10b981;
+				border: 2.5px solid #fff;
+				border-radius: 50%;
+				box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+				animation: pulse-green 2s infinite;
+			}
+			@keyframes pulse-green {
+				0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+				70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+				100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+			}
+
+			/* Chat Popup Window */
+			.support-chat-window {
+				display: none;
+				position: fixed;
+				bottom: 90px;
+				width: 370px;
+				max-width: calc(100vw - 30px);
+				background: #ffffff;
+				border-radius: 20px;
+				box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22);
+				border: 1px solid rgba(226, 232, 240, 0.9);
+				z-index: 9999;
+				overflow: hidden;
+				flex-direction: column;
+				animation: chatSlideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+			}
+			.support-chat-wrapper.pos-left .support-chat-window {
+				left: 25px;
+			}
+			.support-chat-wrapper.pos-right .support-chat-window {
+				right: 25px;
+			}
+			.support-chat-window.open {
+				display: flex;
+			}
+			@keyframes chatSlideUp {
+				from { opacity: 0; transform: translateY(20px) scale(0.95); }
+				to { opacity: 1; transform: translateY(0) scale(1); }
+			}
+
+			/* Chat Header */
+			.chat-hdr {
+				background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+				color: #ffffff;
+				padding: 16px 20px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			.chat-hdr-agent {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+			}
+			.chat-agent-avatar {
+				width: 44px;
+				height: 44px;
+				border-radius: 50%;
+				background: linear-gradient(135deg, #2563eb, #7c3aed);
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 1.3rem;
+				position: relative;
+				box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+			}
+			.chat-agent-avatar::after {
+				content: '';
+				position: absolute;
+				bottom: 0;
+				left: 0;
+				width: 11px;
+				height: 11px;
+				background: #10b981;
+				border: 2px solid #fff;
+				border-radius: 50%;
+			}
+			.chat-hdr-info h4 {
+				margin: 0 0 3px;
+				font-size: 1.05rem;
+				font-weight: 800;
+				color: #fff;
+			}
+			.chat-hdr-info span {
+				font-size: 0.78rem;
+				color: #94a3b8;
+				display: flex;
+				align-items: center;
+				gap: 4px;
+			}
+			.chat-close-btn {
+				background: rgba(255, 255, 255, 0.12);
+				border: none;
+				color: #fff;
+				width: 32px;
+				height: 32px;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				cursor: pointer;
+				font-size: 1.1rem;
+				transition: background 0.2s;
+			}
+			.chat-close-btn:hover {
+				background: rgba(255, 255, 255, 0.25);
+			}
+
+			/* Chat Body */
+			.chat-body-scroll {
+				padding: 16px 18px;
+				max-height: 280px;
+				min-height: 150px;
+				overflow-y: auto;
+				background: #f8fafc;
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+			}
+			.chat-msg-bubble {
+				max-width: 85%;
+				padding: 12px 15px;
+				border-radius: 14px;
+				font-size: 0.9rem;
+				line-height: 1.5;
+				position: relative;
+				word-break: break-word;
+			}
+			.chat-msg-bubble.incoming {
+				align-self: flex-start;
+				background: #ffffff;
+				color: #1e293b;
+				border-bottom-right-radius: 4px;
+				box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+				border: 1px solid #e2e8f0;
+			}
+			.chat-msg-bubble.outgoing {
+				align-self: flex-end;
+				background: #2563eb;
+				color: #ffffff;
+				border-bottom-left-radius: 4px;
+				box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+			}
+			.chat-msg-time {
+				font-size: 0.7rem;
+				margin-top: 4px;
+				opacity: 0.7;
+				text-align: left;
+			}
+
+			/* Chat Footer Form */
+			.chat-footer {
+				padding: 16px 18px;
+				background: #ffffff;
+				border-top: 1px solid #f1f5f9;
+			}
+			.chat-input-group {
+				margin-bottom: 10px;
+			}
+			.chat-input-group input,
+			.chat-input-group textarea {
+				width: 100%;
+				box-sizing: border-box;
+				border: 1.5px solid #e2e8f0;
+				border-radius: 10px;
+				padding: 9px 12px;
+				font-family: inherit;
+				font-size: 0.88rem;
+				color: #1e293b;
+				background: #f8fafc;
+				transition: all 0.2s ease;
+			}
+			.chat-input-group input:focus,
+			.chat-input-group textarea:focus {
+				outline: none;
+				border-color: #2563eb;
+				background: #fff;
+				box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+			}
+			.chat-submit-btn {
+				width: 100%;
+				background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+				color: #fff;
+				border: none;
+				border-radius: 10px;
+				padding: 11px;
+				font-family: inherit;
+				font-size: 0.95rem;
+				font-weight: 700;
+				cursor: pointer;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				gap: 8px;
+				transition: all 0.2s;
+				box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+			}
+			.chat-submit-btn:hover {
+				opacity: 0.95;
+				transform: translateY(-1px);
+			}
+			.chat-submit-btn:disabled {
+				opacity: 0.6;
+				cursor: not-allowed;
+				transform: none;
+			}
+
+			/* Mobile Responsiveness */
+			@media (max-width: 768px) {
+				.support-chat-wrapper {
+					bottom: 75px !important;
+				}
+				.support-chat-wrapper.pos-left {
+					left: 15px !important;
+				}
+				.support-chat-wrapper.pos-right {
+					right: 15px !important;
+				}
+				.support-chat-btn .support-chat-label {
+					display: none;
+				}
+				.support-chat-btn {
+					padding: 12px;
+					border-radius: 50%;
+				}
+				.support-chat-window {
+					bottom: 140px !important;
+					left: 15px !important;
+					right: 15px !important;
+					width: auto !important;
+				}
+			}
 			.mob-bar-item {
 				display: flex;
 				flex-direction: column;
@@ -2166,6 +2725,61 @@ class Scraper_Auto_Shop_Plugin {
 					<span>سبد خرید</span>
 				</a>
 			</div>
+
+			<?php if ( ! empty( $settings['enable_support_chat'] ) ) : ?>
+			<!-- Floating Online Support Chat Widget -->
+			<div class="support-chat-wrapper <?php echo 'right' === ( $settings['chat_button_position'] ?? 'left' ) ? 'pos-right' : 'pos-left'; ?>" id="supportChatWrap">
+				<button type="button" class="support-chat-btn" id="supportChatTrigger" aria-label="پشتیبانی آنلاین">
+					<span class="support-chat-badge"></span>
+					<svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+					<span class="support-chat-label">پشتیبانی آنلاین</span>
+				</button>
+
+				<div class="support-chat-window" id="supportChatBox">
+					<div class="chat-hdr">
+						<div class="chat-hdr-agent">
+							<div class="chat-agent-avatar">👩‍💼</div>
+							<div class="chat-hdr-info">
+								<h4><?php echo esc_html( $settings['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?></h4>
+								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی سریع</span>
+							</div>
+						</div>
+						<button type="button" class="chat-close-btn" id="supportChatClose" aria-label="بستن">✕</button>
+					</div>
+
+					<div class="chat-body-scroll" id="supportChatBody">
+						<div class="chat-msg-bubble incoming">
+							<div style="font-weight:700; font-size:0.8rem; color:#2563eb; margin-bottom:4px;">پشتیبانی فروشگاه</div>
+							<div><?php echo nl2br( esc_html( $settings['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.' ) ); ?></div>
+							<div class="chat-msg-time"><?php echo esc_html( date_i18n( 'H:i' ) ); ?></div>
+						</div>
+					</div>
+
+					<div class="chat-footer">
+						<form id="supportChatForm" onsubmit="return false;">
+							<div class="chat-input-group">
+								<input type="text" id="chatNameInput" placeholder="نام شما (اختیاری)" maxlength="60">
+							</div>
+							<div class="chat-input-group">
+								<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس (الزامی)*" required maxlength="20" dir="ltr">
+							</div>
+							<div class="chat-input-group">
+								<textarea id="chatMsgInput" placeholder="سوال یا پیام خود را بنویسید..." rows="2" required maxlength="1000"></textarea>
+							</div>
+							<button type="submit" id="chatSendBtn" class="chat-submit-btn">
+								<span>ارسال پیام به پشتیبانی 🚀</span>
+							</button>
+						</form>
+						<div id="chatSuccessCard" style="display:none; text-align:center; padding:15px 5px;">
+							<div style="font-size:2.2rem; margin-bottom:8px;">✅</div>
+							<div style="font-weight:800; color:#059669; font-size:1rem; margin-bottom:6px;">پیام شما ارسال شد!</div>
+							<div style="font-size:0.85rem; color:#64748b; line-height:1.5;">کارشناسان پشتیبانی پیام شما را دریافت کردند و به زودی از طریق پیام‌رسان یا تماس پاسخ خواهند داد.</div>
+							<button type="button" id="chatAskAnotherBtn" style="margin-top:12px; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:8px; padding:6px 14px; font-family:inherit; font-size:0.85rem; cursor:pointer; color:#334155; font-weight:700;">ارسال پیام جدید</button>
+						</div>
+					</div>
+				</div>
+			</div>
+			<?php endif; ?>
 
 			<!-- Modern Store Footer -->
 			<div class="modern-store-footer">
@@ -2697,6 +3311,109 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
+			// Support Chat Widget Logic
+			const chatTrigger = document.getElementById('supportChatTrigger');
+			const chatBox = document.getElementById('supportChatBox');
+			const chatClose = document.getElementById('supportChatClose');
+			const chatForm = document.getElementById('supportChatForm');
+			const chatSendBtn = document.getElementById('chatSendBtn');
+			const chatBody = document.getElementById('supportChatBody');
+			const chatSuccessCard = document.getElementById('chatSuccessCard');
+			const chatAskAnotherBtn = document.getElementById('chatAskAnotherBtn');
+
+			if (chatTrigger && chatBox) {
+				chatTrigger.addEventListener('click', () => {
+					chatBox.classList.toggle('open');
+					if (chatBox.classList.contains('open')) {
+						setTimeout(() => {
+							const phoneInput = document.getElementById('chatPhoneInput');
+							if (phoneInput) phoneInput.focus();
+						}, 150);
+					}
+				});
+
+				if (chatClose) {
+					chatClose.addEventListener('click', () => {
+						chatBox.classList.remove('open');
+					});
+				}
+
+				// Close chat if clicked outside
+				document.addEventListener('click', (e) => {
+					if (chatBox.classList.contains('open') && !chatBox.contains(e.target) && !chatTrigger.contains(e.target)) {
+						chatBox.classList.remove('open');
+					}
+				});
+
+				if (chatForm) {
+					chatForm.addEventListener('submit', (e) => {
+						e.preventDefault();
+						const name = (document.getElementById('chatNameInput').value || '').trim();
+						const phone = (document.getElementById('chatPhoneInput').value || '').trim();
+						const message = (document.getElementById('chatMsgInput').value || '').trim();
+
+						if (!phone) {
+							showToast('لطفاً شماره تماس خود را وارد نمایید.', 'error');
+							return;
+						}
+						if (!message) {
+							showToast('لطفاً متن پیام خود را وارد نمایید.', 'error');
+							return;
+						}
+
+						chatSendBtn.disabled = true;
+						chatSendBtn.innerHTML = '<span>در حال ارسال پیام... ⏳</span>';
+
+						const formData = new FormData();
+						formData.append('action', 'submit_support_chat');
+						formData.append('nonce', '<?php echo esc_js( wp_create_nonce( 'scraper_support_chat_nonce' ) ); ?>');
+						formData.append('name', name);
+						formData.append('phone', phone);
+						formData.append('message', message);
+
+						fetch('<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>', {
+							method: 'POST',
+							body: formData
+						})
+						.then(res => res.json())
+						.then(res => {
+							chatSendBtn.disabled = false;
+							chatSendBtn.innerHTML = '<span>ارسال پیام به پشتیبانی 🚀</span>';
+
+							if (res.success) {
+								// Add outgoing bubble to chat
+								const userBubble = document.createElement('div');
+								userBubble.className = 'chat-msg-bubble outgoing';
+								userBubble.innerHTML = `<div style="font-weight:700; font-size:0.8rem; margin-bottom:3px;">شما (${escapeHtml(name || 'مشتری')})</div><div>${escapeHtml(message)}</div><div class="chat-msg-time">ارسال شد ✓✓</div>`;
+								chatBody.appendChild(userBubble);
+								chatBody.scrollTop = chatBody.scrollHeight;
+
+								// Show success card
+								chatForm.style.display = 'none';
+								chatSuccessCard.style.display = 'block';
+								showToast('✅ پیام شما به پشتیبانی ارسال شد.');
+							} else {
+								showToast(res.data || 'خطا در ثبت پیام.', 'error');
+							}
+						})
+						.catch(err => {
+							chatSendBtn.disabled = false;
+							chatSendBtn.innerHTML = '<span>ارسال پیام به پشتیبانی 🚀</span>';
+							showToast('خطای ارتباط با سرور. لطفاً دوباره تلاش کنید.', 'error');
+						});
+					});
+				}
+
+				if (chatAskAnotherBtn) {
+					chatAskAnotherBtn.addEventListener('click', () => {
+						document.getElementById('chatMsgInput').value = '';
+						chatSuccessCard.style.display = 'none';
+						chatForm.style.display = 'block';
+						document.getElementById('chatMsgInput').focus();
+					});
+				}
+			}
+
 			// Initialize cart view
 			updateCartUI();
 		})();
@@ -2735,6 +3452,16 @@ class Scraper_Auto_Shop_Plugin {
 				'show_features_banner'    => ! empty( $_POST['show_features_banner'] ),
 				'show_special_badge'      => ! empty( $_POST['show_special_badge'] ),
 				'free_shipping_threshold' => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
+				'enable_support_chat'     => ! empty( $_POST['enable_support_chat'] ),
+				'chat_button_position'    => in_array( $_POST['chat_button_position'] ?? '', array( 'left', 'right' ), true ) ? $_POST['chat_button_position'] : 'left',
+				'chat_window_title'       => sanitize_text_field( $_POST['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ),
+				'chat_welcome_message'    => sanitize_textarea_field( $_POST['chat_welcome_message'] ?? '' ),
+				'bale_token'              => sanitize_text_field( $_POST['bale_token'] ?? '' ),
+				'bale_chat_id'            => sanitize_text_field( $_POST['bale_chat_id'] ?? '' ),
+				'telegram_token'          => sanitize_text_field( $_POST['telegram_token'] ?? '' ),
+				'telegram_chat_id'        => sanitize_text_field( $_POST['telegram_chat_id'] ?? '' ),
+				'rubika_token'            => sanitize_text_field( $_POST['rubika_token'] ?? '' ),
+				'rubika_chat_id'          => sanitize_text_field( $_POST['rubika_chat_id'] ?? '' ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			$updated = true;
@@ -2972,6 +3699,209 @@ class Scraper_Auto_Shop_Plugin {
 					</table>
 				</div>
 
+				<!-- Support Chat & Messenger Forwarding Settings -->
+				<div style="background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:22px 25px; margin-bottom:25px; box-shadow:0 4px 12px rgba(0,0,0,0.03);">
+					<div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:12px; margin-bottom:18px;">
+						<h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a; display:flex; align-items:center; gap:8px;">
+							<span>💬</span> تنظیمات چت پشتیبانی آنلاین و ارسال پیام‌ها به پیام‌رسان‌ها (بله / تلگرام / روبیکا)
+						</h3>
+						<span style="background:#eff6ff; color:#2563eb; font-weight:700; padding:4px 12px; border-radius:12px; font-size:0.8rem;">
+							متصل به بخش اعلان‌های اسکرپر
+						</span>
+					</div>
+
+					<p style="color:#64748b; font-size:0.92rem; line-height:1.6; margin-top:0; margin-bottom:18px;">
+						با فعال بودن این بخش، یک دکمه چت آنلاین مدرن در ویترین فروشگاه قرار می‌گیرد. هر پیامی که مشتریان ارسال کنند، به صورت آنی به پیام‌رسان‌های پیکربندی‌شده در بخش اعلان‌های فایل اسکرپر (<code>connections.json</code>) شامل <strong>بله (Bale)</strong>، <strong>تلگرام (Telegram)</strong> و <strong>روبیکا (Rubika)</strong> ارسال خواهد شد.
+					</p>
+
+					<?php
+					$active_messengers = self::get_active_messengers( $opts );
+					?>
+
+					<!-- Status overview box -->
+					<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:15px 20px; margin-bottom:20px;">
+						<div style="font-weight:800; font-size:0.95rem; color:#1e293b; margin-bottom:10px;">
+							📡 وضعیت پیام‌رسان‌های شناسایی‌شده از فایل اسکرپر و تنظیمات:
+						</div>
+						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+							<!-- Bale -->
+							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['bale'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
+								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+									<span>🔹 بله (Bale):</span>
+									<?php if ( isset( $active_messengers['bale'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+									<?php else : ?>
+										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
+									<?php endif; ?>
+								</div>
+								<div style="font-size:0.78rem; color:#64748b;">
+									<?php
+									if ( isset( $active_messengers['bale'] ) ) {
+										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['bale']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
+									} else {
+										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
+									}
+									?>
+								</div>
+							</div>
+
+							<!-- Telegram -->
+							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['telegram'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
+								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+									<span>🔹 تلگرام (Telegram):</span>
+									<?php if ( isset( $active_messengers['telegram'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+									<?php else : ?>
+										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
+									<?php endif; ?>
+								</div>
+								<div style="font-size:0.78rem; color:#64748b;">
+									<?php
+									if ( isset( $active_messengers['telegram'] ) ) {
+										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['telegram']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
+									} else {
+										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
+									}
+									?>
+								</div>
+							</div>
+
+							<!-- Rubika -->
+							<div style="background:#fff; border:1px solid <?php echo isset( $active_messengers['rubika'] ) ? '#bbf7d0' : '#e2e8f0'; ?>; border-radius:10px; padding:12px;">
+								<div style="font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+									<span>🔹 روبیکا (Rubika):</span>
+									<?php if ( isset( $active_messengers['rubika'] ) ) : ?>
+										<span style="color:#16a34a; font-size:0.8rem; font-weight:800;">🟢 فعال و متصل</span>
+									<?php else : ?>
+										<span style="color:#94a3b8; font-size:0.8rem;">⚪ تنظیم نشده</span>
+									<?php endif; ?>
+								</div>
+								<div style="font-size:0.78rem; color:#64748b;">
+									<?php
+									if ( isset( $active_messengers['rubika'] ) ) {
+										echo 'منبع: ' . ( 'scraper_connections' === $active_messengers['rubika']['source'] ? 'connections.json اسکرپر' : 'تنظیمات سفارشی' );
+									} else {
+										echo 'توکن یا Chat ID در اسکرپر یا فیلدهای زیر خالی است.';
+									}
+									?>
+								</div>
+							</div>
+						</div>
+
+						<!-- Test Button -->
+						<div style="margin-top:15px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+							<button type="button" id="btnTestMessengers" class="button button-secondary" style="font-weight:700; padding:6px 16px; border-color:#2563eb; color:#2563eb;">
+								🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)
+							</button>
+							<span id="testMessengersStatus" style="font-weight:600; font-size:0.9rem;"></span>
+						</div>
+					</div>
+
+					<table class="form-table">
+						<tr>
+							<th scope="row">فعال‌سازی چت آنلاین:</th>
+							<td>
+								<label>
+									<input type="checkbox" name="enable_support_chat" value="1" <?php checked( ! empty( $opts['enable_support_chat'] ) ); ?>>
+									دکمه شناور چت آنلاین و فرم گفتگوی مستقیم در صفحات فروشگاه نمایش داده شود.
+								</label>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">موقعیت دکمه چت:</th>
+							<td>
+								<select name="chat_button_position" class="regular-text">
+									<option value="left" <?php selected( $opts['chat_button_position'] ?? 'left', 'left' ); ?>>پایین سمت چپ صفحه (توصیه شده)</option>
+									<option value="right" <?php selected( $opts['chat_button_position'] ?? 'left', 'right' ); ?>>پایین سمت راست صفحه</option>
+								</select>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">عنوان پنجره گفتگو:</th>
+							<td>
+								<input type="text" name="chat_window_title" value="<?php echo esc_attr( $opts['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?>" class="large-text">
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">پیام خوش‌آمدگویی خودکار:</th>
+							<td>
+								<textarea name="chat_welcome_message" rows="3" class="large-text"><?php echo esc_textarea( $opts['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید، پیام بگذارید تا همکاران ما سریعاً پاسخ دهند.' ); ?></textarea>
+								<p class="description">این متن به عنوان پیام اول از طرف پشتیبان به مشتری نشان داده می‌شود.</p>
+							</td>
+						</tr>
+
+						<tr>
+							<th scope="row" colspan="2" style="padding-top:20px; padding-bottom:5px;">
+								<strong style="color:#0f172a; font-size:1rem;">⚙️ تنظیمات اختصاصی پیام‌رسان‌ها (اختیاری — در صورت خالی بودن، خودکار از connections.json خوانده می‌شود):</strong>
+							</th>
+						</tr>
+						<tr>
+							<th scope="row">ربات بله (Bale):</th>
+							<td>
+								<input type="password" name="bale_token" value="<?php echo esc_attr( $opts['bale_token'] ?? '' ); ?>" placeholder="Bot Token بله" class="regular-text" dir="ltr" style="margin-left:10px;">
+								<input type="text" name="bale_chat_id" value="<?php echo esc_attr( $opts['bale_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+								<p class="description">اگر در بخش اعلان‌های اسکرپر وارد شده باشد، نیازی به وارد کردن مجدد در اینجا نیست.</p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">ربات تلگرام (Telegram):</th>
+							<td>
+								<input type="password" name="telegram_token" value="<?php echo esc_attr( $opts['telegram_token'] ?? '' ); ?>" placeholder="Bot Token تلگرام" class="regular-text" dir="ltr" style="margin-left:10px;">
+								<input type="text" name="telegram_chat_id" value="<?php echo esc_attr( $opts['telegram_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+							</td>
+						</tr>
+						<tr>
+							<th scope="row">ربات روبیکا (Rubika):</th>
+							<td>
+								<input type="password" name="rubika_token" value="<?php echo esc_attr( $opts['rubika_token'] ?? '' ); ?>" placeholder="Bot Token روبیکا" class="regular-text" dir="ltr" style="margin-left:10px;">
+								<input type="text" name="rubika_chat_id" value="<?php echo esc_attr( $opts['rubika_chat_id'] ?? '' ); ?>" placeholder="شناسه عددی چت (Chat ID)" class="regular-text" dir="ltr">
+							</td>
+						</tr>
+					</table>
+
+					<!-- Recent customer messages log table -->
+					<?php
+					$recent_chat_logs = get_option( 'scraper_support_chat_logs', array() );
+					?>
+					<div style="margin-top:25px; border-top:1px solid #f1f5f9; padding-top:15px;">
+						<h4 style="margin:0 0 12px; font-size:1rem; font-weight:800; color:#1e293b;">
+							📋 آخرین پیام‌های دریافتی از مشتریان (۵ پیام اخیر):
+						</h4>
+						<?php if ( empty( $recent_chat_logs ) ) : ?>
+							<p style="color:#94a3b8; font-size:0.85rem; margin:0;">هنوز پیامی از طرف مشتریان در چت آنلاین ثبت نشده است.</p>
+						<?php else : ?>
+							<table class="wp-list-table widefat fixed striped" style="border-radius:8px; overflow:hidden;">
+								<thead>
+									<tr>
+										<th style="width:130px; font-weight:700;">زمان</th>
+										<th style="width:130px; font-weight:700;">نام مشتری</th>
+										<th style="width:120px; font-weight:700;">شماره تماس</th>
+										<th style="font-weight:700;">متن پیام</th>
+										<th style="width:140px; font-weight:700;">وضعیت ارسال</th>
+									</tr>
+								</thead>
+								<tbody>
+									<?php foreach ( array_slice( $recent_chat_logs, 0, 5 ) as $log ) : ?>
+										<tr>
+											<td style="font-size:0.82rem; color:#64748b;"><?php echo esc_html( $log['time'] ?? '—' ); ?></td>
+											<td style="font-weight:700;"><?php echo esc_html( $log['name'] ?? '—' ); ?></td>
+											<td dir="ltr" style="text-align:right;"><a href="tel:<?php echo esc_attr( $log['phone'] ?? '' ); ?>" style="font-weight:600; color:#2563eb;"><?php echo esc_html( $log['phone'] ?? '—' ); ?></a></td>
+											<td style="font-size:0.88rem;"><?php echo esc_html( $log['message'] ?? '—' ); ?></td>
+											<td>
+												<?php if ( ! empty( $log['sent_ok'] ) ) : ?>
+													<span style="color:#16a34a; font-weight:700; font-size:0.82rem;">✅ ارسال به پیام‌رسان</span>
+												<?php else : ?>
+													<span style="color:#d97706; font-weight:700; font-size:0.82rem;">⚠️ ثبت در سیستم</span>
+												<?php endif; ?>
+											</td>
+										</tr>
+									<?php endforeach; ?>
+								</tbody>
+							</table>
+						<?php endif; ?>
+					</div>
+				</div>
+
 				<p class="submit" style="display:flex; gap:15px; align-items:center;">
 					<input type="submit" name="scraper_shop_save" class="button button-primary button-large" value="💾 ذخیره تنظیمات کامل فروشگاه و قیمت" style="font-weight:800; padding:8px 24px;">
 				</p>
@@ -3003,7 +3933,37 @@ class Scraper_Auto_Shop_Plugin {
 					$btn.prop('disabled', true).text('در حال همگام‌سازی با ووکامرس...');
 					$status.html('<span style="color:#2563eb;">⏳ در حال انتقال محصولات به دیتابیس ووکامرس...</span>');
 
+				$('#btnTestMessengers').on('click', function(e){
+					e.preventDefault();
+					var $btn = $(this);
+					var $status = $('#testMessengersStatus');
+					$btn.prop('disabled', true).text('در حال ارسال پیام تست... ⏳');
+					$status.html('<span style="color:#2563eb;">در حال ارسال تست به پیام‌رسان‌های فعال...</span>');
+
 					$.ajax({
+						url: ajaxurl,
+						type: 'POST',
+						data: {
+							action: 'test_support_messengers',
+							nonce: '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>'
+						},
+						success: function(res){
+							$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)');
+							if (res.success) {
+								$status.html('<span style="color:#16a34a; font-weight:700;">✅ ' + (res.data.message || 'پیام با موفقیت به پیام‌رسان‌ها ارسال شد!') + '</span>');
+							} else {
+								var err = (res.data && res.data.message) ? res.data.message : 'ارسال تست با خطا مواجه شد.';
+								$status.html('<span style="color:#dc2626; font-weight:700;">❌ ' + err + '</span>');
+							}
+						},
+						error: function(){
+							$btn.prop('disabled', false).text('🔔 ارسال پیام آزمایشی به پیام‌رسان‌ها (تست اتصال)');
+							$status.html('<span style="color:#dc2626; font-weight:700;">❌ خطای ارتباط با سرور.</span>');
+						}
+					});
+				});
+
+				$.ajax({
 						url: ajaxurl,
 						type: 'POST',
 						data: {

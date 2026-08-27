@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.5.0
+ * Version: 12.6.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -46,6 +46,11 @@ class Scraper_Auto_Shop_Plugin {
 			'show_features_banner'        => true,
 			'show_special_badge'          => true,
 			'free_shipping_threshold'     => 400000,
+
+			// Storefront Template & Color Presets
+			'store_template'              => 'digikala', // digikala, snappshop, basalam, torob, digistyle, technolife, modern
+			'store_palette'               => 'digikala-red', // digikala-red, snapp-green, basalam-coral, torob-red, digistyle-rose, technolife-blue, royal-blue, luxury-purple, amber-gold, persian-turquoise
+			'auto_convert_rial'           => true,
 
 			// Pricing & Profit
 			'price_markup_percent'        => 20,
@@ -241,21 +246,43 @@ class Scraper_Auto_Shop_Plugin {
 			if ( is_numeric( $prod ) ) {
 				return (float) $prod;
 			}
-			$s = self::persian_to_english_digits( (string) $prod );
-			$s = str_replace( array( ',', '،', '٫', ' ' ), '', $s );
-			$c = preg_replace( '/[^\d.]/', '', $s );
-			return ! empty( $c ) ? (float) $c : 0;
+			$raw_str = (string) $prod;
+			$is_rial = (
+				stripos( $raw_str, 'ریال' ) !== false ||
+				stripos( $raw_str, 'rial' ) !== false ||
+				stripos( $raw_str, 'irr' ) !== false
+			);
+			$s = self::persian_to_english_digits( $raw_str );
+			$s = str_replace( array( ',', '،', '٫', ' ', '-', '_' ), '', $s );
+			// In Iranian eCommerce, '.' is widely used as thousands separator (e.g. 150.000 or 1.500.000)
+			$s = str_replace( '.', '', $s );
+			$c = preg_replace( '/[^\d]/', '', $s );
+			if ( empty( $c ) ) {
+				return 0;
+			}
+			$val = (float) $c;
+			if ( $is_rial && $val > 1000 ) {
+				$val = $val / 10;
+			}
+			return $val;
+		}
+
+		$is_rial = false;
+		$unit = strtolower( (string) ( $prod['price_unit'] ?? $prod['unit'] ?? '' ) );
+		if ( 'rial' === $unit || 'irr' === $unit || stripos( $unit, 'ریال' ) !== false ) {
+			$is_rial = true;
 		}
 
 		$candidates = array(
+			'sale_price',
 			'final_price',
 			'price',
 			'primary_price',
 			'display_price',
 			'new_price',
-			'regular_price',
 			'price_val',
 			'price_min',
+			'regular_price',
 			'orig_price',
 			'display_regular_price',
 			'old_price',
@@ -272,13 +299,17 @@ class Scraper_Auto_Shop_Plugin {
 				$val = $val['value'] ?? $val['amount'] ?? $val['raw'] ?? $val['price'] ?? reset( $val );
 			}
 			if ( is_scalar( $val ) ) {
-				$s = self::persian_to_english_digits( (string) $val );
-				$s = str_replace( array( ',', '،', '٫', ' ' ), '', $s );
-				$c = preg_replace( '/[^\d.]/', '', $s );
+				$raw_str = (string) $val;
+				if ( stripos( $raw_str, 'ریال' ) !== false || stripos( $raw_str, 'rial' ) !== false || stripos( $raw_str, 'irr' ) !== false ) {
+					$is_rial = true;
+				}
+				$s = self::persian_to_english_digits( $raw_str );
+				$s = str_replace( array( ',', '،', '٫', ' ', '-', '_' ), '', $s );
+				$s = str_replace( '.', '', $s );
+				$c = preg_replace( '/[^\d]/', '', $s );
 				if ( is_numeric( $c ) && (float) $c > 0 ) {
 					$num = (float) $c;
-					$unit = strtolower( (string) ( $prod['price_unit'] ?? $prod['unit'] ?? '' ) );
-					if ( ( 'rial' === $unit || 'irr' === $unit ) && $num > 1000 ) {
+					if ( $is_rial && $num > 1000 ) {
 						$num = $num / 10;
 					}
 					return $num;
@@ -289,8 +320,9 @@ class Scraper_Auto_Shop_Plugin {
 		// Check price_rial
 		if ( ! empty( $prod['price_rial'] ) ) {
 			$s = self::persian_to_english_digits( (string) $prod['price_rial'] );
-			$s = str_replace( array( ',', '،', '٫', ' ' ), '', $s );
-			$c = preg_replace( '/[^\d.]/', '', $s );
+			$s = str_replace( array( ',', '،', '٫', ' ', '-', '_' ), '', $s );
+			$s = str_replace( '.', '', $s );
+			$c = preg_replace( '/[^\d]/', '', $s );
 			if ( is_numeric( $c ) && (float) $c > 0 ) {
 				return (float) $c / 10;
 			}
@@ -300,11 +332,9 @@ class Scraper_Auto_Shop_Plugin {
 		if ( ! empty( $prod['variation_prices'] ) && is_array( $prod['variation_prices'] ) ) {
 			foreach ( $prod['variation_prices'] as $vp ) {
 				$raw_vp = is_array( $vp ) ? ( $vp['price'] ?? reset( $vp ) ) : $vp;
-				$s = self::persian_to_english_digits( (string) $raw_vp );
-				$s = str_replace( array( ',', '،', '٫', ' ' ), '', $s );
-				$c = preg_replace( '/[^\d.]/', '', $s );
-				if ( is_numeric( $c ) && (float) $c > 0 ) {
-					return (float) $c;
+				$num = self::extract_raw_price( $raw_vp );
+				if ( $num > 0 ) {
+					return $num;
 				}
 			}
 		}
@@ -313,8 +343,47 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
+	 * Accurately extract raw regular / old (strikethrough) price.
+	 *
+	 * @param mixed $prod
+	 * @return float
+	 */
+	public static function extract_raw_old_price( $prod ) {
+		if ( ! is_array( $prod ) ) {
+			return 0;
+		}
+
+		$old_candidates = array(
+			'regular_price',
+			'old_price',
+			'orig_price',
+			'display_regular_price',
+			'srcPrice',
+			'original_price',
+			'del_price',
+			'price_before_discount',
+		);
+
+		foreach ( $old_candidates as $k ) {
+			if ( ! isset( $prod[ $k ] ) || $prod[ $k ] === '' || $prod[ $k ] === null ) {
+				continue;
+			}
+			$val = $prod[ $k ];
+			if ( is_array( $val ) ) {
+				$val = $val['value'] ?? $val['amount'] ?? $val['raw'] ?? reset( $val );
+			}
+			$num = self::extract_raw_price( $val );
+			if ( $num > 0 ) {
+				return $num;
+			}
+		}
+
+		return 0;
+	}
+
+	/**
 	 * Price Adjustment Engine.
-	 * Calculates adjusted price, supports fallback base price, avoids "تماس بگیرید" unless desired.
+	 * Calculates adjusted price, preserves discounts, handles Rial/Toman, and supports fallback base prices.
 	 *
 	 * @param mixed      $raw_price
 	 * @param array|null $settings
@@ -326,8 +395,10 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		$original = self::extract_raw_price( $raw_price );
-		$fallback = (float) ( $settings['default_fallback_price'] ?? 150000 );
-		$behavior = (string) ( $settings['fallback_price_behavior'] ?? 'use_fallback' );
+		$old_raw  = is_array( $raw_price ) ? self::extract_raw_old_price( $raw_price ) : 0;
+
+		$fallback   = (float) ( $settings['default_fallback_price'] ?? 150000 );
+		$behavior   = (string) ( $settings['fallback_price_behavior'] ?? 'use_fallback' );
 		$markup_pct = (float) ( $settings['price_markup_percent'] ?? 0 );
 		$fixed_add  = (float) ( $settings['price_fixed_add'] ?? 0 );
 		$rounding   = (string) ( $settings['price_rounding'] ?? '1000' );
@@ -343,16 +414,22 @@ class Scraper_Auto_Shop_Plugin {
 				$original = $fixed_add;
 			} else {
 				return array(
-					'has_price'  => false,
-					'original'   => 0,
-					'adjusted'   => 0,
-					'formatted'  => 'تماس بگیرید',
-					'markup_pct' => $markup_pct,
+					'has_price'              => false,
+					'has_valid_source_price' => false,
+					'original'               => 0,
+					'adjusted'               => 0,
+					'old_price'              => 0,
+					'has_discount'           => false,
+					'discount_pct'           => 0,
+					'formatted'              => 'تماس بگیرید',
+					'formatted_old'          => '',
+					'currency'               => $currency,
+					'markup_pct'             => $markup_pct,
 				);
 			}
 		}
 
-		// Calculate adjusted price
+		// Calculate adjusted current price
 		$adjusted = $original * ( 1 + ( $markup_pct / 100 ) ) + $fixed_add;
 
 		// Apply rounding
@@ -364,6 +441,29 @@ class Scraper_Auto_Shop_Plugin {
 			$adjusted = round( $adjusted );
 		}
 
+		// Calculate adjusted old price & discount percent
+		$adjusted_old = 0;
+		$has_discount = false;
+		$discount_pct = 0;
+		$formatted_old = '';
+
+		if ( $old_raw > $original ) {
+			$adjusted_old = $old_raw * ( 1 + ( $markup_pct / 100 ) ) + $fixed_add;
+			if ( '1000' === $rounding && $adjusted_old > 1000 ) {
+				$adjusted_old = round( $adjusted_old / 1000 ) * 1000;
+			} elseif ( '10000' === $rounding && $adjusted_old > 10000 ) {
+				$adjusted_old = round( $adjusted_old / 10000 ) * 10000;
+			} else {
+				$adjusted_old = round( $adjusted_old );
+			}
+
+			if ( $adjusted_old > $adjusted ) {
+				$has_discount  = true;
+				$discount_pct  = (int) round( ( ( $adjusted_old - $adjusted ) / $adjusted_old ) * 100 );
+				$formatted_old = self::to_fa_num( number_format( $adjusted_old ) ) . ' ' . $currency;
+			}
+		}
+
 		$formatted = self::to_fa_num( number_format( $adjusted ) ) . ' ' . $currency;
 
 		return array(
@@ -371,16 +471,16 @@ class Scraper_Auto_Shop_Plugin {
 			'has_valid_source_price' => $has_valid_source_price,
 			'original'               => $original,
 			'adjusted'               => $adjusted,
+			'old_price'              => $adjusted_old,
+			'has_discount'           => $has_discount,
+			'discount_pct'           => $discount_pct,
 			'formatted'              => $formatted,
+			'formatted_old'          => $formatted_old,
+			'currency'               => $currency,
 			'markup_pct'             => $markup_pct,
 		);
 	}
 
-	/**
-	 * Get summary list of profiles from scraper4 profiles.json (used internally for admin sync).
-	 *
-	 * @return array
-	 */
 	public static function get_profiles_summary() {
 		$summary = array();
 		$candidates = array(
@@ -494,17 +594,21 @@ class Scraper_Auto_Shop_Plugin {
 							$cat  = $prod['category'] ?? $prod['cat'] ?? 'عمومی';
 
 							$products[] = array(
-								'id'              => $hash,
-								'title'           => $title,
-								'has_price'       => $price_calc['has_price'],
-								'original_price'  => $price_calc['original'],
-								'price'           => $price_calc['adjusted'],
-								'price_formatted' => $price_calc['formatted'],
-								'image'           => $img,
-								'gallery'         => $gallery,
-								'category'        => $cat,
-								'description'     => $desc,
-								'in_stock'        => true,
+								'id'                  => $hash,
+								'title'               => $title,
+								'has_price'           => $price_calc['has_price'],
+								'original_price'      => $price_calc['original'],
+								'price'               => $price_calc['adjusted'],
+								'price_formatted'     => $price_calc['formatted'],
+								'old_price'           => $price_calc['old_price'],
+								'old_price_formatted' => $price_calc['formatted_old'],
+								'has_discount'        => $price_calc['has_discount'],
+								'discount_pct'        => $price_calc['discount_pct'],
+								'image'               => $img,
+								'gallery'             => $gallery,
+								'category'            => $cat,
+								'description'         => $desc,
+								'in_stock'            => true,
 							);
 						}
 					}
@@ -529,17 +633,21 @@ class Scraper_Auto_Shop_Plugin {
 								$img            = $prod['image'] ?? $prod['img'] ?? '';
 								$gallery        = ! empty( $prod['images'] ) && is_array( $prod['images'] ) ? $prod['images'] : ( ! empty( $img ) ? array( $img ) : array() );
 								$products[]     = array(
-									'id'              => $hash,
-									'title'           => $title,
-									'has_price'       => $price_calc['has_price'],
-									'original_price'  => $price_calc['original'],
-									'price'           => $price_calc['adjusted'],
-									'price_formatted' => $price_calc['formatted'],
-									'image'           => $img,
-									'gallery'         => $gallery,
-									'category'        => $prod['category'] ?? $prod['cat'] ?? 'عمومی',
-									'description'     => $prod['description'] ?? $prod['desc'] ?? '',
-									'in_stock'        => true,
+									'id'                  => $hash,
+									'title'               => $title,
+									'has_price'           => $price_calc['has_price'],
+									'original_price'      => $price_calc['original'],
+									'price'               => $price_calc['adjusted'],
+									'price_formatted'     => $price_calc['formatted'],
+									'old_price'           => $price_calc['old_price'],
+									'old_price_formatted' => $price_calc['formatted_old'],
+									'has_discount'        => $price_calc['has_discount'],
+									'discount_pct'        => $price_calc['discount_pct'],
+									'image'               => $img,
+									'gallery'             => $gallery,
+									'category'            => $prod['category'] ?? $prod['cat'] ?? 'عمومی',
+									'description'         => $prod['description'] ?? $prod['desc'] ?? '',
+									'in_stock'            => true,
 								);
 							}
 						}
@@ -548,17 +656,140 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
+		// Also check existing WooCommerce products if available
+		if ( empty( $products ) && function_exists( 'wc_get_products' ) ) {
+			$wc_prods = wc_get_products( array( 'limit' => 50, 'status' => 'publish' ) );
+			if ( ! empty( $wc_prods ) ) {
+				foreach ( $wc_prods as $wp_prod ) {
+					$w_id        = $wp_prod->get_id();
+					$w_title     = $wp_prod->get_name();
+					$w_reg_price = (float) $wp_prod->get_regular_price();
+					$w_sale_price= (float) $wp_prod->get_sale_price();
+					$w_price     = (float) $wp_prod->get_price();
+					$w_img_id    = $wp_prod->get_image_id();
+					$w_img       = $w_img_id ? wp_get_attachment_image_url( $w_img_id, 'full' ) : '';
+					$w_cats      = wc_get_product_category_list( $w_id );
+					$w_cat_clean = strip_tags( $w_cats ) ?: 'عمومی';
+
+					$calc = self::calculate_price( array(
+						'price'         => $w_price,
+						'regular_price' => $w_reg_price > $w_price ? $w_reg_price : 0,
+					), $settings );
+
+					$products[] = array(
+						'id'                  => 'wc_' . $w_id,
+						'title'               => $w_title,
+						'has_price'           => $calc['has_price'],
+						'original_price'      => $calc['original'],
+						'price'               => $calc['adjusted'],
+						'price_formatted'     => $calc['formatted'],
+						'old_price'           => $calc['old_price'],
+						'old_price_formatted' => $calc['formatted_old'],
+						'has_discount'        => $calc['has_discount'],
+						'discount_pct'        => $calc['discount_pct'],
+						'image'               => $w_img,
+						'gallery'             => array( $w_img ),
+						'category'            => $w_cat_clean,
+						'description'         => $wp_prod->get_short_description() ?: $wp_prod->get_description(),
+						'in_stock'            => $wp_prod->is_in_stock(),
+					);
+				}
+			}
+		}
+
+		// Demo fallback items if still empty so the shop displays beautifully on preview
+		if ( empty( $products ) ) {
+			$demo_items = array(
+				array(
+					'id'            => 'demo_1',
+					'title'         => 'ساعت هوشمند اولترا پرو مدل Max-9 با صفحه نمایش AMOLED',
+					'raw_price'     => 1450000,
+					'old_price_raw' => 1950000,
+					'image'         => 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'گجت‌های هوشمند',
+					'description'   => 'دارای سنسورهای پایش سلامت، مکالمه بلوتوثی باکیفیت و ضد آب با استاندارد IP68.',
+				),
+				array(
+					'id'            => 'demo_2',
+					'title'         => 'هدفون بی‌سیم نویز کنسلینگ استریو مدل Studio Pro',
+					'raw_price'     => 890000,
+					'old_price_raw' => 1250000,
+					'image'         => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'لوازم صوتی',
+					'description'   => 'کیفیت صدای Hi-Res، شارژدهی تا ۴۰ ساعت مداوم و بالشتک‌های فوق‌العاده راحت.',
+				),
+				array(
+					'id'            => 'demo_3',
+					'title'         => 'اسپیکر قابل حمل بلوتوثی ضدآب باس قدرتمند مدل Boom 3',
+					'raw_price'     => 620000,
+					'old_price_raw' => 850000,
+					'image'         => 'https://images.unsplash.com/photo-1543512214-318c7553f230?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'لوازم صوتی',
+					'description'   => 'صدای فراگیر ۳۶۰ درجه، باتری قدرتمند ۲۴ ساعته و مقاومت در برابر پاشش آب.',
+				),
+				array(
+					'id'            => 'demo_4',
+					'title'         => 'کوله پشتی مسافرتی ارگونومیک ضد سرقت با پورت شارژ USB',
+					'raw_price'     => 480000,
+					'old_price_raw' => 690000,
+					'image'         => 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'مد و پوشاک',
+					'description'   => 'جنس برزنتی ضد آب، محفظه اختصاصی لپ‌تاپ تا ۱۵.۶ اینچ و طراحی سبک و مقاوم.',
+				),
+				array(
+					'id'            => 'demo_5',
+					'title'         => 'دستگاه اسپرسوساز خانگی ۲۰ بار تمام استیل اتوماتیک',
+					'raw_price'     => 3200000,
+					'old_price_raw' => 4100000,
+					'image'         => 'https://images.unsplash.com/photo-1517668808822-9ebb02f2a0e6?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'لوازم خانگی',
+					'description'   => 'پمپ فشار ۲۰ بار ایتالیایی، سیستم کاپوچینوساز سریع و فیلتر دولایه استیل.',
+				),
+				array(
+					'id'            => 'demo_6',
+					'title'         => 'کفش ورزشی راحتی مدل Air Cushion مخصوص پیاده‌روی و دویدن',
+					'raw_price'     => 750000,
+					'old_price_raw' => 980000,
+					'image'         => 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=600&auto=format&fit=crop&q=80',
+					'category'      => 'مد و پوشاک',
+					'description'   => 'کفی طبی ضد شوک، بافت تنفس‌پذیر ژاکارد و انعطاف‌پذیری فوق‌العاده بالا.',
+				),
+			);
+
+			foreach ( $demo_items as $d ) {
+				$calc = self::calculate_price( array(
+					'price'         => $d['raw_price'],
+					'regular_price' => $d['old_price_raw'],
+				), $settings );
+
+				$products[] = array(
+					'id'                  => $d['id'],
+					'title'               => $d['title'],
+					'has_price'           => $calc['has_price'],
+					'original_price'      => $calc['original'],
+					'price'               => $calc['adjusted'],
+					'price_formatted'     => $calc['formatted'],
+					'old_price'           => $calc['old_price'],
+					'old_price_formatted' => $calc['formatted_old'],
+					'has_discount'        => $calc['has_discount'],
+					'discount_pct'        => $calc['discount_pct'],
+					'image'               => $d['image'],
+					'gallery'             => array( $d['image'] ),
+					'category'            => $d['category'],
+					'description'         => $d['description'],
+					'in_stock'            => true,
+				);
+			}
+		}
+
 		return $products;
 	}
 
-	/**
-	 * Sync extracted products directly into WooCommerce database.
-	 *
-	 * @return array
-	 */
 	public static function sync_to_woocommerce() {
 		$settings = self::get_settings();
 		$products = self::get_all_scraped_products();
+		$template = ! empty( $settings['store_template'] ) ? $settings['store_template'] : 'digikala';
+		$palette  = ! empty( $settings['store_palette'] ) ? $settings['store_palette'] : 'digikala-red';
 		$created  = 0;
 		$updated  = 0;
 
@@ -878,6 +1109,232 @@ class Scraper_Auto_Shop_Plugin {
 	 * AJAX endpoint for customer support chat submission.
 	 * Supports continuous messenger thread, AI automatic answers, and persistent conversation.
 	 */
+	/**
+	 * Retrieve Master AI model configured in scraper4.php / ai_votes.json / connections.json / ai_providers.json.
+	 *
+	 * @return array
+	 */
+	public static function get_scraper_master_ai_model() {
+		$plugin_dir = plugin_dir_path( __FILE__ );
+
+		// 1. Try ai_votes.json (Master / Pinned model from scraper4)
+		$votes_file = $plugin_dir . 'ai_votes.json';
+		$pin_key = '';
+		if ( file_exists( $votes_file ) ) {
+			$v_data = @json_decode( file_get_contents( $votes_file ), true );
+			if ( is_array( $v_data ) ) {
+				$pin_key = trim( (string) ( $v_data['pin'] ?? $v_data['master'] ?? '' ) );
+			}
+		}
+
+		// 2. Try connections.json (Selected AI Provider & Model)
+		$conn_file = $plugin_dir . 'connections.json';
+		$conn_data = array();
+		if ( file_exists( $conn_file ) ) {
+			$conn_data = @json_decode( file_get_contents( $conn_file ), true ) ?: array();
+		}
+
+		// 3. Try ai_providers.json
+		$prov_file = $plugin_dir . 'ai_providers.json';
+		$providers = array();
+		if ( file_exists( $prov_file ) ) {
+			$providers = @json_decode( file_get_contents( $prov_file ), true ) ?: array();
+		}
+
+		$provider_id = '';
+		$model_id    = '';
+
+		if ( ! empty( $pin_key ) && strpos( $pin_key, '::' ) !== false ) {
+			list( $provider_id, $model_id ) = explode( '::', $pin_key, 2 );
+		} elseif ( ! empty( $conn_data['ai_selected']['provider'] ) ) {
+			$provider_id = (string) $conn_data['ai_selected']['provider'];
+			$model_id    = (string) ( $conn_data['ai_selected']['model'] ?? '' );
+		}
+
+		// Find provider config
+		$prov_cfg = null;
+		if ( ! empty( $provider_id ) && isset( $providers[ $provider_id ] ) ) {
+			$prov_cfg = $providers[ $provider_id ];
+		} else {
+			// Find first enabled provider with at least one model
+			foreach ( $providers as $p_id => $p ) {
+				if ( ( $p['enabled'] ?? true ) !== false && ! empty( $p['models'] ) ) {
+					$prov_cfg    = $p;
+					$provider_id = $p_id;
+					$model_id    = $p['models'][0]['id'] ?? '';
+					break;
+				}
+			}
+		}
+
+		$model_name = ! empty( $model_id ) ? $model_id : 'مدل هوشمند مستر (Master AI)';
+		if ( $prov_cfg && ! empty( $prov_cfg['models'] ) && is_array( $prov_cfg['models'] ) ) {
+			foreach ( $prov_cfg['models'] as $m ) {
+				if ( ( $m['id'] ?? '' ) === $model_id && ! empty( $m['name'] ) ) {
+					$model_name = $m['name'];
+					break;
+				}
+			}
+		}
+
+		$api_key  = $prov_cfg['apiKey'] ?? ( $prov_cfg['keys'][0]['key'] ?? '' );
+		$endpoint = $prov_cfg['endpoint'] ?? '';
+
+		return array(
+			'provider_id' => $provider_id,
+			'model_id'    => $model_id,
+			'model_name'  => $model_name,
+			'api_key'     => trim( (string) $api_key ),
+			'endpoint'    => trim( (string) $endpoint ),
+			'provider'    => $prov_cfg,
+		);
+	}
+
+	/**
+	 * Call Live AI Provider API (OpenAI compatible / Gemini / Anthropic / etc.).
+	 *
+	 * @param array  $master_ai
+	 * @param string $message
+	 * @param string $customer_name
+	 * @param array  $settings
+	 * @return string
+	 */
+	public static function call_ai_api( $master_ai, $message, $customer_name, $settings ) {
+		$endpoint = $master_ai['endpoint'];
+		$api_key  = $master_ai['api_key'];
+		$model_id = $master_ai['model_id'];
+
+		if ( empty( $endpoint ) ) {
+			$endpoint = 'https://api.openai.com/v1/chat/completions';
+		}
+
+		$site_name = get_bloginfo( 'name' ) ?: 'فروشگاه اینترنتی';
+		$system_prompt = ! empty( $settings['ai_system_prompt'] )
+			? $settings['ai_system_prompt']
+			: "تو پشتیبان هوشمند و صمیمی فروشگاه اینترنتی «{$site_name}» هستی. به مشتری با نام «{$customer_name}» به زبان فارسی پاسخ بده. پاسخ کوتاه، مودبانه و حداکثر ۲ الی ۳ جمله باشد.";
+
+		$payload = array(
+			'model'       => $model_id,
+			'messages'    => array(
+				array( 'role' => 'system', 'content' => $system_prompt ),
+				array( 'role' => 'user', 'content' => $message ),
+			),
+			'max_tokens'  => 350,
+			'temperature' => 0.7,
+		);
+
+		$headers = array(
+			'Content-Type' => 'application/json; charset=utf-8',
+		);
+		if ( ! empty( $api_key ) ) {
+			$headers['Authorization'] = 'Bearer ' . $api_key;
+		}
+
+		$response = wp_remote_post( $endpoint, array(
+			'method'    => 'POST',
+			'timeout'   => 12,
+			'headers'   => $headers,
+			'body'      => wp_json_encode( $payload ),
+			'sslverify' => false,
+		) );
+
+		if ( ! is_wp_error( $response ) ) {
+			$body = wp_remote_retrieve_body( $response );
+			$json = @json_decode( $body, true );
+			if ( is_array( $json ) && ! empty( $json['choices'][0]['message']['content'] ) ) {
+				return trim( (string) $json['choices'][0]['message']['content'] );
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Intelligent Built-in E-Commerce Support Assistant (Domain Fallback).
+	 *
+	 * @param string $message
+	 * @param string $customer_name
+	 * @param array  $settings
+	 * @return string
+	 */
+	public static function generate_smart_local_reply( $message, $customer_name, $settings ) {
+		$site_name = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه ما' );
+		$threshold = number_format( (float) ( $settings['free_shipping_threshold'] ?? 400000 ) );
+		$currency  = $settings['currency_symbol'] ?? 'تومان';
+		$msg_lower = mb_strtolower( $message, 'UTF-8' );
+
+		// Greetings
+		if ( preg_match( '/(سلام|درود|وقت بخیر|صبح بخیر|عصر بخیر|سلام علیکم|های)/u', $msg_lower ) ) {
+			$name_part = ! empty( $customer_name ) && 'کاربر مهمان' !== $customer_name ? " {$customer_name} عزیز" : ' گرامی';
+			return "سلام{$name_part}، به {$site_name} خوش آمدید! 🌸 در خدمت شما هستیم. هرگونه سوالی در مورد کالاها یا ثبت سفارش دارید بفرمایید.";
+		}
+
+		// Shipping / Delivery
+		if ( preg_match( '/(ارسال|پست|تیپاکس|هزینه ارسال|چند روزه|کی میرسه|زمان تحویل|کی ارسال)/u', $msg_lower ) ) {
+			return "کلیه سفارش‌های شما با بسته‌بندی ایمن و از طریق پست پیشتاز یا تیپاکس ارسال می‌شوند. ارسال برای خریدهای بالای {$threshold} {$currency} کاملاً رایگان است و معمولاً ظرف ۲ الی ۳ روز کاری تحویل می‌گردد. 🚚";
+		}
+
+		// Order tracking
+		if ( preg_match( '/(پیگیری|کد رهگیری|سفارشم|کجاست|فاکتور|شماره سفارش)/u', $msg_lower ) ) {
+			return "برای پیگیری سفارش، می‌توانید از منوی بالای صفحه گزینه «پیگیری سفارش» را انتخاب فرمایید یا شماره سفارش خود را اینجا ارسال نمایید تا همکاران ما سریعاً وضعیت را بررسی کنند. 📦";
+		}
+
+		// Price / Discounts
+		if ( preg_match( '/(قیمت|تخفیف|چنده|کد تخفیف|ارزان|تخفیف دارد)/u', $msg_lower ) ) {
+			return "تمامی قیمت‌های درج شده در سایت به‌روز و با احتساب تخفیف ویژه فروشگاه محاسبه شده‌اند. همچنین پیشنهادهای ویژه سایت شامل بیشترین درصد تخفیف می‌باشند! ✨";
+		}
+
+		// Return / Guarantee
+		if ( preg_match( '/(مرجوع|گارانتی|ضمانت|خراب|اصل|اورجینال|بازگشت)/u', $msg_lower ) ) {
+			return "تمامی محصولات دارای ضمانت سلامت فیزیکی و ۷ روز مهلت تست و بازگشت کالا هستند. خریدی مطمئن و بدون دغدغه را با ما تجربه کنید. 🛡️";
+		}
+
+		// Payment
+		if ( preg_match( '/(پرداخت|درگاه|کارت به کارت|انتقال|چطور پرداخت|امن)/u', $msg_lower ) ) {
+			return "پرداخت به صورت کاملاً امن و مطمئن از طریق کلیه کارت‌های عضو شبکه بانکی شتاب در درگاه پرداخت آنلاین شاپرک صورت می‌پذیرد. 💳";
+		}
+
+		// Default polite reply
+		$name_part = ! empty( $customer_name ) && 'کاربر مهمان' !== $customer_name ? " {$customer_name} عزیز" : '';
+		return "پیام شما دریافت شد{$name_part}. پیام شما به همکاران پشتیبانی نیز فوروارد شد و به زودی با شما در ارتباط خواهیم بود. در صورت تمایل شماره تماس خود را نیز ثبت فرمایید. 🙏";
+	}
+
+	/**
+	 * Generate AI Support Reply (Connecting to Scraper's Master Model).
+	 *
+	 * @param string $message
+	 * @param string $customer_name
+	 * @param array|null $settings
+	 * @return string
+	 */
+	public static function generate_ai_support_reply( $message, $customer_name = '', $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		$coordination = $settings['ai_coordination_mode'] ?? 'ai_first';
+		if ( 'human_only' === $coordination ) {
+			return '';
+		}
+
+		$master_ai = self::get_scraper_master_ai_model();
+
+		// If a live API key and endpoint are configured in scraper
+		if ( ! empty( $master_ai['api_key'] ) ) {
+			$reply = self::call_ai_api( $master_ai, $message, $customer_name, $settings );
+			if ( ! empty( $reply ) ) {
+				return $reply;
+			}
+		}
+
+		// Fallback to intelligent local domain responder
+		return self::generate_smart_local_reply( $message, $customer_name, $settings );
+	}
+
+	/**
+	 * AJAX endpoint for customer sending message in Live Chat.
+	 * Handles message storage, Master AI response generation, and 3-way messenger forwarding (Bale, Telegram, Rubika).
+	 */
 	public static function ajax_submit_support_chat() {
 		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
 		$settings = self::get_settings();
@@ -897,7 +1354,6 @@ class Scraper_Auto_Shop_Plugin {
 			wp_send_json_error( 'لطفاً متن پیام یا سوال خود را بنویسید.' );
 		}
 
-		// Validate required fields based on admin settings
 		if ( ! empty( $settings['chat_field_name_enable'] ) && ! empty( $settings['chat_field_name_required'] ) && empty( $name ) ) {
 			wp_send_json_error( 'لطفاً نام و نام خانوادگی خود را وارد نمایید.' );
 		}
@@ -911,10 +1367,6 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( ! empty( $settings['chat_field_email_enable'] ) && ! empty( $settings['chat_field_email_required'] ) && ( empty( $email ) || ! is_email( $email ) ) ) {
 			wp_send_json_error( 'لطفاً یک آدرس ایمیل معتبر وارد نمایید.' );
-		}
-
-		if ( ! empty( $settings['chat_field_subject_enable'] ) && ! empty( $settings['chat_field_subject_required'] ) && empty( $subject ) ) {
-			wp_send_json_error( 'لطفاً موضوع پیام خود را وارد نمایید.' );
 		}
 
 		$threads   = self::get_chat_threads();
@@ -981,13 +1433,16 @@ class Scraper_Auto_Shop_Plugin {
 		);
 		$thread['messages'][] = $customer_msg;
 
-		// 2. Generate AI Reply if enabled
-		$ai_reply = self::generate_ai_support_reply( $message, $thread['name'], $settings );
+		// 2. Generate Master AI Reply if enabled
+		$ai_reply  = self::generate_ai_support_reply( $message, $thread['name'], $settings );
+		$master_ai = self::get_scraper_master_ai_model();
+		$model_lbl = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'هوش مصنوعی پشتیبان';
+
 		if ( ! empty( $ai_reply ) ) {
 			$ai_msg = array(
 				'id'          => 'msg_' . ( $now_time + 1 ) . '_' . rand( 100, 999 ),
 				'sender'      => 'ai',
-				'sender_name' => $settings['ai_support_name'] ?? 'پشتیبان هوشمند فروشگاه',
+				'sender_name' => ( $settings['ai_support_name'] ?? 'پشتیبان هوشمند' ) . ' (' . $model_lbl . ')',
 				'text'        => $ai_reply,
 				'time'        => $time_str,
 				'timestamp'   => $now_time + 1,
@@ -1000,9 +1455,9 @@ class Scraper_Auto_Shop_Plugin {
 		$threads = array( $thread_key => $thread ) + $threads;
 		self::save_chat_threads( $threads );
 
-		// Forward notification to messengers
-		$site_name      = get_bloginfo( 'name' );
-		$formatted_text = "💬 پیام جدید از چت آنلاین فروشگاه
+		// 3. Forward Customer Message & AI Reply to Messengers (Bale, Telegram, Rubika)
+		$site_name      = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
+		$formatted_text = "💬 پیام جدید چت آنلاین ({$site_name})
 
 "
 			. "👤 نام مشتری: {$thread['name']}
@@ -1015,32 +1470,33 @@ class Scraper_Auto_Shop_Plugin {
 			$formatted_text .= "📧 ایمیل: {$thread['email']}
 ";
 		}
-		if ( ! empty( $thread['subject'] ) ) {
-			$formatted_text .= "📌 موضوع: {$thread['subject']}
-";
-		}
 		$formatted_text .= "🕒 زمان: {$full_time}
 "
-			. "🏢 فروشگاه: {$site_name}
-
+			. "━━━━━━━━━━━━━━━━━━━
 "
 			. "📝 متن پیام مشتری:
-{$message}
+"
+			. "{$message}
 ";
 
 		if ( ! empty( $ai_reply ) ) {
-			$formatted_text .= "
-🤖 پاسخ اولیه هوش مصنوعی:
-«{$ai_reply}»
+			$formatted_text .= "━━━━━━━━━━━━━━━━━━━
+"
+				. "🤖 پاسخ هوش مصنوعی مستر ({$model_lbl}):
+"
+				. "«{$ai_reply}»
 
 "
-				. "⚡ وضعیت: پاسخ هوشمند فوراً به مشتری داده شد. جهت پاسخ مستقیم انسانی، به پیشخوان وردپرس > تنظیمات اسکرپر > تب ۳ (میز پاسخگویی) مراجعه فرمایید.";
+				. "━━━━━━━━━━━━━━━━━━━
+"
+				. "⚡ وضعیت: پاسخ هوشمند برای مشتری ارسال شد. جهت پاسخ مستقیم ادمین، به تب ۳ میز پاسخگویی در پیشخوان مراجعه فرمایید.";
 		} else {
-			$formatted_text .= "
-⚡ وضعیت: در انتظار پاسخ مستقیم ادمین در پیشخوان وردپرس (تب ۳ میز پاسخگویی)";
+			$formatted_text .= "━━━━━━━━━━━━━━━━━━━
+"
+				. "⚡ وضعیت: در انتظار پاسخ مستقیم ادمین در پیشخوان وردپرس (تب ۳ میز پاسخگویی)";
 		}
 
-		$send_result = self::send_message_to_messengers( $formatted_text );
+		$send_result = self::send_message_to_messengers( $formatted_text, $settings );
 
 		// Legacy logs update
 		$logs = get_option( 'scraper_support_chat_logs', array() );
@@ -1054,6 +1510,7 @@ class Scraper_Auto_Shop_Plugin {
 			'subject'  => $thread['subject'],
 			'message'  => $message,
 			'ai_reply' => $ai_reply,
+			'model'    => $model_lbl,
 			'time'     => $full_time,
 			'sent_ok'  => $send_result['ok'],
 			'sent_to'  => $send_result['sent'],
@@ -1066,52 +1523,36 @@ class Scraper_Auto_Shop_Plugin {
 			'session_id' => $session_id,
 			'thread_id'  => $thread_id,
 			'ai_reply'   => $ai_reply,
+			'ai_model'   => $model_lbl,
 			'thread'     => $thread,
 			'status'     => $send_result,
 		) );
 	}
 
 	/**
-	 * AJAX endpoint for customer live polling their chat thread.
+	 * AJAX endpoint for customer polling updates for active conversation thread.
 	 */
 	public static function ajax_customer_get_thread() {
 		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
+
 		$session_id = sanitize_text_field( $_POST['session_id'] ?? '' );
 		if ( empty( $session_id ) ) {
-			wp_send_json_error( 'شناسه جلسه ارسال نشده است.' );
+			wp_send_json_error( 'شناسه جلسه خالی است.' );
 		}
 
 		$threads = self::get_chat_threads();
-		$thread  = null;
 		foreach ( $threads as $t ) {
 			if ( ( $t['session_id'] ?? '' ) === $session_id ) {
-				$thread = $t;
-				break;
+				wp_send_json_success( array( 'thread' => $t ) );
 			}
 		}
 
-		if ( ! $thread ) {
-			wp_send_json_success( array(
-				'found'    => false,
-				'messages' => array(),
-			) );
-		}
-
-		wp_send_json_success( array(
-			'found'     => true,
-			'thread_id' => $thread['id'] ?? '',
-			'status'    => $thread['status'] ?? 'pending',
-			'customer'  => array(
-				'name'  => $thread['name'] ?? '',
-				'phone' => $thread['phone'] ?? '',
-				'email' => $thread['email'] ?? '',
-			),
-			'messages'  => $thread['messages'] ?? array(),
-		) );
+		wp_send_json_success( array( 'thread' => null ) );
 	}
 
 	/**
-	 * AJAX endpoint for Admin sending a live reply to a customer's chat thread.
+	 * AJAX endpoint for admin sending replies from the WordPress Support Desk.
+	 * Dispatches reply to customer's live chat AND forwards to messengers (Bale, Telegram, Rubika).
 	 */
 	public static function ajax_admin_send_chat_reply() {
 		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
@@ -1119,6 +1560,7 @@ class Scraper_Auto_Shop_Plugin {
 			wp_send_json_error( 'دسترسی غیرمجاز.' );
 		}
 
+		$settings   = self::get_settings();
 		$thread_id  = sanitize_text_field( $_POST['thread_id'] ?? '' );
 		$reply_text = sanitize_textarea_field( $_POST['reply_text'] ?? '' );
 
@@ -1164,15 +1606,45 @@ class Scraper_Auto_Shop_Plugin {
 
 		self::save_chat_threads( $threads );
 
+		// Forward admin reply to messengers!
+		$site_name    = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
+		$target_name  = ! empty( $threads[ $key ]['name'] ) ? $threads[ $key ]['name'] : 'مشتری';
+		$target_phone = ! empty( $threads[ $key ]['phone'] ) ? $threads[ $key ]['phone'] : '';
+
+		$admin_forward_text = "👨‍💼 پاسخ پشتیبان در چت آنلاین ({$site_name})
+
+"
+			. "👤 مخاطب: {$target_name}
+";
+		if ( ! empty( $target_phone ) ) {
+			$admin_forward_text .= "📱 تلفن مشتری: {$target_phone}
+";
+		}
+		$admin_forward_text .= "🕒 زمان پاسخ: " . date_i18n( 'Y/m/d - H:i' ) . "
+"
+			. "✍️ ارسال کننده: {$admin_name}
+
+"
+			. "━━━━━━━━━━━━━━━━━━━
+"
+			. "💬 متن پاسخ همکار / ادمین:
+"
+			. "{$reply_text}
+
+"
+			. "━━━━━━━━━━━━━━━━━━━
+"
+			. "✅ وضعیت: پاسخ در صفحه چت مشتری ثبت و ارسال گردید.";
+
+		$messenger_status = self::send_message_to_messengers( $admin_forward_text, $settings );
+
 		wp_send_json_success( array(
-			'message' => 'پاسخ شما با موفقیت برای مشتری ارسال شد و در چت او نمایش داده خواهد شد.',
-			'thread'  => $threads[ $key ],
+			'message'          => 'پاسخ شما با موفقیت ثبت شد و به پیام‌رسان‌ها فوروارد گردید.',
+			'thread'           => $threads[ $key ],
+			'messenger_status' => $messenger_status,
 		) );
 	}
 
-	/**
-	 * AJAX endpoint for admin retrieving all threads or a specific thread.
-	 */
 	public static function ajax_admin_get_thread() {
 		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -1762,6 +2234,602 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			.modern-shop-root * {
 				box-sizing: border-box;
+			}
+
+			/* =======================================================
+			   STOREFRONT TEMPLATES & COLOR PALETTES
+			   ======================================================= */
+			/* Template 1: Digikala (دیجی‌کالا) */
+			.modern-shop-root.theme-digikala {
+				--sp-accent: #ef394e;
+				--sp-accent-rgb: 239, 57, 78;
+				--sp-accent-hover: #e0293e;
+				--sp-radius: 12px;
+				--sp-card-border: #f0f0f1;
+			}
+			.theme-digikala .store-topbar {
+				background: linear-gradient(90deg, #ef394e 0%, #b91c1c 100%);
+			}
+			.theme-digikala .template-pill {
+				background: #fef2f2;
+				color: #ef394e;
+				border: 1px solid #fecaca;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 6px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 2: SnappShop (اسنپ‌شاپ) */
+			.modern-shop-root.theme-snappshop {
+				--sp-accent: #00c073;
+				--sp-accent-rgb: 0, 192, 115;
+				--sp-accent-hover: #00a863;
+				--sp-radius: 18px;
+				--sp-card-border: #e6f4ea;
+			}
+			.theme-snappshop .store-topbar {
+				background: linear-gradient(90deg, #00c073 0%, #065f46 100%);
+			}
+			.theme-snappshop .template-pill {
+				background: #ecfdf5;
+				color: #059669;
+				border: 1px solid #a7f3d0;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 12px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 3: Basalam (باسلام) */
+			.modern-shop-root.theme-basalam {
+				--sp-accent: #df3826;
+				--sp-accent-rgb: 223, 56, 38;
+				--sp-accent-hover: #cb2e1d;
+				--sp-radius: 14px;
+				--sp-card-border: #f5ebe6;
+			}
+			.theme-basalam {
+				background-color: #fcfaf7;
+			}
+			.theme-basalam .store-topbar {
+				background: linear-gradient(90deg, #df3826 0%, #9a3412 100%);
+			}
+			.theme-basalam .template-pill {
+				background: #fff7ed;
+				color: #c2410c;
+				border: 1px solid #fed7aa;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 8px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 4: Torob (ترب) */
+			.modern-shop-root.theme-torob {
+				--sp-accent: #d32f2f;
+				--sp-accent-rgb: 211, 47, 47;
+				--sp-accent-hover: #b71c1c;
+				--sp-radius: 10px;
+				--sp-card-border: #e2e8f0;
+			}
+			.theme-torob .store-topbar {
+				background: linear-gradient(90deg, #d32f2f 0%, #1e293b 100%);
+			}
+			.theme-torob .template-pill {
+				background: #fef2f2;
+				color: #b91c1c;
+				border: 1px solid #fecaca;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 4px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 5: Digistyle (دیجی‌استایل) */
+			.modern-shop-root.theme-digistyle {
+				--sp-accent: #e11d48;
+				--sp-accent-rgb: 225, 29, 72;
+				--sp-accent-hover: #be123c;
+				--sp-radius: 8px;
+				--sp-card-border: #e2e8f0;
+			}
+			.theme-digistyle .store-topbar {
+				background: linear-gradient(90deg, #111827 0%, #1f2937 100%);
+			}
+			.theme-digistyle .template-pill {
+				background: #fff1f2;
+				color: #e11d48;
+				border: 1px solid #fecdd3;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 4px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 6: Technolife (تکنولایف) */
+			.modern-shop-root.theme-technolife {
+				--sp-accent: #0284c7;
+				--sp-accent-rgb: 2, 132, 199;
+				--sp-accent-hover: #0369a1;
+				--sp-radius: 12px;
+				--sp-card-border: #e0f2fe;
+			}
+			.theme-technolife .store-topbar {
+				background: linear-gradient(90deg, #003366 0%, #0369a1 100%);
+			}
+			.theme-technolife .template-pill {
+				background: #f0f9ff;
+				color: #0284c7;
+				border: 1px solid #bae6fd;
+				font-size: 0.72rem;
+				font-weight: 800;
+				padding: 2px 8px;
+				border-radius: 6px;
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			/* Template 7: Modern (مدرن استاندارد) */
+			.modern-shop-root.theme-modern {
+				--sp-accent: #2563eb;
+				--sp-accent-rgb: 37, 99, 235;
+				--sp-accent-hover: #1d4ed8;
+				--sp-radius: 18px;
+				--sp-card-border: #e2e8f0;
+			}
+
+			/* Color Palette Presets Override */
+			.palette-digikala-red { --sp-accent: #ef394e !important; }
+			.palette-snapp-green { --sp-accent: #00c073 !important; }
+			.palette-basalam-coral { --sp-accent: #df3826 !important; }
+			.palette-torob-red { --sp-accent: #d32f2f !important; }
+			.palette-digistyle-rose { --sp-accent: #e11d48 !important; }
+			.palette-technolife-blue { --sp-accent: #0284c7 !important; }
+			.palette-royal-blue { --sp-accent: #2563eb !important; }
+			.palette-luxury-purple { --sp-accent: #7c3aed !important; }
+			.palette-amber-gold { --sp-accent: #d97706 !important; }
+			.palette-persian-turquoise { --sp-accent: #0d9488 !important; }
+
+			/* =======================================================
+			   ADVANCED HAMBURGER MENU & OFF-CANVAS DRAWER
+			   ======================================================= */
+			.btn-hamburger-pro {
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				background: #f8fafc;
+				border: 1.5px solid #cbd5e1;
+				border-radius: 12px;
+				padding: 8px 14px;
+				font-family: inherit;
+				font-size: 0.88rem;
+				font-weight: 800;
+				color: #1e293b;
+				cursor: pointer;
+				transition: all 0.2s ease;
+			}
+			.btn-hamburger-pro:hover {
+				background: #f1f5f9;
+				border-color: var(--sp-accent);
+				color: var(--sp-accent);
+			}
+			.btn-hamburger-pro .ham-bars {
+				display: flex;
+				flex-direction: column;
+				gap: 3.5px;
+			}
+			.btn-hamburger-pro .ham-bars span {
+				display: block;
+				width: 18px;
+				height: 2.2px;
+				background: currentColor;
+				border-radius: 2px;
+				transition: all 0.2s ease;
+			}
+
+			/* Off-Canvas Overlay */
+			.store-drawer-overlay {
+				position: fixed;
+				inset: 0;
+				background: rgba(15, 23, 42, 0.6);
+				backdrop-filter: blur(4px);
+				-webkit-backdrop-filter: blur(4px);
+				z-index: 10000;
+				opacity: 0;
+				visibility: hidden;
+				transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+			}
+			.store-drawer-overlay.open {
+				opacity: 1;
+				visibility: visible;
+			}
+
+			/* Off-Canvas Drawer Container */
+			.store-drawer {
+				position: fixed;
+				top: 0;
+				right: -440px;
+				width: 390px;
+				max-width: 88vw;
+				height: 100vh;
+				background: #ffffff;
+				z-index: 10001;
+				box-shadow: -12px 0 40px rgba(15, 23, 42, 0.22);
+				display: flex;
+				flex-direction: column;
+				transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+				direction: rtl;
+				text-align: right;
+				font-family: inherit;
+				overflow-y: auto;
+			}
+			.store-drawer.open {
+				right: 0;
+			}
+
+			.drawer-hdr {
+				background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+				color: #fff;
+				padding: 20px 22px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+			}
+			.drawer-brand {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+			}
+			.drawer-logo {
+				width: 42px;
+				height: 42px;
+				background: var(--sp-accent);
+				color: #fff;
+				border-radius: 12px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 1.4rem;
+			}
+			.drawer-brand-info h3 {
+				margin: 0;
+				font-size: 1.05rem;
+				font-weight: 900;
+				color: #fff;
+			}
+			.drawer-brand-info span {
+				font-size: 0.75rem;
+				color: #94a3b8;
+			}
+			.drawer-close-btn {
+				background: rgba(255, 255, 255, 0.1);
+				border: none;
+				color: #fff;
+				width: 34px;
+				height: 34px;
+				border-radius: 50%;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 1rem;
+				cursor: pointer;
+				transition: background 0.2s;
+			}
+			.drawer-close-btn:hover {
+				background: rgba(255, 255, 255, 0.2);
+			}
+
+			.drawer-search-wrap {
+				padding: 14px 18px;
+				background: #f8fafc;
+				border-bottom: 1px solid #e2e8f0;
+			}
+			.drawer-search-wrap input {
+				width: 100%;
+				box-sizing: border-box;
+				border: 1.5px solid #cbd5e1;
+				border-radius: 25px;
+				padding: 10px 16px;
+				font-family: inherit;
+				font-size: 0.85rem;
+				outline: none;
+				transition: all 0.2s ease;
+			}
+			.drawer-search-wrap input:focus {
+				border-color: var(--sp-accent);
+				box-shadow: 0 0 0 3px rgba(var(--sp-accent-rgb), 0.15);
+			}
+
+			.drawer-section-title {
+				padding: 12px 18px 6px;
+				font-size: 0.8rem;
+				font-weight: 800;
+				color: #64748b;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+			}
+
+			.drawer-quick-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 8px;
+				padding: 6px 18px 14px;
+			}
+			.drawer-quick-card {
+				background: #f8fafc;
+				border: 1px solid #e2e8f0;
+				border-radius: 12px;
+				padding: 10px 12px;
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				text-decoration: none;
+				color: #1e293b;
+				font-family: inherit;
+				font-size: 0.82rem;
+				font-weight: 700;
+				cursor: pointer;
+				position: relative;
+				transition: all 0.2s ease;
+			}
+			.drawer-quick-card:hover {
+				background: #eff6ff;
+				border-color: #93c5fd;
+				color: #1d4ed8;
+			}
+			.drawer-quick-card .quick-badge {
+				margin-right: auto;
+				background: #ef4444;
+				color: #fff;
+				padding: 1px 6px;
+				border-radius: 10px;
+				font-size: 0.72rem;
+				font-weight: 900;
+			}
+			.drawer-quick-card .quick-status {
+				margin-right: auto;
+				background: #10b981;
+				color: #fff;
+				padding: 1px 6px;
+				border-radius: 10px;
+				font-size: 0.68rem;
+				font-weight: 700;
+			}
+
+			.drawer-cats-list {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				padding: 6px 18px 14px;
+				max-height: 240px;
+				overflow-y: auto;
+			}
+			.drawer-cat-btn {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				padding: 9px 12px;
+				background: #fff;
+				border: 1px solid #f1f5f9;
+				border-radius: 10px;
+				font-family: inherit;
+				font-size: 0.84rem;
+				font-weight: 700;
+				color: #334155;
+				cursor: pointer;
+				text-align: right;
+				transition: all 0.15s ease;
+			}
+			.drawer-cat-btn:hover,
+			.drawer-cat-btn.active {
+				background: #eff6ff;
+				border-color: #bfdbfe;
+				color: #2563eb;
+			}
+			.drawer-cat-btn .cat-count {
+				background: #f1f5f9;
+				color: #64748b;
+				padding: 1px 8px;
+				border-radius: 12px;
+				font-size: 0.72rem;
+			}
+
+			.drawer-messengers-row {
+				display: flex;
+				gap: 8px;
+				padding: 6px 18px 14px;
+				flex-wrap: wrap;
+			}
+			.drawer-msgr-badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 7px 12px;
+				border-radius: 10px;
+				text-decoration: none;
+				font-size: 0.78rem;
+				font-weight: 700;
+				transition: all 0.2s;
+			}
+			.drawer-msgr-badge.bale { background: #e0f2fe; color: #0284c7; }
+			.drawer-msgr-badge.telegram { background: #e0f2fe; color: #0369a1; }
+			.drawer-msgr-badge.rubika { background: #fee2e2; color: #dc2626; }
+			.drawer-msgr-badge.phone { background: #f0fdf4; color: #16a34a; }
+
+			.drawer-version-box {
+				margin: 12px 18px 24px;
+				background: #f8fafc;
+				border: 1px solid #e2e8f0;
+				border-radius: 14px;
+				padding: 14px;
+			}
+			.version-badges-row {
+				display: flex;
+				gap: 6px;
+				margin-bottom: 10px;
+				flex-wrap: wrap;
+			}
+			.v-pill {
+				padding: 3px 9px;
+				border-radius: 8px;
+				font-size: 0.72rem;
+				font-weight: 800;
+			}
+			.v-pill.v-core { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+			.v-pill.v-shop { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+
+			.btn-changelog-drawer-toggle {
+				width: 100%;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				background: #ffffff;
+				border: 1px solid #cbd5e1;
+				border-radius: 10px;
+				padding: 8px 12px;
+				font-family: inherit;
+				font-size: 0.8rem;
+				font-weight: 800;
+				color: #334155;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+			.btn-changelog-drawer-toggle:hover {
+				background: #f1f5f9;
+				border-color: #94a3b8;
+			}
+
+			.changelog-drawer-panel {
+				margin-top: 10px;
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+			}
+			.ch-part-card {
+				background: #ffffff;
+				border: 1px solid #e2e8f0;
+				border-radius: 10px;
+				padding: 10px 12px;
+			}
+			.ch-part-title {
+				font-size: 0.78rem;
+				font-weight: 800;
+				color: #1e293b;
+				margin-bottom: 6px;
+				border-bottom: 1px dashed #e2e8f0;
+				padding-bottom: 4px;
+			}
+			.ch-list {
+				margin: 0;
+				padding-right: 18px;
+				font-size: 0.74rem;
+				color: #475569;
+				line-height: 1.55;
+			}
+			.ch-list li {
+				margin-bottom: 4px;
+			}
+
+			/* Clean Chat Window & Contact Chip Bar */
+			.chat-contact-chip-bar {
+				padding: 8px 14px;
+				background: #f8fafc;
+				border-bottom: 1px solid #e2e8f0;
+			}
+			.btn-toggle-contact {
+				width: 100%;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				background: #ffffff;
+				border: 1px dashed #cbd5e1;
+				border-radius: 8px;
+				padding: 6px 10px;
+				font-family: inherit;
+				font-size: 0.78rem;
+				font-weight: 700;
+				color: #475569;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+			.btn-toggle-contact:hover {
+				background: #f1f5f9;
+				border-color: var(--sp-accent);
+				color: var(--sp-accent);
+			}
+			.chat-contact-drawer {
+				margin-top: 8px;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+			}
+			.contact-drawer-grid {
+				display: flex;
+				gap: 6px;
+			}
+			.contact-drawer-grid input {
+				flex: 1;
+				border: 1.5px solid #cbd5e1;
+				border-radius: 8px;
+				padding: 6px 10px;
+				font-family: inherit;
+				font-size: 0.8rem;
+				outline: none;
+			}
+			.btn-save-contact-chip {
+				background: var(--sp-accent);
+				color: #fff;
+				border: none;
+				border-radius: 8px;
+				padding: 6px;
+				font-family: inherit;
+				font-size: 0.78rem;
+				font-weight: 700;
+				cursor: pointer;
+			}
+			.chat-quick-suggestions {
+				display: flex;
+				gap: 6px;
+				overflow-x: auto;
+				padding: 6px 14px 4px;
+				scrollbar-width: none;
+			}
+			.chat-quick-suggestions::-webkit-scrollbar { display: none; }
+			.quick-ask-pill {
+				white-space: nowrap;
+				background: #f1f5f9;
+				border: 1px solid #cbd5e1;
+				border-radius: 14px;
+				padding: 4px 10px;
+				font-family: inherit;
+				font-size: 0.72rem;
+				font-weight: 700;
+				color: #334155;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+			.quick-ask-pill:hover {
+				background: #eff6ff;
+				border-color: #93c5fd;
+				color: #2563eb;
 			}
 
 			/* Modern Top Announcement Bar */
@@ -3904,6 +4972,143 @@ class Scraper_Auto_Shop_Plugin {
 			<?php endif; ?>
 
 			<!-- Main Store Header -->
+			<!-- Off-Canvas Hamburger Drawer Overlay -->
+			<div class="store-drawer-overlay" id="storeDrawerOverlay"></div>
+
+			<!-- Advanced Off-Canvas Drawer -->
+			<div class="store-drawer" id="storeDrawer">
+				<div class="drawer-hdr">
+					<div class="drawer-brand">
+						<div class="drawer-logo">📦</div>
+						<div class="drawer-brand-info">
+							<h3><?php echo esc_html( $settings['shop_title'] ); ?></h3>
+							<span><?php echo esc_html( $settings['shop_subtitle'] ); ?></span>
+						</div>
+					</div>
+					<button type="button" class="drawer-close-btn" id="storeDrawerClose" aria-label="بستن منو">✕</button>
+				</div>
+
+				<!-- In-Drawer Live Search -->
+				<div class="drawer-search-wrap">
+					<input type="text" id="drawerLiveSearch" placeholder="🔍 جستجو سریع در بین کالاها...">
+				</div>
+
+				<!-- Quick Action Navigation -->
+				<div class="drawer-section-title">⚡ دسترسی سریع</div>
+				<div class="drawer-quick-grid">
+					<button type="button" class="drawer-quick-card" id="drawerCartTrigger">
+						<span class="quick-icon">🛒</span>
+						<span class="quick-title">سبد خرید</span>
+						<span class="quick-badge" id="drawerCartBadge">۰</span>
+					</button>
+					<button type="button" class="drawer-quick-card" id="drawerTrackingTrigger">
+						<span class="quick-icon">📦</span>
+						<span class="quick-title">پیگیری سفارش</span>
+					</button>
+					<button type="button" class="drawer-quick-card" id="drawerSupportTrigger">
+						<span class="quick-icon">💬</span>
+						<span class="quick-title">پشتیبانی آنلاین</span>
+						<span class="quick-status">آنلاین</span>
+					</button>
+					<a href="<?php echo esc_url( $account_url ); ?>" class="drawer-quick-card">
+						<span class="quick-icon">👤</span>
+						<span class="quick-title">حساب کاربری</span>
+					</a>
+					<button type="button" class="drawer-quick-card" id="drawerRulesTrigger">
+						<span class="quick-icon">📜</span>
+						<span class="quick-title">قوانین و ارسال</span>
+					</button>
+					<a href="#productsAnchor" class="drawer-quick-card" onclick="document.getElementById('storeDrawer').classList.remove('open'); document.getElementById('storeDrawerOverlay').classList.remove('open');">
+						<span class="quick-icon">🛍️</span>
+						<span class="quick-title">همه محصولات</span>
+					</a>
+				</div>
+
+				<!-- Category List with Badges -->
+				<div class="drawer-section-title">📁 دسته‌بندی کالاها</div>
+				<div class="drawer-cats-list">
+					<button type="button" class="drawer-cat-btn active" data-cat="all">
+						<span>همه دسته‌ها</span>
+						<span class="cat-count"><?php echo self::to_fa_num( count( $products ) ); ?></span>
+					</button>
+					<?php foreach ( $categories as $c_name => $c_count ) : ?>
+						<button type="button" class="drawer-cat-btn" data-cat="<?php echo esc_attr( $c_name ); ?>">
+							<span><?php echo esc_html( $c_name ); ?></span>
+							<span class="cat-count"><?php echo self::to_fa_num( $c_count ); ?></span>
+						</button>
+					<?php endforeach; ?>
+				</div>
+
+				<!-- Messengers & Social Links -->
+				<div class="drawer-section-title">📞 ارتباط با ما در پیام‌رسان‌ها</div>
+				<div class="drawer-messengers-row">
+					<?php if ( ! empty( $settings['bale_token'] ) || ! empty( $settings['bale_chat_id'] ) ) : ?>
+						<a href="https://ble.ir" target="_blank" class="drawer-msgr-badge bale">
+							<span>💬</span> بله
+						</a>
+					<?php endif; ?>
+					<?php if ( ! empty( $settings['telegram_token'] ) || ! empty( $settings['telegram_chat_id'] ) ) : ?>
+						<a href="https://t.me" target="_blank" class="drawer-msgr-badge telegram">
+							<span>✈️</span> تلگرام
+						</a>
+					<?php endif; ?>
+					<?php if ( ! empty( $settings['rubika_token'] ) || ! empty( $settings['rubika_chat_id'] ) ) : ?>
+						<a href="https://rubika.ir" target="_blank" class="drawer-msgr-badge rubika">
+							<span>🔴</span> روبیکا
+						</a>
+					<?php endif; ?>
+					<?php if ( ! empty( $settings['contact_phone'] ) ) : ?>
+						<a href="tel:<?php echo esc_attr( $settings['contact_phone'] ); ?>" class="drawer-msgr-badge phone">
+							<span>📞</span> <?php echo esc_html( $settings['contact_phone'] ); ?>
+						</a>
+					<?php endif; ?>
+				</div>
+
+				<!-- Versioning & 3-Part Changelog Section -->
+				<div class="drawer-version-box">
+					<div class="version-badges-row">
+						<span class="v-pill v-core">⚡ هسته اسکرپر: v10.95</span>
+						<span class="v-pill v-shop">🏪 پوسته فروشگاه: v12.6.0</span>
+					</div>
+					<button type="button" class="btn-changelog-drawer-toggle" id="btnChangelogDrawer">
+						<span>📜 مشاهده لاگ تغییرات کامل نسخه‌ها</span>
+						<span class="ch-arrow">▼</span>
+					</button>
+					<div class="changelog-drawer-panel" id="changelogDrawerPanel" style="display:none;">
+						<!-- Part 1: Scraper Core -->
+						<div class="ch-part-card">
+							<div class="ch-part-title">🔹 بخش اول: هسته اسکرپر و استخراج هوشمند (v10.95)</div>
+							<ul class="ch-list">
+								<li>🤖 <strong>مدل مستر هوش مصنوعی (Master AI):</strong> اتصال خودکار مدل انتخاب‌شده در اسکریپر به عنوان مغز متفکر چت آنلاین فروشگاه.</li>
+								<li>⚡ <strong>مدیریت صف و کش محصولات:</strong> کش بهینه هش کالاها جهت جلوگیری از ثبت تکراری و همگام‌سازی مستقیم با ووکامرس/باسلام.</li>
+								<li>🔍 <strong>پالایش الگوهای استخراج:</strong> استخراج دقیق عناوین، تصاویر و مشخصات کالاها بدون کمترین افت سرعت.</li>
+							</ul>
+						</div>
+
+						<!-- Part 2: Messengers & AI Support -->
+						<div class="ch-part-card">
+							<div class="ch-part-title">🔹 بخش دوم: پیام‌رسان‌ها و هوش مصنوعی چت (v12.6.0)</div>
+							<ul class="ch-list">
+								<li>📲 <strong>فوروارد ۳طرفه پیام‌رسان‌ها:</strong> ارسال خودکار تمامی پیام‌های مشتری، پاسخ هوش مصنوعی و پاسخ‌های ادمین به بله، تلگرام و روبیکا.</li>
+								<li>💬 <strong>محیط پاکیزه چت:</strong> جایگزینی فرم شلوغ فوتر چت با نوار سبک و جمع‌شونده اطلاعات تماس و دکمه‌های سوالات آماده.</li>
+								<li>👩‍💼 <strong>میز کارآمد پاسخگویی ادمین:</strong> بازطراحی ریسپانسیو با ارتفاع ۶۲۰ پیکسل، حباب‌های تمیز و پاسخ‌های سریع با یک کلیک.</li>
+							</ul>
+						</div>
+
+						<!-- Part 3: Templates, Pricing & Storefront -->
+						<div class="ch-part-card">
+							<div class="ch-part-title">🔹 بخش سوم: قالب‌ها، محاسبات قیمت و رابط کاربری (v12.6.0)</div>
+							<ul class="ch-list">
+								<li>🎨 <strong>۶ پوسته محبوب فروشگاهی ایرانی:</strong> طراحی اختصاصی تم‌های دیجی‌کالا، اسنپ‌شاپ، باسلام، ترب، دیجی‌استایل و تکنولایف.</li>
+								<li>🌈 <strong>۱۰ پلت رنگی متنوع:</strong> رنگ‌های جذاب و هماهنگ با استانداردهای برندینگ ایرانی قابل انتخاب از پنل تنظیمات.</li>
+								<li>🍔 <strong>منوی همبرگری پیشرفته:</strong> پنل کشویی واکنش‌گرا شامل جستجوی زنده، دسته‌بندی‌ها، پیگیری سفارش، سبد خرید، قوانین و لاگ تغییرات.</li>
+								<li>💰 <strong>رفع قطعی مشکلات قیمت:</strong> پالایش ممیزهای هزارگانی، تبدیل خودکار ریال به تومان، خط زدن قیمت قبل و محاسبه سود بدون افشای اطلاعات فنی.</li>
+							</ul>
+						</div>
+					</div>
+				</div>
+			</div>
+
 			<div class="store-main-header">
 				<a href="#" class="store-brand" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">
 					<div class="store-brand-logo">
@@ -3923,7 +5128,12 @@ class Scraper_Auto_Shop_Plugin {
 				</div>
 
 				<!-- Header Action Buttons -->
-				<div class="store-header-actions">
+				<button type="button" class="btn-hamburger-pro" id="storeHamburgerBtn" aria-label="منوی دسترسی سریع و راهنما">
+						<span class="ham-bars"><span></span><span></span><span></span></span>
+						<span class="ham-text">منو</span>
+					</button>
+
+					<div class="store-header-actions">
 					<?php if ( current_user_can( 'manage_options' ) ) : ?>
 						<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-header-action" title="مدیریت فروشگاه">
 							<span>⚙️</span>
@@ -4137,10 +5347,22 @@ class Scraper_Auto_Shop_Plugin {
 
 								<span class="card-stock-badge">موجود در انبار</span>
 
-								<?php if ( $p['original_price'] > $p['price'] ) : 
-									$disc = round( ( ( $p['original_price'] - $p['price'] ) / $p['original_price'] ) * 100 );
-								?>
-									<span class="card-discount-badge"><?php echo self::to_fa_num( $disc ); ?>٪ تخفیف</span>
+								<?php if ( ! empty( $p['has_discount'] ) && ! empty( $p['discount_pct'] ) ) : ?>
+									<span class="card-discount-badge"><?php echo self::to_fa_num( $p['discount_pct'] ); ?>٪ تخفیف</span>
+								<?php endif; ?>
+
+								<?php if ( 'digikala' === $template ) : ?>
+									<span class="template-pill digikala">🚚 ارسال امروز با اکسپرس</span>
+								<?php elseif ( 'snappshop' === $template ) : ?>
+									<span class="template-pill snappshop">⚡ تحویل فوری با اسنپ</span>
+								<?php elseif ( 'basalam' === $template ) : ?>
+									<span class="template-pill basalam">⭐ غرفه برتر باسلام</span>
+								<?php elseif ( 'torob' === $template ) : ?>
+									<span class="template-pill torob">🏷️ کمترین قیمت بازار</span>
+								<?php elseif ( 'technolife' === $template ) : ?>
+									<span class="template-pill technolife">⚡ گارانتی اصالت کالا</span>
+								<?php elseif ( 'digistyle' === $template ) : ?>
+									<span class="template-pill digistyle">✨ کالکشن ویژه</span>
 								<?php endif; ?>
 
 								<?php if ( ! empty( $p['image'] ) ) : ?>
@@ -4156,13 +5378,13 @@ class Scraper_Auto_Shop_Plugin {
 								
 								<div class="card-pricing-block">
 									<div class="pricing-row-top">
-										<?php if ( $p['original_price'] > 0 && $p['original_price'] > $p['price'] ) : ?>
-											<span class="card-old-price"><?php echo self::to_fa_num( number_format( $p['original_price'] ) ); ?> <?php echo esc_html( $settings['currency_symbol'] ); ?></span>
+										<?php if ( ! empty( $p['has_discount'] ) && ! empty( $p['old_price_formatted'] ) ) : ?>
+											<span class="card-old-price"><?php echo esc_html( $p['old_price_formatted'] ); ?></span>
 										<?php else : ?>
 											<span></span>
 										<?php endif; ?>
 
-										<?php if ( ! empty( $settings['show_special_badge'] ) ) : ?>
+										<?php if ( ! empty( $settings['show_special_badge'] ) && empty( $p['has_discount'] ) ) : ?>
 											<span class="card-special-tag">✨ پیشنهاد ویژه</span>
 										<?php endif; ?>
 									</div>
@@ -4341,23 +5563,36 @@ class Scraper_Auto_Shop_Plugin {
 							<div class="chat-agent-avatar">👩‍💼</div>
 							<div class="chat-hdr-info">
 								<h4><?php echo esc_html( $settings['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?></h4>
-								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند</span>
+								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر</span>
 							</div>
 						</div>
 						<button type="button" class="chat-close-btn" id="supportChatClose" aria-label="بستن">✕</button>
 					</div>
 
-					<!-- Customer Mini Bar (Collapsed view when customer info is saved) -->
-					<div class="chat-user-bar" id="chatUserBar" style="display:none;">
-						<div>👤 گفتگو با: <strong id="chatUserBarName">مشتری</strong> <span id="chatUserBarPhone" dir="ltr" style="font-weight:700;"></span></div>
-						<button type="button" class="chat-user-edit-btn" id="chatUserEditBtn">ویرایش مشخصات</button>
+					<!-- Customer Quick Contact Chip & Collapsible Bar -->
+					<div class="chat-contact-chip-bar" id="chatContactChipBar">
+						<button type="button" class="btn-toggle-contact" id="btnToggleContact">
+							<span id="contactChipTitle">👤 اطلاعات تماس (جهت دریافت پیامک وضعیت)</span>
+							<span id="contactExpandIcon" style="font-size:0.75rem;">▼</span>
+						</button>
+						<div class="chat-contact-drawer" id="chatContactDrawer" style="display:none;">
+							<div class="contact-drawer-grid">
+								<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
+									<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : ''; ?>" maxlength="60">
+								<?php endif; ?>
+								<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
+									<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل (۰۹...) <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : ''; ?>" maxlength="20" dir="ltr">
+								<?php endif; ?>
+							</div>
+							<button type="button" class="btn-save-contact-chip" id="btnSaveContactChip">ذخیره مشخصات ✓</button>
+						</div>
 					</div>
 
 					<!-- Continuous Messenger Scroll Area -->
 					<div class="chat-body-scroll" id="supportChatBody">
 						<div class="chat-msg-bubble incoming welcome-bubble">
 							<div class="chat-msg-sender-badge">🌸 پشتیبانی فروشگاه</div>
-							<div><?php echo nl2br( esc_html( $settings['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره محصولات یا ثبت سفارش دارید بنویسید تا همکاران ما سریعاً پاسخ دهند.' ) ); ?></div>
+							<div><?php echo nl2br( esc_html( $settings['chat_welcome_message'] ?? 'سلام! خوش آمدید 👋 هرگونه سوالی درباره کالاها، قیمت‌ها یا ثبت سفارش دارید بنویسید تا همکاران ما سریعاً پاسخ دهند.' ) ); ?></div>
 							<div class="chat-msg-time"><?php echo esc_html( date_i18n( 'H:i' ) ); ?></div>
 						</div>
 					</div>
@@ -4365,45 +5600,23 @@ class Scraper_Auto_Shop_Plugin {
 					<!-- Typing Indicator Animation -->
 					<div id="chatTypingIndicator" style="display:none; padding:0 18px 8px;">
 						<div class="chat-typing-bubble">
-							<span style="font-size:0.78rem; font-weight:700; color:var(--chat-primary);" id="chatTypingText">🤖 در حال نگارش پاسخ...</span>
+							<span style="font-size:0.78rem; font-weight:700; color:var(--chat-primary);" id="chatTypingText">🤖 در حال نگارش پاسخ هوشمند...</span>
 							<div class="chat-typing-dots"><span></span><span></span><span></span></div>
 						</div>
 					</div>
 
 					<!-- Message Composer Footer -->
 					<div class="chat-footer">
+						<!-- Quick Suggested Questions -->
+						<div class="chat-quick-suggestions">
+							<button type="button" class="quick-ask-pill" data-text="هزینه و زمان ارسال سفارش‌ها چطور است؟">🚚 زمان و هزینه ارسال؟</button>
+							<button type="button" class="quick-ask-pill" data-text="آیا کالاها ضمانت اصالت، بازگشت و سلامت دارند؟">🛡️ ضمانت اصالت و بازگشت؟</button>
+							<button type="button" class="quick-ask-pill" data-text="نحوه پیگیری سفارش و کد رهگیری پستی به چه صورت است؟">📦 پیگیری سفارش</button>
+						</div>
 						<form id="supportChatForm" onsubmit="return false;">
-							<!-- Contact inputs (Name, Phone, Email, Subject) shown if not filled -->
-							<div class="chat-contact-fields" id="chatContactFields">
-								<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
-									<div>
-										<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_name_required'] ) ? 'required' : ''; ?> maxlength="60">
-									</div>
-								<?php endif; ?>
-
-								<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
-									<div>
-										<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل / تماس <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_phone_required'] ) ? 'required' : ''; ?> maxlength="20" dir="ltr">
-									</div>
-								<?php endif; ?>
-
-								<?php if ( ! empty( $settings['chat_field_email_enable'] ) ) : ?>
-									<div>
-										<input type="email" id="chatEmailInput" placeholder="آدرس ایمیل <?php echo ! empty( $settings['chat_field_email_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_email_required'] ) ? 'required' : ''; ?> maxlength="80" dir="ltr">
-									</div>
-								<?php endif; ?>
-
-								<?php if ( ! empty( $settings['chat_field_subject_enable'] ) ) : ?>
-									<div>
-										<input type="text" id="chatSubjectInput" placeholder="موضوع سوال <?php echo ! empty( $settings['chat_field_subject_required'] ) ? '(الزامی)*' : '(اختیاری)'; ?>" <?php echo ! empty( $settings['chat_field_subject_required'] ) ? 'required' : ''; ?> maxlength="100">
-									</div>
-								<?php endif; ?>
-							</div>
-
-							<!-- Continuous Message Textarea & Send Button -->
 							<div class="chat-input-row">
-								<textarea id="chatMsgInput" class="chat-msg-textarea" placeholder="پیام یا سوال شما... (Enter)" rows="1" required maxlength="1200"></textarea>
-								<button type="submit" id="chatSendBtn" class="chat-send-btn" aria-label="ارسال">
+								<textarea id="chatMsgInput" class="chat-msg-textarea" placeholder="پیام یا سوال خود را بنویسید... (Enter جهت ارسال)" rows="1" required maxlength="1200"></textarea>
+								<button type="submit" id="chatSendBtn" class="chat-send-btn" aria-label="ارسال پیام">
 									<svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
 								</button>
 							</div>
@@ -4467,6 +5680,147 @@ class Scraper_Auto_Shop_Plugin {
 
 			const freeShippingThreshold = <?php echo (int) ( $settings['free_shipping_threshold'] ?? 400000 ); ?>;
 			const currencySymbol = ' <?php echo esc_js( $settings['currency_symbol'] ); ?>';
+
+			// Hamburger Drawer Controls
+			const storeDrawer = document.getElementById('storeDrawer');
+			const storeDrawerOverlay = document.getElementById('storeDrawerOverlay');
+			const storeHamburgerBtn = document.getElementById('storeHamburgerBtn');
+			const storeDrawerClose = document.getElementById('storeDrawerClose');
+			const drawerLiveSearch = document.getElementById('drawerLiveSearch');
+			const btnChangelogDrawer = document.getElementById('btnChangelogDrawer');
+			const changelogDrawerPanel = document.getElementById('changelogDrawerPanel');
+
+			function toggleDrawer(open) {
+				if (!storeDrawer || !storeDrawerOverlay) return;
+				if (open) {
+					storeDrawer.classList.add('open');
+					storeDrawerOverlay.classList.add('open');
+				} else {
+					storeDrawer.classList.remove('open');
+					storeDrawerOverlay.classList.remove('open');
+				}
+			}
+
+			if (storeHamburgerBtn) {
+				storeHamburgerBtn.addEventListener('click', () => toggleDrawer(true));
+			}
+			if (storeDrawerClose) {
+				storeDrawerClose.addEventListener('click', () => toggleDrawer(false));
+			}
+			if (storeDrawerOverlay) {
+				storeDrawerOverlay.addEventListener('click', () => toggleDrawer(false));
+			}
+
+			// In-drawer Live Search
+			if (drawerLiveSearch) {
+				drawerLiveSearch.addEventListener('input', (e) => {
+					const val = e.target.value.trim().toLowerCase();
+					searchQuery = val;
+					currentPage = 1;
+					filterAndRenderProducts();
+				});
+			}
+
+			// Drawer Category Filter Buttons
+			app.querySelectorAll('.drawer-cat-btn').forEach(btn => {
+				btn.addEventListener('click', () => {
+					app.querySelectorAll('.drawer-cat-btn').forEach(b => b.classList.remove('active'));
+					btn.classList.add('active');
+					currentCat = btn.getAttribute('data-cat') || 'all';
+					currentPage = 1;
+					filterAndRenderProducts();
+					toggleDrawer(false);
+					const anchor = document.getElementById('productsAnchor');
+					if (anchor) anchor.scrollIntoView({ behavior: 'smooth' });
+				});
+			});
+
+			// Drawer Quick Shortcuts
+			const drawerCartTrigger = document.getElementById('drawerCartTrigger');
+			if (drawerCartTrigger) {
+				drawerCartTrigger.addEventListener('click', () => {
+					toggleDrawer(false);
+					openCartDrawer();
+				});
+			}
+			const drawerTrackingTrigger = document.getElementById('drawerTrackingTrigger');
+			if (drawerTrackingTrigger) {
+				drawerTrackingTrigger.addEventListener('click', () => {
+					toggleDrawer(false);
+					const modal = document.getElementById('orderTrackingModal');
+					if (modal) modal.style.display = 'flex';
+				});
+			}
+			const drawerSupportTrigger = document.getElementById('drawerSupportTrigger');
+			if (drawerSupportTrigger) {
+				drawerSupportTrigger.addEventListener('click', () => {
+					toggleDrawer(false);
+					const chatBox = document.getElementById('supportChatBox');
+					if (chatBox) {
+						chatBox.classList.add('open');
+						const input = document.getElementById('chatMsgInput');
+						if (input) input.focus();
+					}
+				});
+			}
+			const drawerRulesTrigger = document.getElementById('drawerRulesTrigger');
+			if (drawerRulesTrigger) {
+				drawerRulesTrigger.addEventListener('click', () => {
+					toggleDrawer(false);
+					const modal = document.getElementById('rulesModal');
+					if (modal) modal.style.display = 'flex';
+				});
+			}
+
+			// Changelog Accordion Toggle inside Drawer
+			if (btnChangelogDrawer && changelogDrawerPanel) {
+				btnChangelogDrawer.addEventListener('click', () => {
+					const isHidden = changelogDrawerPanel.style.display === 'none';
+					changelogDrawerPanel.style.display = isHidden ? 'flex' : 'none';
+					const arrow = btnChangelogDrawer.querySelector('.ch-arrow');
+					if (arrow) arrow.textContent = isHidden ? '▲' : '▼';
+				});
+			}
+
+			// Contact chip toggle inside chat
+			const btnToggleContact = document.getElementById('btnToggleContact');
+			const chatContactDrawer = document.getElementById('chatContactDrawer');
+			const btnSaveContactChip = document.getElementById('btnSaveContactChip');
+			const contactChipTitle = document.getElementById('contactChipTitle');
+
+			if (btnToggleContact && chatContactDrawer) {
+				btnToggleContact.addEventListener('click', () => {
+					const isOpen = chatContactDrawer.style.display !== 'none';
+					chatContactDrawer.style.display = isOpen ? 'none' : 'flex';
+					const icon = document.getElementById('contactExpandIcon');
+					if (icon) icon.textContent = isOpen ? '▼' : '▲';
+				});
+			}
+			if (btnSaveContactChip && chatContactDrawer) {
+				btnSaveContactChip.addEventListener('click', () => {
+					chatContactDrawer.style.display = 'none';
+					const nameVal = (document.getElementById('chatNameInput') || {}).value || '';
+					const phoneVal = (document.getElementById('chatPhoneInput') || {}).value || '';
+					if (nameVal || phoneVal) {
+						if (contactChipTitle) contactChipTitle.textContent = '👤 ' + (nameVal || 'مشتری') + (phoneVal ? ' (' + phoneVal + ')' : '') + ' ✓';
+					}
+					const icon = document.getElementById('contactExpandIcon');
+					if (icon) icon.textContent = '▼';
+				});
+			}
+
+			// Quick Questions Suggestions
+			app.querySelectorAll('.quick-ask-pill').forEach(btn => {
+				btn.addEventListener('click', () => {
+					const text = btn.getAttribute('data-text');
+					const input = document.getElementById('chatMsgInput');
+					if (input && text) {
+						input.value = text;
+						const sendBtn = document.getElementById('chatSendBtn');
+						if (sendBtn) sendBtn.click();
+					}
+				});
+			});
 
 			let cart = [];
 			try {
@@ -5481,6 +6835,9 @@ class Scraper_Auto_Shop_Plugin {
 				'show_features_banner'        => ! empty( $_POST['show_features_banner'] ),
 				'show_special_badge'          => ! empty( $_POST['show_special_badge'] ),
 				'free_shipping_threshold'     => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
+				'store_template'              => sanitize_text_field( $_POST['store_template'] ?? 'digikala' ),
+				'store_palette'               => sanitize_text_field( $_POST['store_palette'] ?? 'digikala-red' ),
+				'auto_convert_rial'           => ! empty( $_POST['auto_convert_rial'] ),
 
 				// Tab 2: Pricing & Profit
 				'price_markup_percent'        => floatval( $_POST['price_markup_percent'] ?? 0 ),
@@ -5913,6 +7270,134 @@ class Scraper_Auto_Shop_Plugin {
 							<span class="field-badge field-badge-blue">طراحی لوکس اختصاصی</span>
 						</div>
 
+						<!-- Visual eCommerce Storefront Templates Selector -->
+						<div style="margin-bottom:24px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:20px;">
+							<h4 style="margin:0 0 6px; font-size:1.05rem; color:#0f172a; font-weight:800;">🛍️ انتخاب پوسته فروشگاه (eCommerce Templates)</h4>
+							<p style="margin:0 0 16px; font-size:0.85rem; color:#64748b;">
+								پوسته ظاهری مورد نظر خود را متناسب با سبک برند انتخاب نمایید تا تمامی رنگ‌بندی‌ها، انحناها و برچسب‌های ویترین به صورت خودکار منطبق شوند:
+							</p>
+
+							<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
+								<!-- Digikala -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? 'digikala' ) === 'digikala' ? '#ef394e' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="digikala" <?php checked( ( $opts['store_template'] ?? 'digikala' ), 'digikala' ); ?>>
+											<strong style="color:#ef394e; font-size:0.95rem;">قالب دیجی‌کالا</strong>
+										</div>
+										<span style="background:#fef2f2; color:#ef394e; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">پیشنهاد شگفت‌انگیز</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">نشان‌های قرمز نمادین، ارسال اکسپرس، برچسب تخفیف درصدی و ساختار استاندارد پرفروش‌ترین فروشگاه ایران.</span>
+								</label>
+
+								<!-- SnappShop -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'snappshop' ? '#00c073' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="snappshop" <?php checked( ( $opts['store_template'] ?? '' ), 'snappshop' ); ?>>
+											<strong style="color:#00c073; font-size:0.95rem;">قالب اسنپ‌شاپ</strong>
+										</div>
+										<span style="background:#ecfdf5; color:#059669; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">سوپراپ</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">سبک سبز مدرن سوپراپ اسنپ، انحنای گرد ۱۸ پیکسلی و برچسب‌های ارسال فوری با تحویل پیک.</span>
+								</label>
+
+								<!-- Basalam -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'basalam' ? '#df3826' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="basalam" <?php checked( ( $opts['store_template'] ?? '' ), 'basalam' ); ?>>
+											<strong style="color:#df3826; font-size:0.95rem;">قالب باسلام</strong>
+										</div>
+										<span style="background:#fff7ed; color:#c2410c; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">بازارچه صمیمی</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">رنگ مرجانی گرم، برچسب‌های غرفه برتر باسلام، تجربه خرید صمیمی و گفتگوی مستقیم با مشتری.</span>
+								</label>
+
+								<!-- Torob -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'torob' ? '#d32f2f' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="torob" <?php checked( ( $opts['store_template'] ?? '' ), 'torob' ); ?>>
+											<strong style="color:#d32f2f; font-size:0.95rem;">قالب ترب</strong>
+										</div>
+										<span style="background:#fef2f2; color:#b91c1c; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">کمترین قیمت</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">طراحی مقایسه قیمت هوشمند ترب، تراکم داده بهینه، ضمانت بازگشت و بهترین قیمت بازار.</span>
+								</label>
+
+								<!-- Digistyle -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'digistyle' ? '#e11d48' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="digistyle" <?php checked( ( $opts['store_template'] ?? '' ), 'digistyle' ); ?>>
+											<strong style="color:#e11d48; font-size:0.95rem;">قالب دیجی‌استایل</strong>
+										</div>
+										<span style="background:#fff1f2; color:#be123c; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">مد و لاکچری</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">سبک مد و فشن لوکس، عکس‌های کشیده عمودی، حروف‌نگاری مینیمال و برچسب‌های کالکشن خاص.</span>
+								</label>
+
+								<!-- Technolife -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'technolife' ? '#0284c7' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="technolife" <?php checked( ( $opts['store_template'] ?? '' ), 'technolife' ); ?>>
+											<strong style="color:#0284c7; font-size:0.95rem;">قالب تکنولایف</strong>
+										</div>
+										<span style="background:#f0f9ff; color:#0369a1; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">دیجیتال و گجت</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">تم آبی دیجیتال و تکنولوژی، چیپ‌های مشخصات سخت‌افزاری و برچسب ضمانت شرکتی.</span>
+								</label>
+
+								<!-- Modern Luxury -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'modern' ? '#2563eb' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#ffffff; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:all 0.2s;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<div style="display:flex; align-items:center; gap:8px;">
+											<input type="radio" name="store_template" value="modern" <?php checked( ( $opts['store_template'] ?? '' ), 'modern' ); ?>>
+											<strong style="color:#2563eb; font-size:0.95rem;">مدرن استاندارد</strong>
+										</div>
+										<span style="background:#eff6ff; color:#1d4ed8; padding:2px 8px; border-radius:6px; font-size:0.72rem; font-weight:800;">سلطنتی شیشه‌ای</span>
+									</div>
+									<span style="font-size:0.78rem; color:#64748b; line-height:1.5;">تم آبی لاجوردی، افکت‌های ملایم گلس‌مورفیزم و سایه‌های نرم شناور بر پایه طراحی بین‌المللی.</span>
+								</label>
+							</div>
+						</div>
+
+						<!-- Color Presets Visual Swatches -->
+						<div style="margin-bottom:24px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:20px;">
+							<h4 style="margin:0 0 6px; font-size:1.05rem; color:#0f172a; font-weight:800;">🎨 پلت‌های رنگی جذاب (Color Palettes)</h4>
+							<p style="margin:0 0 14px; font-size:0.85rem; color:#64748b;">
+								روی هر پالت کلیک کنید تا رنگ تاکید فروشگاه فوراً به‌روز شود:
+							</p>
+
+							<div style="display:flex; gap:10px; flex-wrap:wrap;">
+								<?php 
+								$palettes = array(
+									'digikala-red'       => array( 'title' => 'قرمز دیجی‌کالا', 'hex' => '#ef394e' ),
+									'snapp-green'        => array( 'title' => 'سبز اسنپ', 'hex' => '#00c073' ),
+									'basalam-coral'      => array( 'title' => 'مرجانی باسلام', 'hex' => '#df3826' ),
+									'torob-red'          => array( 'title' => 'قرمز ترب', 'hex' => '#d32f2f' ),
+									'digistyle-rose'     => array( 'title' => 'رز دیجی‌استایل', 'hex' => '#e11d48' ),
+									'technolife-blue'    => array( 'title' => 'آبی تکنولایف', 'hex' => '#0284c7' ),
+									'royal-blue'         => array( 'title' => 'آبی سلطنتی', 'hex' => '#2563eb' ),
+									'luxury-purple'      => array( 'title' => 'بنفش لوکس', 'hex' => '#7c3aed' ),
+									'amber-gold'         => array( 'title' => 'طلایی کهربایی', 'hex' => '#d97706' ),
+									'persian-turquoise'  => array( 'title' => 'فیروزه‌ای ایرانی', 'hex' => '#0d9488' ),
+								);
+								$active_pal = $opts['store_palette'] ?? 'digikala-red';
+								foreach ( $palettes as $p_key => $p_data ) :
+									$is_sel = ( $active_pal === $p_key );
+								?>
+									<label style="display:inline-flex; align-items:center; gap:6px; background:#fff; border:2px solid <?php echo $is_sel ? $p_data['hex'] : '#cbd5e1'; ?>; padding:6px 12px; border-radius:20px; cursor:pointer; transition:all 0.2s;">
+										<input type="radio" name="store_palette" value="<?php echo esc_attr( $p_key ); ?>" <?php checked( $active_pal, $p_key ); ?> onchange="document.querySelector('input[name=accent_color]').value='<?php echo esc_js( $p_data['hex'] ); ?>';">
+										<span style="width:14px; height:14px; border-radius:50%; background:<?php echo esc_attr( $p_data['hex'] ); ?>; display:inline-block;"></span>
+										<span style="font-size:0.8rem; font-weight:700; color:#334155;"><?php echo esc_html( $p_data['title'] ); ?></span>
+									</label>
+								<?php endforeach; ?>
+							</div>
+						</div>
+
 						<table class="form-table">
 							<tr>
 								<th scope="row">جایگزینی سربرگ قالب با سربرگ لوکس:</th>
@@ -6093,7 +7578,7 @@ class Scraper_Auto_Shop_Plugin {
 						</div>
 
 						<!-- Two-Column Desk Console (Organized & Responsive) -->
-						<div class="scraper-support-desk" style="display:flex; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; background:#ffffff; height:500px;">
+						<div class="scraper-support-desk" style="display:flex; border:1px solid #e2e8f0; border-radius:14px; overflow:hidden; background:#ffffff; height:620px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
 							
 							<!-- Column 1: Conversations List (Right Column in RTL) -->
 							<div class="desk-threads-col" style="width:310px; border-left:1px solid #e2e8f0; display:flex; flex-direction:column; background:#f8fafc; height:100%; flex-shrink:0;">

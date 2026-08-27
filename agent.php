@@ -5566,45 +5566,97 @@ class Scraper_Auto_Shop_Plugin {
 			<?php endif; ?>
 
 			<style>
+				.scraper-admin-dashboard {
+					box-sizing: border-box;
+					max-width: 100%;
+				}
+				/* Mobile Tab Switcher Dropdown */
+				.scraper-mobile-tab-bar {
+					display: none;
+					margin-bottom: 14px;
+					background: #ffffff;
+					border: 1px solid #cbd5e1;
+					border-radius: 12px;
+					padding: 12px;
+					box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+				}
+				.scraper-mobile-tab-bar label {
+					display: block;
+					font-size: 0.88rem;
+					font-weight: 800;
+					color: #0f172a;
+					margin-bottom: 6px;
+				}
+				.scraper-mobile-tab-bar select {
+					width: 100% !important;
+					max-width: 100% !important;
+					padding: 10px 14px !important;
+					font-size: 1rem !important;
+					font-weight: 700 !important;
+					border: 2px solid #2563eb !important;
+					border-radius: 10px !important;
+					color: #0f172a !important;
+					background: #f8fafc !important;
+				}
+
+				/* Navigation Tabs (Always Visible & Wrapping) */
+				.scraper-tab-nav-row {
+					display: flex;
+					justify-content: space-between;
+					align-items: center;
+					flex-wrap: wrap;
+					gap: 12px;
+					border-bottom: 2px solid #e2e8f0;
+					margin-bottom: 20px;
+					padding-bottom: 12px;
+				}
 				.scraper-tab-nav {
 					display: flex;
 					gap: 8px;
-					border-bottom: 2px solid #e2e8f0;
-					margin-bottom: 24px;
-					overflow-x: auto;
-					white-space: nowrap;
-					-webkit-overflow-scrolling: touch;
-					scrollbar-width: none;
-					padding-bottom: 6px;
-				}
-				.scraper-tab-nav::-webkit-scrollbar {
-					display: none;
+					flex-wrap: wrap;
+					flex: 1;
 				}
 				.scraper-tab-link {
 					display: inline-flex;
 					align-items: center;
-					gap: 8px;
-					padding: 11px 18px;
-					font-size: 0.95rem;
+					justify-content: center;
+					gap: 6px;
+					padding: 9px 15px;
+					font-size: 0.9rem;
 					font-weight: 800;
-					color: #64748b;
+					color: #475569;
 					text-decoration: none;
-					border-radius: 12px;
-					border: 1px solid transparent;
-					background: #f1f5f9;
+					border-radius: 10px;
+					border: 1px solid #cbd5e1;
+					background: #f8fafc;
 					transition: all 0.2s ease;
 					cursor: pointer;
-					flex-shrink: 0;
 				}
 				.scraper-tab-link:hover {
 					color: #0f172a;
 					background: #e2e8f0;
+					border-color: #94a3b8;
 				}
 				.scraper-tab-link.active {
-					color: #ffffff;
-					background: #2563eb;
-					border-color: #2563eb;
-					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28);
+					color: #ffffff !important;
+					background: #2563eb !important;
+					border-color: #2563eb !important;
+					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28) !important;
+				}
+				.scraper-top-save-btn {
+					background: #2563eb !important;
+					border-color: #2563eb !important;
+					color: #ffffff !important;
+					font-weight: 800 !important;
+					padding: 8px 20px !important;
+					border-radius: 10px !important;
+					font-size: 0.92rem !important;
+					cursor: pointer;
+					white-space: nowrap;
+					flex-shrink: 0;
+				}
+				.scraper-top-save-btn:hover {
+					background: #1d4ed8 !important;
 				}
 				.scraper-tab-panel {
 					display: none;
@@ -5748,32 +5800,84 @@ class Scraper_Auto_Shop_Plugin {
 						font-size: 16px !important;
 						min-height: 44px !important;
 					}
+					.scraper-mobile-tab-bar {
+						display: block !important;
+					}
+					.scraper-tab-nav-row {
+						flex-direction: column !important;
+						align-items: stretch !important;
+						gap: 10px !important;
+					}
+					.scraper-tab-nav {
+						display: grid !important;
+						grid-template-columns: repeat(2, 1fr) !important;
+						gap: 6px !important;
+						width: 100% !important;
+					}
+					.scraper-tab-link {
+						padding: 10px 6px !important;
+						font-size: 0.8rem !important;
+						width: 100% !important;
+						box-sizing: border-box !important;
+					}
+					.scraper-top-save-btn {
+						width: 100% !important;
+						text-align: center !important;
+						padding: 11px !important;
+					}
 					.scraper-save-bar {
-						position: sticky !important;
-						bottom: 0 !important;
-						z-index: 999 !important;
-						background: rgba(255,255,255,0.96) !important;
-						backdrop-filter: blur(12px) !important;
-						padding: 12px 16px !important;
-						border-top: 1px solid #cbd5e1 !important;
-						box-shadow: 0 -4px 20px rgba(0,0,0,0.08) !important;
+						position: static !important;
+						width: 100% !important;
+						box-sizing: border-box !important;
+						padding: 14px 12px !important;
+						flex-direction: column !important;
+						gap: 10px !important;
+						text-align: center !important;
+					}
+					.scraper-save-btn {
+						width: 100% !important;
+						display: block !important;
+						box-sizing: border-box !important;
+						padding: 12px !important;
+						font-size: 1rem !important;
 					}
 				}
 				</style>
 
-			<!-- Modern Tab Navigation -->
-			<div class="scraper-tab-nav" id="scraperAdminTabs">
-				<button type="button" class="scraper-tab-link active" data-tab="tab-storefront">🎨 ۱. ویترین و ظاهر فروشگاه</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-pricing">💰 ۲. قیمت‌گذاری و سود</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت آنلاین و میز پاسخگویی</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-ai">🤖 ۴. هوش مصنوعی و هماهنگی</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-messengers">📡 ۵. پیام‌رسان‌ها (بله/تلگرام/روبیکا)</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🔄 ۶. ووکامرس و اسکرپر</button>
-				<button type="button" class="scraper-tab-link" data-tab="tab-logs">📋 ۷. گزارش پیام‌های مشتریان</button>
-			</div>
-
 			<form method="post" action="" id="scraperAdminForm">
 				<?php wp_nonce_field( 'scraper_shop_settings_action', 'scraper_shop_settings_nonce' ); ?>
+
+				<!-- Mobile Quick Tab Selector Dropdown -->
+				<div class="scraper-mobile-tab-bar">
+					<label for="mobileTabSelector">📂 انتخاب بخش تنظیمات (پرش سریع):</label>
+					<select id="mobileTabSelector">
+						<option value="tab-storefront">🎨 ۱. ویترین و ظاهر فروشگاه</option>
+						<option value="tab-pricing">💰 ۲. قیمت‌گذاری و سود</option>
+						<option value="tab-chat">💬 ۳. چت آنلاین و میز پاسخگویی</option>
+						<option value="tab-ai">🤖 ۴. هوش مصنوعی و هماهنگی</option>
+						<option value="tab-messengers">📡 ۵. پیام‌رسان‌ها (بله/تلگرام/روبیکا)</option>
+						<option value="tab-woocommerce">🔄 ۶. ووکامرس و اسکرپر</option>
+						<option value="tab-logs">📋 ۷. گزارش پیام‌های مشتریان</option>
+					</select>
+				</div>
+
+				<!-- All 7 Tabs Navigation (Always Fully Visible & Wrapping) + Top Save Button -->
+				<div class="scraper-tab-nav-row">
+					<div class="scraper-tab-nav" id="scraperAdminTabs">
+						<button type="button" class="scraper-tab-link active" data-tab="tab-storefront">🎨 ۱. ویترین فروشگاه</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-pricing">💰 ۲. قیمت‌گذاری</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت و پاسخگویی</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-ai">🤖 ۴. هوش مصنوعی</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-messengers">📡 ۵. پیام‌رسان‌ها</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🔄 ۶. ووکامرس</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-logs">📋 ۷. گزارش پیام‌ها</button>
+					</div>
+					<div>
+						<button type="submit" name="scraper_shop_save" class="button scraper-top-save-btn">
+							💾 ذخیره تغییرات
+						</button>
+					</div>
+				</div>
 
 				<!-- ================= TAB 1: STOREFRONT & APPEARANCE ================= -->
 				<div id="tab-storefront" class="scraper-tab-panel active">
@@ -6876,12 +6980,14 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
-				<!-- Fixed Save Settings Bar -->
-				<div class="scraper-save-bar" style="background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; margin-top:20px; box-shadow:0 4px 14px rgba(0,0,0,0.04);">
-					<div style="font-size:0.92rem; color:#64748b; font-weight:600;">
-						💡 تغییرات اعمال‌شده در هر یک از زبانه‌ها با زدن کلید زیر ذخیره خواهند شد.
+				<!-- Compact Responsive Save Settings Bar -->
+				<div class="scraper-save-bar" style="background:#ffffff; border:1px solid #cbd5e1; border-radius:12px; padding:14px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-top:24px; box-shadow:0 4px 14px rgba(0,0,0,0.03); max-width:100%; box-sizing:border-box;">
+					<div style="font-size:0.88rem; color:#475569; font-weight:700;">
+						💡 کلیه تغییرات در هر یک از ۷ زبانه با زدن کلید زیر ذخیره می‌شوند.
 					</div>
-					<input type="submit" name="scraper_shop_save" class="button button-primary button-large" value="💾 ذخیره تمامی تنظیمات فروشگاه و هوش مصنوعی" style="font-weight:800; padding:8px 28px; font-size:1rem; border-radius:10px;">
+					<button type="submit" name="scraper_shop_save" class="button button-primary scraper-save-btn" style="background:#2563eb; border-color:#2563eb; font-weight:800; padding:8px 24px; font-size:0.95rem; border-radius:8px; cursor:pointer;">
+						💾 ذخیره تغییرات
+					</button>
 				</div>
 			</form>
 		</div>
@@ -6889,6 +6995,12 @@ class Scraper_Auto_Shop_Plugin {
 		<script>
 		jQuery(document).ready(function($){
 			// Tab switching logic
+			// Mobile Tab Selector Sync
+			$('#mobileTabSelector').on('change', function(){
+				var targetTab = $(this).val();
+				$('#scraperAdminTabs .scraper-tab-link[data-tab="' + targetTab + '"]').click();
+			});
+
 			$('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				e.preventDefault();
 				var tabId = $(this).attr('data-tab');
@@ -6897,6 +7009,7 @@ class Scraper_Auto_Shop_Plugin {
 				$('.scraper-tab-panel').removeClass('active');
 				$('#' + tabId).addClass('active');
 
+				$('#mobileTabSelector').val(tabId);
 				try {
 					sessionStorage.setItem('scraper_active_tab', tabId);
 				} catch(err){}

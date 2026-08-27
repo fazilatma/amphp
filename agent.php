@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 11.2.0
+ * Version: 11.3.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -38,7 +38,7 @@ class Scraper_Auto_Shop_Plugin {
 			'contact_phone'               => '۰۲۱-۱۲۳۴۵۶۷۸',
 			'support_hours'               => 'پاسخگویی ۹ الی ۲۲',
 			'shop_title'                  => 'فروشگاه آنلاین و هوشمند نوآوران',
-			'shop_subtitle'               => 'تنوع بی‌نظیر محصولات استخراج‌شده از منابع معتبر با تضمین اصالت و بهترین قیمت بازار',
+			'shop_subtitle'               => 'تنوع بی‌نظیر کالاها با تضمین اصالت، سلامت فیزیکی و ارسال سریع به سراسر کشور',
 			'price_markup_percent'        => 20,
 			'price_fixed_add'             => 0,
 			'price_rounding'              => '1000', // none, 1000, 10000
@@ -47,9 +47,9 @@ class Scraper_Auto_Shop_Plugin {
 			'fallback_price_behavior'     => 'use_fallback', // 'use_fallback' or 'call_for_price'
 			'accent_color'                => '#2563eb',
 			'products_per_page'           => 16,
-			'show_source_badge'           => true,
+			'show_brand_badge'            => true,
 			'show_features_banner'        => true,
-			'show_markup_badge'           => true,
+			'show_special_badge'          => true,
 		);
 	}
 
@@ -477,7 +477,7 @@ class Scraper_Auto_Shop_Plugin {
 									'category'        => $prod['category'] ?? $prod['cat'] ?? 'عمومی',
 									'description'     => $prod['description'] ?? $prod['desc'] ?? '',
 									'link'            => $prod['link'] ?? $prod['url'] ?? '',
-									'profile'         => 'ووکامرس / استخراج‌شده',
+									'profile'         => 'برند برتر',
 									'profile_key'     => 'woo_temp',
 									'in_stock'        => true,
 								);
@@ -666,6 +666,7 @@ class Scraper_Auto_Shop_Plugin {
 
 	/**
 	 * Shortcode [scraped_shop] / [modern_shop] HTML Renderer.
+	 * 100% clean customer experience with NO internal scraper/extraction references.
 	 */
 	public static function render_shop_shortcode() {
 		$settings = self::get_settings();
@@ -679,19 +680,19 @@ class Scraper_Auto_Shop_Plugin {
 			$categories[ $cat ] = ( $categories[ $cat ] ?? 0 ) + 1;
 		}
 
-		// Unique profiles
+		// Unique brands/profiles (presented cleanly as Brands/Suppliers)
 		$prof_counts = array();
 		foreach ( $products as $p ) {
 			$pr = ! empty( $p['profile'] ) ? $p['profile'] : 'سایر';
 			$prof_counts[ $pr ] = ( $prof_counts[ $pr ] ?? 0 ) + 1;
 		}
 
-		$scraper_admin_url = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$account_url = function_exists( 'wc_get_page_permalink' ) ? wc_get_page_permalink( 'myaccount' ) : wp_login_url();
+		$scraper_admin_url = admin_url( 'admin.php?page=scraper-full-dashboard' );
 
 		ob_start();
 		?>
-		<!-- Scraper & Auto Shop Pro Modern Storefront -->
+		<!-- Modern Online Storefront -->
 		<style>
 			:root {
 				--sp-accent: <?php echo esc_attr( $settings['accent_color'] ); ?>;
@@ -954,7 +955,7 @@ class Scraper_Auto_Shop_Plugin {
 				background: rgba(37,99,235,0.08);
 			}
 
-			/* Dropdown Mega Menu for Categories */
+			/* Dropdown Mega Menu for Categories & Brands */
 			.mega-dropdown-panel {
 				display: none;
 				position: absolute;
@@ -1143,11 +1144,11 @@ class Scraper_Auto_Shop_Plugin {
 			.product-card:hover .card-thumb-wrap img {
 				transform: scale(1.08);
 			}
-			.card-source-tag {
+			.card-brand-tag {
 				position: absolute;
 				top: 12px;
 				right: 12px;
-				background: rgba(15, 23, 42, 0.75);
+				background: rgba(15, 23, 42, 0.78);
 				backdrop-filter: blur(8px);
 				color: #fff;
 				font-size: 0.75rem;
@@ -1209,13 +1210,13 @@ class Scraper_Auto_Shop_Plugin {
 				color: #94a3b8;
 				text-decoration: line-through;
 			}
-			.card-markup-badge {
+			.card-special-badge {
 				background: #ecfdf5;
 				color: #059669;
 				border: 1px solid #a7f3d0;
-				padding: 2px 7px;
+				padding: 2px 8px;
 				border-radius: 6px;
-				font-size: 0.72rem;
+				font-size: 0.75rem;
 				font-weight: 700;
 			}
 			.card-new-price {
@@ -1566,16 +1567,16 @@ class Scraper_Auto_Shop_Plugin {
 
 				<!-- Smart Header Search -->
 				<div class="store-header-search">
-					<input type="text" id="headerLiveSearch" placeholder="جستجوی هوشمند در تمام کالاهای استخراج‌شده...">
+					<input type="text" id="headerLiveSearch" placeholder="جستجو در بین هزاران کالای متنوع و باکیفیت...">
 					<svg viewBox="0 0 24 24"><path d="M10 18a7.952 7.952 0 0 0 4.897-1.688l4.396 4.396 1.414-1.414-4.396-4.396A7.952 7.952 0 0 0 18 10c0-4.411-3.589-8-8-8s-8 3.589-8 8 3.589 8 8 8zm0-14c3.309 0 6 2.691 6 6s-2.691 6-6 6-6-2.691-6-6 2.691-6 6-6z"/></svg>
 				</div>
 
 				<!-- Header Action Buttons -->
 				<div class="store-header-actions">
 					<?php if ( current_user_can( 'manage_options' ) ) : ?>
-						<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-header-action" title="مدیریت اسکرپر">
+						<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-header-action" title="مدیریت فروشگاه">
 							<span>⚙️</span>
-							<span>پنل اسکرپر</span>
+							<span>مدیریت</span>
 						</a>
 					<?php endif; ?>
 
@@ -1619,14 +1620,14 @@ class Scraper_Auto_Shop_Plugin {
 					<?php if ( count( $prof_counts ) > 0 ) : ?>
 						<div style="position:relative; display:inline-block;">
 							<button type="button" class="nav-item-link" id="sourcesDropdownBtn" style="border:none; background:transparent; cursor:pointer;">
-								<span>📍</span>
-								<span>غرفه‌ها و منابع</span>
+								<span>🏷️</span>
+								<span>برندها و تأمین‌کنندگان</span>
 								<span style="font-size:0.7rem;">▼</span>
 							</button>
 							<div class="mega-dropdown-panel" id="sourcesDropdownPanel">
-								<div style="padding:8px 10px; font-weight:800; font-size:0.85rem; color:#64748b; border-bottom:1px solid #f1f5f9;">انتخاب منبع استخراج:</div>
+								<div style="padding:8px 10px; font-weight:800; font-size:0.85rem; color:#64748b; border-bottom:1px solid #f1f5f9;">انتخاب برند و سازنده:</div>
 								<div class="dropdown-cat-item" data-profile="all">
-									<span>همه منابع و فروشگاه‌ها</span>
+									<span>همه برندها</span>
 									<span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span>
 								</div>
 								<?php foreach ( $prof_counts as $pr_name => $pr_count ) : ?>
@@ -1655,13 +1656,13 @@ class Scraper_Auto_Shop_Plugin {
 				<div class="store-nav-left" style="display:flex; align-items:center; gap:8px;">
 					<span style="font-size:0.82rem; color:#10b981; font-weight:700; display:flex; align-items:center; gap:5px;">
 						<span style="width:8px; height:8px; background:#10b981; border-radius:50%; display:inline-block; box-shadow:0 0 8px #10b981;"></span>
-						فروشگاه فعال • ارسال فوری
+						فروشگاه آنلاین • ارسال فوری
 					</span>
 				</div>
 
 				<!-- Categories Dropdown Panel -->
 				<div class="mega-dropdown-panel" id="megaDropdownPanel">
-					<div style="padding:8px 10px; font-weight:800; font-size:0.85rem; color:#64748b; border-bottom:1px solid #f1f5f9;">دسته‌بندی‌های موجود:</div>
+					<div style="padding:8px 10px; font-weight:800; font-size:0.85rem; color:#64748b; border-bottom:1px solid #f1f5f9;">دسته‌بندی‌های کالا:</div>
 					<div class="dropdown-cat-item" data-cat="all">
 						<span>همه دسته‌ها</span>
 						<span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span>
@@ -1695,11 +1696,9 @@ class Scraper_Auto_Shop_Plugin {
 						</div>
 					<?php endforeach; ?>
 				</div>
-				<?php if ( current_user_can( 'manage_options' ) ) : ?>
-					<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-card-buy" style="margin-top:auto; padding:12px; text-align:center;">
-						⚙️ ورود به پنل اسکرپر
-					</a>
-				<?php endif; ?>
+				<a href="<?php echo esc_url( $account_url ); ?>" class="btn-card-buy" style="margin-top:auto; padding:12px; text-align:center;">
+					👤 ورود / ثبت‌نام در فروشگاه
+				</a>
 			</div>
 
 			<!-- Hero Banner -->
@@ -1711,7 +1710,7 @@ class Scraper_Auto_Shop_Plugin {
 					<div class="hero-features-bar">
 						<div class="hero-feature-item"><span>🚀</span> ارسال سریع سراسر کشور</div>
 						<div class="hero-feature-item"><span>💎</span> تضمین اصالت و سلامت کالا</div>
-						<div class="hero-feature-item"><span>🔄</span> قیمت‌های رقابتی با تعدیل هوشمند</div>
+						<div class="hero-feature-item"><span>🔄</span> تضمین بهترین قیمت بازار</div>
 						<div class="hero-feature-item"><span>🛡️</span> پشتیبانی ۲۴ ساعته</div>
 					</div>
 				<?php endif; ?>
@@ -1720,14 +1719,14 @@ class Scraper_Auto_Shop_Plugin {
 			<div id="productsAnchor"></div>
 
 			<?php if ( empty( $products ) ) : ?>
-				<!-- Clean Empty State when no profiles scraped yet -->
+				<!-- Clean Customer-facing Empty State -->
 				<div class="shop-empty-state">
 					<div class="empty-icon">📦</div>
-					<h3>هنوز محصولی از پروفایل‌ها استخراج نشده است</h3>
-					<p>محصولات این فروشگاه مستقیماً از پروفایل‌های تعریف‌شده در اسکرپر بارگذاری می‌شوند. برای اضافه کردن محصول، وارد پنل مدیریت اسکرپر شوید و اولین استخراج خود را آغاز کنید.</p>
-					<?php if ( current_user_can( 'manage_options' ) ) : ?>
-						<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-card-buy" style="padding:12px 28px; font-size:1rem;">
-							⚡ ورود به پنل اسکرپر و استخراج محصولات
+					<h3>در حال حاضر کالایی در این بخش موجود نیست</h3>
+					<p>کالاهای جدید به زودی در انبار موجود و در فروشگاه عرضه خواهند شد. برای اطلاع از موجودی مجدداً سر بزنید یا با پشتیبانی تماس حاصل فرمایید.</p>
+					<?php if ( ! empty( $settings['contact_phone'] ) ) : ?>
+						<a href="tel:<?php echo esc_attr( $settings['contact_phone'] ); ?>" class="btn-card-buy" style="padding:12px 28px; font-size:1rem;">
+							📞 تماس با پشتیبانی فروشگاه
 						</a>
 					<?php endif; ?>
 				</div>
@@ -1737,7 +1736,7 @@ class Scraper_Auto_Shop_Plugin {
 				<div class="shop-toolbar">
 					<div class="toolbar-right">
 						<span id="productCounter" style="font-weight:700; color:#475569;">
-							نمایش <?php echo self::to_fa_num( count( $products ) ); ?> محصول استخراج‌شده
+							نمایش <?php echo self::to_fa_num( count( $products ) ); ?> محصول فعال
 						</span>
 					</div>
 					<div class="toolbar-left" style="display:flex; align-items:center; gap:10px;">
@@ -1751,11 +1750,11 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 				</div>
 
-				<!-- Source Profile Filter Pills (if multiple profiles exist) -->
+				<!-- Brand Filter Pills (if multiple brands exist) -->
 				<?php if ( count( $prof_counts ) > 1 ) : ?>
-					<div style="margin-bottom:8px; font-size:0.9rem; font-weight:700; color:#64748b;">فیلتر بر اساس منبع استخراج:</div>
+					<div style="margin-bottom:8px; font-size:0.9rem; font-weight:700; color:#64748b;">فیلتر بر اساس برند:</div>
 					<div class="filter-pills-wrap" id="profilePills">
-						<div class="filter-pill active" data-profile="all">همه منابع <span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span></div>
+						<div class="filter-pill active" data-profile="all">همه برندها <span class="filter-pill-badge"><?php echo self::to_fa_num( count( $products ) ); ?></span></div>
 						<?php foreach ( $prof_counts as $pr_name => $pr_count ) : ?>
 							<div class="filter-pill" data-profile="<?php echo esc_attr( $pr_name ); ?>">
 								<?php echo esc_html( $pr_name ); ?>
@@ -1788,8 +1787,8 @@ class Scraper_Auto_Shop_Plugin {
 							
 							<div class="card-thumb-wrap">
 								<span class="card-stock-badge">✨ موجود</span>
-								<?php if ( ! empty( $settings['show_source_badge'] ) && ! empty( $p['profile'] ) ) : ?>
-									<span class="card-source-tag">📍 <?php echo esc_html( $p['profile'] ); ?></span>
+								<?php if ( ! empty( $settings['show_brand_badge'] ) && ! empty( $p['profile'] ) ) : ?>
+									<span class="card-brand-tag">🏷️ <?php echo esc_html( $p['profile'] ); ?></span>
 								<?php endif; ?>
 
 								<?php if ( ! empty( $p['image'] ) ) : ?>
@@ -1805,14 +1804,14 @@ class Scraper_Auto_Shop_Plugin {
 								
 								<div class="card-pricing-block">
 									<div class="pricing-row-top">
-										<?php if ( $p['original_price'] > 0 && $p['original_price'] != $p['price'] ) : ?>
+										<?php if ( $p['original_price'] > 0 && $p['original_price'] > $p['price'] ) : ?>
 											<span class="card-old-price"><?php echo self::to_fa_num( number_format( $p['original_price'] ) ); ?> <?php echo esc_html( $settings['currency_symbol'] ); ?></span>
 										<?php else : ?>
 											<span></span>
 										<?php endif; ?>
 
-										<?php if ( ! empty( $settings['show_markup_badge'] ) && ! empty( $settings['price_markup_percent'] ) ) : ?>
-											<span class="card-markup-badge">+<?php echo self::to_fa_num( $settings['price_markup_percent'] ); ?>٪ تعدیل</span>
+										<?php if ( ! empty( $settings['show_special_badge'] ) ) : ?>
+											<span class="card-special-badge">✨ پیشنهاد ویژه</span>
 										<?php endif; ?>
 									</div>
 									<div class="card-new-price"><?php echo esc_html( $p['price_formatted'] ); ?></div>
@@ -1822,13 +1821,13 @@ class Scraper_Auto_Shop_Plugin {
 									<button type="button" class="btn-card-quick open-quick-view" 
 										data-title="<?php echo esc_attr( $p['title'] ); ?>"
 										data-price="<?php echo esc_attr( $p['price_formatted'] ); ?>"
-										data-old-price="<?php echo esc_attr( $p['original_price'] > 0 ? self::to_fa_num( number_format( $p['original_price'] ) ) . ' ' . $settings['currency_symbol'] : '' ); ?>"
+										data-old-price="<?php echo esc_attr( $p['original_price'] > $p['price'] ? self::to_fa_num( number_format( $p['original_price'] ) ) . ' ' . $settings['currency_symbol'] : '' ); ?>"
 										data-img="<?php echo esc_url( $p['image'] ); ?>"
 										data-cat="<?php echo esc_attr( $p['category'] ); ?>"
 										data-desc="<?php echo esc_attr( $p['description'] ); ?>"
 										data-profile="<?php echo esc_attr( $p['profile'] ); ?>"
 										data-link="<?php echo esc_url( $p['link'] ); ?>">
-										جزئیات
+										مشاهده مشخصات
 									</button>
 									<button type="button" class="btn-card-buy add-to-cart-btn"
 										data-id="<?php echo esc_attr( $p['id'] ); ?>"
@@ -1852,7 +1851,7 @@ class Scraper_Auto_Shop_Plugin {
 					<div class="modal-close" id="closeQuickView">✕</div>
 					<div class="modal-inner">
 						<div class="modal-col-img">
-							<img src="" id="modalImg" alt="تصویر محصول">
+							<img src="" id="modalImg" alt="تصویر کالا">
 						</div>
 						<div class="modal-col-info">
 							<div style="display:flex; gap:10px; margin-bottom:8px;">
@@ -1868,13 +1867,14 @@ class Scraper_Auto_Shop_Plugin {
 
 							<p id="modalDesc" style="color:#64748b; font-size:0.92rem; line-height:1.8; max-height:150px; overflow-y:auto; margin-bottom:20px;"></p>
 							
-							<div style="display:flex; gap:12px; align-items:center;">
+							<div style="display:flex; gap:12px; align-items:center; margin-bottom:15px;">
 								<button type="button" class="btn-card-buy" id="modalAddToCartBtn" style="flex:1; padding:12px; font-size:1rem;">
 									افزودن به سبد خرید
 								</button>
-								<a href="#" id="modalSourceLink" target="_blank" class="btn-card-quick" style="text-decoration:none; padding:12px 18px; font-size:0.9rem;">
-									مشاهده در سایت مبدأ ↗
-								</a>
+							</div>
+
+							<div style="color:#059669; font-size:0.85rem; font-weight:700; display:flex; align-items:center; gap:6px;">
+								<span>🛡️</span> ۷ روز ضمانت بازگشت و تعویض بدون قید و شرط
 							</div>
 						</div>
 					</div>
@@ -1911,17 +1911,14 @@ class Scraper_Auto_Shop_Plugin {
 					<div class="footer-col">
 						<h4><?php echo esc_html( $settings['shop_title'] ); ?></h4>
 						<p><?php echo esc_html( $settings['shop_subtitle'] ); ?></p>
-						<p style="color:#059669; font-weight:700;">🟢 پشتیبانی آنلاین و فعال</p>
+						<p style="color:#059669; font-weight:700;">🟢 فروشگاه آنلاین و سفارش‌گیری فعال است</p>
 					</div>
 					<div class="footer-col">
 						<h4>دسترسی سریع</h4>
 						<ul>
 							<li><a href="#" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">صفحه اصلی فروشگاه</a></li>
 							<li><a href="#productsAnchor" onclick="document.getElementById('productsGrid').scrollIntoView({behavior:'smooth'}); return false;">فهرست کامل کالاها</a></li>
-							<li><a href="<?php echo esc_url( $account_url ); ?>">پیگیری سفارشات و حساب</a></li>
-							<?php if ( current_user_can( 'manage_options' ) ) : ?>
-								<li><a href="<?php echo esc_url( $scraper_admin_url ); ?>">پنل اسکرپر و تنظیمات</a></li>
-							<?php endif; ?>
+							<li><a href="<?php echo esc_url( $account_url ); ?>">پیگیری سفارشات و حساب کاربری</a></li>
 						</ul>
 					</div>
 					<div class="footer-col">
@@ -1937,18 +1934,18 @@ class Scraper_Auto_Shop_Plugin {
 					</div>
 					<div class="footer-col">
 						<h4>تماس و پشتیبانی</h4>
-						<p>پاسخگویی: <?php echo esc_html( $settings['support_hours'] ); ?></p>
+						<p>ساعات پاسخگویی: <?php echo esc_html( $settings['support_hours'] ); ?></p>
 						<?php if ( ! empty( $settings['contact_phone'] ) ) : ?>
 							<p style="font-size:1.1rem; font-weight:800; color:#0f172a;">📞 <?php echo esc_html( $settings['contact_phone'] ); ?></p>
 						<?php endif; ?>
 						<div style="background:#f1f5f9; padding:10px 14px; border-radius:10px; font-size:0.82rem; color:#475569;">
-							✨ تضمین اصالت فیزیکی و بازگشت وجه تا ۷ روز
+							✨ ضمانت ۱۰۰٪ سلامت فیزیکی و بازگشت کالا
 						</div>
 					</div>
 				</div>
 				<div class="footer-bottom">
-					<div>تمامی حقوق این فروشگاه محفوظ است © <?php echo esc_html( date( 'Y' ) ); ?></div>
-					<div>پشتیبانی شده توسط افزونه جامع Scraper & Auto Shop Pro</div>
+					<div>تمامی حقوق این وب‌سایت برای فروشگاه آنلاین محفوظ است © <?php echo esc_html( date( 'Y' ) ); ?></div>
+					<div>تجربه خرید مدرن و هوشمند آنلاین</div>
 				</div>
 			</div>
 
@@ -1988,7 +1985,7 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			}
 
-			// Sources dropdown toggle
+			// Brands dropdown toggle
 			const sourcesBtn = document.getElementById('sourcesDropdownBtn');
 			const sourcesPanel = document.getElementById('sourcesDropdownPanel');
 			if (sourcesBtn && sourcesPanel) {
@@ -2053,7 +2050,7 @@ class Scraper_Auto_Shop_Plugin {
 
 				const counter = document.getElementById('productCounter');
 				if (counter) {
-					counter.textContent = 'نمایش ' + toFa(visibleCount) + ' محصول';
+					counter.textContent = 'نمایش ' + toFa(visibleCount) + ' محصول فعال';
 				}
 			}
 
@@ -2098,7 +2095,7 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			});
 
-			// Profile pill clicks
+			// Brand pill clicks
 			app.querySelectorAll('#profilePills .filter-pill').forEach(pill => {
 				pill.addEventListener('click', () => {
 					app.querySelectorAll('#profilePills .filter-pill').forEach(p => p.classList.remove('active'));
@@ -2108,7 +2105,7 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			});
 
-			// Dropdown profile clicks
+			// Dropdown brand clicks
 			app.querySelectorAll('.dropdown-cat-item[data-profile]').forEach(item => {
 				item.addEventListener('click', (e) => {
 					e.preventDefault();
@@ -2263,7 +2260,6 @@ class Scraper_Auto_Shop_Plugin {
 					const cat = btn.getAttribute('data-cat');
 					const desc = btn.getAttribute('data-desc');
 					const profile = btn.getAttribute('data-profile');
-					const link = btn.getAttribute('data-link');
 
 					activeModalProduct = {
 						id: 'qv_' + Math.random(),
@@ -2282,17 +2278,9 @@ class Scraper_Auto_Shop_Plugin {
 					}
 
 					document.getElementById('modalCat').textContent = '📂 ' + (cat || 'عمومی');
-					document.getElementById('modalProfile').textContent = profile ? '📍 منبع: ' + profile : '';
+					document.getElementById('modalProfile').textContent = profile ? '🏷️ برند: ' + profile : '';
 					document.getElementById('modalDesc').textContent = desc || 'توضیحات تکمیلی برای این محصول درج نشده است.';
 					document.getElementById('modalImg').src = img || '';
-
-					const srcLink = document.getElementById('modalSourceLink');
-					if (link) {
-						srcLink.href = link;
-						srcLink.style.display = 'inline-block';
-					} else {
-						srcLink.style.display = 'none';
-					}
 
 					qvModal.classList.add('open');
 				});
@@ -2352,9 +2340,9 @@ class Scraper_Auto_Shop_Plugin {
 				'shop_subtitle'           => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
 				'accent_color'            => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
 				'products_per_page'       => intval( $_POST['products_per_page'] ?? 16 ),
-				'show_source_badge'       => ! empty( $_POST['show_source_badge'] ),
+				'show_brand_badge'        => ! empty( $_POST['show_brand_badge'] ),
 				'show_features_banner'    => ! empty( $_POST['show_features_banner'] ),
-				'show_markup_badge'       => ! empty( $_POST['show_markup_badge'] ),
+				'show_special_badge'      => ! empty( $_POST['show_special_badge'] ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			$updated = true;
@@ -2564,12 +2552,12 @@ class Scraper_Auto_Shop_Plugin {
 							<th scope="row">نشان‌ها و برچسب‌های کارت کالا:</th>
 							<td>
 								<label style="display:block; margin-bottom:8px;">
-									<input type="checkbox" name="show_markup_badge" value="1" <?php checked( $opts['show_markup_badge'] ); ?>>
-									نمایش برچسب درصد افزایش/تعدیل قیمت روی کارت محصول
+									<input type="checkbox" name="show_special_badge" value="1" <?php checked( ! empty( $opts['show_special_badge'] ) ); ?>>
+									نمایش نشان «پیشنهاد ویژه» روی کارت کالا
 								</label>
 								<label style="display:block; margin-bottom:8px;">
-									<input type="checkbox" name="show_source_badge" value="1" <?php checked( $opts['show_source_badge'] ); ?>>
-									نمایش نام غرفه/پروفایل منبع روی تصویر محصول
+									<input type="checkbox" name="show_brand_badge" value="1" <?php checked( ! empty( $opts['show_brand_badge'] ) ); ?>>
+									نمایش برچسب برند/سازنده روی تصویر محصول
 								</label>
 								<label style="display:block;">
 									<input type="checkbox" name="show_features_banner" value="1" <?php checked( $opts['show_features_banner'] ); ?>>
@@ -2582,7 +2570,7 @@ class Scraper_Auto_Shop_Plugin {
 							<td>
 								<label>
 									<input type="checkbox" name="enable_shop_takeover" value="1" <?php checked( $opts['enable_shop_takeover'] ); ?>>
-									ویترین پیش‌فرض فروشگاه ووکامرس با این ویترین مدرن و محصولات استخراج‌شده جایگزین شود.
+									ویترین پیش‌فرض فروشگاه ووکامرس با این ویترین مدرن جایگزین شود.
 								</label>
 							</td>
 						</tr>
@@ -2600,7 +2588,7 @@ class Scraper_Auto_Shop_Plugin {
 					🔄 درج مستقیم در دیتابیس محصولات ووکامرس (WooCommerce Database Sync)
 				</h3>
 				<p style="color:#64748b; font-size:0.95rem; line-height:1.6; max-width:800px;">
-					با فشردن دکمه زیر، تمامی محصولات استخراج‌شده به عنوان محصولات رسمی ووکامرس (با قیمت تعدیل‌شده، دسته‌بندی و متای منبع) در دیتابیس وردپرس درج یا به‌روزرسانی می‌شوند:
+					با فشردن دکمه زیر، تمامی محصولات به عنوان محصولات رسمی ووکامرس (با قیمت نهایی، دسته‌بندی و متای برند) در دیتابیس وردپرس درج یا به‌روزرسانی می‌شوند:
 				</p>
 				<div style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-top:15px;">
 					<button type="button" id="btnSyncToWoo" class="button button-secondary button-hero" style="font-weight:800; padding:8px 24px; border-color:#2563eb; color:#2563eb;">

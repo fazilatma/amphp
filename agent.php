@@ -144,6 +144,8 @@ class Scraper_Auto_Shop_Plugin {
 		// Support chat AJAX endpoints (Customer & AI thread)
 		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
 		add_action( 'wp_ajax_nopriv_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
+		add_action( 'wp_ajax_scraper_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
+		add_action( 'wp_ajax_nopriv_scraper_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
 		add_action( 'wp_ajax_scraper_customer_get_thread', array( __CLASS__, 'ajax_customer_get_thread' ) );
 		add_action( 'wp_ajax_nopriv_scraper_customer_get_thread', array( __CLASS__, 'ajax_customer_get_thread' ) );
 
@@ -1020,10 +1022,10 @@ class Scraper_Auto_Shop_Plugin {
 
 			$args = array(
 				'method'      => 'POST',
-				'timeout'     => 15,
-				'redirection' => 5,
+				'timeout'     => 3,
+				'redirection' => 2,
 				'httpversion' => '1.0',
-				'blocking'    => true,
+				'blocking'    => false, // Non-blocking so customer chat is never delayed!
 				'headers'     => array(
 					'Content-Type' => 'application/json; charset=utf-8',
 				),
@@ -1423,8 +1425,10 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		// 1. Customer Message
+		$client_msg_id = sanitize_text_field( $_POST['client_msg_id'] ?? '' );
+		$customer_msg_id = ! empty( $client_msg_id ) ? $client_msg_id : ( 'msg_' . $now_time . '_' . rand( 100, 999 ) );
 		$customer_msg = array(
-			'id'          => 'msg_' . $now_time . '_' . rand( 100, 999 ),
+			'id'          => $customer_msg_id,
 			'sender'      => 'customer',
 			'sender_name' => ( ! empty( $thread['name'] ) && 'کاربر مهمان' !== $thread['name'] ) ? $thread['name'] : 'شما',
 			'text'        => $message,
@@ -1533,7 +1537,7 @@ class Scraper_Auto_Shop_Plugin {
 	 * AJAX endpoint for customer polling updates for active conversation thread.
 	 */
 	public static function ajax_customer_get_thread() {
-		check_ajax_referer( 'scraper_support_chat_nonce', 'nonce' );
+		if ( ! empty( $_POST['nonce'] ) ) { check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false ); }
 
 		$session_id = sanitize_text_field( $_POST['session_id'] ?? '' );
 		if ( empty( $session_id ) ) {
@@ -6585,6 +6589,17 @@ class Scraper_Auto_Shop_Plugin {
 
 				if (!chatBox) return;
 
+				// Dedicated Safe HTML Escape Helper
+				function escapeHtml(text) {
+					if (!text) return '';
+					return String(text)
+						.replace(/&/g, '&amp;')
+						.replace(/</g, '&lt;')
+						.replace(/>/g, '&gt;')
+						.replace(/"/g, '&quot;')
+						.replace(/'/g, '&#039;');
+				}
+
 				// Persistent Session ID
 				let sessionId = localStorage.getItem('scraper_chat_session_id');
 				if (!sessionId) {
@@ -6645,7 +6660,7 @@ class Scraper_Auto_Shop_Plugin {
 						if (chatBox.classList.contains('open')) {
 							if (chatBody) chatBody.scrollTop = chatBody.scrollHeight;
 							pollThreadMessages();
-							if (chatMsgInput) setTimeout(() => chatMsgInput.focus(), 150);
+							if (chatMsgInput) setTimeout(() => { try { chatMsgInput.focus(); } catch(e){} }, 150);
 						}
 					});
 				}
@@ -6667,7 +6682,7 @@ class Scraper_Auto_Shop_Plugin {
 					}
 				});
 
-				// Render Message Bubbles
+				// Render Message Bubbles (Guaranteed deduplication & formatting)
 				const renderedMsgIds = new Set();
 
 				function renderMessageBubble(msg) {
@@ -6679,20 +6694,20 @@ class Scraper_Auto_Shop_Plugin {
 
 					if (msg.sender === 'customer') {
 						bubble.className = 'chat-msg-bubble outgoing';
-						bubble.innerHTML = `<div>${escapeHtml(msg.text)}</div><div class="chat-msg-time">${escapeHtml(timeStr)} ✓✓</div>`;
+						bubble.innerHTML = '<div>' + escapeHtml(msg.text) + '</div><div class="chat-msg-time">' + escapeHtml(timeStr) + ' ✓✓</div>';
 					} else if (msg.sender === 'ai') {
 						bubble.className = 'chat-msg-bubble incoming ai-bubble';
-						bubble.innerHTML = `<div class="chat-msg-sender-badge">🤖 ${escapeHtml(msg.sender_name || 'پشتیبان هوشمند')}</div><div>${escapeHtml(msg.text).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">${escapeHtml(timeStr)}</div>`;
+						bubble.innerHTML = '<div class="chat-msg-sender-badge">🤖 ' + escapeHtml(msg.sender_name || 'پشتیبان هوشمند') + '</div><div>' + escapeHtml(msg.text).replace(/\n/g, '<br>') + '</div><div class="chat-msg-time">' + escapeHtml(timeStr) + '</div>';
 					} else if (msg.sender === 'admin') {
 						bubble.className = 'chat-msg-bubble incoming admin-bubble';
-						bubble.innerHTML = `<div class="chat-msg-sender-badge">👨‍💼 ${escapeHtml(msg.sender_name || 'مدیریت فروشگاه (پاسخ ادمین)')}</div><div>${escapeHtml(msg.text).replace(/\n/g, '<br>')}</div><div class="chat-msg-time">${escapeHtml(timeStr)}</div>`;
+						bubble.innerHTML = '<div class="chat-msg-sender-badge">👨‍💼 ' + escapeHtml(msg.sender_name || 'مدیریت فروشگاه (پاسخ ادمین)') + '</div><div>' + escapeHtml(msg.text).replace(/\n/g, '<br>') + '</div><div class="chat-msg-time">' + escapeHtml(timeStr) + '</div>';
 					}
 
 					chatBody.appendChild(bubble);
 					chatBody.scrollTop = chatBody.scrollHeight;
 				}
 
-				// Poll Messages
+				// Poll Messages from Server
 				let isPolling = false;
 				function pollThreadMessages() {
 					if (isPolling) return;
@@ -6717,7 +6732,7 @@ class Scraper_Auto_Shop_Plugin {
 					.catch(() => { isPolling = false; });
 				}
 
-				// Initial poll & periodic poll when open
+				// Initial poll & periodic poll every 4 seconds when open
 				pollThreadMessages();
 				setInterval(() => {
 					if (chatBox.classList.contains('open')) {
@@ -6725,14 +6740,14 @@ class Scraper_Auto_Shop_Plugin {
 					}
 				}, 4000);
 
-				// Core Send Message Function (Reliable & Instant)
+				// Core Send Message Function (Reliable, Instant & Deduplicated)
 				function doSendMessage(customText) {
 					const raw = (typeof customText === 'string' && customText.length > 0) ? customText : (chatMsgInput ? chatMsgInput.value : '');
 					const message = (raw || '').trim();
 
 					if (!message) {
 						if (chatMsgInput) {
-							chatMsgInput.focus();
+							try { chatMsgInput.focus(); } catch(e){}
 							chatMsgInput.style.borderColor = '#ef4444';
 							setTimeout(() => {
 								if (chatMsgInput) chatMsgInput.style.borderColor = '';
@@ -6756,11 +6771,13 @@ class Scraper_Auto_Shop_Plugin {
 						chatMsgInput.style.overflowY = 'hidden';
 					}
 
-					// Render customer bubble immediately
-					const tempId = 'msg_temp_' + Date.now();
+					// Generate Unique Client Message ID for deduplication
+					const clientMsgId = 'msg_c_' + Date.now();
 					const timeNow = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+					// Render customer bubble immediately
 					renderMessageBubble({
-						id: tempId,
+						id: clientMsgId,
 						sender: 'customer',
 						sender_name: (curName && curName !== 'کاربر مهمان') ? curName : 'شما',
 						text: message,
@@ -6782,6 +6799,7 @@ class Scraper_Auto_Shop_Plugin {
 					formData.append('action', 'submit_support_chat');
 					formData.append('nonce', '<?php echo esc_js( wp_create_nonce( 'scraper_support_chat_nonce' ) ); ?>');
 					formData.append('session_id', sessionId);
+					formData.append('client_msg_id', clientMsgId);
 					formData.append('name', curName);
 					formData.append('phone', curPhone);
 					formData.append('message', message);
@@ -6802,20 +6820,24 @@ class Scraper_Auto_Shop_Plugin {
 						} else if (res && !res.success && res.data) {
 							showToast(res.data, 'error');
 						}
-						if (chatMsgInput) chatMsgInput.focus();
+						if (chatMsgInput) {
+							try { chatMsgInput.focus(); } catch(e){}
+						}
 					})
 					.catch(err => {
 						if (chatSendBtn) chatSendBtn.disabled = false;
 						if (typingIndicator) typingIndicator.style.display = 'none';
-						// Polite fallback message so user knows message is registered
+						// Fallback response so user is never left without feedback
 						renderMessageBubble({
 							id: 'ai_fallback_' + Date.now(),
 							sender: 'ai',
 							sender_name: 'پشتیبان هوشمند',
-							text: 'پیام شما دریافت شد. همکاران ما به زودی بررسی و پاسخ خواهند داد.',
+							text: 'پیام شما ثبت شد. پاسخ همکاران یا هوش مصنوعی به زودی برای شما ارسال خواهد شد.',
 							time: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })
 						});
-						if (chatMsgInput) chatMsgInput.focus();
+						if (chatMsgInput) {
+							try { chatMsgInput.focus(); } catch(e){}
+						}
 					});
 				}
 

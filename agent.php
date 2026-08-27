@@ -31,9 +31,11 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	public static function get_default_settings() {
 		return array(
-			// Storefront
-			'enable_shop_takeover'        => true,
-			'replace_site_header'         => true,
+			// Storefront Dual Controls (4-State System)
+			'enable_shop_takeover'        => true, // تیک ۱: قالب و ظاهر مدرن با هدر و منوی اختصاصی
+			'enable_scraped_products'     => true, // تیک ۲: محصولات هوشمند و جدید اسکرپر
+			'takeover_front_page'         => false, // جایگزینی اختیاری صفحه نخست با ویترین
+			'replace_site_header'         => true, // حذف کامل هدر و منوی قالب وردپرس
 			'show_top_bar'                => true,
 			'top_bar_notice'              => 'تخفیف ویژه امروز: ارسال رایگان برای سفارش‌های بالای ۴۰۰ هزار تومان! 🚚',
 			'contact_phone'               => '۰۲۱-۱۲۳۴۵۶۷۸',
@@ -125,6 +127,16 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
+	 * Deactivation hook callback.
+	 * Flushes rewrite rules and cached transients so WordPress and WooCommerce
+	 * immediately and cleanly revert to their original state without lingering filters.
+	 */
+	public static function on_deactivate() {
+		delete_transient( 'scraper_shop_cached_products' );
+		wp_cache_flush();
+	}
+
+	/**
 	 * Initialize plugin hooks.
 	 */
 	public static function init() {
@@ -137,6 +149,9 @@ class Scraper_Auto_Shop_Plugin {
 
 		// WooCommerce shop page takeover
 		add_filter( 'template_include', array( __CLASS__, 'maybe_takeover_shop_template' ), 99 );
+
+		// Complete suppression of legacy WordPress theme header & menu when custom storefront is enabled
+		add_action( 'wp_head', array( __CLASS__, 'inject_custom_header_suppression_css' ), 1 );
 
 		// AJAX actions for syncing to WooCommerce
 		add_action( 'wp_ajax_scraper_sync_to_woo', array( __CLASS__, 'ajax_sync_to_woo' ) );
@@ -536,9 +551,128 @@ class Scraper_Auto_Shop_Plugin {
 	 *
 	 * @return array
 	 */
-	public static function get_all_scraped_products() {
+	/**
+	 * Retrieve native WooCommerce / WordPress products from the database.
+	 * Used when the user unchecks the scraped products toggle (State 2 or State 4).
+	 *
+	 * @return array
+	 */
+	public static function get_woocommerce_native_products() {
 		$products = array();
+
+		if ( function_exists( 'wc_get_products' ) ) {
+			$wc_prods = wc_get_products( array(
+				'limit'   => 100,
+				'status'  => 'publish',
+				'orderby' => 'date',
+				'order'   => 'DESC',
+			) );
+
+			if ( ! empty( $wc_prods ) && is_array( $wc_prods ) ) {
+				foreach ( $wc_prods as $wp_prod ) {
+					if ( ! is_object( $wp_prod ) ) continue;
+					$p_id = $wp_prod->get_id();
+					$price = (float) $wp_prod->get_price();
+					$reg_price = (float) $wp_prod->get_regular_price();
+					$sale_price = (float) $wp_prod->get_sale_price();
+					$has_discount = ( $sale_price > 0 && $reg_price > $sale_price );
+					$discount_pct = ( $has_discount && $reg_price > 0 ) ? round( ( ( $reg_price - $sale_price ) / $reg_price ) * 100 ) : 0;
+
+					$img_id = $wp_prod->get_image_id();
+					$img_url = $img_id ? wp_get_attachment_image_url( $img_id, 'full' ) : '';
+					if ( empty( $img_url ) ) {
+						$scraped_img = get_post_meta( $p_id, '_scraped_image_url', true );
+						$img_url = ! empty( $scraped_img ) ? $scraped_img : ( function_exists( 'wc_placeholder_img_src' ) ? wc_placeholder_img_src() : '' );
+					}
+
+					$cat_list = wc_get_product_category_list( $p_id );
+					$clean_cat = wp_strip_all_tags( $cat_list );
+					if ( empty( $clean_cat ) ) {
+						$clean_cat = 'کالای عمومی';
+					}
+
+					$desc = wp_strip_all_tags( $wp_prod->get_short_description() ?: $wp_prod->get_description() );
+
+					$products[] = array(
+						'id'                  => $p_id,
+						'title'               => $wp_prod->get_name(),
+						'has_price'           => ( $price > 0 ),
+						'original_price'      => $reg_price ?: $price,
+						'price'               => $price,
+						'price_formatted'     => number_format( $price ) . ' تومان',
+						'old_price'           => $has_discount ? $reg_price : 0,
+						'old_price_formatted' => $has_discount ? ( number_format( $reg_price ) . ' تومان' ) : '',
+						'has_discount'        => $has_discount,
+						'discount_pct'        => $discount_pct,
+						'image'               => $img_url,
+						'gallery'             => array( $img_url ),
+						'category'            => $clean_cat,
+						'description'         => $desc,
+						'in_stock'            => $wp_prod->is_in_stock(),
+					);
+				}
+			}
+		}
+
+		// Fallback to get_posts if wc_get_products returned empty
+		if ( empty( $products ) ) {
+			$raw_posts = get_posts( array(
+				'post_type'      => 'product',
+				'post_status'    => 'publish',
+				'posts_per_page' => 100,
+			) );
+
+			if ( ! empty( $raw_posts ) ) {
+				foreach ( $raw_posts as $post ) {
+					$pid = $post->ID;
+					$price = (float) get_post_meta( $pid, '_price', true );
+					$reg_price = (float) get_post_meta( $pid, '_regular_price', true );
+					$sale_price = (float) get_post_meta( $pid, '_sale_price', true );
+					$has_discount = ( $sale_price > 0 && $reg_price > $sale_price );
+					$discount_pct = ( $has_discount && $reg_price > 0 ) ? round( ( ( $reg_price - $sale_price ) / $reg_price ) * 100 ) : 0;
+
+					$img = get_the_post_thumbnail_url( $pid, 'full' );
+					if ( empty( $img ) ) {
+						$img = get_post_meta( $pid, '_scraped_image_url', true );
+					}
+
+					$cats = wp_get_post_terms( $pid, 'product_cat', array( 'fields' => 'names' ) );
+					$cat = ( ! empty( $cats ) && ! is_wp_error( $cats ) ) ? $cats[0] : 'کالای عمومی';
+
+					$products[] = array(
+						'id'                  => $pid,
+						'title'               => get_the_title( $pid ),
+						'has_price'           => ( $price > 0 ),
+						'original_price'      => $reg_price ?: $price,
+						'price'               => $price,
+						'price_formatted'     => number_format( $price ) . ' تومان',
+						'old_price'           => $has_discount ? $reg_price : 0,
+						'old_price_formatted' => $has_discount ? ( number_format( $reg_price ) . ' تومان' ) : '',
+						'has_discount'        => $has_discount,
+						'discount_pct'        => $discount_pct,
+						'image'               => $img ?: '',
+						'gallery'             => array( $img ?: '' ),
+						'category'            => $cat,
+						'description'         => wp_strip_all_tags( $post->post_excerpt ?: $post->post_content ),
+						'in_stock'            => true,
+					);
+				}
+			}
+		}
+
+		return $products;
+	}
+
+	public static function get_all_scraped_products() {
 		$settings = self::get_settings();
+		$use_scraped = ! empty( $settings['enable_scraped_products'] );
+
+		// State 2 & State 4: If scraped products toggle is unchecked, return native WooCommerce / WordPress products!
+		if ( ! $use_scraped ) {
+			return self::get_woocommerce_native_products();
+		}
+
+		$products = array();
 		$seen     = array();
 
 		// Check profiles.json in plugin directory
@@ -2149,13 +2283,70 @@ class Scraper_Auto_Shop_Plugin {
 	 * @param string $template
 	 * @return string
 	 */
+	/**
+	 * Inject custom CSS to completely remove WordPress theme header & menu on shop pages
+	 * when custom storefront takeover is enabled.
+	 */
+	public static function inject_custom_header_suppression_css() {
+		$settings = self::get_settings();
+		if ( empty( $settings['enable_shop_takeover'] ) || empty( $settings['replace_site_header'] ) ) {
+			return;
+		}
+
+		$is_target = false;
+		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
+			$is_target = true;
+		} elseif ( ! empty( $settings['takeover_front_page'] ) && ( is_front_page() || is_home() ) ) {
+			$is_target = true;
+		} else {
+			global $post;
+			if ( ! empty( $post ) && is_a( $post, 'WP_Post' ) ) {
+				if ( has_shortcode( $post->post_content, 'scraped_shop' ) || has_shortcode( $post->post_content, 'modern_shop' ) ) {
+					$is_target = true;
+				}
+			}
+		}
+
+		if ( $is_target ) {
+			?>
+			<style id="scraper-suppress-wp-theme-header">
+				/* حذف کامل، قطعی و همیشگی هدر و منوی قالب وردپرس */
+				body > header, body > #header, body > #masthead, body > .site-header, 
+				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
+				header, #masthead, .site-header, #site-header, .header-wrap, .main-header, 
+				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
+				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
+				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
+				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
+				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
+				#wpadminbar + header, #wpadminbar + #masthead { 
+					display: none !important; 
+				}
+			</style>
+			<?php
+		}
+	}
+
+	/**
+	 * Hijack WooCommerce shop template with modern full-experience shop.
+	 *
+	 * @param string $template
+	 * @return string
+	 */
 	public static function maybe_takeover_shop_template( $template ) {
 		$settings = self::get_settings();
 		if ( empty( $settings['enable_shop_takeover'] ) ) {
 			return $template;
 		}
 
+		$should_takeover = false;
 		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
+			$should_takeover = true;
+		} elseif ( ! empty( $settings['takeover_front_page'] ) && ( is_front_page() || is_home() ) ) {
+			$should_takeover = true;
+		}
+
+		if ( $should_takeover ) {
 			self::render_standalone_shop_page();
 			exit;
 		}
@@ -2173,24 +2364,48 @@ class Scraper_Auto_Shop_Plugin {
 
 	/**
 	 * Render Standalone Modern Shop Page.
+	 * Completely removes the WordPress theme's header and menu, replacing them with
+	 * our dedicated custom header, navbar, mega categories dropdown, and hamburger drawer.
 	 */
 	public static function render_standalone_shop_page() {
 		$settings = self::get_settings();
-		get_header();
-
-		// Suppress legacy theme header if replace_site_header is enabled
-		if ( ! empty( $settings['replace_site_header'] ) ) {
-			echo '<style>
-				header.site-header, #masthead, .header-wrap, .main-header, .site-top-bar, .entry-header { display: none !important; }
-				body { background-color: #f8fafc !important; }
-			</style>';
-		}
-
-		echo '<div class="scraper-shop-fullscreen-wrap" style="width:100%; max-width:1440px; margin:0 auto; padding:0 15px 40px;">';
-		echo self::render_shop_shortcode();
-		echo '</div>';
-
-		get_footer();
+		?>
+		<!DOCTYPE html>
+		<html <?php language_attributes(); ?> dir="rtl">
+		<head>
+			<meta charset="<?php bloginfo( 'charset' ); ?>">
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<title><?php echo esc_html( ( $settings['shop_title'] ?? 'فروشگاه آنلاین' ) . ' | ' . get_bloginfo( 'name' ) ); ?></title>
+			<?php wp_head(); ?>
+			<style id="scraper-dedicated-standalone-style">
+				/* حذف کامل، قطعی و همیشگی هدر و منوی قالب وردپرس */
+				body > header, body > #header, body > #masthead, body > .site-header, 
+				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
+				header, #masthead, .site-header, #site-header, .header-wrap, .main-header, 
+				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
+				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
+				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
+				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
+				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
+				#wpadminbar + header, #wpadminbar + #masthead { 
+					display: none !important; 
+				}
+				html, body {
+					margin: 0 !important;
+					padding: 0 !important;
+					background-color: #f8fafc !important;
+					font-family: "Vazirmatn", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+				}
+			</style>
+		</head>
+		<body <?php body_class( 'scraper-standalone-shop-takeover' ); ?>>
+			<div class="scraper-shop-fullscreen-wrap" style="width:100%; margin:0 auto; padding:0;">
+				<?php echo self::render_shop_shortcode(); ?>
+			</div>
+			<?php wp_footer(); ?>
+		</body>
+		</html>
+		<?php
 	}
 
 	/**
@@ -6962,6 +7177,8 @@ class Scraper_Auto_Shop_Plugin {
 			$new_settings = array(
 				// Tab 1: Storefront & Appearance
 				'enable_shop_takeover'        => ! empty( $_POST['enable_shop_takeover'] ),
+				'enable_scraped_products'     => ! empty( $_POST['enable_scraped_products'] ),
+				'takeover_front_page'         => ! empty( $_POST['takeover_front_page'] ),
 				'replace_site_header'         => ! empty( $_POST['replace_site_header'] ),
 				'show_top_bar'                => ! empty( $_POST['show_top_bar'] ),
 				'top_bar_notice'              => sanitize_text_field( $_POST['top_bar_notice'] ?? '' ),
@@ -7410,6 +7627,56 @@ class Scraper_Auto_Shop_Plugin {
 							<span class="field-badge field-badge-blue">طراحی لوکس اختصاصی</span>
 						</div>
 
+						<!-- 🎛️ سیستم کنترل دوگانه وضعیت فروشگاه (۴ حالت ممکن) -->
+						<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
+							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+								<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">
+									<span>🎛️</span> سیستم کنترل دوگانه قالب و محصولات (۴ حالت ممکن)
+								</h4>
+								<span style="background:#2563eb; color:#fff; font-size:0.75rem; font-weight:800; padding:4px 12px; border-radius:20px;">
+									کنترل مستقل با دو تیک مجزا
+								</span>
+							</div>
+							<p style="margin:0 0 16px; font-size:0.88rem; color:#334155; line-height:1.7;">
+								با دو تیک زیر می‌توانید قالب و ظاهر فروشگاه را مستقل از منبع محصولات تنظیم نمایید. در حالت پیش‌فرض، هر دو تیک فعال هستند تا کامل‌ترین و مدرن‌ترین ویترین اختصاصی به مشتریان نمایش داده شود.
+							</p>
+
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:14px; margin-bottom:16px;">
+								<!-- تیک ۱: قالب، هدر و منوی اختصاصی -->
+								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; transition:all 0.2s;" id="labelStoreTakeover">
+									<div style="display:flex; align-items:center; gap:10px;">
+										<input type="checkbox" name="enable_shop_takeover" id="chkStoreTakeover" value="1" <?php checked( ! empty( $opts['enable_shop_takeover'] ) ); ?> style="width:20px; height:20px; accent-color:#2563eb;">
+										<strong style="font-size:1rem; color:#0f172a;">۱. فعال‌سازی پوسته، هدر و منوی مدرن اختصاصی</strong>
+									</div>
+									<div style="font-size:0.82rem; color:#64748b; line-height:1.65; padding-right:30px;">
+										✅ <strong>هدر و منوی قالب وردپرس کلاً برداشته می‌شود</strong> و هدر اختصاصی شامل لوگو، مگامنو دسته‌بندی‌ها، جستجوی زنده، دکمه‌های حساب کاربری، سبد خرید و منوی همبرگری فعال می‌گردد.<br>
+										❌ با برداشتن این تیک، ظاهر، هدر و منو دقیقاً به قالب اصلی وردپرس بازمی‌گردد.
+									</div>
+								</label>
+
+								<!-- تیک ۲: محصولات هوشمند اسکرپر -->
+								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; transition:all 0.2s;" id="labelScrapedProducts">
+									<div style="display:flex; align-items:center; gap:10px;">
+										<input type="checkbox" name="enable_scraped_products" id="chkScrapedProducts" value="1" <?php checked( ! empty( $opts['enable_scraped_products'] ) ); ?> style="width:20px; height:20px; accent-color:#10b981;">
+										<strong style="font-size:1rem; color:#0f172a;">۲. فعال‌سازی محصولات جدید و هوشمند اسکرپر</strong>
+									</div>
+									<div style="font-size:0.82rem; color:#64748b; line-height:1.65; padding-right:30px;">
+										✅ محصولات جدید و هوشمند استخراج‌شده از اسکرپر (با اعمال ضرایب سود، تخفیف‌ها و پالایش ممیزها) نمایش داده می‌شوند.<br>
+										❌ با برداشتن این تیک، محصولات اصلی و واقعی موجود در دیتابیس ووکامرس و وردپرس لود می‌شوند.
+									</div>
+								</label>
+							</div>
+
+							<!-- جعبه وضعیت زنده ۴ حالت -->
+							<div id="boxDualStateIndicator" style="background:#ffffff; border:1.5px dashed #2563eb; border-radius:12px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+								<div style="display:flex; align-items:center; gap:8px;">
+									<span style="font-size:0.85rem; color:#64748b;">وضعیت فعال فروشگاه:</span>
+									<strong id="dualStateTitle" style="font-size:0.95rem; color:#1d4ed8;">—</strong>
+								</div>
+								<div id="dualStateDesc" style="font-size:0.84rem; color:#475569; line-height:1.5;">—</div>
+							</div>
+						</div>
+
 						<!-- Visual eCommerce Storefront Templates Selector -->
 						<div style="margin-bottom:24px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 6px; font-size:1.05rem; color:#0f172a; font-weight:800;">🛍️ انتخاب پوسته فروشگاه (eCommerce Templates)</h4>
@@ -7626,11 +7893,11 @@ class Scraper_Auto_Shop_Plugin {
 								</td>
 							</tr>
 							<tr>
-								<th scope="row">جایگزینی صفحه فروشگاه ووکامرس:</th>
+								<th scope="row">جایگزینی صفحه نخست وب‌سایت (Home Page):</th>
 								<td>
 									<label>
-										<input type="checkbox" name="enable_shop_takeover" value="1" <?php checked( $opts['enable_shop_takeover'] ); ?>>
-										برگه اصلی فروشگاه ووکامرس با این ویترین جذاب و مدرن نمایش داده شود.
+										<input type="checkbox" name="takeover_front_page" value="1" <?php checked( ! empty( $opts['takeover_front_page'] ) ); ?>>
+										علاوه بر برگه فروشگاه، صفحه اصلی سایت هم با این ویترین مدرن و اختصاصی نمایش داده شود.
 									</label>
 								</td>
 							</tr>
@@ -9035,6 +9302,43 @@ class Scraper_Auto_Shop_Plugin {
 				});
 			});
 
+			// Dual State Interactive Indicator (4 States)
+			function updateDualStateUI() {
+				var hasTakeover = $('#chkStoreTakeover').is(':checked');
+				var hasProducts = $('#chkScrapedProducts').is(':checked');
+				var $box = $('#boxDualStateIndicator');
+				var $title = $('#dualStateTitle');
+				var $desc = $('#dualStateDesc');
+
+				$('#labelStoreTakeover').css('border-color', hasTakeover ? '#2563eb' : '#cbd5e1');
+				$('#labelScrapedProducts').css('border-color', hasProducts ? '#10b981' : '#cbd5e1');
+
+				if (hasTakeover && hasProducts) {
+					// State 1: Default
+					$box.css({background: '#eff6ff', borderColor: '#2563eb'});
+					$title.css('color', '#1d4ed8').html('🌟 حالت ۱ (پیش‌فرض): ویترین و هدر اختصاصی + محصولات جدید اسکرپر');
+					$desc.html('هدر و منوی قالب وردپرس کلاً حذف شده، هدر و منوی اختصاصی فعال است و محصولات هوشمند اسکرپر نمایش می‌یابند.');
+				} else if (hasTakeover && !hasProducts) {
+					// State 2: Custom theme with native WooCommerce products
+					$box.css({background: '#f0fdf4', borderColor: '#10b981'});
+					$title.css('color', '#047857').html('🎨 حالت ۲: ویترین و هدر اختصاصی + محصولات اصلی ووکامرس');
+					$desc.html('هدر و منوی قالب وردپرس کلاً حذف شده و هدر اختصاصی فعال است، اما محصولات مستقیماً از دیتابیس اصلی ووکامرس لود می‌شوند.');
+				} else if (!hasTakeover && hasProducts) {
+					// State 3: Native WP Theme with Scraped products
+					$box.css({background: '#fffbeb', borderColor: '#f59e0b'});
+					$title.css('color', '#b45309').html('🛍️ حالت ۳: قالب و هدر اصلی وردپرس + محصولات جدید اسکرپر');
+					$desc.html('هدر، منو و قالب اصلی وردپرس بدون تغییر نمایش می‌یابند، اما محصولات هوشمند جدید اسکرپر لود می‌شوند.');
+				} else {
+					// State 4: Fully reverted to original WP & WooCommerce
+					$box.css({background: '#f8fafc', borderColor: '#94a3b8'});
+					$title.css('color', '#475569').html('↩️ حالت ۴: بازگشت کامل به حالت اولیه (قالب پیش‌فرض وردپرس + محصولات اصلی ووکامرس)');
+					$desc.html('سایت کاملاً به حالت استاندارد بدون هیچ‌گونه تغییرات ظاهری یا محصولی از سوی افزونه بازمی‌گردد.');
+				}
+			}
+
+			$('#chkStoreTakeover, #chkScrapedProducts').on('change', updateDualStateUI);
+			updateDualStateUI();
+
 			// Refresh desk button
 			$('#btnRefreshAdminDesk').on('click', function(){
 				location.reload();
@@ -9128,8 +9432,9 @@ class Scraper_Auto_Shop_Plugin {
 
 endif; // class_exists
 
-// Global activation hook
+// Global activation and deactivation hooks
 register_activation_hook( __FILE__, array( 'Scraper_Auto_Shop_Plugin', 'on_activate' ) );
+register_deactivation_hook( __FILE__, array( 'Scraper_Auto_Shop_Plugin', 'on_deactivate' ) );
 
 // Initialize
 if ( did_action( 'plugins_loaded' ) ) {

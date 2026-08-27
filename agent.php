@@ -5192,6 +5192,7 @@ class Scraper_Auto_Shop_Plugin {
 						<div class="ch-part-card">
 							<div class="ch-part-title">🔹 بخش اول: هسته اسکرپر و استخراج هوشمند (v10.95)</div>
 							<ul class="ch-list">
+								<li>📝 <strong>ساخت هوشمند توضیحات و دسته:</strong> تولید خودکار مشخصات، مزایا و دسته‌بندی با مدل مستر هوش مصنوعی و وب‌سرچ (fallback به تولید مستقیم).</li>
 								<li>🤖 <strong>مدل مستر هوش مصنوعی (Master AI):</strong> اتصال خودکار مدل انتخاب‌شده در اسکریپر به عنوان مغز متفکر چت آنلاین فروشگاه.</li>
 								<li>⚡ <strong>مدیریت صف و کش محصولات:</strong> کش بهینه هش کالاها جهت جلوگیری از ثبت تکراری و همگام‌سازی مستقیم با ووکامرس/باسلام.</li>
 								<li>🔍 <strong>پالایش الگوهای استخراج:</strong> استخراج دقیق عناوین، تصاویر و مشخصات کالاها بدون کمترین افت سرعت.</li>
@@ -5676,30 +5677,30 @@ class Scraper_Auto_Shop_Plugin {
 							<div class="chat-agent-avatar">👩‍💼</div>
 							<div class="chat-hdr-info">
 								<h4><?php echo esc_html( $settings['chat_window_title'] ?? 'پشتیبانی آنلاین فروشگاه' ); ?></h4>
-								<span><span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر</span>
+								<span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+									<span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر
+									<span id="chatHeaderCustomerBadge" style="display:none; background:rgba(255,255,255,0.22); padding:1px 7px; border-radius:10px; font-size:0.72rem; align-items:center; gap:3px;">
+										<span id="chatHeaderCustomerName">مشتری</span>
+										<button type="button" id="btnEditCustomerName" style="background:none; border:none; color:#fff; cursor:pointer; font-size:0.75rem; padding:0;" title="ویرایش اطلاعات">✏️</button>
+									</span>
+								</span>
 							</div>
 						</div>
 						<button type="button" class="chat-close-btn" id="supportChatClose" aria-label="بستن">✕</button>
 					</div>
 
-					<!-- Customer Quick Contact Chip & Collapsible Bar -->
-					<div class="chat-contact-chip-bar" id="chatContactChipBar">
-						<button type="button" class="btn-toggle-contact" id="btnToggleContact" title="کلیک جهت ویرایش مشخصات تماس">
-							<span id="contactChipTitle">👤 مشخصات تماس (جهت دریافت پیامک وضعیت)</span>
-							<span id="contactExpandIcon" style="font-size:0.75rem;">▼</span>
-						</button>
-						<div class="chat-contact-drawer" id="chatContactDrawer" style="display:none;">
-							<div class="contact-drawer-grid">
-								<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
-									<input type="text" id="chatNameInput" placeholder="نام و نام خانوادگی <?php echo ! empty( $settings['chat_field_name_required'] ) ? '(الزامی)*' : ''; ?>" maxlength="60">
-								<?php endif; ?>
-								<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
-									<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل (۰۹...) <?php echo ! empty( $settings['chat_field_phone_required'] ) ? '(الزامی)*' : ''; ?>" maxlength="20" dir="ltr">
-								<?php endif; ?>
-							</div>
-							<button type="button" class="btn-save-contact-chip" id="btnSaveContactChip">ذخیره مشخصات ✓</button>
-						</div>
+					<!-- Customer Quick Contact Chip Bar (Auto-removes once saved/sent to maximize message space) -->
+					<?php if ( ! empty( $settings['chat_field_name_enable'] ) || ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
+					<div class="chat-contact-chip-bar" id="chatContactChipBar" style="padding:6px 12px; background:#f8fafc; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; gap:6px;">
+						<?php if ( ! empty( $settings['chat_field_name_enable'] ) ) : ?>
+							<input type="text" id="chatNameInput" placeholder="نام شما (اختیاری)..." maxlength="50" style="flex:1; border:1px solid #cbd5e1; border-radius:14px; padding:4px 10px; font-size:0.78rem; background:#fff; font-family:inherit; outline:none; box-sizing:border-box;">
+						<?php endif; ?>
+						<?php if ( ! empty( $settings['chat_field_phone_enable'] ) ) : ?>
+							<input type="tel" id="chatPhoneInput" placeholder="شماره موبایل..." maxlength="15" dir="ltr" style="width:115px; border:1px solid #cbd5e1; border-radius:14px; padding:4px 8px; font-size:0.78rem; background:#fff; font-family:inherit; outline:none; box-sizing:border-box;">
+						<?php endif; ?>
+						<button type="button" id="btnSaveContactChip" style="background:var(--chat-primary, #2563eb); color:#fff; border:none; border-radius:14px; padding:4px 10px; font-size:0.75rem; font-weight:700; cursor:pointer; white-space:nowrap;">ثبت ✓</button>
 					</div>
+					<?php endif; ?>
 
 					<!-- Continuous Messenger Scroll Area -->
 					<div class="chat-body-scroll" id="supportChatBody">
@@ -6579,34 +6580,13 @@ class Scraper_Auto_Shop_Plugin {
 				const chatMsgInput = document.getElementById('chatMsgInput');
 				const typingIndicator = document.getElementById('chatTypingIndicator');
 
-				const btnToggleContact = document.getElementById('btnToggleContact');
-				const chatContactDrawer = document.getElementById('chatContactDrawer');
-				const btnSaveContactChip = document.getElementById('btnSaveContactChip');
-				const contactChipTitle = document.getElementById('contactChipTitle');
-				const contactExpandIcon = document.getElementById('contactExpandIcon');
-				const nameInput = document.getElementById('chatNameInput');
-				const phoneInput = document.getElementById('chatPhoneInput');
-
-				if (!chatBox) return;
-
-				// Dedicated Safe HTML Escape Helper
-				function escapeHtml(text) {
-					if (!text) return '';
-					return String(text)
-						.replace(/&/g, '&amp;')
-						.replace(/</g, '&lt;')
-						.replace(/>/g, '&gt;')
-						.replace(/"/g, '&quot;')
-						.replace(/'/g, '&#039;');
-				}
-
-				// Persistent Session ID
-				let sessionId = localStorage.getItem('scraper_chat_session_id');
-				if (!sessionId) {
-					sessionId = 'sess_' + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
-					localStorage.setItem('scraper_chat_session_id', sessionId);
-				}
-
+								<span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+									<span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر
+									<span id="chatHeaderCustomerBadge" style="display:none; background:rgba(255,255,255,0.22); padding:1px 7px; border-radius:10px; font-size:0.72rem; align-items:center; gap:3px;">
+										<span id="chatHeaderCustomerName">مشتری</span>
+										<button type="button" id="btnEditCustomerName" style="background:none; border:none; color:#fff; cursor:pointer; font-size:0.75rem; padding:0;" title="ویرایش اطلاعات">✏️</button>
+									</span>
+								</span>
 				// Restore Contact Info
 				const savedName = localStorage.getItem('scraper_chat_customer_name') || '';
 				const savedPhone = localStorage.getItem('scraper_chat_customer_phone') || '';
@@ -6614,41 +6594,39 @@ class Scraper_Auto_Shop_Plugin {
 				if (nameInput && savedName) nameInput.value = savedName;
 				if (phoneInput && savedPhone) phoneInput.value = savedPhone;
 
-				function refreshContactChipTitle() {
-					const curName = (nameInput ? nameInput.value.trim() : '') || savedName;
-					const curPhone = (phoneInput ? phoneInput.value.trim() : '') || savedPhone;
-					if (contactChipTitle) {
-						if (curName || curPhone) {
-							contactChipTitle.textContent = '👤 ' + (curName || 'مشتری') + (curPhone ? ' (' + curPhone + ')' : '') + ' ✓';
-						} else {
-							contactChipTitle.textContent = '👤 مشخصات تماس (جهت دریافت پیامک وضعیت)';
-						}
-					}
-				}
-				refreshContactChipTitle();
-
-				// Contact drawer toggles
-				if (btnToggleContact && chatContactDrawer) {
-					btnToggleContact.addEventListener('click', (e) => {
-						e.preventDefault();
-						const isClosed = chatContactDrawer.style.display === 'none';
-						chatContactDrawer.style.display = isClosed ? 'flex' : 'none';
-						if (contactExpandIcon) contactExpandIcon.textContent = isClosed ? '▲' : '▼';
-						if (isClosed && nameInput) nameInput.focus();
-					});
-				}
-
-				if (btnSaveContactChip && chatContactDrawer) {
+								<span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+									<span style="color:#10b981;">●</span> آنلاین • پاسخگویی هوشمند مستر
+									<span id="chatHeaderCustomerBadge" style="display:none; background:rgba(255,255,255,0.22); padding:1px 7px; border-radius:10px; font-size:0.72rem; align-items:center; gap:3px;">
+										<span id="chatHeaderCustomerName">مشتری</span>
+										<button type="button" id="btnEditCustomerName" style="background:none; border:none; color:#fff; cursor:pointer; font-size:0.75rem; padding:0;" title="ویرایش اطلاعات">✏️</button>
+									</span>
+								</span>
 					btnSaveContactChip.addEventListener('click', (e) => {
 						e.preventDefault();
 						const curName = nameInput ? nameInput.value.trim() : '';
 						const curPhone = phoneInput ? phoneInput.value.trim() : '';
 						if (curName) localStorage.setItem('scraper_chat_customer_name', curName);
 						if (curPhone) localStorage.setItem('scraper_chat_customer_phone', curPhone);
-						refreshContactChipTitle();
-						chatContactDrawer.style.display = 'none';
-						if (contactExpandIcon) contactExpandIcon.textContent = '▼';
-						showToast('اطلاعات تماس ذخیره شد ✓');
+						updateCustomerBadgeAndCleanUI();
+						showToast('مشخصات شما ذخیره شد ✓');
+					});
+				}
+
+				// Header edit button (tiny pencil icon)
+				if (btnEditCustomerName) {
+					btnEditCustomerName.addEventListener('click', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						const cur = localStorage.getItem('scraper_chat_customer_name') || '';
+						const newN = prompt('نام و نام خانوادگی خود را جهت نمایش در پشتیبانی وارد کنید:', cur);
+						if (newN !== null) {
+							const cleanN = newN.trim();
+							localStorage.setItem('scraper_chat_customer_name', cleanN);
+							if (nameInput) nameInput.value = cleanN;
+							updateCustomerBadgeAndCleanUI();
+						}
+					});
+				}
 					});
 				}
 
@@ -6762,7 +6740,8 @@ class Scraper_Auto_Shop_Plugin {
 
 					if (curName && curName !== 'کاربر مهمان') localStorage.setItem('scraper_chat_customer_name', curName);
 					if (curPhone) localStorage.setItem('scraper_chat_customer_phone', curPhone);
-					refreshContactChipTitle();
+					updateCustomerBadgeAndCleanUI();
+					if (chatContactChipBar) chatContactChipBar.style.display = 'none';
 
 					// Clear message input & reset height to 42px immediately
 					if (chatMsgInput) {

@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.104.1';
+const APP_VERSION = '10.105';
 const APP_VERSION_DATE = '1405/06/08';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -4639,6 +4639,71 @@ function aiProductHasVariations(array $p): bool {
 }
 
 /** نرمال‌سازی خروجی AI/وب به ساختار استاندارد تنوع‌های اسکریپر */
+/**
+ * v10.105: پاک‌سازی HTML توضیحات AI — جلوگیری از نمایش &lt;p&gt; و &#13; به‌صورت متن خام.
+ * چندبار entity-decode می‌کند، تگ‌های خطرناک را حذف و فقط تگ‌های سادهٔ محتوا را نگه می‌دارد.
+ */
+function aiSanitizeDescriptionHtml(string $html): string {
+    $html = trim($html);
+    if ($html === '') return '';
+    /* اگر کل رشته داخل کوتیشن/markdown پیچیده شده */
+    $html = preg_replace('/^```(?:html)?\s*/i', '', $html);
+    $html = preg_replace('/\s*```$/', '', $html);
+    $html = trim($html, " \t\n\r\0\x0B\"'`");
+    /* چند دور decode برای &amp;lt;p&amp;gt; و &lt;p&gt; */
+    for ($i = 0; $i < 4; $i++) {
+        $prev = $html;
+        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if ($html === $prev) break;
+    }
+    /* حذف CR صریح و entity باقی‌مانده */
+    $html = str_replace(["\r\n", "\r", "&#13;", "&#x0D;", "&#xd;"], "\n", $html);
+    $html = preg_replace('/\n{3,}/u', "\n\n", $html);
+    /* اگر هنوز به‌صورت متنِ «&lt;p&gt;...» است */
+    if (strpos($html, '&lt;') !== false || strpos($html, '&gt;') !== false) {
+        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    /* فقط تگ‌های امن محتوا */
+    $allowed = '<p><br><br/><ul><ol><li><strong><b><em><i><u><h3><h4><h5><div><span>';
+    if (function_exists('strip_tags')) {
+        $html = strip_tags($html, $allowed);
+    }
+    /* حذف style/on* از تگ‌های باقی‌مانده */
+    $html = preg_replace('/\s(on\w+|style|class)\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/iu', '', $html);
+    $html = trim($html);
+    /* اگر HTML واقعی نبود — پاراگراف‌بندی ساده */
+    if ($html !== '' && strpos($html, '<') === false) {
+        $parts = preg_split('/\n{2,}/u', $html) ?: [$html];
+        $buf = '';
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if ($part === '') continue;
+            $buf .= '<p>' . htmlspecialchars($part, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>';
+        }
+        $html = $buf !== '' ? $buf : ('<p>' . htmlspecialchars($html, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>');
+    }
+    return $html;
+}
+
+/** v10.105: مقدار تنوع کوتاه است؟ (چند کلمه/عدد — نه جملهٔ بلند) */
+function aiVariationValueIsShort(string $v): bool {
+    $v = trim(preg_replace('/\s+/u', ' ', $v));
+    if ($v === '') return false;
+    /* سقف کاراکتر سخت */
+    if (mb_strlen($v, 'UTF-8') > 28) return false;
+    /* بیش از ۴ واژه = احتمالاً توضیح، نه گزینه */
+    $words = preg_split('/\s+/u', $v, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if (count($words) > 4) return false;
+    /* جمله با نقطه/علامت سؤال */
+    if (preg_match('/[.!؟?]{1,}/u', $v) && mb_strlen($v, 'UTF-8') > 12) return false;
+    /* متن تبلیغاتی رایج */
+    if (preg_match('/(مناسب|ایده‌آل|فوق‌العاده|ضمانت|ارسال|خرید|توضیح|ویژگی‌های)/u', $v)
+        && mb_strlen($v, 'UTF-8') > 16) {
+        return false;
+    }
+    return true;
+}
+
 function aiNormalizeVariations($raw): array {
     $out = ['groups' => [], 'values' => [], 'text' => '', 'prices' => []];
     if ($raw === null || $raw === '' || $raw === []) return $out;
@@ -4656,7 +4721,8 @@ function aiNormalizeVariations($raw): array {
         foreach ($vals as $v) {
             if (is_array($v)) $v = (string)($v['name'] ?? $v['title'] ?? $v['value'] ?? $v['label'] ?? '');
             $v = trim((string)$v);
-            if ($v === '' || mb_strlen($v) > 80) continue;
+            /* v10.105: تنوع فقط چند عدد/کلمه — متن بلند AI اعمال نشود */
+            if ($v === '' || !aiVariationValueIsShort($v)) continue;
             $k = mb_strtolower($v, 'UTF-8');
             if (isset($seen[$k])) continue;
             $seen[$k] = true;
@@ -4664,7 +4730,12 @@ function aiNormalizeVariations($raw): array {
             $flat[] = $v;
         }
         if (!$clean) return;
-        $groups[] = ['name' => ($name !== '' ? mb_substr($name, 0, 60) : 'ویژگی'), 'values' => array_slice($clean, 0, 40)];
+        /* نام گروه هم کوتاه */
+        $gName = $name !== '' ? mb_substr(trim($name), 0, 24) : 'ویژگی';
+        if (mb_strlen($gName, 'UTF-8') > 24 || count(preg_split('/\s+/u', $gName) ?: []) > 4) {
+            $gName = 'ویژگی';
+        }
+        $groups[] = ['name' => $gName, 'values' => array_slice($clean, 0, 24)];
     };
 
     if (is_string($raw)) {
@@ -4738,6 +4809,15 @@ function aiNormalizeVariations($raw): array {
 function aiApplyVariationsToProduct(array $p, $rawVars): array {
     $nv = aiNormalizeVariations($rawVars);
     if (!$nv['values'] && !$nv['groups']) return $p;
+    /* v10.105: اگر نرمال‌سازی چیزی نگذاشت یا متن نهایی شبیه توضیح است — اعمال نکن */
+    if ($nv['text'] !== '' && mb_strlen($nv['text'], 'UTF-8') > 160) {
+        return $p;
+    }
+    $bad = false;
+    foreach ($nv['values'] as $vv) {
+        if (!aiVariationValueIsShort((string)$vv)) { $bad = true; break; }
+    }
+    if ($bad) return $p;
     /* اگر از قبل تنوع استخراج‌شده از مبدأ هست، AI را روی خالی‌ها ننویس مگر متن خالی */
     $had = aiProductHasVariations($p);
     if (!$had) {
@@ -4908,16 +4988,22 @@ function aiFillProductContent(array $p, bool $webSearch = true, bool $mapBsl = t
             /* فقط وقتی توضیح کم بود، متن را جایگزین کن — وگرنه توضیح مبدأ پاک می‌شود */
             if ($needDesc) {
                 if ($short !== '') {
+                    $short = trim(html_entity_decode(strip_tags($short), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
                     $p['shortDesc'] = $short;
                     $p['short_desc'] = $short;
-                    $p['brief'] = mb_substr(strip_tags($short), 0, 250);
+                    $p['brief'] = mb_substr($short, 0, 250);
                     $changed = true;
                 }
                 if ($html !== '') {
-                    $p['longDesc'] = $html;
-                    $p['long_desc'] = $html;
-                    $p['description'] = $html;
-                    $changed = true;
+                    $html = function_exists('aiSanitizeDescriptionHtml')
+                        ? aiSanitizeDescriptionHtml($html)
+                        : $html;
+                    if ($html !== '') {
+                        $p['longDesc'] = $html;
+                        $p['long_desc'] = $html;
+                        $p['description'] = $html;
+                        $changed = true;
+                    }
                 }
             }
             if ($catHint !== '' && trim((string)($p['category'] ?? '')) === '') {
@@ -5309,9 +5395,9 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
         $ctxBits .= "تنوع‌های یافت‌شده در وب: " . (string)$webInfo['variations_hint'] . "\n";
     }
     $jsonShape = '{"category":"...", "short_description":"...", "description_html":"...", "variations":[{"name":"رنگ","values":["..."]},{"name":"سایز","values":["..."]}]}';
-    $varRule = "۴. تنوع‌های واقعی محصول را (رنگ، سایز، ظرفیت، مدل، بسته و …) به‌صورت آرایهٔ groups پیدا کنید. "
-        . "اگر در وب/عنوان چیزی نیست، آرایه خالی بگذارید — تنوع ساختگی نفرستید. "
-        . "در description_html اگر تنوع معتبری هست یک بخش «گزینه‌های موجود» با ul اضافه کنید.\\n";
+    $varRule = "۴. تنوع‌ها فقط مقادیر کوتاه‌اند (حداکثر چند کلمه یا عدد مثل: مشکی، ۳۸، 128GB) — "
+        . "هرگز جمله یا توضیح بلند در values ننویسید. اگر مطمئن نیستید آرایه خالی بگذارید. "
+        . "در description_html اگر تنوع کوتاه معتبری هست یک بخش «گزینه‌های موجود» با ul اضافه کنید.\\n";
 
     if (!empty($webInfo['found']) && !empty($webInfo['snippets'])) {
         $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\\n"
@@ -5463,6 +5549,8 @@ function aiParseContentJson(string $raw, string $title, array $webInfo): array {
             if (!$nv['values'] && !empty($webInfo['variations_hint'])) {
                 $nv = aiNormalizeVariations((string)$webInfo['variations_hint']);
             }
+            $desc = function_exists('aiSanitizeDescriptionHtml') ? aiSanitizeDescriptionHtml($desc) : $desc;
+            $short = trim(html_entity_decode(strip_tags($short), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
             return [
                 'category' => $cat,
                 'short_description' => $short ?: mb_substr(strip_tags($desc), 0, 150) . '...',
@@ -27102,6 +27190,16 @@ if (isset($_GET['selftest'])) {
          (strpos($selfSrc, "'resume_from' => \$stCur") !== false
           && strpos($selfSrc, "\$stPgQ === (string)(\$running['id'] ?? '')") !== false
           && strpos($selfSrc, "\$chk['resume_from'] ?? \$chk['current'] ?? 0") !== false));
+
+    /* ==== v10.105: AI desc sanitize + short variations ==== */
+    $add('10.105', 'نسخهٔ ۱۰.۱۰۵',
+         str_contains($selfSrc, "const APP_VERSION = '10.105';")
+         || strpos($selfSrc, "const APP_VERSION = '10.105'") !== false);
+    $add('10.105', 'AI description HTML sanitizer',
+         strpos($selfSrc, 'function aiSanitizeDescriptionHtml') !== false);
+    $add('10.105', 'variation values must be short',
+         strpos($selfSrc, 'function aiVariationValueIsShort') !== false
+         && strpos($selfSrc, 'aiVariationValueIsShort($v)') !== false);
 
     /* ==== v10.104: resume checkpoint + BSL scard restore ==== */
     $add('10.104', 'نسخهٔ ۱۰.۱۰۴',

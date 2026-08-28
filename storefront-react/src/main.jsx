@@ -39,9 +39,57 @@ function inlineMd(raw) {
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer" class="sf-md-link">$2</a>');
   return s;
 }
+function decodeHtmlEntities(str) {
+  let s = String(str ?? '');
+  if (!s) return '';
+  /* چند دور برای &amp;lt;p&amp;gt; و &#13; */
+  for (let i = 0; i < 4; i++) {
+    const prev = s;
+    s = s
+      .replace(/&#13;|&#x0d;|&#xd;/gi, '\n')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&');
+    if (typeof document !== 'undefined') {
+      try {
+        const ta = document.createElement('textarea');
+        ta.innerHTML = s;
+        s = ta.value;
+      } catch (_) { /* ignore */ }
+    }
+    if (s === prev) break;
+  }
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/** اگر محتوا HTML واقعی است (از AI) مستقیم و امن برگردان */
+function sanitizeAiHtml(html) {
+  let s = decodeHtmlEntities(html).trim();
+  if (!s) return '';
+  s = s.replace(/^```(?:html)?\s*/i, '').replace(/\s*```$/, '').trim();
+  /* فقط تگ‌های محتوا */
+  s = s.replace(/<(?!\/?(?:p|br|br\/|ul|ol|li|strong|b|em|i|u|h[3-5]|div|span)\b)[^>]*>/gi, '');
+  s = s.replace(/\s(on\w+|style)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  return s.trim();
+}
+
+function looksLikeHtml(s) {
+  const t = String(s || '').trim();
+  return /<\s*\/?\s*(p|div|ul|ol|li|h[1-6]|br|strong|b|em)\b/i.test(t)
+    || /&lt;\s*\/?\s*(p|div|ul|ol|li)\b/i.test(t);
+}
+
 function renderMarkdown(src) {
-  const raw = String(src ?? '').replace(/\r\n/g, '\n').trim();
+  let raw = decodeHtmlEntities(String(src ?? '')).trim();
   if (!raw) return null;
+  /* v13.3.2: توضیح AI که HTML است — markdown نکن (وگرنه &lt;p&gt; دیده می‌شود) */
+  if (looksLikeHtml(String(src ?? '')) || looksLikeHtml(raw)) {
+    const safe = sanitizeAiHtml(String(src ?? ''));
+    return safe || null;
+  }
   const lines = raw.split('\n');
   const blocks = [];
   let i = 0;

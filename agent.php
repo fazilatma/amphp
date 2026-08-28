@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.7
+ * Version: 13.3.8
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -163,7 +163,7 @@ class Scraper_Auto_Shop_Plugin {
 			$opts = array_merge( $defaults, $opts );
 		}
 
-		/* v13.3.7: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
+		/* v13.3.8: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
 		try {
 			$cn = self::get_scraper_connections();
 			if ( is_array( $cn ) ) {
@@ -687,7 +687,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( function_exists( 'wc_get_products' ) ) {
 			$wc_prods = wc_get_products( array(
-				'limit'   => -1, /* v13.3.7: همهٔ محصولات ووکامرس */
+				'limit'   => -1, /* v13.3.8: همهٔ محصولات ووکامرس */
 				'status'  => 'publish',
 				'orderby' => 'date',
 				'order'   => 'DESC',
@@ -747,7 +747,7 @@ class Scraper_Auto_Shop_Plugin {
 			$raw_posts = get_posts( array(
 				'post_type'      => 'product',
 				'post_status'    => 'publish',
-				'posts_per_page' => -1, /* v13.3.7 all */
+				'posts_per_page' => -1, /* v13.3.8 all */
 			) );
 
 			if ( ! empty( $raw_posts ) ) {
@@ -795,7 +795,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.7: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
+	 * v13.3.8: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
 	 * مسیر پروفایل مثل get_profiles_summary چندجا چک می‌شود.
 	 *
 	 * @return array
@@ -823,7 +823,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.7: منبع کاتالوگ ویترین — scraper | woocommerce | merge
+	 * v13.3.8: منبع کاتالوگ ویترین — scraper | woocommerce | merge
 	 */
 	public static function resolve_catalog_source( $settings = null ) {
 		if ( ! is_array( $settings ) ) {
@@ -1096,7 +1096,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
-		/* v13.3.7: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
+		/* v13.3.8: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
 		$need_woo = ( $source === 'merge' ) || empty( $products );
 		if ( $need_woo ) {
 			$woo_list = self::get_woocommerce_native_products();
@@ -1672,7 +1672,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.7: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
+	 * v13.3.8: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
 	 *
 	 * @param string $font_key
 	 * @return bool
@@ -2542,7 +2542,7 @@ class Scraper_Auto_Shop_Plugin {
 			'temperature' => 0.7,
 		);
 
-		// v13.3.7: Prefer scraper4 live engine (same path as master model tests).
+		// v13.3.8: Prefer scraper4 live engine (same path as master model tests).
 		self::load_scraper_ai_engine();
 		if ( function_exists( 'aiProviderCall' ) && is_array( $prov_cfg ) && ! empty( $prov_cfg ) ) {
 			if ( empty( $prov_cfg['id'] ) && ! empty( $master_ai['provider_id'] ) ) {
@@ -4718,7 +4718,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 
 	/**
-	 * v13.3.7: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
+	 * v13.3.8: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
 	 *
 	 * @param string $html Raw AI / stored description.
 	 * @return string Safe HTML fragment.
@@ -4837,7 +4837,7 @@ class Scraper_Auto_Shop_Plugin {
 		delete_transient( $lock_key );
 
 		if ( $filled_prod && is_array( $filled_prod ) ) {
-			/* v13.3.7: HTML خام entity-encoded را قبل از ذخیره پاک کن */
+			/* v13.3.8: HTML خام entity-encoded را قبل از ذخیره پاک کن */
 			foreach ( array( 'long_desc', 'longDesc', 'description', 'desc' ) as $fk ) {
 				if ( ! empty( $filled_prod[ $fk ] ) && is_string( $filled_prod[ $fk ] ) ) {
 					$filled_prod[ $fk ] = self::sanitize_product_description_html( $filled_prod[ $fk ] );
@@ -5055,7 +5055,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
 		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
-		// v13.3.7: HTML واقعی برای PDP (نه entity-encoded)
+		// v13.3.8: HTML واقعی برای PDP (نه entity-encoded)
 		$desc_out = self::sanitize_product_description_html( $desc );
 		$short_clean = trim( html_entity_decode( wp_strip_all_tags( $short ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 		if ( $desc_out === '' && $short_clean !== '' ) {
@@ -5073,7 +5073,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
 			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
 		}
-		/* v13.3.7: متن تنوع بلند (جمله) را نشان نده */
+		/* v13.3.8: متن تنوع بلند (جمله) را نشان نده */
 		if ( $variations_text !== '' && mb_strlen( $variations_text, 'UTF-8' ) > 160 ) {
 			$variations_text = '';
 		}
@@ -5127,7 +5127,17 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	public static function ajax_submit_support_chat() {
-		if ( ! empty( $_POST['nonce'] ) ) { check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false ); }
+		// Clean buffer so PHP notices never corrupt JSON for the storefront chat widget.
+		while ( function_exists( 'ob_get_level' ) && ob_get_level() > 0 ) {
+			@ob_end_clean();
+		}
+		if ( function_exists( 'ob_start' ) ) {
+			@ob_start();
+		}
+		@ini_set( 'display_errors', '0' );
+		if ( ! empty( $_POST['nonce'] ) ) {
+			check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false );
+		}
 		$settings = self::get_settings();
 
 		$session_id = sanitize_text_field( $_POST['session_id'] ?? '' );
@@ -5252,14 +5262,48 @@ class Scraper_Auto_Shop_Plugin {
 		}
 		$thread['messages'][] = $customer_msg;
 
-		// 2. Generate Master AI Reply if enabled
+		// 2. Generate Master AI Reply if enabled (never let AI failures kill the AJAX JSON)
 		$_ai_msg = $message;
 		if ( ! empty( $GLOBALS['_amphp_chat_product_ctx'] ) ) {
 			$_ai_msg .= (string) $GLOBALS['_amphp_chat_product_ctx'];
 		}
-		$ai_reply  = self::generate_ai_support_reply( $_ai_msg, $thread['name'], $settings );
-		$master_ai = self::get_scraper_master_ai_model();
-		$model_lbl = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'هوش مصنوعی پشتیبان';
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 90 );
+		}
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			@wp_raise_memory_limit( 'admin' );
+		}
+		$ai_reply  = '';
+		$master_ai = array();
+		$model_lbl = 'هوش مصنوعی پشتیبان';
+		try {
+			$master_ai = self::get_scraper_master_ai_model( $settings );
+			$model_lbl = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : $model_lbl;
+			$ai_reply  = self::generate_ai_support_reply( $_ai_msg, $thread['name'], $settings );
+		} catch ( \Throwable $e ) {
+			error_log( 'AMPHP support chat AI error: ' . $e->getMessage() );
+			try {
+				$ai_reply = self::generate_smart_local_reply( $_ai_msg, $thread['name'], $settings );
+				$model_lbl = 'پاسخ محلی فروشگاه';
+			} catch ( \Throwable $e2 ) {
+				$ai_reply = '';
+			}
+		}
+		if ( ! is_string( $ai_reply ) ) {
+			$ai_reply = '';
+		}
+		$ai_reply = trim( $ai_reply );
+		// Never leave the customer with an empty bot bubble.
+		if ( $ai_reply === '' ) {
+			$ai_reply = self::generate_smart_local_reply( $_ai_msg, $thread['name'], $settings );
+			if ( ! is_string( $ai_reply ) || trim( $ai_reply ) === '' ) {
+				$site = function_exists( 'get_bloginfo' ) ? ( get_bloginfo( 'name' ) ?: 'فروشگاه' ) : 'فروشگاه';
+				$ai_reply = "سلام! پیام شما در «{$site}» دریافت شد. همکاران پشتیبانی به‌زودی پاسخ می‌دهند. برای پیگیری سریع‌تر می‌توانید شماره تماس خود را همین‌جا بنویسید.";
+			}
+			if ( $model_lbl === 'هوش مصنوعی پشتیبان' ) {
+				$model_lbl = 'پشتیبان فروشگاه';
+			}
+		}
 
 		if ( ! empty( $ai_reply ) ) {
 			$ai_msg = array(
@@ -5349,18 +5393,24 @@ class Scraper_Auto_Shop_Plugin {
 		$logs = array_slice( $logs, 0, 50 );
 		update_option( 'scraper_support_chat_logs', $logs, false );
 
-		$ai_source = ! empty( $ai_reply ) ? 'master' : 'none';
-		// Detect canned local NLP only when reply came from generate_smart_local_reply heuristics
-		// (master path already preferred; flag helps storefront/debug).
+		$ai_source = 'live';
+		if ( $model_lbl === 'پاسخ محلی فروشگاه' || $model_lbl === 'پشتیبان فروشگاه' ) {
+			$ai_source = 'local';
+		}
+		while ( function_exists( 'ob_get_level' ) && ob_get_level() > 0 ) {
+			@ob_end_clean();
+		}
 		wp_send_json_success( array(
-			'message'    => 'پیام شما با موفقیت ثبت شد.',
+			'message'    => 'ok',
 			'session_id' => $session_id,
 			'thread_id'  => $thread_id,
 			'ai_reply'   => $ai_reply,
-			'reply'      => $ai_reply, // alias for storefront clients
+			'reply'      => $ai_reply,
+			'bot_reply'  => $ai_reply,
+			'text'       => $ai_reply,
 			'ai_model'   => $model_lbl,
 			'ai_source'  => $ai_source,
-			'ai_key'     => $master_ai['key'] ?? '',
+			'ai_key'     => is_array( $master_ai ) ? ( $master_ai['key'] ?? '' ) : '',
 			'thread'     => $thread,
 			'status'     => $send_result,
 		) );
@@ -6551,7 +6601,7 @@ class Scraper_Auto_Shop_Plugin {
 		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
 		$site     = get_bloginfo( 'name' );
 		// Prefer PHP proxy URLs so shop works even when /asset/*.js is missing or blocked by host.
-		$ver = '13.3.6';
+		$ver = '13.3.8';
 		$css_url  = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url   = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Fail only if neither disk files NOR embedded payload exist (v13.1.5+ embeds JS/CSS).
@@ -6580,7 +6630,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.7' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.8' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6641,7 +6691,7 @@ img{max-width:100%;height:auto}
 		$products = self::get_all_scraped_products();
 		$total_catalog = is_array( $products ) ? count( $products ) : 0;
 
-		/* v13.3.7: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
+		/* v13.3.8: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
 		   payload lean است (بدون گالری/توضیح بلند) تا TTFB سبک بماند. */
 		$safe_products = array();
 		foreach ( (array) $products as $p ) {
@@ -6784,7 +6834,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.6',
+				'version'     => '13.3.8',
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
 				'total_count' => isset( $total_catalog ) ? (int) $total_catalog : count( $safe_products ),
@@ -6797,7 +6847,7 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.3.6';
+		$ver = '13.3.8';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
@@ -6809,7 +6859,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.7 -->
+		<!-- AMPHP Storefront v13.3.8 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -6891,7 +6941,7 @@ img{max-width:100%;height:auto}
 			'yekan'     => array( 'label' => 'یکان', 'stack' => 'Yekan,' . $fb, 'css' => '', 'face' => '' ),
 			'estedad'   => array( 'label' => 'استعداد', 'stack' => 'Estedad,' . $fb, 'css' => '', 'face' => '' ),
 		);
-		/* v13.3.7: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
+		/* v13.3.8: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
 		$server_key = 'vazirmatn';
 		try {
 			$st = self::get_settings();
@@ -7031,7 +7081,7 @@ img{max-width:100%;height:auto}
 	 */
 	public static function storefront_asset_url( $file ) {
 		$file = basename( (string) $file );
-		$ver = '13.3.6';
+		$ver = '13.3.8';
 		return add_query_arg(
 			array(
 				'amphp_sf' => $file,
@@ -7105,7 +7155,7 @@ img{max-width:100%;height:auto}
 		}
 		$css = self::storefront_asset_url( 'storefront.css' );
 		$js  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.1.2';
+		$ver = '13.3.8';
 		wp_register_style( 'amphp-storefront', $css, array(), $ver );
 		wp_enqueue_style( 'amphp-storefront' );
 		wp_register_script( 'amphp-storefront', $js, array(), $ver, true );
@@ -7237,7 +7287,7 @@ img{max-width:100%;height:auto}
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			delete_transient( 'scraper_shop_cached_products' );
-			/* v13.3.7: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
+			/* v13.3.8: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
 			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
 			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;
@@ -7653,7 +7703,7 @@ img{max-width:100%;height:auto}
 							$merge_pref = 'scraper';
 						}
 						?>
-						<!-- v13.3.7: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
+						<!-- v13.3.8: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
 						<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
 							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
 								<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">

@@ -1383,9 +1383,9 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_submit_support_chat');
-      fd.append('nonce', ajax.chatNonce || '');
+      const nonce = (ajax && (ajax.chatNonce || ajax.nonce || ajax.chat_nonce)) || '';
+      if (nonce) fd.append('nonce', nonce);
       fd.append('message', msg);
-      /* keep session for multi-turn if present */
       try {
         const sid = sessionStorage.getItem('amphp_chat_sid') || '';
         if (sid) fd.append('session_id', sid);
@@ -1399,39 +1399,79 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
         if (ctx.description) bits.push(`توضیح: ${String(ctx.description).slice(0, 280)}`);
         fd.append('product_context', bits.join(' | '));
       }
-      const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', {
+      const ajaxUrl = (ajax && (ajax.ajaxUrl || ajax.url)) || '/wp-admin/admin-ajax.php';
+      const res = await fetch(ajaxUrl, {
         method: 'POST',
         body: fd,
         credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
       });
-      const data = await res.json().catch(() => ({}));
-      if (data?.data?.session_id) {
-        try { sessionStorage.setItem('amphp_chat_sid', String(data.data.session_id)); } catch (_) { /* ignore */ }
+      const raw = await res.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        // WP sometimes prefixes PHP notices before JSON
+        const m = raw && raw.match(/\{[\s\S]*\}\s*$/);
+        if (m) {
+          try { data = JSON.parse(m[0]); } catch (e2) { data = {}; }
+        }
       }
-      /* Prefer real AI reply; never treat the generic "message registered" ack as the chat answer */
-      const ackPhrases = [
-        'پیام شما با موفقیت ثبت شد',
-        'پیام شما دریافت شد',
-        'ارسال انجام شد',
-      ];
-      let reply =
-        (typeof data?.data?.ai_reply === 'string' && data.data.ai_reply.trim()) ||
-        (typeof data?.data?.reply === 'string' && data.data.reply.trim()) ||
-        (typeof data?.data?.response === 'string' && data.data.response.trim()) ||
-        '';
-      if (reply && ackPhrases.some((p) => reply.includes(p))) {
-        reply = '';
+      const payload = (data && typeof data === 'object' && data.data && typeof data.data === 'object')
+        ? data.data
+        : (data || {});
+      if (payload.session_id) {
+        try { sessionStorage.setItem('amphp_chat_sid', String(payload.session_id)); } catch (_) { /* ignore */ }
       }
-      if (!reply && data?.success) {
-        reply = 'پیام شما ثبت شد. پشتیبان هوشمند در حال حاضر پاسخ زنده‌ای برنگرداند؛ همکاران ما به‌زودی جواب می‌دهند.';
-      } else if (!reply) {
-        reply = data?.data?.message && !ackPhrases.some((p) => String(data.data.message).includes(p))
-          ? String(data.data.message)
-          : 'ارسال انجام نشد. لطفاً دوباره تلاش کنید.';
+      const pick = (...vals) => {
+        for (const v of vals) {
+          if (typeof v === 'string' && v.trim()) return v.trim();
+        }
+        return '';
+      };
+      const isAck = (s) => {
+        const t = String(s || '');
+        return (
+          t === 'ارسال انجام شد' ||
+          t === 'ارسال انجام نشد. لطفاً دوباره تلاش کنید.' ||
+          t.includes('پیام شما با موفقیت ثبت شد') ||
+          t.includes('پیام شما دریافت شد') ||
+          t === '1' ||
+          t === '0'
+        );
+      };
+      let reply = pick(
+        payload.ai_reply,
+        payload.reply,
+        payload.response,
+        payload.bot_reply,
+        payload.text,
+        // last message from thread if AI stored there
+        Array.isArray(payload.thread?.messages)
+          ? [...payload.thread.messages].reverse().find((x) => x && (x.sender === 'ai' || x.role === 'bot'))?.text
+          : ''
+      );
+      if (isAck(reply)) reply = '';
+      if (!reply && data && data.success === false) {
+        const err = pick(payload.message, payload.error, typeof data.data === 'string' ? data.data : '');
+        reply = err || 'پاسخ سرور ناموفق بود. لطفاً دوباره تلاش کنید.';
       }
-      setMsgs((m) => [...m, { id: `b${Date.now()}`, role: 'bot', text: String(reply) }]);
-    } catch {
-      setMsgs((m) => [...m, { id: `b${Date.now()}`, role: 'bot', text: 'ارتباط با سرور برقرار نشد. کمی بعد دوباره تلاش کنید.' }]);
+      if (!reply) {
+        // success without AI text — never show bare "ارسال انجام شد"
+        reply = 'متأسفانه پاسخ هوشمند دریافت نشد. چند لحظه بعد دوباره بپرسید یا از پشتیبانی تلفنی استفاده کنید.';
+      }
+      setMsgs((m) => [...m, {
+        id: `b${Date.now()}`,
+        role: 'bot',
+        text: String(reply),
+        meta: payload.ai_model ? String(payload.ai_model) : '',
+      }]);
+    } catch (err) {
+      setMsgs((m) => [...m, {
+        id: `b${Date.now()}`,
+        role: 'bot',
+        text: 'ارتباط با سرور برقرار نشد. صفحه را یک‌بار رفرش کنید و دوباره بفرستید.',
+      }]);
     } finally {
       setBusy(false);
     }

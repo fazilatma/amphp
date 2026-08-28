@@ -1479,7 +1479,7 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   return (
     <>
-      <button type="button" className={`sf-chat-fab ${pos}`} onClick={() => setOpen((v) => !v)}>
+      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.9" onClick={() => setOpen((v) => !v)}>
         <span>💬</span>
         <span className="lbl">{settings.chat_window_title || 'پشتیبانی'}</span>
       </button>

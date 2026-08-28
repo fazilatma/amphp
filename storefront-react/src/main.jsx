@@ -5,6 +5,7 @@ import './storefront.css';
 const PAGE_SIZE = 20;
 const CART_KEY = 'amphp_sf_cart_v1';
 const WISH_KEY = 'amphp_sf_wish_v1';
+const PENDING_ORDER_KEY = 'amphp_sf_pending_order_v1';
 const COLS_KEY = 'scraped_shop_cols';
 
 const faDigits = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
@@ -140,6 +141,38 @@ const loadLS = (k, fb) => {
 const saveLS = (k, v) => {
   try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
 };
+
+/** Woo/gateway return: order-received URL or ?amphp_paid=1 */
+function detectOrderReturn() {
+  try {
+    const u = new URL(window.location.href);
+    const q = u.searchParams;
+    const path = (u.pathname || '').toLowerCase();
+    const orderId = q.get('order_id') || q.get('order') || q.get('amphp_order') || '';
+    const orderKey = q.get('key') || q.get('order_key') || q.get('amphp_key') || '';
+    const paidFlag = q.get('amphp_paid') === '1' || q.get('payment') === 'success' || q.get('status') === 'paid';
+    const onReceived = /order-received|order_received|thank/.test(path) || q.has('order-received');
+    const pathOid = (path.match(/order-received\/(\d+)/) || [])[1] || '';
+    if (paidFlag || onReceived || (orderId && orderKey) || pathOid) {
+      return { order_id: orderId || pathOid, order_key: orderKey, paid: true };
+    }
+  } catch {}
+  return null;
+}
+
+function clearOrderReturnParams() {
+  try {
+    const u = new URL(window.location.href);
+    let dirty = false;
+    ['amphp_paid', 'amphp_order', 'amphp_key', 'order_id', 'order', 'key', 'order_key', 'payment', 'status'].forEach((k) => {
+      if (u.searchParams.has(k)) { u.searchParams.delete(k); dirty = true; }
+    });
+    if (dirty) {
+      const next = u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '') + (u.hash || '');
+      window.history.replaceState({}, '', next);
+    }
+  } catch {}
+}
 
 const FONT_KEY = (typeof window !== 'undefined' && window.APP_FONT_KEY) ? window.APP_FONT_KEY : 'scraper_font';
 const FONT_FALLBACK = 'Tahoma,system-ui,-apple-system,sans-serif';
@@ -546,12 +579,12 @@ function fieldOn(settings, key, defOn = true) {
 
 function CheckoutPage({
   open, onClose, items, currency, settings, ajax, gateways: bootGateways,
-  onQty, onRemove, onClearCart, toast,
+  onQty, onRemove, onClearCart, toast, initialDone = null,
 }) {
   const [gateways, setGateways] = useState(() => Array.isArray(bootGateways) ? bootGateways : []);
   const [payment, setPayment] = useState('');
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null);
+  const [done, setDone] = useState(() => (initialDone && typeof initialDone === 'object' ? initialDone : null));
   const [err, setErr] = useState('');
   const [form, setForm] = useState({
     name: '', phone: '', email: '', province: '', city: '', address: '', postal: '', notes: '',
@@ -560,7 +593,11 @@ function CheckoutPage({
   useEffect(() => {
     if (!open) return;
     setErr('');
-    setDone(null);
+    if (initialDone && typeof initialDone === 'object' && initialDone.phase === 'complete') {
+      setDone(initialDone);
+    } else if (!done || done.phase !== 'complete') {
+      if (!initialDone) setDone(null);
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -639,15 +676,39 @@ function CheckoutPage({
         return;
       }
       const payload = data.data || {};
-      setDone(payload);
-      onClearCart?.();
-      toast?.(payload.message || 'سفارش ثبت شد', 'ok');
-      if (payload.pay_url && payload.payment_method && payload.payment_method !== 'cod') {
-        // short delay so user sees success then redirect to gateway
+      const needsPay = !!(payload.needs_payment || payload.pay_url)
+        && payload.payment_method
+        && payload.payment_method !== 'cod'
+        && !payload.is_cod;
+      if (needsPay && payload.pay_url) {
+        /* هنوز به درگاه نرفته — پیام «سفارش کامل شد» نگو؛ مستقیم بفرست */
+        try {
+          saveLS(PENDING_ORDER_KEY, {
+            order_id: payload.order_id,
+            order_key: payload.order_key,
+            total: payload.total,
+            total_formatted: payload.total_formatted,
+            payment_method: payload.payment_method,
+            payment_title: payload.payment_title,
+            thankyou_url: payload.thankyou_url || '',
+            message: payload.message || settings.checkout_success_msg || '',
+            at: Date.now(),
+          });
+        } catch {}
+        onClearCart?.();
+        toast?.('در حال انتقال به درگاه پرداخت…', 'ok');
+        setDone({ ...payload, phase: 'redirecting' });
         setTimeout(() => {
-          try { window.location.href = payload.pay_url; } catch {}
-        }, 1200);
+          try { window.location.href = payload.pay_url; } catch {
+            setDone({ ...payload, phase: 'awaiting_payment' });
+          }
+        }, 450);
+        return;
       }
+      try { localStorage.removeItem(PENDING_ORDER_KEY); } catch {}
+      setDone({ ...payload, phase: 'complete', paid: true });
+      onClearCart?.();
+      toast?.(payload.message || settings.checkout_success_msg || 'سفارش شما ثبت شد', 'ok');
     } catch {
       setErr('خطا در ارتباط با سرور. دوباره تلاش کنید.');
     } finally {
@@ -668,21 +729,33 @@ function CheckoutPage({
         <div className="sf-checkout-steps">
           <span className="on">۱. سبد</span>
           <span className="on">۲. اطلاعات</span>
-          <span className={done ? 'on' : ''}>۳. پرداخت</span>
+          <span className={done && done.phase === 'complete' ? 'on' : (done ? 'mid' : '')}>۳. پرداخت</span>
         </div>
       </div>
 
       {done ? (
-        <div className="sf-checkout-success">
-          <div className="ico">✓</div>
-          <h3>{done.message || settings.checkout_success_msg || 'سفارش شما ثبت شد'}</h3>
-          <p>شماره سفارش: <strong>{toFa(done.order_id)}</strong></p>
-          <p>مبلغ: <strong>{done.total_formatted || formatMoney(done.total, currency)}</strong></p>
-          <p>روش پرداخت: <strong>{done.payment_title || done.payment_method}</strong></p>
-          {done.pay_url && done.payment_method !== 'cod' ? (
-            <a className="sf-btn primary lg" href={done.pay_url}>ادامه پرداخت در درگاه ↗</a>
+        <div className={`sf-checkout-success ${(done.phase === 'redirecting' || done.phase === 'awaiting_payment') ? 'pending' : 'complete'}`}>
+          {(done.phase === 'redirecting' || done.phase === 'awaiting_payment') ? (
+            <>
+              <div className="ico">⏳</div>
+              <h3>در حال انتقال به درگاه پرداخت…</h3>
+              <p>سفارش ثبت شد؛ لطفاً پرداخت را در درگاه تکمیل کنید.</p>
+              <p>شماره سفارش: <strong>{toFa(done.order_id)}</strong></p>
+              <p>مبلغ: <strong>{done.total_formatted || formatMoney(done.total, currency)}</strong></p>
+              {done.pay_url ? (
+                <a className="sf-btn primary lg" href={done.pay_url}>ورود به درگاه پرداخت ↗</a>
+              ) : null}
+              <p className="sf-co-hint">پیام تکمیل سفارش فقط پس از بازگشت موفق از درگاه نمایش داده می‌شود.</p>
+            </>
           ) : (
-            <button type="button" className="sf-btn primary lg" onClick={onClose}>بازگشت به فروشگاه</button>
+            <>
+              <div className="ico">✓</div>
+              <h3>{done.message || settings.checkout_success_msg || 'سفارش شما با موفقیت تکمیل شد'}</h3>
+              <p>شماره سفارش: <strong>{toFa(done.order_id)}</strong></p>
+              <p>مبلغ: <strong>{done.total_formatted || formatMoney(done.total, currency)}</strong></p>
+              <p>روش پرداخت: <strong>{done.payment_title || done.payment_method}</strong></p>
+              <button type="button" className="sf-btn primary lg" onClick={onClose}>بازگشت به فروشگاه</button>
+            </>
           )}
         </div>
       ) : (
@@ -928,6 +1001,7 @@ function StoreApp({ boot }) {
   const [quick, setQuick] = useState(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [checkoutDoneSeed, setCheckoutDoneSeed] = useState(null);
   const [toasts, setToasts] = useState([]);
   const megaRef = useRef(null);
   const searchRef = useRef(null);
@@ -972,6 +1046,58 @@ function StoreApp({ boot }) {
     const id = `${Date.now()}_${Math.random()}`;
     setToasts((t) => [...t, { id, text, type }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2800);
+  }, []);
+
+  /* v13.1.8: پیام تکمیل فقط بعد از بازگشت از درگاه (نه با زدن دکمه پرداخت) */
+  useEffect(() => {
+    const ret = detectOrderReturn();
+    let pending = null;
+    try { pending = loadLS(PENDING_ORDER_KEY, null); } catch { pending = null; }
+    const bootPaid = boot && boot.paid_order && typeof boot.paid_order === 'object' ? boot.paid_order : null;
+    const successMsg = settings.checkout_success_msg || 'سفارش شما با موفقیت تکمیل شد. از خریدتان سپاسگزاریم!';
+
+    if (bootPaid && (bootPaid.order_id || bootPaid.paid)) {
+      const seed = {
+        order_id: bootPaid.order_id,
+        order_key: bootPaid.order_key || '',
+        total: bootPaid.total,
+        total_formatted: bootPaid.total_formatted,
+        payment_method: bootPaid.payment_method || '',
+        payment_title: bootPaid.payment_title || '',
+        message: bootPaid.message || successMsg,
+        phase: 'complete',
+        paid: true,
+      };
+      setCheckoutDoneSeed(seed);
+      setCheckoutOpen(true);
+      try { localStorage.removeItem(PENDING_ORDER_KEY); } catch {}
+      clearOrderReturnParams();
+      toast(seed.message, 'ok');
+      return;
+    }
+
+    if (ret && ret.paid) {
+      const base = (pending && typeof pending === 'object') ? pending : {};
+      const seed = {
+        ...base,
+        order_id: ret.order_id || base.order_id || '',
+        order_key: ret.order_key || base.order_key || '',
+        message: base.message || successMsg,
+        phase: 'complete',
+        paid: true,
+      };
+      setCheckoutDoneSeed(seed);
+      setCheckoutOpen(true);
+      setCart([]);
+      try { localStorage.removeItem(PENDING_ORDER_KEY); } catch {}
+      clearOrderReturnParams();
+      toast(seed.message, 'ok');
+      return;
+    }
+
+    if (pending && pending.at && (Date.now() - Number(pending.at)) > 2 * 3600 * 1000) {
+      try { localStorage.removeItem(PENDING_ORDER_KEY); } catch {}
+    }
   }, []);
 
   const filtered = useMemo(() => {
@@ -1522,7 +1648,7 @@ function StoreApp({ boot }) {
       />
       <CheckoutPage
         open={checkoutOpen}
-        onClose={() => setCheckoutOpen(false)}
+        onClose={() => { setCheckoutOpen(false); setCheckoutDoneSeed(null); }}
         items={cart}
         currency={currency}
         settings={settings}
@@ -1532,6 +1658,7 @@ function StoreApp({ boot }) {
         onRemove={(id) => setCart((c) => c.filter((x) => x.id !== id))}
         onClearCart={() => setCart([])}
         toast={toast}
+        initialDone={checkoutDoneSeed}
       />
       <MenuDrawer
         open={menuOpen}

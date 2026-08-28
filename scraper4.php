@@ -713,8 +713,14 @@ function queueHasProfile(array $entries, string $profileKey, int $staleAfter = 0
         if ((string)($e['profile_key'] ?? '') !== $profileKey) continue;
         if (!in_array((string)($e['status'] ?? ''), $active, true)) continue;
         // ردیف رهاشده نباید تا ابد جلوی پروفایل را بگیرد
+        // v10.80: started_at=0 → paused_at؛ برای waiting بدون مهر، از id (ex_…_TIMESTAMP_…) تخمین بزن
         if ($staleAfter > 0) {
             $ts = (int)($e['started_at'] ?? 0);
+            if ($ts <= 0) $ts = (int)($e['paused_at'] ?? 0);
+            if ($ts <= 0) {
+                $id = (string)($e['id'] ?? '');
+                if (preg_match('~_(\d{10})_~', $id, $m)) $ts = (int)$m[1];
+            }
             if ($ts > 0 && ($now - $ts) > $staleAfter) continue;
         }
         return $e;
@@ -781,6 +787,78 @@ function extractWriteQueue(array $queue): void {
  * ===================================================================== */
 
 /** قفل را برمی‌دارد. اگر قفلِ زنده‌ای هست، اطلاعاتش را برمی‌گرداند. */
+
+/**
+ * v10.80: پاک‌سازی ردیف‌های مردهٔ صف استخراج و قفل کهنه.
+ * همگام‌سازی دستی و خودکار هر دو از اینجا استفاده می‌کنند تا
+ * «duplicate/locked» خاموش جلوی enqueue را نگیرد.
+ *
+ * @param string $profileKey خالی = همهٔ پروفایل‌ها
+ * @param array  $opts       max_idle, clear_waiting, reason
+ * @return int تعداد موارد پاک‌شده
+ */
+function extractClearStaleBlockers(string $profileKey = '', array $opts = []): int {
+    $cleared = 0;
+    $now = time();
+    $stall = max(90, (int)(loadConnections()['stall_after'] ?? 300));
+    $maxIdle = (int)($opts['max_idle'] ?? $stall);
+    if ($maxIdle < 60) $maxIdle = 60;
+    $clearWaiting = !empty($opts['clear_waiting']); // waiting/paused همیشه (دستی) یا فقط کهنه
+    $reason = (string)($opts['reason'] ?? 'پاک‌سازی خودکار');
+    try {
+        $q = extractReadQueue();
+        $entries = is_array($q['entries'] ?? null) ? $q['entries'] : [];
+        $prog = readProgress(EXTRACT_PROGRESS_FILE);
+        $dirty = false;
+        foreach ($entries as &$e) {
+            if (!is_array($e)) continue;
+            $pk = (string)($e['profile_key'] ?? '');
+            $st = (string)($e['status'] ?? '');
+            if ($profileKey !== '' && $pk !== '' && $pk !== $profileKey) continue;
+            if (!in_array($st, ['running', 'waiting', 'paused'], true)) continue;
+            $mine = ((string)($prog['queue_id'] ?? '')) === ((string)($e['id'] ?? ''));
+            $ts = $mine ? (int)($prog['last_progress_ts'] ?? 0) : 0;
+            if ($ts <= 0) $ts = (int)($e['started_at'] ?? 0);
+            // waiting بدون started_at — از done_at/id time حدس نزن؛ کهنه فرض کن اگر clear_waiting
+            $idle = $ts > 0 ? ($now - $ts) : ($clearWaiting || $st !== 'running' ? PHP_INT_MAX : 0);
+            $kill = false;
+            if ($st === 'waiting' || $st === 'paused') {
+                $kill = $clearWaiting || ($idle > $maxIdle);
+            } elseif ($st === 'running' && $idle > $maxIdle) {
+                $kill = true;
+            }
+            if (!$kill) continue;
+            $e['status'] = 'failed';
+            $e['error'] = $reason . ' (' . ($idle === PHP_INT_MAX ? 'بدون پیشرفت' : ($idle . 'ث بی‌حرکت')) . ')';
+            $e['done_at'] = $now;
+            $cleared++;
+            $dirty = true;
+        }
+        unset($e);
+        if ($dirty) {
+            $q['entries'] = $entries;
+            extractWriteQueue($q);
+        }
+        if (defined('EXTRACT_LOCK_FILE') && is_file(EXTRACT_LOCK_FILE)) {
+            $lk = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
+            $lkAge = is_array($lk) ? ($now - (int)($lk['at'] ?? 0)) : ($now - (int)@filemtime(EXTRACT_LOCK_FILE));
+            $progRunning = !empty($prog['running']) && empty($prog['done']);
+            $progIdle = $now - (int)($prog['last_progress_ts'] ?? 0);
+            $lkMine = $profileKey !== '' && is_array($lk) && (string)($lk['profile_key'] ?? '') === $profileKey;
+            if ($lkMine || !$progRunning || $progIdle > $maxIdle || $lkAge > $maxIdle) {
+                // اگر قفل مال پروفایل دیگری است و پیشرفت زنده است، دست نزن
+                if ($profileKey !== '' && is_array($lk) && !$lkMine && $progRunning && $progIdle <= $maxIdle) {
+                    // keep
+                } else {
+                    @unlink(EXTRACT_LOCK_FILE);
+                    $cleared++;
+                }
+            }
+        }
+    } catch (Throwable $ex) { /* never block */ }
+    return $cleared;
+}
+
 function extractLockAcquire(string $queueId, string $profileKey): array {
     $now = time();
     $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
@@ -12456,14 +12534,24 @@ if($dup!==null){
     if($_dupTs<=0)$_dupTs=(int)($dup['started_at']??0);
     $_dupIdle=$_dupTs>0?(time()-$_dupTs):PHP_INT_MAX;
     $_dupMax=max(120,(int)(loadConnections()['stall_after']??300));
-    /* v10.79: همگام‌سازی/استخراج دستی — آستانهٔ کوتاه‌تر و بستن waiting/paused */
+    /* v10.79/v10.80: دستی = آستانهٔ کوتاه؛ خودکار هم waiting/paused و running مرده را برمی‌دارد
+       (قبلاً waiting با started_at=0 تا ابد جلوی enqueue می‌ایستاد). */
     $_dupIsManual = in_array((string)$trigger, ['manual', 'manual_sync'], true);
+    $_dupIsAuto   = in_array((string)$trigger, ['auto', 'cron', 'watchdog_resume'], true);
+    $_dupSt = (string)($dup['status'] ?? '');
     if ($_dupIsManual) {
         $_dupMax = min($_dupMax, 90);
-        $_dupSt = (string)($dup['status'] ?? '');
         if ($_dupSt === 'waiting' || $_dupSt === 'paused') {
             $_dupIdle = PHP_INT_MAX; // force replace
         }
+    } elseif ($_dupIsAuto) {
+        if ($_dupSt === 'waiting' || $_dupSt === 'paused') {
+            // ردیف منتظر بدون ضربان — برای کران مانع دائمی نباشد
+            if ($_dupIdle === PHP_INT_MAX || $_dupIdle > min(300, $_dupMax)) {
+                $_dupIdle = PHP_INT_MAX;
+            }
+        }
+        // running مرده: همان $_dupMax (stall) کافی است
     }
     if($_dupIdle>$_dupMax){
         // مرده است — ردیفش را ببند و ادامه بده
@@ -15510,53 +15598,14 @@ if (isset($_GET['manual_sync'])) {
             JSON_UNESCAPED_UNICODE);
         exit;
     }
-    /* v10.79: قبل از شروع، ردیف‌های مرده/کهنهٔ همین پروفایل در صف استخراج
-       و قفل سراسری کهنه را آزاد کن — وگرنه runBackendExtract با
-       «duplicate/locked» برمی‌گردد و هیچ ردیف تازه‌ای دیده نمی‌شود. */
+    /* v10.79/v10.80: قبل از شروع، ردیف‌های مرده و قفل کهنه را آزاد کن */
+    $_msCleared = 0;
     try {
-        $_msCleared = 0;
-        $_msQ = extractReadQueue();
-        $_msEntries = is_array($_msQ['entries'] ?? null) ? $_msQ['entries'] : [];
-        $_msNow = time();
-        $_msStall = max(90, (int)(loadConnections()['stall_after'] ?? 300));
-        $_msProg = readProgress(EXTRACT_PROGRESS_FILE);
-        $_msDirtyQ = false;
-        foreach ($_msEntries as &$_msE) {
-            if (!is_array($_msE)) continue;
-            $_msPk = (string)($_msE['profile_key'] ?? '');
-            $_msSt = (string)($_msE['status'] ?? '');
-            if ($_msKey !== '' && $_msPk !== '' && $_msPk !== $_msKey) continue;
-            if (!in_array($_msSt, ['running', 'waiting', 'paused'], true)) continue;
-            $_msMine = ((string)($_msProg['queue_id'] ?? '')) === ((string)($_msE['id'] ?? ''));
-            $_msTs = $_msMine ? (int)($_msProg['last_progress_ts'] ?? 0) : 0;
-            if ($_msTs <= 0) $_msTs = (int)($_msE['started_at'] ?? 0);
-            $_msIdle = $_msTs > 0 ? ($_msNow - $_msTs) : PHP_INT_MAX;
-            /* برای همگام‌سازی دستی: waiting/paused کهنه یا running بی‌حرکت را ببند */
-            if ($_msSt === 'waiting' || $_msSt === 'paused' || $_msIdle > min(90, $_msStall)) {
-                $_msE['status'] = 'failed';
-                $_msE['error'] = 'جایگزین شد توسط همگام‌سازی دستی (' . ($_msIdle === PHP_INT_MAX ? 'بدون پیشرفت' : ($_msIdle . 'ث بی‌حرکت')) . ')';
-                $_msE['done_at'] = $_msNow;
-                $_msCleared++;
-                $_msDirtyQ = true;
-            }
-        }
-        unset($_msE);
-        if ($_msDirtyQ) {
-            $_msQ['entries'] = $_msEntries;
-            extractWriteQueue($_msQ);
-        }
-        /* قفل استخراج کهنه (extract.lock) */
-        if (defined('EXTRACT_LOCK_FILE') && is_file(EXTRACT_LOCK_FILE)) {
-            $_msLk = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
-            $_msLkAge = is_array($_msLk) ? ($_msNow - (int)($_msLk['at'] ?? 0)) : ($_msNow - (int)@filemtime(EXTRACT_LOCK_FILE));
-            $_msLkProgRunning = !empty($_msProg['running']) && empty($_msProg['done']);
-            $_msLkProgIdle = $_msNow - (int)($_msProg['last_progress_ts'] ?? 0);
-            $_msLkMine = is_array($_msLk) && $_msKey !== '' && (string)($_msLk['profile_key'] ?? '') === $_msKey;
-            if ($_msLkMine || !$_msLkProgRunning || $_msLkProgIdle > min(90, $_msStall) || $_msLkAge > min(90, $_msStall)) {
-                @unlink(EXTRACT_LOCK_FILE);
-                $_msCleared++;
-            }
-        }
+        $_msCleared = extractClearStaleBlockers($_msKey, [
+            'max_idle' => min(90, max(60, (int)(loadConnections()['stall_after'] ?? 300))),
+            'clear_waiting' => true,
+            'reason' => 'جایگزین شد توسط همگام‌سازی دستی',
+        ]);
     } catch (Throwable $_msExClr) { /* never block start */ }
 
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
@@ -16036,6 +16085,19 @@ if (!empty($wdEarly['extract_resume'])) {
      only=<key>  ⇒ فقط همان پروفایل
      force=1     ⇒ گیتِ «هنوز نوبتش نشده» یک بار نادیده گرفته می‌شود
    ===================================================================== */
+/* v10.80: در شروع کران/همگام‌سازی خودکار، ردیف و قفل مرده را جارو کن
+   تا due بودن پروفایل به enqueue واقعی برسد (نه silent duplicate). */
+if (!manualSyncActive()) {
+    try {
+        $_autoClr = extractClearStaleBlockers('', [
+            'max_idle' => max(120, (int)($cn['stall_after'] ?? 300)),
+            'clear_waiting' => false,
+            'reason' => 'پاک‌سازی کران (ردیف/قفل کهنه)',
+        ]);
+        if ($_autoClr > 0) $results['stale_cleared'] = $_autoClr;
+    } catch (Throwable $_autoClrEx) {}
+}
+
 $_onlyKey  = trim((string)($_GET['only'] ?? ''));
 $_forceRun = !empty($_GET['force']);
 foreach ($profiles as $key => $profile) {

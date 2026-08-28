@@ -85,7 +85,12 @@ const staticOk = (
   agent.includes('function send_messenger_notification') &&
   agent.includes('send_message_to_messengers') &&
   boot.includes('enable_custom_checkout') &&
-  boot.includes('gateways')
+  boot.includes('gateways') &&
+  js.includes('amphp_sf_pending_order') &&
+  js.includes('redirecting') &&
+  agent.includes('needs_payment') &&
+  agent.includes('amphp_paid') &&
+  agent.includes('paid_order')
 );
 
 const result = {
@@ -104,6 +109,7 @@ const result = {
   paybar: !!paybar,
   paybarBtn: !!(paybarBtn && /پرداخت|ثبت/.test(paybarBtn.textContent||'')),
   messengerAlias: agent.includes('function send_messenger_notification'),
+  paymentDeferSuccess: js.includes('amphp_sf_pending_order') && js.includes('redirecting') && agent.includes('needs_payment'),
 };
 console.log(JSON.stringify(result, null, 2));
 process.exit(staticOk ? 0 : 2);

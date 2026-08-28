@@ -1052,3 +1052,8 @@
 .sf-app[data-template="technolife"] .sf-header-wrap * { color: #e8f0fe; }
 .sf-app[data-template="technolife"] .sf-search input { background: #132744; color: #fff; }
 .sf-app[data-template="technolife"] .sf-burger-btn { background: #1a73e8; }
+
+
+/* v13.1.8 payment pending vs complete */
+.sf-checkout-success.pending .ico { background: linear-gradient(135deg,#f59e0b,#f97316); }
+.sf-checkout-steps span.mid { opacity: 1; color: var(--sf-accent, #ef394e); border-color: var(--sf-accent, #ef394e); }

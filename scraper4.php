@@ -4298,6 +4298,314 @@ function aiSearchProductWeb(string $title): array {
 /**
  * v10.72: تولید خودکار توضیحات و دسته‌بندی توسط هوش مصنوعی مستر و کاندیدها (با جستجوی وب)
  */
+
+/**
+ * v10.83: تولید خودکار توضیحات/دسته برای محصولاتِ بدون محتوا
+ * تنظیمات در connections.ai_content_auto
+ */
+function aiContentAutoCfg(?array $cn = null): array {
+    $cn = $cn ?? loadConnections();
+    $c = is_array($cn['ai_content_auto'] ?? null) ? $cn['ai_content_auto'] : [];
+    /* v10.83: پیش‌فرض روشن (همیشه-فعال) تا اولین ذخیرهٔ صریح */
+    $enabled = array_key_exists('enabled', $c) ? !empty($c['enabled']) : true;
+    return [
+        'enabled'     => $enabled,
+        'web_search'  => !isset($c['web_search']) || !empty($c['web_search']),
+        'per_run'     => max(1, min(40, (int)($c['per_run'] ?? 8))),
+        'only_missing'=> !isset($c['only_missing']) || !empty($c['only_missing']),
+        'bsl_cats'    => !isset($c['bsl_cats']) || !empty($c['bsl_cats']),
+    ];
+}
+
+/** محصول نیاز به تولید AI دارد؟ (توضیح/دسته خالی) */
+function aiProductNeedsContent(array $p): bool {
+    $short = trim((string)($p['shortDesc'] ?? $p['short_desc'] ?? $p['brief'] ?? ''));
+    $long  = trim((string)($p['longDesc'] ?? $p['long_desc'] ?? $p['description'] ?? ''));
+    $catId = (int)($p['bsl_category_id'] ?? $p['category_id'] ?? 0);
+    $needDesc = ($short === '' && $long === '')
+        || mb_strlen(strip_tags($long !== '' ? $long : $short)) < 40;
+    /* بدون شناسهٔ برگ باسلام → نیاز به نگاشت (حتی اگر نام دسته آزاد باشد) */
+    $needCat = ($catId <= 0);
+    if ($needCat && !$needDesc) {
+        $failAt = (int)($p['ai_bsl_map_fail_at'] ?? 0);
+        if ($failAt > 0 && (time() - $failAt) < 86400) {
+            $needCat = false; /* یک‌بار در ۲۴س شکست خورده — فردا دوباره */
+        }
+    }
+    return $needDesc || $needCat;
+}
+
+/**
+ * نگاشت نام/متن دستهٔ آزاد به شناسهٔ برگ باسلام (فرمت ارسال).
+ * اول AI category picker اگر ممکن؛ وگرنه autoMatch.
+ */
+function aiMapToBslCategory(string $title, string $catHint = '', ?array $cn = null): array {
+    $cn = $cn ?? loadConnections();
+    $out = ['category_id' => 0, 'category_name' => $catHint, 'via' => ''];
+    $bs = $cn['basalam'] ?? [];
+    $tk = trim((string)($bs['token'] ?? ''));
+    if ($tk === '' || !function_exists('bslCatsAll')) {
+        return $out;
+    }
+    try {
+        $cats = bslCatsAll($tk);
+        if (!$cats || !is_array($cats)) return $out;
+        $leaves = function_exists('bslCatsLeaves') ? bslCatsLeaves($tk) : $cats;
+        if (!$leaves) $leaves = $cats;
+
+        // 1) exact / fuzzy name match on hint
+        $hint = trim($catHint);
+        if ($hint !== '') {
+            $hintN = mb_strtolower(preg_replace('/\s+/u', ' ', $hint));
+            $best = 0; $bestId = 0; $bestName = '';
+            foreach ($leaves as $c) {
+                if (!is_array($c)) continue;
+                $nm = trim((string)($c['name'] ?? ''));
+                if ($nm === '') continue;
+                $nmN = mb_strtolower(preg_replace('/\s+/u', ' ', $nm));
+                if ($nmN === $hintN || mb_strpos($hintN, $nmN) !== false || mb_strpos($nmN, $hintN) !== false) {
+                    $id = (int)($c['id'] ?? 0);
+                    if ($id > 0) { $bestId = $id; $bestName = $nm; break; }
+                }
+                // score simple
+                similar_text($hintN, $nmN, $pct);
+                if ($pct > $best && $pct >= 55) { $best = $pct; $bestId = (int)($c['id'] ?? 0); $bestName = $nm; }
+            }
+            if ($bestId > 0) {
+                if (function_exists('findLeafCategory')) $bestId = findLeafCategory($bestId, $cats);
+                $out = ['category_id' => $bestId, 'category_name' => $bestName ?: $hint, 'via' => 'name_match'];
+                return $out;
+            }
+        }
+
+        // 2) autoMatch on title
+        if (function_exists('autoMatchBslCategory')) {
+            $id = (int)autoMatchBslCategory($title, $leaves);
+            if ($id > 0) {
+                if (function_exists('findLeafCategory')) $id = findLeafCategory($id, $cats);
+                $name = '';
+                foreach ($leaves as $c) {
+                    if ((int)($c['id'] ?? 0) === $id) { $name = (string)($c['name'] ?? ''); break; }
+                }
+                return ['category_id' => $id, 'category_name' => $name ?: $hint, 'via' => 'auto_match'];
+            }
+        }
+
+        // 3) AI category picker (cheap) if available
+        if (function_exists('aiPickCategory') || function_exists('aiCandidateCategory')) {
+            // use compact list
+            $catList = '';
+            if (function_exists('aiCatListBuild')) {
+                $catList = aiCatListBuild($leaves, [], 8000, $title);
+            } else {
+                $n = 0;
+                foreach ($leaves as $c) {
+                    if ($n++ > 80) break;
+                    $catList .= ((int)($c['id'] ?? 0)) . ': ' . (string)($c['name'] ?? '') . "\n";
+                }
+            }
+            if ($catList !== '' && function_exists('aiActiveConfig') && function_exists('aiProviderCall') && function_exists('aiCatPayload') && function_exists('aiCatParse')) {
+                $cfg = aiActiveConfig();
+                $prov = $cfg['provider'] ?? null;
+                $model = $cfg['model'] ?? '';
+                if ($prov && $model !== '') {
+                    $net = function_exists('aiNetCfg') ? aiNetCfg($cn) : null;
+                    $t0 = microtime(true);
+                    $r = aiProviderCall($prov, $model, aiCatPayload($title, $catList, [], ''), $net);
+                    $res = aiCatParse($r, $title, $leaves, $model, (int)round((microtime(true) - $t0) * 1000));
+                    if (!empty($res['ok']) && (int)($res['category_id'] ?? 0) > 0) {
+                        return [
+                            'category_id' => (int)$res['category_id'],
+                            'category_name' => (string)($res['category_name'] ?? $hint),
+                            'via' => 'ai_cat',
+                        ];
+                    }
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        $out['error'] = $e->getMessage();
+    }
+    return $out;
+}
+
+/**
+ * یک محصول را (اگر محتوا ندارد) با AI پر کن + دستهٔ باسلام.
+ * فیلدها: shortDesc/longDesc + short_desc/long_desc (سازگاری ارسال) + bsl_category_id
+ */
+function aiFillProductContent(array $p, bool $webSearch = true, bool $mapBsl = true, ?array $cn = null): array {
+    $title = trim((string)($p['title'] ?? $p['name'] ?? ''));
+    if ($title === '') return ['product' => $p, 'filled' => false, 'error' => 'no title'];
+    if (!aiProductNeedsContent($p)) return ['product' => $p, 'filled' => false, 'skipped' => true];
+
+    $short0 = trim((string)($p['shortDesc'] ?? $p['short_desc'] ?? $p['brief'] ?? ''));
+    $long0  = trim((string)($p['longDesc'] ?? $p['long_desc'] ?? $p['description'] ?? ''));
+    $needDesc = ($short0 === '' && $long0 === '')
+        || mb_strlen(strip_tags($long0 !== '' ? $long0 : $short0)) < 40;
+    $catId0 = (int)($p['bsl_category_id'] ?? $p['category_id'] ?? 0);
+    $needCat = ($catId0 <= 0);
+    $changed = false;
+    $catHint = trim((string)($p['category'] ?? $p['bsl_category_name'] ?? ''));
+    $model = '';
+
+    if ($needDesc) {
+        $gen = aiGenerateProductDescriptionAndCategory($title, $webSearch);
+        if (empty($gen['ok'])) {
+            /* اگر فقط دسته کم بود، ادامه بده؛ وگرنه fail */
+            if (!$needCat) {
+                return ['product' => $p, 'filled' => false, 'error' => (string)($gen['error'] ?? 'gen fail')];
+            }
+        } else {
+            $short = trim((string)($gen['short_description'] ?? ''));
+            $html  = trim((string)($gen['description_html'] ?? ''));
+            if ($catHint === '') $catHint = trim((string)($gen['category'] ?? ''));
+            $model = (string)($gen['model_used'] ?? '');
+            if ($short !== '') {
+                $p['shortDesc'] = $short;
+                $p['short_desc'] = $short;
+                $p['brief'] = mb_substr(strip_tags($short), 0, 250);
+                $changed = true;
+            }
+            if ($html !== '') {
+                $p['longDesc'] = $html;
+                $p['long_desc'] = $html;
+                $p['description'] = $html;
+                $changed = true;
+            }
+            if ($catHint !== '' && trim((string)($p['category'] ?? '')) === '') {
+                $p['category'] = $catHint;
+                $changed = true;
+            }
+            /* gen خودش bsl_category_id برمی‌گرداند */
+            if ($mapBsl && (int)($gen['bsl_category_id'] ?? 0) > 0 && $needCat) {
+                $p['bsl_category_id'] = (int)$gen['bsl_category_id'];
+                $p['category_id'] = (int)$gen['bsl_category_id'];
+                if (!empty($gen['bsl_category_name'])) {
+                    $p['bsl_category_name'] = (string)$gen['bsl_category_name'];
+                }
+                $changed = true;
+                $needCat = false;
+            }
+        }
+    }
+
+    $bsl = ['category_id' => (int)($p['bsl_category_id'] ?? 0), 'category_name' => $catHint, 'via' => ''];
+    if ($mapBsl && $needCat) {
+        $bsl = aiMapToBslCategory($title, $catHint, $cn);
+        if ((int)($bsl['category_id'] ?? 0) > 0) {
+            $p['bsl_category_id'] = (int)$bsl['category_id'];
+            $p['category_id'] = (int)$bsl['category_id'];
+            if (!empty($bsl['category_name'])) {
+                $p['bsl_category_name'] = (string)$bsl['category_name'];
+                if (trim((string)($p['category'] ?? '')) === '') {
+                    $p['category'] = (string)$bsl['category_name'];
+                }
+            }
+            $changed = true;
+        }
+    }
+    if ($mapBsl && (int)($p['bsl_category_id'] ?? 0) <= 0) {
+        $p['ai_bsl_map_fail_at'] = time();
+    } elseif ((int)($p['bsl_category_id'] ?? 0) > 0) {
+        unset($p['ai_bsl_map_fail_at']);
+    }
+    if ($changed) {
+        $p['ai_content_at'] = time();
+        if ($model !== '') $p['ai_content_model'] = $model;
+    }
+    return [
+        'product' => $p,
+        'filled' => $changed,
+        'bsl' => $bsl,
+        'model' => $model,
+        'category_hint' => $catHint,
+    ];
+}
+
+/**
+ * روی همهٔ پروفایل‌ها: محصولات بدون توضیح/دسته را پر کن.
+ * @return array stats
+ */
+function aiAutoFillMissingAcrossProfiles(?array $cn = null, int $limit = 0): array {
+    $cn = $cn ?? loadConnections();
+    $cfg = aiContentAutoCfg($cn);
+    if (!$cfg['enabled'] && $limit <= 0) {
+        // allow forced run with limit even if disabled? no — caller checks
+    }
+    $per = $limit > 0 ? $limit : (int)$cfg['per_run'];
+    $per = max(1, min(40, $per));
+    $web = !empty($cfg['web_search']);
+    $mapBsl = !empty($cfg['bsl_cats']);
+    $onlyMissing = !empty($cfg['only_missing']);
+
+    $stats = [
+        'ok' => true, 'scanned' => 0, 'needed' => 0, 'filled' => 0, 'skipped' => 0,
+        'failed' => 0, 'profiles' => 0, 'log' => [],
+    ];
+    $profiles = loadProfiles();
+    if (!is_array($profiles) || !$profiles) {
+        $stats['ok'] = false;
+        $stats['error'] = 'پروفایلی نیست';
+        return $stats;
+    }
+    $dirty = false;
+    $budget = $per;
+    $t0 = time();
+    $maxSec = 90; // keep cron-friendly
+
+    foreach ($profiles as $pk => $prof) {
+        if ($budget <= 0 || (time() - $t0) >= $maxSec) break;
+        if (!is_array($prof)) continue;
+        $products = $prof['products'] ?? null;
+        if (!is_array($products) || !$products) continue;
+        $stats['profiles']++;
+        $changedProf = false;
+
+        foreach ($products as $i => $entry) {
+            if ($budget <= 0 || (time() - $t0) >= $maxSec) break;
+            $isPair = is_array($entry) && count($entry) === 2 && is_array($entry[1] ?? null);
+            $p = $isPair ? $entry[1] : (is_array($entry) ? $entry : null);
+            if (!is_array($p)) continue;
+            $stats['scanned']++;
+            if ($onlyMissing && !aiProductNeedsContent($p)) { $stats['skipped']++; continue; }
+            if (!$onlyMissing && !aiProductNeedsContent($p)) { $stats['skipped']++; continue; }
+            $stats['needed']++;
+            $budget--;
+            try {
+                $r = aiFillProductContent($p, $web, $mapBsl, $cn);
+                if (!empty($r['filled'])) {
+                    $p2 = $r['product'];
+                    if ($isPair) $products[$i][1] = $p2;
+                    else $products[$i] = $p2;
+                    $changedProf = true;
+                    $stats['filled']++;
+                    $ttl = mb_substr((string)($p2['title'] ?? ''), 0, 40);
+                    $cid = (int)($p2['bsl_category_id'] ?? 0);
+                    $stats['log'][] = '✓ ' . $ttl . ($cid ? (" → bsl#{$cid}") : '');
+                } else {
+                    $stats['failed']++;
+                    if (!empty($r['error'])) $stats['log'][] = '✗ ' . mb_substr((string)$r['error'], 0, 80);
+                }
+            } catch (Throwable $e) {
+                $stats['failed']++;
+                $stats['log'][] = '✗ ' . mb_substr($e->getMessage(), 0, 80);
+            }
+        }
+        if ($changedProf) {
+            $prof['products'] = $products;
+            $prof['updatedAt'] = time();
+            $profiles[$pk] = $prof;
+            $dirty = true;
+        }
+    }
+    if ($dirty) {
+        saveProfiles($profiles);
+        $stats['saved'] = true;
+    }
+    $stats['log'] = array_slice($stats['log'], -30);
+    return $stats;
+}
+
 function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch = true): array {
     $title = trim($title);
     if (empty($title)) {
@@ -4313,7 +4621,7 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
     if (!empty($webInfo['found']) && !empty($webInfo['snippets'])) {
         $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\n"
             . "با توجه به نتایج جستجوی اینترنتی زیر درباره محصول «{$title}»، لطفاً:\n"
-            . "۱. دسته‌بندی مناسب و استاندارد فروشگاهی محصول را تعیین کنید.\n"
+            . "۱. دسته‌بندی مناسب فروشگاهی را با نام دقیق برگِ درختِ دسته‌بندی (ترجیحاً سازگار با باسلام) تعیین کنید.\n"
             . "۲. یک متن معرفی کوتاه (۱ الی ۲ جمله جذاب) بنویسید.\n"
             . "۳. توضیحات کامل، جذاب و سئو شده به زبان فارسی در قالب تگ‌های استاندارد HTML (شامل تگ‌های p، ul، li، strong، h3 و h4 برای معرفی، ویژگی‌های کلیدی، مشخصات فنی و جمع‌بندی خرید) تولید فرمایید.\n\n"
             . "مشخصات و اطلاعات یافت‌شده در وب:\n"
@@ -4323,7 +4631,7 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
     } else {
         $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\n"
             . "با توجه به عدم مشاهده مشخصات در وب، لطفاً بر اساس عنوان «{$title}» و دانش تخصصی خود:\n"
-            . "۱. دسته‌بندی دقیق این محصول را مشخص کنید.\n"
+            . "۱. دسته‌بندی دقیق برگ‌مانند (نام دستهٔ نهایی فروشگاهی، سازگار با باسلام) را مشخص کنید.\n"
             . "۲. یک معرفی کوتاه (۱ الی ۲ جمله) بنویسید.\n"
             . "۳. توضیحات جامع و ساختاریافته به زبان فارسی با تگ‌های تمیز HTML (شامل معرفی، کاربردها، ویژگی‌های برجسته و راهنمای خرید) تولید کنید.\n\n"
             . "پاسخ را حتماً و فقط در قالب فرمت استاندارد JSON زیر برگردانید:\n"
@@ -4390,6 +4698,9 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
     // If still empty, use intelligent domain fallback generator
     if (empty($rawAnswer)) {
         $fb = aiGenerateFallbackContent($title, $webInfo);
+        $bslMap = function_exists('aiMapToBslCategory')
+            ? aiMapToBslCategory($title, (string)($fb['category'] ?? ''))
+            : ['category_id' => 0, 'category_name' => (string)($fb['category'] ?? ''), 'via' => ''];
         return [
             'ok' => true,
             'title' => $title,
@@ -4399,11 +4710,17 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
             'category' => $fb['category'],
             'short_description' => $fb['short_description'],
             'description_html' => $fb['description_html'],
+            'bsl_category_id' => (int)($bslMap['category_id'] ?? 0),
+            'bsl_category_name' => (string)($bslMap['category_name'] ?? ''),
+            'bsl_category_via' => (string)($bslMap['via'] ?? ''),
         ];
     }
 
     // Parse JSON
     $parsed = aiParseContentJson($rawAnswer, $title, $webInfo);
+    $bslMap = function_exists('aiMapToBslCategory')
+        ? aiMapToBslCategory($title, (string)($parsed['category'] ?? ''))
+        : ['category_id' => 0, 'category_name' => (string)($parsed['category'] ?? ''), 'via' => ''];
     return [
         'ok' => true,
         'title' => $title,
@@ -4414,6 +4731,10 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
         'short_description' => $parsed['short_description'],
         'description_html' => $parsed['description_html'],
         'raw_text' => $rawAnswer,
+        /* v10.83: دسته به فرمت باسلام (شناسه برگ) برای ارسال سریع‌تر */
+        'bsl_category_id' => (int)($bslMap['category_id'] ?? 0),
+        'bsl_category_name' => (string)($bslMap['category_name'] ?? ''),
+        'bsl_category_via' => (string)($bslMap['via'] ?? ''),
     ];
 }
 
@@ -12197,6 +12518,16 @@ if (isset($_POST['ai_net'])) {
     ];
 }
 
+if (isset($_POST['ai_content_auto'])) {
+    $aca = json_decode($_POST['ai_content_auto'], true) ?: [];
+    $conn['ai_content_auto'] = [
+        'enabled' => !empty($aca['enabled']),
+        'web_search' => !isset($aca['web_search']) || !empty($aca['web_search']),
+        'per_run' => max(1, min(40, (int)($aca['per_run'] ?? 8))),
+        'only_missing' => !isset($aca['only_missing']) || !empty($aca['only_missing']),
+        'bsl_cats' => !isset($aca['bsl_cats']) || !empty($aca['bsl_cats']),
+    ];
+}
 if (isset($_POST['baleh'])) { $bl = json_decode($_POST['baleh'], true) ?: []; $conn['baleh'] = ['enabled'=>!empty($bl['enabled']),'token'=>trim($bl['token']??''),'chat_id'=>trim($bl['chat_id']??'')]; }
 if (isset($_POST['rubika'])) { $rb = json_decode($_POST['rubika'], true) ?: []; $conn['rubika'] = ['enabled'=>!empty($rb['enabled']),'token'=>trim($rb['token']??''),'chat_id'=>trim($rb['chat_id']??'')]; }
 /* v10.78 (92): تلگرام — سومین پیام‌رسان، با همان ساختار بله/روبیکا */
@@ -13541,11 +13872,50 @@ $profilesNow[$pkFinal]=$profileOnDisk;
 saveProfiles($profilesNow);
 $profiles=$profilesNow;$profile=$profileOnDisk;
 
+/* v10.83: اگر تیک «تولید خودکار توضیحات» روشن است، فقط روی محصولاتِ همین
+   پروفایل که توضیح/دسته ندارند AI بزن — قبل از ارسال به باسلام. */
+try {
+    $_aiCfg = aiContentAutoCfg(loadConnections());
+    if (!empty($_aiCfg['enabled']) && $phase !== 'list') {
+        $_aiN = 0; $_aiFilled = 0;
+        $_aiMax = min(12, (int)$_aiCfg['per_run']);
+        $_aiProds = is_array($profileOnDisk['products'] ?? null) ? $profileOnDisk['products'] : [];
+        $_aiChanged = false;
+        foreach ($_aiProds as $_aiI => $_aiE) {
+            if ($_aiN >= $_aiMax) break;
+            $_aiPair = is_array($_aiE) && count($_aiE) === 2 && is_array($_aiE[1] ?? null);
+            $_aiP = $_aiPair ? $_aiE[1] : (is_array($_aiE) ? $_aiE : null);
+            if (!is_array($_aiP) || !aiProductNeedsContent($_aiP)) continue;
+            $_aiN++;
+            $_aiR = aiFillProductContent($_aiP, !empty($_aiCfg['web_search']), !empty($_aiCfg['bsl_cats']));
+            if (!empty($_aiR['filled'])) {
+                if ($_aiPair) $_aiProds[$_aiI][1] = $_aiR['product'];
+                else $_aiProds[$_aiI] = $_aiR['product'];
+                $_aiChanged = true;
+                $_aiFilled++;
+            }
+        }
+        if ($_aiChanged) {
+            $profileOnDisk['products'] = $_aiProds;
+            $profilesNow = loadProfiles();
+            $profilesNow[$pkFinal] = $profileOnDisk;
+            saveProfiles($profilesNow);
+            $profiles = $profilesNow;
+            $profile = $profileOnDisk;
+            $GLOBALS['_aiContentFilled'] = $_aiFilled;
+        }
+    }
+} catch (Throwable $_aiEx) { /* never break extract */ }
+
 /* v8.90: خلاصهٔ پایانی، جزئیات فاز ۲ را هم نگه دارد.
    قبلاً این نوشتن آخر، همهٔ لاگ و شمارنده‌های جزئیات را پاک می‌کرد و
    کاربر فقط یک خط «تکمیل شد» می‌دید — یعنی همان چیزی که می‌خواست بداند
    (چند صفحه باز شد، چند عکس آمد، چه چیزی نیامد) از بین می‌رفت. */
 $finalLog=['✅ استخراج تکمیل شد — '.count($allProducts).' محصول'];
+if (!empty($GLOBALS['_aiContentFilled'])) {
+    $finalLog[] = '   • 🤖 تولید خودکار توضیح/دسته: ' . (int)$GLOBALS['_aiContentFilled'] . ' محصول';
+    unset($GLOBALS['_aiContentFilled']);
+}
 $finalLog[]='   • 🆕 '.$newCount.' جدید · 💰 '.$priceChanged.' تغییر قیمت · ❌ '.$removedCount.' حذف‌شده · ⏭ '.$unchanged.' بدون تغییر';
 if($detailTotal>0){
 $finalLog[]='   • 🔍 جزئیات: '.$detailOk.' صفحه باز شد'
@@ -14132,13 +14502,17 @@ function bslUpsertManyShops(array $p, array $shops, array $opts, int $conc = 4):
     foreach ($live as $vid => $sh) if (empty($out[$vid]['ok'])) $toCreate[$vid] = $sh;
     if ($toCreate) {
         $catUsed = $catId;
+        /* v10.83: اگر AI قبلاً دستهٔ باسلام را روی محصول نوشته، همان را بگیر */
+        if ($catUsed <= 0) {
+            $catUsed = (int)($p['bsl_category_id'] ?? $p['category_id'] ?? 0);
+        }
         if ($catUsed <= 0 && $autoCat && !empty($flatCats)) {
             $_ac = autoMatchBslCategory($title, $flatCats);
             if ($_ac > 0) $catUsed = $_ac;
         }
         if ($catUsed > 0 && !empty($cData)) $catUsed = findLeafCategory($catUsed, $cData);
-        $brief = trim(strip_tags((string)($p['short_desc'] ?? '')));
-        $desc  = trim((string)($p['long_desc'] ?? ''));
+        $brief = trim(strip_tags((string)($p['short_desc'] ?? $p['shortDesc'] ?? $p['brief'] ?? '')));
+        $desc  = trim((string)($p['long_desc'] ?? $p['longDesc'] ?? $p['description'] ?? ''));
         if ($brief === '') $brief = trim(strip_tags($title));
         if ($desc === '')  $desc  = $brief;
         $jobs = [];
@@ -14250,13 +14624,17 @@ function bslUpsertToShop(array $p, array $shop, array $opts): array {
     }
 
     $catUsed = $catId;
+    /* v10.83: دستهٔ از پیش نگاشت‌شده روی محصول (AI content auto) */
+    if ($catUsed <= 0) {
+        $catUsed = (int)($p['bsl_category_id'] ?? $p['category_id'] ?? 0);
+    }
     if ($catUsed <= 0 && $autoCat && !empty($flatCats)) {
         $_ac = autoMatchBslCategory($title, $flatCats);
         if ($_ac > 0) $catUsed = $_ac;
     }
     if ($catUsed > 0 && !empty($cData) && is_array($cData)) $catUsed = findLeafCategory($catUsed, $cData);
-    $brief = trim(strip_tags((string)($p['short_desc'] ?? '')));
-    $desc  = trim((string)($p['long_desc'] ?? ''));
+    $brief = trim(strip_tags((string)($p['short_desc'] ?? $p['shortDesc'] ?? $p['brief'] ?? '')));
+    $desc  = trim((string)($p['long_desc'] ?? $p['longDesc'] ?? $p['description'] ?? ''));
     if ($brief === '') $brief = trim(strip_tags($title));
     if ($desc === '')  $desc  = $brief;
     $bp = ['name' => mb_substr($title, 0, 120), 'brief' => mb_substr($brief, 0, 250),
@@ -17163,6 +17541,16 @@ if (!manualSyncActive()) {
    ارسال و اعلان — که کارِ اصلیِ برنامه‌اند — قربانیِ یک کارِ هوش مصنوعی
    می‌شدند. پس آخر صف است: هرچه لازم است اول انجام شده، و اگر اینجا
    کشته شویم چیزی از دست نرفته و کارها در تیکِ بعدی سررسید می‌مانند. */
+/* v10.83: تولید خودکار توضیح/دسته برای محصولاتِ بدون محتوا (همهٔ پروفایل‌ها) */
+try {
+    $_aiAuto = aiContentAutoCfg($cn);
+    if (!empty($_aiAuto['enabled'])) {
+        $results['ai_content_auto'] = aiAutoFillMissingAcrossProfiles($cn);
+    }
+} catch (Throwable $e) {
+    $results['ai_content_auto'] = ['error' => mb_substr($e->getMessage(), 0, 200)];
+}
+
 try {
     $autoRes = autoTick($cn, $now);
     if (!empty($autoRes['ran'])) {
@@ -37724,6 +38112,36 @@ if (isset($_GET['ai_generate_product_content']) || ($_POST['action'] ?? '') === 
     exit;
 }
 
+/* v10.83: اجرای فوری تولید خودکار برای محصولاتِ بدون محتوا (همهٔ پروفایل‌ها) */
+if (isset($_GET['ai_content_auto_run']) || ($_POST['action'] ?? '') === 'ai_content_auto_run') {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(300);
+    $cn = loadConnections();
+    $lim = max(1, min(40, (int)($_REQUEST['limit'] ?? (aiContentAutoCfg($cn)['per_run'] ?? 8))));
+    /* force enabled for manual run */
+    $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
+    $stats = aiAutoFillMissingAcrossProfiles($cn, $lim);
+    echo json_encode($stats, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+if (isset($_GET['ai_content_auto_status'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $cn = loadConnections();
+    $cfg = aiContentAutoCfg($cn);
+    $need = 0; $total = 0;
+    foreach (loadProfiles() as $pr) {
+        if (!is_array($pr)) continue;
+        foreach ((array)($pr['products'] ?? []) as $e) {
+            $pp = (is_array($e) && isset($e[1]) && is_array($e[1])) ? $e[1] : (is_array($e) ? $e : null);
+            if (!is_array($pp)) continue;
+            $total++;
+            if (aiProductNeedsContent($pp)) $need++;
+        }
+    }
+    echo json_encode(['ok' => true, 'cfg' => $cfg, 'products_total' => $total, 'products_need' => $need], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if (isset($_GET['ai_category'])) {
 header('Content-Type: application/json; charset=UTF-8');
 $cn=loadConnections();$bs=$cn['basalam']??[];
@@ -47558,6 +47976,34 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
       </label>
     </div>
 
+    <!-- v10.83: همیشه فعال — پر کردن خودکار محصولات بدون توضیح/دسته -->
+    <div style="background:#0f172a;border:1px solid #065f46;border-radius:8px;padding:10px;margin-bottom:12px">
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" id="aiContentAutoEnabled" checked style="width:16px;height:16px;margin-top:2px" onchange="aiContentAutoSave()">
+        <span>
+          <b style="color:#34d399;font-size:12px">✅ همیشه فعال: تولید خودکار توضیح و دسته برای محصولات بدون محتوا</b>
+          <div style="font-size:10.5px;color:#94a3b8;line-height:1.75;margin-top:4px">
+            وقتی روشن باشد، بعد از استخراج و در هر کران، برای <b>همهٔ پروفایل‌ها</b> محصولاتی که توضیح کوتاه/بلند یا دسته ندارند
+            با هوش مصنوعی پر می‌شوند. دسته به <b style="color:#a7f3d0">فرمت باسلام (شناسهٔ برگ)</b> نگاشت می‌شود تا ارسال سریع‌تر شود.
+          </div>
+        </span>
+      </label>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;padding-right:24px;align-items:center">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd5e1;cursor:pointer">
+          <input type="checkbox" id="aiContentAutoWeb" checked style="width:14px;height:14px" onchange="aiContentAutoSave()"> جستجوی وب
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd5e1;cursor:pointer">
+          <input type="checkbox" id="aiContentAutoBsl" checked style="width:14px;height:14px" onchange="aiContentAutoSave()"> نگاشت دسته به باسلام
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd5e1">
+          سقف هر نوبت:
+          <input type="number" id="aiContentAutoPerRun" value="8" min="1" max="40" style="width:56px;background:#111c31;border:1px solid #334155;border-radius:6px;color:#e2e8f0;padding:3px 6px" onchange="aiContentAutoSave()">
+        </label>
+        <button type="button" class="btn btn-emerald" onclick="aiContentAutoRunNow()" style="font-size:10.5px;padding:4px 10px">▶ الان برای محصولاتِ ناقص اجرا کن</button>
+        <span id="aiContentAutoStat" style="font-size:10px;color:#64748b"></span>
+      </div>
+    </div>
+
     <div style="display:flex;gap:8px">
       <button type="button" class="btn btn-emerald" id="btnAiRunGen" onclick="aiRunContentGen()" style="flex:1;padding:9px;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;gap:6px">
         <span>🚀</span> جستجو در وب و ساخت هوشمند توضیحات و دسته‌بندی
@@ -47588,6 +48034,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
         <button type="button" class="btn btn-blue" onclick="aiCopyGenCat()" style="font-size:9.5px;padding:2px 8px">کپی دسته‌بندی</button>
       </div>
       <input type="text" id="aiGenResCat" readonly style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:7px 10px;color:#38bdf8;font-weight:700;font-size:11.5px;box-sizing:border-box">
+      <div id="aiGenResBsl" style="margin-top:4px;font-size:10.5px;color:#a7f3d0;display:none"></div>
     </div>
 
     <!-- فیلد معرفی کوتاه -->
@@ -61931,7 +62378,16 @@ const ne=cn.notif_events||{};/* v10.45: نبودِ کلید = روشن، صری�
 if($('remindAfter'))$('remindAfter').value=(cn.notif_remind_after!==undefined?cn.notif_remind_after:30);if($('remindMax'))$('remindMax').value=(cn.notif_remind_max!==undefined?cn.notif_remind_max:0);if($('qDedup'))$('qDedup').checked=cn.queue_dedup!==false;if($('qDedupStale'))$('qDedupStale').value=Math.round((cn.queue_dedup_stale!==undefined?cn.queue_dedup_stale:7200)/60);if($('cronLockMin'))$('cronLockMin').value=(cn.cron_lock_min||30);if($('keepReports'))$('keepReports').value=(cn.keep_reports||20);if($('contentSync'))$('contentSync').checked=(cn.content_sync!==false);if($('catLearnWords'))$('catLearnWords').value=String(cn.catlearn_words||1);catLearnWordsCfg=parseInt(cn.catlearn_words||1)||1;updateCatWordsBadge();if($('digestEnabled'))$('digestEnabled').checked=!!cn.digest_enabled;if($('digestHour')){if(!$('digestHour').options.length){let hh='';for(let i=0;i<24;i++)hh+='<option value="'+i+'">'+toFa(String(i).padStart(2,'0'))+':۰۰</option>';$('digestHour').innerHTML=hh;}$('digestHour').value=String(cn.digest_hour!==undefined?cn.digest_hour:23);}if($('digestHours'))$('digestHours').value=String(cn.digest_hours||24);updateDigestBadge();updateGenBadge();if($('retireMode'))$('retireMode').value=cn.retire_mode||'off';if($('retireWooAction'))$('retireWooAction').value=cn.retire_woo_action||'delete';if($('retireBslAction'))$('retireBslAction').value=cn.retire_bsl_action||'delete';if($('retireMaxPct'))$('retireMaxPct').value=cn.retire_max_pct||30;if($('retireMaxCount'))$('retireMaxCount').value=cn.retire_max_count||50;if($('stallWatchdog'))$('stallWatchdog').checked=cn.stall_watchdog!==false;if($('stallAfter'))$('stallAfter').value=cn.stall_after||300;if($('autoResume'))$('autoResume').checked=cn.auto_resume!==false;if($('autoResumeMax'))$('autoResumeMax').value=(cn.auto_resume_max||2);if($('bslCatAuto'))$('bslCatAuto').checked=cn.bsl_catalog_auto!==false;if($('bslCatTtl'))$('bslCatTtl').value=(cn.bsl_catalog_ttl_h!==undefined?cn.bsl_catalog_ttl_h:6);if($('detailBudget'))$('detailBudget').value=(cn.detail_budget_sec!==undefined?cn.detail_budget_sec:0);if($('proxyTimeout'))$('proxyTimeout').value=(cn.proxy_timeout_sec||45);srcNetApply(cn.src_net||{});updateRetireBadge();updateStallBadge();
 updN();if(b.token&&bslAllCats.length===0){loadBslCats();}
 renderNotifHealth(); /* v10.46 (۶۰): خطِ وضعیتِ اعلان‌ها */
-arApplyCfg(cn.autoreply||{});arLoad();}
+arApplyCfg(cn.autoreply||{});arLoad();
+try{
+  const aca=cn.ai_content_auto||{};
+  if($('aiContentAutoEnabled'))$('aiContentAutoEnabled').checked=(aca.enabled!==false&&aca.enabled!==0&&aca.enabled!=='0');
+  if($('aiContentAutoWeb'))$('aiContentAutoWeb').checked=aca.web_search!==false;
+  if($('aiContentAutoBsl'))$('aiContentAutoBsl').checked=aca.bsl_cats!==false;
+  if($('aiContentAutoPerRun')&&aca.per_run)$('aiContentAutoPerRun').value=String(aca.per_run);
+  aiContentAutoRefreshStat();
+}catch(e){}
+}
 /* v8.87: پیش‌نمایش زندهٔ تعدیل قیمت مقصد.
    روی یک قیمت نمونه نشان می‌دهد نتیجه چه می‌شود، تا قبل از ذخیره معلوم
    باشد درصد درست وارد شده یا نه (مثلاً ۲۰- به‌جای ۲۰). */
@@ -61966,7 +62422,15 @@ fd.append('ai_net',JSON.stringify(getAiNet()));
 fd.append('baleh',JSON.stringify({enabled:$('balehEnabled')?.checked?1:0,token:$('balehToken')?.value||'',chat_id:$('balehChatId')?.value||''}));
 fd.append('rubika',JSON.stringify({enabled:$('rubikaEnabled')?.checked?1:0,token:$('rubikaToken')?.value||'',chat_id:$('rubikaChatId')?.value||''}));
 fd.append('telegram',JSON.stringify({enabled:$('telegramEnabled')?.checked?1:0,token:$('telegramToken')?.value||'',chat_id:$('telegramChatId')?.value||''}));
-fd.append('notif_events',JSON.stringify({order_new:$('notifOrderNew')?.checked?1:0,order_status:$('notifOrderStatus')?.checked?1:0,chat_msg:$('notifChatMsg')?.checked?1:0,product_status:$('notifProductStatus')?.checked?1:0,product_new:$('notifProductNew')?.checked?1:0,order_refund:$('notifOrderRefund')?.checked?1:0,src_price:$('notifSrcPrice')?.checked?1:0,src_stock:$('notifSrcStock')?.checked?1:0,run_fail:$('notifRunFail')?.checked?1:0,retire:$('notifRetire')?.checked?1:0,cron_ping:$('notifCronPing')?.checked?1:0,sync_report:$('notifSyncReport')?.checked?1:0}));/* v10.46 (۶۰): غرفهٔ انتخاب‌شده برای پیام مشتری */fd.append('notif_chat_shop',String($('notifChatShop')?.value||0));fd.append('notif_scan_limit',$('notifScanLimit')?.value||20); /* v10.86 (100) */fd.append('ping_every',$('pingEvery')?.value||360);fd.append('notif_remind_after',$('remindAfter')?.value??30);fd.append('notif_remind_max',$('remindMax')?.value??0);fd.append('queue_dedup',$('qDedup')?.checked?1:0);fd.append('queue_dedup_stale',Math.round((parseInt($('qDedupStale')?.value)||0)*60));fd.append('cron_lock_min',$('cronLockMin')?.value??30);fd.append('keep_reports',$('keepReports')?.value??20);fd.append('content_sync',$('contentSync')?.checked?1:0);fd.append('catlearn_words',$('catLearnWords')?.value??1);fd.append('digest_enabled',$('digestEnabled')?.checked?1:0);fd.append('digest_hour',$('digestHour')?.value??23);fd.append('digest_hours',$('digestHours')?.value??24);fd.append('retire_mode',$('retireMode')?.value||'off');fd.append('retire_woo_action',$('retireWooAction')?.value||'delete');fd.append('retire_bsl_action',$('retireBslAction')?.value||'delete');fd.append('retire_max_pct',$('retireMaxPct')?.value||30);fd.append('retire_max_count',$('retireMaxCount')?.value||50);fd.append('stall_watchdog',$('stallWatchdog')?.checked?1:0);fd.append('stall_after',$('stallAfter')?.value||300);fd.append('auto_resume',$('autoResume')?.checked?1:0);fd.append('auto_resume_max',$('autoResumeMax')?.value||2);fd.append('bsl_catalog_auto',$('bslCatAuto')?.checked?1:0);fd.append('bsl_catalog_ttl_h',$('bslCatTtl')?.value||6);fd.append('detail_budget_sec',$('detailBudget')?.value??0);fd.append('proxy_timeout_sec',$('proxyTimeout')?.value??45);fd.append('src_net',JSON.stringify(srcNetCollect()));fd.append('autoreply',JSON.stringify(arCollectCfg()));fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+fd.append('notif_events',JSON.stringify({order_new:$('notifOrderNew')?.checked?1:0,order_status:$('notifOrderStatus')?.checked?1:0,chat_msg:$('notifChatMsg')?.checked?1:0,product_status:$('notifProductStatus')?.checked?1:0,product_new:$('notifProductNew')?.checked?1:0,order_refund:$('notifOrderRefund')?.checked?1:0,src_price:$('notifSrcPrice')?.checked?1:0,src_stock:$('notifSrcStock')?.checked?1:0,run_fail:$('notifRunFail')?.checked?1:0,retire:$('notifRetire')?.checked?1:0,cron_ping:$('notifCronPing')?.checked?1:0,sync_report:$('notifSyncReport')?.checked?1:0}));/* v10.46 (۶۰): غرفهٔ انتخاب‌شده برای پیام مشتری */fd.append('notif_chat_shop',String($('notifChatShop')?.value||0));fd.append('notif_scan_limit',$('notifScanLimit')?.value||20); /* v10.86 (100) */fd.append('ping_every',$('pingEvery')?.value||360);fd.append('notif_remind_after',$('remindAfter')?.value??30);fd.append('notif_remind_max',$('remindMax')?.value??0);fd.append('queue_dedup',$('qDedup')?.checked?1:0);fd.append('queue_dedup_stale',Math.round((parseInt($('qDedupStale')?.value)||0)*60));fd.append('cron_lock_min',$('cronLockMin')?.value??30);fd.append('keep_reports',$('keepReports')?.value??20);fd.append('content_sync',$('contentSync')?.checked?1:0);fd.append('catlearn_words',$('catLearnWords')?.value??1);fd.append('digest_enabled',$('digestEnabled')?.checked?1:0);fd.append('digest_hour',$('digestHour')?.value??23);fd.append('digest_hours',$('digestHours')?.value??24);fd.append('retire_mode',$('retireMode')?.value||'off');fd.append('retire_woo_action',$('retireWooAction')?.value||'delete');fd.append('retire_bsl_action',$('retireBslAction')?.value||'delete');fd.append('retire_max_pct',$('retireMaxPct')?.value||30);fd.append('retire_max_count',$('retireMaxCount')?.value||50);fd.append('stall_watchdog',$('stallWatchdog')?.checked?1:0);fd.append('stall_after',$('stallAfter')?.value||300);fd.append('auto_resume',$('autoResume')?.checked?1:0);fd.append('auto_resume_max',$('autoResumeMax')?.value||2);fd.append('bsl_catalog_auto',$('bslCatAuto')?.checked?1:0);fd.append('bsl_catalog_ttl_h',$('bslCatTtl')?.value||6);fd.append('detail_budget_sec',$('detailBudget')?.value??0);fd.append('proxy_timeout_sec',$('proxyTimeout')?.value??45);fd.append('src_net',JSON.stringify(srcNetCollect()));fd.append('autoreply',JSON.stringify(arCollectCfg()));
+fd.append('ai_content_auto',JSON.stringify({
+  enabled:!!($('aiContentAutoEnabled')&&$('aiContentAutoEnabled').checked),
+  web_search:!!($('aiContentAutoWeb')&&$('aiContentAutoWeb').checked),
+  bsl_cats:!!($('aiContentAutoBsl')&&$('aiContentAutoBsl').checked),
+  only_missing:true,
+  per_run:parseInt(($('aiContentAutoPerRun')||{}).value)||8
+}));
+fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
 if(!window._connSaveNoToast)showToast(d.ok?'✓ ذخیره شد':'خطا',!d.ok);
 window._connSaveNoToast=false;_connSaveIndicator(d.ok?'ok':'err');
 }).catch(()=>{if(!window._connSaveNoToast)showToast('خطا',1);window._connSaveNoToast=false;_connSaveIndicator('err');});}
@@ -64015,6 +64479,36 @@ function aiCopyGenHtml(){
     el.select(); document.execCommand('copy'); showToast('کپی شد ✓');
   });
 }
+
+/* v10.83: تیک همیشه-فعال تولید خودکار توضیح/دسته */
+function aiContentAutoSave(){
+  try{ if(typeof scheduleConnSave==='function') scheduleConnSave();
+       else if(typeof saveConn==='function'){ window._connSaveNoToast=true; saveConn(); }
+  }catch(e){}
+  aiContentAutoRefreshStat();
+}
+function aiContentAutoRefreshStat(){
+  const el=$('aiContentAutoStat'); if(!el)return;
+  fetch('?ai_content_auto_status=1').then(r=>r.json()).then(d=>{
+    if(!d||!d.ok){el.textContent='';return;}
+    const on=d.cfg&&d.cfg.enabled;
+    el.innerHTML=(on?'<span style="color:#34d399">● فعال</span>':'<span style="color:#64748b">○ خاموش</span>')
+      +' · نیاز به محتوا: <b style="color:#fbbf24">'+toFa(d.products_need||0)+'</b> از '+toFa(d.products_total||0);
+  }).catch(()=>{});
+}
+function aiContentAutoRunNow(){
+  const el=$('aiContentAutoStat');
+  if(el)el.textContent='⏳ در حال تولید…';
+  const lim=parseInt(($('aiContentAutoPerRun')||{}).value)||8;
+  fetch('?ai_content_auto_run=1&limit='+encodeURIComponent(lim)).then(r=>r.json()).then(d=>{
+    if(!d){showToast('پاسخ خالی',1);return;}
+    const msg='پر شد: '+toFa(d.filled||0)+' · ناموفق: '+toFa(d.failed||0)+' · نیاز: '+toFa(d.needed||0);
+    showToast(d.ok!==false?('🤖 '+msg):('خطا: '+(d.error||'')), !d.ok);
+    if(el)el.textContent=msg;
+    aiContentAutoRefreshStat();
+  }).catch(()=>{showToast('خطا شبکه',1);if(el)el.textContent='';});
+}
+
 function aiRunContentGen(){
   const inp = $('aiGenProdTitle');
   const title = (inp ? inp.value : '').trim();
@@ -64073,6 +64567,16 @@ function aiRunContentGen(){
 
       const catInp = $('aiGenResCat');
       if(catInp) catInp.value = d.category || 'کالای عمومی';
+      const bslEl = $('aiGenResBsl');
+      if(bslEl){
+        if(d.bsl_category_id){
+          bslEl.style.display='block';
+          bslEl.textContent='🟢 باسلام: #'+d.bsl_category_id+(d.bsl_category_name?(' — '+d.bsl_category_name):'')+(d.bsl_category_via?(' ('+d.bsl_category_via+')'):'');
+        }else{
+          bslEl.style.display='block';
+          bslEl.textContent='⚠️ شناسهٔ باسلام نگاشت نشد — نام دسته ذخیره شد؛ auto_category هنگام ارسال کمک می‌کند';
+        }
+      }
 
       const shortBox = $('aiGenResShort');
       if(shortBox) shortBox.value = d.short_description || '';

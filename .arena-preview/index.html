@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AMPHP Storefront Sandbox Preview</title>
+<link rel="stylesheet" href="/asset/js/storefront/storefront.css?ver=13.1.1" id="amphp-storefront-css">
+<style>
+html,body{margin:0;padding:0;background:#f4f6fb;font-family:Tahoma,'Segoe UI',system-ui,sans-serif}
+*{box-sizing:border-box}
+</style>
+</head>
+<body class="scraper-standalone-shop-takeover amphp-react-storefront amphp-bare">
+<div class="scraper-shop-fullscreen-wrap" id="amphp-bare-root">
+  <div id="amphp-storefront-root" class="amphp-storefront-root" data-engine="react" dir="rtl">
+    <div class="amphp-sf-bootwait" style="padding:32px 16px;text-align:center;font-family:Tahoma,sans-serif;color:#64748b;font-size:.95rem;font-weight:700;">در حال بارگذاری…</div>
+  </div>
+</div>
+<script src="/boot-sample.js"></script>
+<script src="/asset/js/storefront/storefront.js?ver=13.1.1" id="amphp-storefront-js"></script>
+<script>
+(function(){
+  setTimeout(function(){
+    var el = document.getElementById('amphp-storefront-root');
+    window.__AMPHP_TEST__ = {
+      mounted: el && el.getAttribute('data-mounted') === '1',
+      hasHeader: !!(el && el.querySelector('.sf-header, .sf-header-wrap')),
+      hasGrid: !!(el && el.querySelector('.sf-grid, .sf-card')),
+      hasBootWait: !!(el && el.querySelector('.amphp-sf-bootwait')),
+      productCards: el ? el.querySelectorAll('.sf-card').length : 0,
+      text: el ? (el.innerText || '').slice(0, 200) : ''
+    };
+    console.log('AMPHP_TEST', window.__AMPHP_TEST__);
+    document.title = window.__AMPHP_TEST__.mounted ? 'AMPHP OK' : 'AMPHP FAIL';
+  }, 1500);
+})();
+</script>
+</body>
+</html>

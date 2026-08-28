@@ -1920,6 +1920,259 @@ if($d!==null)curl_setopt($ch,CURLOPT_POSTFIELDS,json_encode($d,JSON_UNESCAPED_UN
 $b=curl_exec($ch);$e=curl_error($ch);$code=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);curl_close($ch);
 return ['ok'=>$code>=200&&$code<300,'code'=>$code,'error'=>$e,'body'=>@json_decode($b,true),'raw'=>$b];
 }
+
+/**
+ * v10.82: حالت همگام‌سازی ووکامرس
+ *   sync_mode: api | direct
+ *   sync_fallback: api_then_direct | direct_then_api | none
+ */
+function wooSyncMode(?array $w = null): string {
+    $w = $w ?? ((loadConnections()['woocommerce'] ?? []) ?: []);
+    $m = strtolower(trim((string)($w['sync_mode'] ?? 'api')));
+    return in_array($m, ['api', 'direct'], true) ? $m : 'api';
+}
+function wooSyncFallback(?array $w = null): string {
+    $w = $w ?? ((loadConnections()['woocommerce'] ?? []) ?: []);
+    $f = strtolower(trim((string)($w['sync_fallback'] ?? 'api_then_direct')));
+    $ok = ['api_then_direct', 'direct_then_api', 'none', 'api', 'direct'];
+    if (!in_array($f, $ok, true)) $f = 'api_then_direct';
+    // aliases
+    if ($f === 'api') $f = 'api_then_direct';
+    if ($f === 'direct') $f = 'direct_then_api';
+    return $f;
+}
+/** آیا همگام مستقیم (CRUD وردپرس/ووکامرس) در این پردازه ممکن است؟ */
+function wooDirectAvailable(): bool {
+    return class_exists('WooCommerce')
+        || class_exists('WC_Product_Simple')
+        || function_exists('wc_get_product');
+}
+/**
+ * ترتیب تلاش: primary سپس fallback (در صورت نیاز).
+ * @return list<string> e.g. ['direct','api']
+ */
+function wooSyncAttemptOrder(?array $w = null): array {
+    $mode = wooSyncMode($w);
+    $fb = wooSyncFallback($w);
+    $order = [$mode];
+    if ($fb === 'none') return $order;
+    if ($mode === 'api' && ($fb === 'api_then_direct' || $fb === 'direct_then_api')) {
+        $order[] = 'direct';
+    } elseif ($mode === 'direct' && ($fb === 'direct_then_api' || $fb === 'api_then_direct')) {
+        $order[] = 'api';
+    }
+    // unique preserve order
+    $out = [];
+    foreach ($order as $x) {
+        if ($x === 'direct' && !wooDirectAvailable()) continue;
+        if (!in_array($x, $out, true)) $out[] = $x;
+    }
+    if (!$out) $out = ['api'];
+    return $out;
+}
+
+/**
+ * ساخت/آپدیت محصول با CRUD مستقیم ووکامرس (بدون REST).
+ * @return array{ok:bool,code?:int,error?:string,body?:array,via?:string,raw?:string}
+ */
+function wooDirectUpsert(array $wp, ?int $existingId = null, string $productKey = ''): array {
+    if (!wooDirectAvailable()) {
+        return ['ok' => false, 'code' => 0, 'error' => 'ووکامرس در همین PHP لود نیست — همگام مستقیم ممکن نیست', 'via' => 'direct'];
+    }
+    try {
+        if (!function_exists('wc_get_product') && !class_exists('WC_Product_Simple')) {
+            return ['ok' => false, 'code' => 0, 'error' => 'WC_Product در دسترس نیست', 'via' => 'direct'];
+        }
+        $product = null;
+        $isUpdate = false;
+        if ($existingId && $existingId > 0 && function_exists('wc_get_product')) {
+            $product = wc_get_product($existingId);
+            if ($product) $isUpdate = true;
+        }
+        if (!$product && $productKey !== '' && class_exists('WP_Query')) {
+            // meta lookup
+            $q = new WP_Query([
+                'post_type' => 'product', 'post_status' => 'any', 'posts_per_page' => 1,
+                'fields' => 'ids', 'no_found_rows' => true,
+                'meta_query' => [['key' => '_amphp_product_key', 'value' => $productKey]],
+            ]);
+            if (!empty($q->posts[0])) {
+                $product = wc_get_product((int)$q->posts[0]);
+                if ($product) { $isUpdate = true; $existingId = (int)$q->posts[0]; }
+            }
+            wp_reset_postdata();
+        }
+        if (!$product) {
+            if (!empty($wp['sku']) && function_exists('wc_get_product_id_by_sku')) {
+                $sid = (int)wc_get_product_id_by_sku((string)$wp['sku']);
+                if ($sid > 0) {
+                    $product = wc_get_product($sid);
+                    if ($product) { $isUpdate = true; $existingId = $sid; }
+                }
+            }
+        }
+        if (!$product) {
+            if (class_exists('WC_Product_Variable') && (($wp['type'] ?? '') === 'variable')) {
+                $product = new WC_Product_Variable();
+            } else {
+                $product = class_exists('WC_Product_Simple') ? new WC_Product_Simple() : null;
+            }
+            if (!$product) {
+                return ['ok' => false, 'code' => 0, 'error' => 'نمی‌توان WC_Product ساخت', 'via' => 'direct'];
+            }
+        }
+
+        if (isset($wp['name'])) $product->set_name((string)$wp['name']);
+        if (isset($wp['status'])) $product->set_status((string)$wp['status']);
+        if (isset($wp['description'])) $product->set_description((string)$wp['description']);
+        if (isset($wp['short_description'])) $product->set_short_description((string)$wp['short_description']);
+        if (isset($wp['sku']) && $wp['sku'] !== '') {
+            try { $product->set_sku((string)$wp['sku']); } catch (Throwable $e) { /* sku conflict */ }
+        }
+        if (isset($wp['regular_price'])) $product->set_regular_price((string)$wp['regular_price']);
+        if (isset($wp['sale_price'])) $product->set_sale_price((string)$wp['sale_price']);
+        if (array_key_exists('manage_stock', $wp)) $product->set_manage_stock(!empty($wp['manage_stock']));
+        if (isset($wp['stock_quantity'])) $product->set_stock_quantity((int)$wp['stock_quantity']);
+        if (isset($wp['stock_status'])) $product->set_stock_status((string)$wp['stock_status']);
+        elseif (!empty($wp['manage_stock'])) $product->set_stock_status(((int)($wp['stock_quantity'] ?? 0) > 0) ? 'instock' : 'outofstock');
+        else $product->set_stock_status('instock');
+
+        if (!empty($wp['categories']) && is_array($wp['categories'])) {
+            $ids = [];
+            foreach ($wp['categories'] as $c) {
+                if (is_array($c) && !empty($c['id'])) $ids[] = (int)$c['id'];
+                elseif (is_numeric($c)) $ids[] = (int)$c;
+            }
+            if ($ids) $product->set_category_ids($ids);
+        }
+
+        // images: [{id: N}] or [{src: url}]
+        if (!empty($wp['images']) && is_array($wp['images'])) {
+            $imgIds = [];
+            foreach ($wp['images'] as $im) {
+                if (is_array($im) && !empty($im['id'])) $imgIds[] = (int)$im['id'];
+                elseif (is_array($im) && !empty($im['src'])) {
+                    $aid = wooDirectSideloadImage((string)$im['src'], (string)($wp['name'] ?? 'product'));
+                    if ($aid > 0) $imgIds[] = $aid;
+                }
+            }
+            if ($imgIds) {
+                $product->set_image_id($imgIds[0]);
+                if (count($imgIds) > 1) $product->set_gallery_image_ids(array_slice($imgIds, 1));
+            }
+        }
+
+        if (!empty($wp['attributes']) && is_array($wp['attributes']) && method_exists($product, 'set_attributes')) {
+            // leave complex attrs to API path if needed — best-effort skip
+        }
+
+        $id = $product->save();
+        if (!$id || is_wp_error($id)) {
+            $err = is_wp_error($id) ? $id->get_error_message() : 'save failed';
+            return ['ok' => false, 'code' => 500, 'error' => $err, 'via' => 'direct'];
+        }
+        $id = (int)$id;
+        if ($productKey !== '') {
+            update_post_meta($id, '_amphp_product_key', $productKey);
+        }
+        update_post_meta($id, '_amphp_sync_via', 'direct');
+        $body = ['id' => $id, 'name' => $product->get_name(), 'permalink' => $product->get_permalink()];
+        return ['ok' => true, 'code' => $isUpdate ? 200 : 201, 'body' => $body, 'via' => 'direct', 'updated' => $isUpdate];
+    } catch (Throwable $e) {
+        return ['ok' => false, 'code' => 500, 'error' => $e->getMessage(), 'via' => 'direct'];
+    }
+}
+
+/** sideload تصویر خارجی → attachment id */
+function wooDirectSideloadImage(string $url, string $title = ''): int {
+    if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) return 0;
+    if (!function_exists('media_sideload_image')) {
+        if (!defined('ABSPATH')) return 0;
+        @require_once ABSPATH . 'wp-admin/includes/media.php';
+        @require_once ABSPATH . 'wp-admin/includes/file.php';
+        @require_once ABSPATH . 'wp-admin/includes/image.php';
+    }
+    if (!function_exists('media_sideload_image')) return 0;
+    try {
+        $att = media_sideload_image($url, 0, $title !== '' ? $title : null, 'id');
+        if (is_wp_error($att)) return 0;
+        return (int)$att;
+    } catch (Throwable $e) {
+        return 0;
+    }
+}
+
+/**
+ * پیدا کردن محصول موجود: اول meta/کلید، بعد API search (اگر لازم).
+ */
+function wooFindExistingSmart(array $w, string $title, string $suffix = '', string $productKey = ''): ?array {
+    if ($productKey !== '' && wooDirectAvailable() && class_exists('WP_Query') && class_exists('WooCommerce')) {
+        try {
+            $q = new WP_Query([
+                'post_type' => 'product', 'post_status' => 'any', 'posts_per_page' => 1,
+                'fields' => 'ids', 'no_found_rows' => true,
+                'meta_query' => [['key' => '_amphp_product_key', 'value' => $productKey]],
+            ]);
+            if (!empty($q->posts[0])) {
+                $pid = (int)$q->posts[0];
+                wp_reset_postdata();
+                return ['id' => $pid, 'name' => get_the_title($pid), 'via' => 'direct_meta'];
+            }
+            wp_reset_postdata();
+        } catch (Throwable $e) {}
+    }
+    if (function_exists('wooFindExisting')) {
+        $ex = wooFindExisting($w, $title, $suffix, $productKey);
+        if (is_array($ex) && !empty($ex['id'])) return $ex;
+    }
+    return null;
+}
+
+/**
+ * یک درخواست create/update با ترتیب sync_mode + fallback.
+ * $wp = payload شبیه REST
+ */
+function wooUpsertWithMode(array $w, array $wp, ?array $existing = null, string $productKey = ''): array {
+    $attempts = wooSyncAttemptOrder($w);
+    $last = ['ok' => false, 'error' => 'no attempt', 'via' => ''];
+    $exId = $existing ? (int)($existing['id'] ?? 0) : 0;
+    foreach ($attempts as $via) {
+        if ($via === 'direct') {
+            $r = wooDirectUpsert($wp, $exId > 0 ? $exId : null, $productKey);
+            $r['attempt'] = $via;
+            if (!empty($r['ok'])) return $r;
+            $last = $r;
+            continue;
+        }
+        // API
+        $store = (string)($w['store_url'] ?? '');
+        $ck = (string)($w['consumer_key'] ?? '');
+        $cs = (string)($w['consumer_secret'] ?? '');
+        if ($store === '' || $ck === '' || $cs === '') {
+            $last = ['ok' => false, 'error' => 'تنظیمات API ووکامرس ناقص', 'via' => 'api'];
+            continue;
+        }
+        if ($exId > 0) {
+            $r = wooReq($store, $ck, $cs, 'PUT', 'products/' . $exId, $wp);
+        } else {
+            $r = wooReq($store, $ck, $cs, 'POST', 'products', $wp);
+        }
+        $r['via'] = 'api';
+        $r['attempt'] = 'api';
+        if (!empty($r['ok'])) {
+            // stamp meta if direct available
+            $newId = (int)($r['body']['id'] ?? 0);
+            if ($newId > 0 && $productKey !== '' && function_exists('update_post_meta') && wooDirectAvailable()) {
+                try { update_post_meta($newId, '_amphp_product_key', $productKey); } catch (Throwable $e) {}
+            }
+            return $r;
+        }
+        $last = $r;
+    }
+    return $last;
+}
+
+
 /* =====================================================================
  *  v8.61: راه‌های عبور برای اتصال به سرویس‌های هوش مصنوعی
  *
@@ -11916,7 +12169,12 @@ if (($_POST['action'] ?? '') === 'save_connections') {
 ob_clean();
 header('Content-Type: application/json; charset=UTF-8');
 $conn = loadConnections();
-if (isset($_POST['woocommerce'])) { $w = json_decode($_POST['woocommerce'], true) ?: []; $conn['woocommerce'] = ['enabled'=>!empty($w['enabled']),'store_url'=>trim($w['store_url']??''),'consumer_key'=>trim($w['consumer_key']??''),'consumer_secret'=>trim($w['consumer_secret']??''),'default_category'=>(int)($w['default_category']??0),'default_status'=>$w['default_status']??'draft','stock_quantity'=>(int)($w['stock_quantity']??10),'manage_stock'=>!empty($w['manage_stock']),'price_mode'=>in_array(($w['price_mode']??'none'),['none','percent','multiplier'],true)?(string)$w['price_mode']:'none','price_val'=>(float)($w['price_val']??0),'price_round'=>max(0,(int)($w['price_round']??0))]; }
+if (isset($_POST['woocommerce'])) { $w = json_decode($_POST['woocommerce'], true) ?: [];
+    $_wMode = strtolower(trim((string)($w['sync_mode'] ?? 'api')));
+    if (!in_array($_wMode, ['api', 'direct'], true)) $_wMode = 'api';
+    $_wFb = strtolower(trim((string)($w['sync_fallback'] ?? 'api_then_direct')));
+    if (!in_array($_wFb, ['api_then_direct', 'direct_then_api', 'none'], true)) $_wFb = 'api_then_direct';
+    $conn['woocommerce'] = ['enabled'=>!empty($w['enabled']),'store_url'=>trim($w['store_url']??''),'consumer_key'=>trim($w['consumer_key']??''),'consumer_secret'=>trim($w['consumer_secret']??''),'default_category'=>(int)($w['default_category']??0),'default_status'=>$w['default_status']??'draft','stock_quantity'=>(int)($w['stock_quantity']??10),'manage_stock'=>!empty($w['manage_stock']),'price_mode'=>in_array(($w['price_mode']??'none'),['none','percent','multiplier'],true)?(string)$w['price_mode']:'none','price_val'=>(float)($w['price_val']??0),'price_round'=>max(0,(int)($w['price_round']??0)),'sync_mode'=>$_wMode,'sync_fallback'=>$_wFb]; }
 if (isset($_POST['basalam'])) { $b = json_decode($_POST['basalam'], true) ?: []; $fallbackCats=array_values(array_filter(array_map('intval',$b['fallback_cat_ids']??[]),function($v){return $v>0;})); $vendors=[]; if(!empty($b['vendors'])&&is_array($b['vendors'])){foreach($b['vendors'] as $v){$vid=(int)($v['vendor_id']??0);$vt=trim($v['token']??'');if($vid>0&&$vt!=='')$vendors[]=['vendor_id'=>$vid,'token'=>$vt,'name'=>trim($v['name']??''),'shop_name'=>trim($v['shop_name']??''),'price_mode'=>in_array(($v['price_mode']??'none'),['none','percent','multiplier'],true)?(string)$v['price_mode']:'none','price_val'=>(float)($v['price_val']??0)];}} $conn['basalam'] = ['enabled'=>!empty($b['enabled']),'token'=>trim($b['token']??''),'vendor_id'=>(int)($b['vendor_id']??0),'preparation_days'=>(int)($b['preparation_days']??3),'weight'=>(int)($b['weight']??500),'package_weight'=>(int)($b['package_weight']??0),'stock'=>(int)($b['stock']??10),'net_indirect'=>!empty($b['net_indirect']),'category_id'=>(int)($b['category_id']??0),'auto_category'=>!empty($b['auto_category']),'send_all_shops'=>!empty($b['send_all_shops']),'fallback_cat_ids'=>$fallbackCats,'vendors'=>$vendors,'price_mode'=>in_array(($b['price_mode']??'none'),['none','percent','multiplier'],true)?(string)$b['price_mode']:'none','price_val'=>(float)($b['price_val']??0),'price_round'=>max(0,(int)($b['price_round']??0))]; }
 
 if (isset($_POST['ai'])) { $a = json_decode($_POST['ai'], true) ?: []; $conn['ai'] = ['enabled'=>!empty($a['enabled']),'api_key'=>trim($a['api_key']??''),'base_url'=>trim($a['base_url']??'https://dashscope.aliyuncs.com/compatible-mode/v1'),'model'=>trim($a['model']??'qwen-plus'),'temperature'=>(float)($a['temperature']??0.1)]; }
@@ -25619,152 +25877,12 @@ if (isset($_GET['selftest'])) {
     $add('10.50', 'نسخهٔ ۱۰.۵۰',
          str_contains($selfSrc, "const APP_VERSION = '10.50';"));
     $add('10.50', 'Manual sync send is fully server-side: manual worker drives queue in rounds',
-         (strpos($selfSrc, "
-/**
- * v10.81: صف‌سازی ارسال برای یک پروفایل بعد از استخراج بک‌اند (همگام دستی).
- * منطق خلاصه‌شده از حلقهٔ کران — بدون قفل کران.
- */
-function manualSyncEnqueueSends(string $key, array $profile, array $cn, array $exRes): array {
-    $out = ['log' => [], 'woo' => false, 'bsl' => false];
-    $syncCfg = is_array($profile['syncConfig'] ?? null) ? $profile['syncConfig'] : [];
-    $target = (string)($syncCfg['target'] ?? 'woo');
-    if (!in_array($target, ['woo', 'bsl', 'both', 'none'], true)) $target = 'woo';
-    if ($target === 'none') {
-        $out['log'][] = '⏭ مقصد none';
-        return $out;
-    }
-    $now = time();
-    /* Build product list from profile disk */
-    $products = [];
-    foreach ((array)($profile['products'] ?? []) as $entry) {
-        if (is_array($entry) && count($entry) === 2 && is_array($entry[1])) {
-            $pk = (string)$entry[0];
-            $products[$pk] = $entry[1];
-            $products[$pk]['key'] = $pk;
-        }
-    }
-    if (!$products) {
-        $out['log'][] = '⚠️ محصولی روی دیسک نیست — صف ارسال خالی';
-        return $out;
-    }
-    $out['log'][] = '📦 ' . count($products) . ' محصول برای صف ارسال';
-
-    $wooOn = ($target === 'woo' || $target === 'both') && !empty($syncCfg['wooAddUpdate']);
-    $bslOn = ($target === 'bsl' || $target === 'both') && !empty($syncCfg['bslAddUpdate']);
-    /* اگر تیک add/update نبود ولی target هست، باز هم صف کن (رفتار force دستی) */
-    if (!$wooOn && ($target === 'woo' || $target === 'both')) $wooOn = true;
-    if (!$bslOn && ($target === 'bsl' || $target === 'both')) $bslOn = true;
-
-    $bslForceAll = empty($syncCfg['bslOnlyChanged']); /* force full on manual */
-    $wooForceAll = empty($syncCfg['wooOnlyChanged']);
-    /* manual always prefers sending something */
-    $bslOnlyChanged = false;
-    $wooOnlyChanged = false;
-
-    /* Serialize products file for queue */
-    $qDir = __DIR__;
-    $stamp = date('Ymd_His');
-    $safeKey = preg_replace('~[^a-zA-Z0-9_\-]+~', '_', $key);
-
-    if ($wooOn && function_exists('wooReadQueue') && function_exists('wooWriteQueue')) {
-        try {
-            $wooSend = array_values($products);
-            $wooQFile = $qDir . '/woo_queue_' . $safeKey . '_' . $stamp . '.json';
-            @file_put_contents($wooQFile, json_encode($wooSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-            $wooQueue = wooReadQueue();
-            if (!isset($wooQueue['entries']) || !is_array($wooQueue['entries'])) $wooQueue['entries'] = [];
-            /* clear stale for this profile */
-            foreach ($wooQueue['entries'] as &$we) {
-                if (!is_array($we)) continue;
-                if ((string)($we['profile_key'] ?? '') !== $key) continue;
-                if (in_array((string)($we['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
-                    $we['status'] = 'failed';
-                    $we['error'] = 'جایگزین همگام دستی';
-                    $we['done_at'] = $now;
-                }
-            }
-            unset($we);
-            $wooQueueId = 'woo_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
-            $wooSuffix = (string)($profile['titleSuffix'] ?? '');
-            $wooCatId = (int)($syncCfg['wooCategoryId'] ?? 0);
-            $wooQueue['entries'][] = [
-                'id' => $wooQueueId, 'status' => 'waiting',
-                'products_file' => $wooQFile, 'total' => count($wooSend),
-                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
-                'started_at' => 0, 'done_at' => 0,
-                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
-                'only_changed' => $wooOnlyChanged, 'trigger' => 'manual_sync',
-                'config' => ['title_suffix' => $wooSuffix, 'category_id' => $wooCatId, 'force_all' => true],
-            ];
-            wooWriteQueue($wooQueue);
-            $out['woo'] = true;
-            $out['woo_total'] = count($wooSend);
-            $out['log'][] = '🛒 ووکامرس: ' . count($wooSend) . ' در صف';
-        } catch (Throwable $e) {
-            $out['log'][] = '⚠️ ووکامرس: ' . mb_substr($e->getMessage(), 0, 120);
-        }
-    }
-
-    if ($bslOn && function_exists('bslReadQueue') && function_exists('bslWriteQueue')) {
-        try {
-            $bslSend = array_values($products);
-            $qFile = $qDir . '/bsl_queue_' . $safeKey . '_' . $stamp . '.json';
-            @file_put_contents($qFile, json_encode($bslSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-            $queue = bslReadQueue();
-            if (!isset($queue['entries']) || !is_array($queue['entries'])) $queue['entries'] = [];
-            foreach ($queue['entries'] as &$be) {
-                if (!is_array($be)) continue;
-                if ((string)($be['profile_key'] ?? '') !== $key) continue;
-                if (in_array((string)($be['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
-                    $be['status'] = 'failed';
-                    $be['error'] = 'جایگزین همگام دستی';
-                    $be['done_at'] = $now;
-                }
-            }
-            unset($be);
-            $queueId = 'bsl_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
-            $catId = (int)($profile['bslCategoryId'] ?? $syncCfg['bslCategoryId'] ?? 0);
-            $autoCat = !empty($syncCfg['bslAutoCategory']);
-            $titleSuffix = (string)($profile['titleSuffix'] ?? '');
-            $delayMs = (int)($cn['basalam']['delay_ms'] ?? 400);
-            $retryDelayMs = (int)($cn['basalam']['retry_delay_ms'] ?? 1500);
-            $allFallbackCats = is_array($profile['bslFallbackCatIds'] ?? null) ? $profile['bslFallbackCatIds'] : [];
-            $queue['entries'][] = [
-                'id' => $queueId, 'status' => 'waiting',
-                'products_file' => $qFile, 'total' => count($bslSend),
-                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
-                'started_at' => 0, 'done_at' => 0, 'paused_at' => 0,
-                'only_changed' => false,
-                'config' => [
-                    'category_id' => $catId, 'auto_category' => $autoCat,
-                    'title_suffix' => $titleSuffix, 'delay_ms' => $delayMs,
-                    'retry_delay_ms' => $retryDelayMs, 'fallback_cat_ids' => $allFallbackCats,
-                    'send_all_shops' => !empty($cn['basalam']['send_all_shops']),
-                    'force_all' => true,
-                ],
-                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
-                'trigger' => 'manual_sync', 'auto_sync' => true,
-            ];
-            bslWriteQueue($queue);
-            $out['bsl'] = true;
-            $out['bsl_total'] = count($bslSend);
-            $out['log'][] = '⭐ باسلام: ' . count($bslSend) . ' در صف';
-        } catch (Throwable $e) {
-            $out['log'][] = '⚠️ باسلام: ' . mb_substr($e->getMessage(), 0, 120);
-        }
-    }
-
-    if (!$out['woo'] && !$out['bsl']) {
-        $out['log'][] = 'ℹ️ مقصد فعالی برای صف ارسال نبود (target=' . $target . ')';
-    }
-    return $out;
-}
-
-function manualServerSendRun(int \$roundMs = 1500000, int \$maxRounds = 12): array {") !== false
+         (strpos($selfSrc, "function manualServerSendRun(int \$roundMs = 1500000, int \$maxRounds = 12): array {") !== false
           && strpos($selfSrc, "function msQueuePendingRow(string \$which): ?array {") !== false
           && strpos($selfSrc, "function msLockFresh(string \$which): bool {") !== false
           && strpos($selfSrc, "\$_msSendRes = manualServerSendRun();") !== false
-          && strpos($selfSrc, "if (manualSyncActive() && empty(\$results['manual_stopped'])) {") !== false));
+          && strpos($selfSrc, "if (manualSyncActive() && empty(\$results['manual_stopped'])) {") !== false
+          && strpos($selfSrc, 'function manualSyncEnqueueSends') !== false));
     $add('10.50', 'No more keep-the-tab-open in manual flow',
          (strpos($selfSrc, 'sending is continuing server-side — no need to keep the tab open') !== false
           && strpos($selfSrc, 'Sending is handled fully server-side') !== false
@@ -32326,6 +32444,147 @@ function msQueuePendingRow(string $which): ?array {
     return null;
 }
 
+
+/**
+ * v10.81: صف‌سازی ارسال برای یک پروفایل بعد از استخراج بک‌اند (همگام دستی).
+ * منطق خلاصه‌شده از حلقهٔ کران — بدون قفل کران.
+ */
+function manualSyncEnqueueSends(string $key, array $profile, array $cn, array $exRes): array {
+    $out = ['log' => [], 'woo' => false, 'bsl' => false];
+    $syncCfg = is_array($profile['syncConfig'] ?? null) ? $profile['syncConfig'] : [];
+    $target = (string)($syncCfg['target'] ?? 'woo');
+    if (!in_array($target, ['woo', 'bsl', 'both', 'none'], true)) $target = 'woo';
+    if ($target === 'none') {
+        $out['log'][] = '⏭ مقصد none';
+        return $out;
+    }
+    $now = time();
+    /* Build product list from profile disk */
+    $products = [];
+    foreach ((array)($profile['products'] ?? []) as $entry) {
+        if (is_array($entry) && count($entry) === 2 && is_array($entry[1])) {
+            $pk = (string)$entry[0];
+            $products[$pk] = $entry[1];
+            $products[$pk]['key'] = $pk;
+        }
+    }
+    if (!$products) {
+        $out['log'][] = '⚠️ محصولی روی دیسک نیست — صف ارسال خالی';
+        return $out;
+    }
+    $out['log'][] = '📦 ' . count($products) . ' محصول برای صف ارسال';
+
+    $wooOn = ($target === 'woo' || $target === 'both') && !empty($syncCfg['wooAddUpdate']);
+    $bslOn = ($target === 'bsl' || $target === 'both') && !empty($syncCfg['bslAddUpdate']);
+    /* اگر تیک add/update نبود ولی target هست، باز هم صف کن (رفتار force دستی) */
+    if (!$wooOn && ($target === 'woo' || $target === 'both')) $wooOn = true;
+    if (!$bslOn && ($target === 'bsl' || $target === 'both')) $bslOn = true;
+
+    $bslForceAll = empty($syncCfg['bslOnlyChanged']); /* force full on manual */
+    $wooForceAll = empty($syncCfg['wooOnlyChanged']);
+    /* manual always prefers sending something */
+    $bslOnlyChanged = false;
+    $wooOnlyChanged = false;
+
+    /* Serialize products file for queue */
+    $qDir = __DIR__;
+    $stamp = date('Ymd_His');
+    $safeKey = preg_replace('~[^a-zA-Z0-9_\-]+~', '_', $key);
+
+    if ($wooOn && function_exists('wooReadQueue') && function_exists('wooWriteQueue')) {
+        try {
+            $wooSend = array_values($products);
+            $wooQFile = $qDir . '/woo_queue_' . $safeKey . '_' . $stamp . '.json';
+            @file_put_contents($wooQFile, json_encode($wooSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $wooQueue = wooReadQueue();
+            if (!isset($wooQueue['entries']) || !is_array($wooQueue['entries'])) $wooQueue['entries'] = [];
+            /* clear stale for this profile */
+            foreach ($wooQueue['entries'] as &$we) {
+                if (!is_array($we)) continue;
+                if ((string)($we['profile_key'] ?? '') !== $key) continue;
+                if (in_array((string)($we['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
+                    $we['status'] = 'failed';
+                    $we['error'] = 'جایگزین همگام دستی';
+                    $we['done_at'] = $now;
+                }
+            }
+            unset($we);
+            $wooQueueId = 'woo_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+            $wooSuffix = (string)($profile['titleSuffix'] ?? '');
+            $wooCatId = (int)($syncCfg['wooCategoryId'] ?? 0);
+            $wooQueue['entries'][] = [
+                'id' => $wooQueueId, 'status' => 'waiting',
+                'products_file' => $wooQFile, 'total' => count($wooSend),
+                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                'started_at' => 0, 'done_at' => 0,
+                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
+                'only_changed' => $wooOnlyChanged, 'trigger' => 'manual_sync',
+                'config' => ['title_suffix' => $wooSuffix, 'category_id' => $wooCatId, 'force_all' => true],
+            ];
+            wooWriteQueue($wooQueue);
+            $out['woo'] = true;
+            $out['woo_total'] = count($wooSend);
+            $out['log'][] = '🛒 ووکامرس: ' . count($wooSend) . ' در صف';
+        } catch (Throwable $e) {
+            $out['log'][] = '⚠️ ووکامرس: ' . mb_substr($e->getMessage(), 0, 120);
+        }
+    }
+
+    if ($bslOn && function_exists('bslReadQueue') && function_exists('bslWriteQueue')) {
+        try {
+            $bslSend = array_values($products);
+            $qFile = $qDir . '/bsl_queue_' . $safeKey . '_' . $stamp . '.json';
+            @file_put_contents($qFile, json_encode($bslSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $queue = bslReadQueue();
+            if (!isset($queue['entries']) || !is_array($queue['entries'])) $queue['entries'] = [];
+            foreach ($queue['entries'] as &$be) {
+                if (!is_array($be)) continue;
+                if ((string)($be['profile_key'] ?? '') !== $key) continue;
+                if (in_array((string)($be['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
+                    $be['status'] = 'failed';
+                    $be['error'] = 'جایگزین همگام دستی';
+                    $be['done_at'] = $now;
+                }
+            }
+            unset($be);
+            $queueId = 'bsl_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+            $catId = (int)($profile['bslCategoryId'] ?? $syncCfg['bslCategoryId'] ?? 0);
+            $autoCat = !empty($syncCfg['bslAutoCategory']);
+            $titleSuffix = (string)($profile['titleSuffix'] ?? '');
+            $delayMs = (int)($cn['basalam']['delay_ms'] ?? 400);
+            $retryDelayMs = (int)($cn['basalam']['retry_delay_ms'] ?? 1500);
+            $allFallbackCats = is_array($profile['bslFallbackCatIds'] ?? null) ? $profile['bslFallbackCatIds'] : [];
+            $queue['entries'][] = [
+                'id' => $queueId, 'status' => 'waiting',
+                'products_file' => $qFile, 'total' => count($bslSend),
+                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                'started_at' => 0, 'done_at' => 0, 'paused_at' => 0,
+                'only_changed' => false,
+                'config' => [
+                    'category_id' => $catId, 'auto_category' => $autoCat,
+                    'title_suffix' => $titleSuffix, 'delay_ms' => $delayMs,
+                    'retry_delay_ms' => $retryDelayMs, 'fallback_cat_ids' => $allFallbackCats,
+                    'send_all_shops' => !empty($cn['basalam']['send_all_shops']),
+                    'force_all' => true,
+                ],
+                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
+                'trigger' => 'manual_sync', 'auto_sync' => true,
+            ];
+            bslWriteQueue($queue);
+            $out['bsl'] = true;
+            $out['bsl_total'] = count($bslSend);
+            $out['log'][] = '⭐ باسلام: ' . count($bslSend) . ' در صف';
+        } catch (Throwable $e) {
+            $out['log'][] = '⚠️ باسلام: ' . mb_substr($e->getMessage(), 0, 120);
+        }
+    }
+
+    if (!$out['woo'] && !$out['bsl']) {
+        $out['log'][] = 'ℹ️ مقصد فعالی برای صف ارسال نبود (target=' . $target . ')';
+    }
+    return $out;
+}
+
 function manualServerSendRun(int $roundMs = 1500000, int $maxRounds = 12): array {
     $out = ['rounds' => 0, 'stopped' => false, 'dests' => []];
     foreach (cronWatchdogQueueOrder() as $dest) {
@@ -37782,10 +38041,24 @@ if($__wchg)wooWriteQueue($__wq);
 }
 
 $cn=loadConnections();$w=$cn['woocommerce']??[];
-if(empty($w['store_url'])||empty($w['consumer_key'])||empty($w['consumer_secret'])){
-writeProgress(WOO_PROGRESS_FILE,['running'=>false,'done'=>true,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ تنظیمات ووکامرس ناقص'],'total_log_count'=>1,'sent_details'=>[],'updated_details'=>[],'skipped_details'=>[],'failed_details'=>[]]);
+/* v10.82: مستقیم بدون کلید API مجاز است؛ API به کلید نیاز دارد */
+$_wooAttempts = function_exists('wooSyncAttemptOrder') ? wooSyncAttemptOrder($w) : ['api'];
+$_wooNeedApi = in_array('api', $_wooAttempts, true);
+$_wooNeedDirect = in_array('direct', $_wooAttempts, true);
+$_wooApiOk = !empty($w['store_url']) && !empty($w['consumer_key']) && !empty($w['consumer_secret']);
+$_wooDirectOk = function_exists('wooDirectAvailable') && wooDirectAvailable();
+if ($_wooNeedApi && !$_wooApiOk && !($_wooNeedDirect && $_wooDirectOk)) {
+writeProgress(WOO_PROGRESS_FILE,['running'=>false,'done'=>true,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ تنظیمات ووکامرس ناقص (برای API: آدرس+کلید؛ برای مستقیم: ووکامرس روی همین سایت)'],'total_log_count'=>1,'sent_details'=>[],'updated_details'=>[],'skipped_details'=>[],'failed_details'=>[]]);
 exit;
 }
+if ($_wooNeedDirect && !$_wooDirectOk && !$_wooApiOk) {
+writeProgress(WOO_PROGRESS_FILE,['running'=>false,'done'=>true,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ همگام مستقیم ممکن نیست — ووکامرس در این PHP لود نیست و API هم تنظیم نشده'],'total_log_count'=>1,'sent_details'=>[],'updated_details'=>[],'skipped_details'=>[],'failed_details'=>[]]);
+exit;
+}
+wooBackendProgress(0,0,0,0,0,0,'','⚙️ حالت: '.implode(' → ', $_wooAttempts)
+  .($_wooDirectOk?' · مستقیم آماده':'')
+  .($_wooApiOk?' · API آماده':''));
+
 
 $raw=@file_get_contents(WOO_PRODUCTS_FILE);
 $pd=json_decode($raw?:'[]',true)?:[];
@@ -38001,13 +38274,13 @@ if($wooAttrs)$wpUpdate['attributes']=$wooAttrs;
 // v8.85: دستهٔ استخراج‌شده در آپدیت هم اعمال شود
 $_catUpd=wooCategoryIds($w,$p['category']??'');
 if($_catUpd)$wpUpdate['categories']=array_map(fn($i)=>['id'=>$i],$_catUpd);
-$r=wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$exId,$wpUpdate);
+$r=function_exists('wooUpsertWithMode')?wooUpsertWithMode($w,$wpUpdate,['id'=>$exId],(string)$pKey):wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$exId,$wpUpdate);
 // v8.58: اگر فقط تصویر مقصر بود، بدون تصویر دوباره تلاش کن تا بقیهٔ
 // تغییرات (قیمت/موجودی) از دست نرود.
 if(!$r['ok']&&!empty($wpUpdate['images'])&&wooIsImageError($r)){
 wooBackendProgress($sent,$updated,$skipped,$fail,$total,$n,mb_substr($pTitle,0,30),"[{$n}] ⚠️ ووکامرس تصویر را نگرفت — آپدیت بدون تصویر");
 unset($wpUpdate['images']);
-$r=wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$exId,$wpUpdate);
+$r=function_exists('wooUpsertWithMode')?wooUpsertWithMode($w,$wpUpdate,['id'=>$exId],(string)$pKey):wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$exId,$wpUpdate);
 }
 if($r['ok']&&!empty($r['body']['id'])){
 $updated++;$wooUpdatedList[]=array_merge(['title'=>$pTitle,'key'=>$pKey,'remote_id'=>$r['body']['id'],'edit_url'=>$editUrl,'changes'=>'قیمت '.$exPrice.'→'.$pPrice,'update_reason'=>'تغییر قیمت: '.$exPrice.' → '.$pPrice],$card);
@@ -38033,7 +38306,7 @@ $wooNewImgs=wooGalleryPayload($w,productImageList($p),$imgNote);
 if($imgNote)wooBackendProgress($sent,$updated,$skipped,$fail,$total,$n,mb_substr($pTitle,0,30),"[{$n}] 🖼 ".$imgNote);
 
 // محصول اول بدون تصویر ساخته می‌شود تا هیچ‌وقت به‌خاطر تصویر رد نشود
-$r=wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'POST','products',$wp);
+$r=function_exists('wooUpsertWithMode')?wooUpsertWithMode($w,$wp,null,(string)$pKey):wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'POST','products',$wp);
 if($r['ok']&&!empty($r['body']['id'])){
 $newId=(int)$r['body']['id'];
 $editUrl=rtrim($w['store_url'],'/').'/wp-admin/post.php?post='.$newId.'&action=edit';
@@ -38067,8 +38340,8 @@ if(!empty($p['short_desc']))$wpFix['short_description']=$p['short_desc'];
 if(!empty($p['long_desc']))$wpFix['description']=$p['long_desc'];
 if(!empty($wooNewImgs))$wpFix['images']=$wooNewImgs;
 $_at=wooVariationAttributes($p); if($_at)$wpFix['attributes']=$_at;
-$rf=wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$dupId,$wpFix);
-if(empty($rf['ok'])&&!empty($wpFix['images'])&&wooIsImageError($rf)){unset($wpFix['images']);$rf=wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$dupId,$wpFix);}
+$rf=function_exists('wooUpsertWithMode')?wooUpsertWithMode($w,$wpFix,['id'=>$dupId],(string)($pKey??'')):wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$dupId,$wpFix);
+if(empty($rf['ok'])&&!empty($wpFix['images'])&&wooIsImageError($rf)){unset($wpFix['images']);$rf=function_exists('wooUpsertWithMode')?wooUpsertWithMode($w,$wpFix,['id'=>$dupId],(string)($pKey??'')):wooReq($w['store_url'],$w['consumer_key'],$w['consumer_secret'],'PUT','products/'.$dupId,$wpFix);}
 if(!empty($rf['ok'])&&!empty($rf['body']['id'])){
 $updated++;$wooUpdatedList[]=array_merge(['title'=>$pTitle,'key'=>$pKey,'remote_id'=>$dupId,'edit_url'=>rtrim($w['store_url'],'/').'/wp-admin/post.php?post='.$dupId.'&action=edit','changes'=>'آپدیت پس از خطای تکراری','update_reason'=>'محصول از قبل موجود بود'],$card);
 wooBackendProgress($sent,$updated,$skipped,$fail,$total,$n,mb_substr($pTitle,0,30),"[{$n}] ✅ آپدیت شد به‌جای ایجاد: ID#".$dupId);
@@ -46632,6 +46905,27 @@ html[data-skin="gloss"] .progress-bar{
 <div class="smenu">
 <div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>🛒 ووکامرس</h3><span class="cst off" id="wcS">غیرمتصل</span><span class="arrow">▼</span></div>
 <div class="smenu-body">
+<div style="background:#1e1b4b;border:1px solid #4c1d95;border-radius:8px;padding:10px;margin-bottom:10px">
+<div style="font-size:12px;color:#c4b5fd;font-weight:800;margin-bottom:6px">⚡ روش همگام‌سازی با ووکامرس</div>
+<div class="crow" style="flex-direction:column;align-items:stretch;gap:6px">
+<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 8px;border-radius:6px;background:#0f172a;border:1px solid #334155">
+<input type="radio" name="wcSyncMode" id="wcModeApi" value="api" checked style="margin-top:3px">
+<span><b style="color:#a5b4fc">همگام‌سازی با API</b><br><small style="color:#94a3b8;line-height:1.6">REST ووکامرس (Consumer Key/Secret) — مناسب فروشگاه دور یا وقتی اسکرپر جدا از وردپرس است.</small></span>
+</label>
+<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 8px;border-radius:6px;background:#0f172a;border:1px solid #334155">
+<input type="radio" name="wcSyncMode" id="wcModeDirect" value="direct" style="margin-top:3px">
+<span><b style="color:#86efac">همگام‌سازی مستقیم</b><br><small style="color:#94a3b8;line-height:1.6">CRUD داخل همین وردپرس/ووکامرس — سریع‌تر، بدون HTTP. وقتی افزونه روی همان سایت فروشگاه است.</small></span>
+</label>
+</div>
+<div class="crow" style="margin-top:8px"><label style="min-width:70px">پشتیبان:</label>
+<select id="wcSyncFallback" style="flex:1">
+<option value="api_then_direct">اگر API شکست → مستقیم</option>
+<option value="direct_then_api">اگر مستقیم شکست → API</option>
+<option value="none">بدون پشتیبان (فقط روش اصلی)</option>
+</select>
+</div>
+<div style="font-size:10px;color:#64748b;margin-top:4px;line-height:1.7">با انتخاب «مستقیم»، کلید API اختیاری است مگر پشتیبان API روشن باشد. با «API»، برای پشتیبان مستقیم باید اسکرپر داخل همان ووکامرس اجرا شود.</div>
+</div>
 <div class="crow"><label>آدرس:</label><input type="url" id="wcUrl" placeholder="https://yourstore.com" dir="ltr"></div>
 <div class="crow"><label>Key:</label><input id="wcCK" placeholder="ck_..." dir="ltr"></div>
 <div class="crow"><label>Secret:</label><input type="password" id="wcCS" placeholder="cs_..." dir="ltr"></div>
@@ -61616,7 +61910,7 @@ renderChangelog();
 // ========== Connection JS ==========
 let wSend=false,bSend=false,cn={woocommerce:{},basalam:{}},extractPollTimer=null,extractModalTimer=null;
 function loadConn(){fetch('',{method:'POST',body:new URLSearchParams('action=load_connections')}).then(r=>r.json()).then(d=>{if(d.ok){cn=d.connections;applyCn();}}).catch(()=>{});}
-function applyCn(){const w=cn.woocommerce||{},b=cn.basalam||{};if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
+function applyCn(){const w=cn.woocommerce||{},b=cn.basalam||{};if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;try{const sm=w.sync_mode||'api';if($('wcModeApi'))$('wcModeApi').checked=(sm!=='direct');if($('wcModeDirect'))$('wcModeDirect').checked=(sm==='direct');if($('wcSyncFallback'))$('wcSyncFallback').value=w.sync_fallback||'api_then_direct';}catch(e){}if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
 if($('bsIndirect'))$('bsIndirect').checked=!!b.net_indirect;// v7.48: Restore category in searchable dropdown
 if(b.category_id){$('bsCat').value=String(b.category_id);bslSelectedCatId=b.category_id;if(bslAllCats.length>0){renderBslCatDropdown(bslAllCats,b.category_id);}else{loadBslCats();}}else{$('bsCat').value='0';bslSelectedCatId=0;if($('bsCatSearch'))$('bsCatSearch').value='';}
 if($('bsAutoCat'))$('bsAutoCat').checked=!!b.auto_category;if($('bsSendAllShops')){$('bsSendAllShops').checked=!!b.send_all_shops;try{bslRenderShopsHint();}catch(e){}}if($('bsDelayMs')&&b.delay_ms)$('bsDelayMs').value=b.delay_ms;if($('bsRetryDelayMs')&&b.retry_delay_ms)$('bsRetryDelayMs').value=b.retry_delay_ms;
@@ -61664,7 +61958,7 @@ function destPricePreview(pre){
     +toFa(res.toLocaleString('en-US'))
     +'  ('+(diff>=0?'+':'')+toFa(pct)+'٪)';
 }
-function saveConn(){const fd=new FormData();fd.append('action','save_connections');fd.append('woocommerce',JSON.stringify({enabled:1,store_url:$('wcUrl').value.trim(),consumer_key:$('wcCK').value.trim(),consumer_secret:$('wcCS').value.trim(),default_status:$('wcSt').value,default_category:parseInt($('wcCat').value)||0,manage_stock:$('wcMS').checked,stock_quantity:parseInt($('wcSQ').value)||10,price_mode:($('wcPMode')||{}).value||'none',price_val:parseFloat(($('wcPVal')||{}).value)||0,price_round:parseInt(($('wcPRound')||{}).value)||0}));bslFlushVendors(); /* v10.87: flush price fields before saving */
+function saveConn(){const fd=new FormData();fd.append('action','save_connections');fd.append('woocommerce',JSON.stringify({enabled:1,store_url:$('wcUrl').value.trim(),consumer_key:$('wcCK').value.trim(),consumer_secret:$('wcCS').value.trim(),default_status:$('wcSt').value,default_category:parseInt($('wcCat').value)||0,manage_stock:$('wcMS').checked,stock_quantity:parseInt($('wcSQ').value)||10,price_mode:($('wcPMode')||{}).value||'none',price_val:parseFloat(($('wcPVal')||{}).value)||0,price_round:parseInt(($('wcPRound')||{}).value)||0,sync_mode:(($('wcModeDirect')&&$('wcModeDirect').checked)?'direct':'api'),sync_fallback:(($('wcSyncFallback')||{}).value||'api_then_direct')}));bslFlushVendors(); /* v10.87: flush price fields before saving */
 fd.append('basalam',JSON.stringify({enabled:1,token:$('bsTk').value.trim(),vendor_id:parseInt($('bsVid').value)||0,preparation_days:parseInt($('bsPD').value)||3,weight:parseInt($('bsW').value)||500,package_weight:parseInt($('bsPW')?.value)||0,stock:parseInt($('bsSt').value)||10,net_indirect:$('bsIndirect')?.checked||false,category_id:parseInt($('bsCat').value)||0,auto_category:$('bsAutoCat')?.checked||false,send_all_shops:$('bsSendAllShops')?.checked||false,delay_ms:parseInt($('bsDelayMs')?.value)||500,retry_delay_ms:parseInt($('bsRetryDelayMs')?.value)||1000,fallback_cat_ids:getBslFallbackCatIds(),vendors:bslExtraVendors,price_mode:($('bsPMode')||{}).value||'none',price_val:parseFloat(($('bsPVal')||{}).value)||0,price_round:parseInt(($('bsPRound')||{}).value)||0}));
 // v8.06: Save AI settings
 fd.append('ai_net',JSON.stringify(getAiNet()));

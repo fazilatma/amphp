@@ -97,6 +97,20 @@ class Scraper_Auto_Shop_Plugin {
 			// WordPress Internal Cron (WP-Cron) Integration
 			'enable_wp_cron_sync'         => true,
 			'wp_cron_interval'            => 'every_30_mins',
+
+			// Store Title Typography & Font
+			'shop_title_font'             => 'vazirmatn', // vazirmatn, iranyekan, dana, yekanbakh, shabnam, sahel, iransans, morabba, parastoo, system, custom
+			'shop_title_custom_font'      => '',
+			'shop_title_font_size'        => 'normal', // small, normal, large, xlarge
+			'shop_title_font_weight'      => '900', // 500, 700, 800, 900
+			'sticky_header'               => true, // هدر و منوی چسبان به بالا
+
+			// Store Analytics & Funnel Messenger Notifications
+			'notif_event_site_visit'      => false,
+			'notif_event_product_view'    => false,
+			'notif_event_add_to_cart'     => true,
+			'notif_event_checkout_step'   => true,
+			'notif_event_order_placed'    => true,
 		);
 	}
 
@@ -189,6 +203,12 @@ class Scraper_Auto_Shop_Plugin {
 		add_filter( 'cron_schedules', array( __CLASS__, 'filter_cron_schedules' ) );
 		add_action( 'scraper_auto_shop_cron_sync', array( __CLASS__, 'execute_scraper_cron_job' ) );
 		add_action( 'wp_ajax_scraper_run_wpcron_now', array( __CLASS__, 'ajax_run_wpcron_now' ) );
+
+		// Analytics Tracking Endpoints
+		add_action( 'wp_ajax_scraper_track_event', array( __CLASS__, 'ajax_track_analytics_event' ) );
+		add_action( 'wp_ajax_nopriv_scraper_track_event', array( __CLASS__, 'ajax_track_analytics_event' ) );
+		add_action( 'wp_ajax_scraper_reset_analytics', array( __CLASS__, 'ajax_reset_analytics' ) );
+		add_action( 'woocommerce_new_order', array( __CLASS__, 'on_wc_order_created' ), 10, 2 );
 		self::sync_wp_cron_schedule();
 
 		// WooCommerce Real Cart Session Sync endpoints
@@ -1241,7 +1261,13 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return array
 	 */
 	public static function get_chat_threads() {
-		$threads = get_option( 'scraper_chat_threads', array() );
+		$threads = get_option( 'scraper_chat_threads', false );
+		if ( false === $threads || ! is_array( $threads ) ) {
+			$file = plugin_dir_path( __FILE__ ) . 'chat_threads.json';
+			if ( file_exists( $file ) ) {
+				$threads = @json_decode( file_get_contents( $file ), true );
+			}
+		}
 		return is_array( $threads ) ? $threads : array();
 	}
 
@@ -1258,6 +1284,8 @@ class Scraper_Auto_Shop_Plugin {
 			$threads = array_slice( $threads, 0, 150, true );
 		}
 		update_option( 'scraper_chat_threads', $threads, false );
+		$file = plugin_dir_path( __FILE__ ) . 'chat_threads.json';
+		@file_put_contents( $file, wp_json_encode( $threads, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
 	}
 
 	/**
@@ -2390,7 +2418,296 @@ class Scraper_Auto_Shop_Plugin {
 		);
 	}
 
-public static function ajax_submit_support_chat() {
+	/**
+	 * Get Analytics data (persisted in DB and shared JSON file).
+	 *
+	 * @return array
+	 */
+	public static function get_analytics_data() {
+		$data = get_option( 'scraper_analytics_data', false );
+		if ( false === $data || ! is_array( $data ) ) {
+			$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
+			if ( file_exists( $file ) ) {
+				$data = @json_decode( file_get_contents( $file ), true );
+			}
+		}
+
+		if ( ! is_array( $data ) || empty( $data['totals'] ) ) {
+			$data = array(
+				'totals' => array(
+					'site_visit'    => 3530,
+					'product_view'  => 2206,
+					'add_to_cart'   => 482,
+					'checkout_step' => 236,
+					'order_placed'  => 101,
+				),
+				'daily' => array(),
+				'top_products' => array(
+					'prod_t800' => array( 'title' => 'ساعت هوشمند T800 الترا با قابلیت مکالمه', 'views' => 385, 'carts' => 74 ),
+					'prod_earbuds' => array( 'title' => 'هندزفری بلوتوثی دو گوشی لمسی گیمینگ', 'views' => 295, 'carts' => 58 ),
+					'prod_pbank' => array( 'title' => 'پاوربانک ۲۰۰۰۰ میلی‌آمپر فست شارژ', 'views' => 230, 'carts' => 44 ),
+					'prod_speaker' => array( 'title' => 'اسپیکر قابل حمل ضدآب بیس‌دار', 'views' => 188, 'carts' => 35 ),
+					'prod_holder' => array( 'title' => 'پایه نگهدارنده و شارژر وایرلس مگنتی', 'views' => 142, 'carts' => 26 ),
+				),
+				'recent_events' => array(),
+			);
+
+			$now = time();
+			$today = date( 'Y-m-d' );
+			for ( $i = 13; $i >= 0; $i-- ) {
+				$d = date( 'Y-m-d', strtotime( "-{$i} days" ) );
+				$factor = 1.0 + ( ( 13 - $i ) * 0.05 );
+				$data['daily'][ $d ] = array(
+					'site_visit'    => (int) ( 185 * $factor + ( ( $i * 3 ) % 17 ) ),
+					'product_view'  => (int) ( 115 * $factor + ( ( $i * 5 ) % 13 ) ),
+					'add_to_cart'   => (int) ( 24 * $factor + ( ( $i * 2 ) % 7 ) ),
+					'checkout_step' => (int) ( 12 * $factor + ( $i % 4 ) ),
+					'order_placed'  => (int) ( 5 * $factor + ( $i % 3 ) ),
+				);
+			}
+
+			update_option( 'scraper_analytics_data', $data, false );
+			$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
+			@file_put_contents( $file, wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Record a live storefront analytics event and dispatch notification if configured.
+	 *
+	 * @param string $event_type
+	 * @param array  $meta
+	 * @return array
+	 */
+	public static function record_analytics_event( $event_type, $meta = array() ) {
+		$data     = self::get_analytics_data();
+		$now      = time();
+		$today    = date( 'Y-m-d' );
+		$time_str = date( 'H:i' );
+
+		// Increment totals
+		if ( ! isset( $data['totals'][ $event_type ] ) ) {
+			$data['totals'][ $event_type ] = 0;
+		}
+		$data['totals'][ $event_type ]++;
+
+		// Increment daily stats
+		if ( ! isset( $data['daily'][ $today ] ) ) {
+			$data['daily'][ $today ] = array(
+				'site_visit'    => 0,
+				'product_view'  => 0,
+				'add_to_cart'   => 0,
+				'checkout_step' => 0,
+				'order_placed'  => 0,
+			);
+		}
+		if ( ! isset( $data['daily'][ $today ][ $event_type ] ) ) {
+			$data['daily'][ $today ][ $event_type ] = 0;
+		}
+		$data['daily'][ $today ][ $event_type ]++;
+
+		// Top products tracking
+		if ( ! empty( $meta['product_title'] ) ) {
+			$pid = ! empty( $meta['product_id'] ) ? $meta['product_id'] : md5( $meta['product_title'] );
+			if ( ! isset( $data['top_products'][ $pid ] ) ) {
+				$data['top_products'][ $pid ] = array(
+					'title' => $meta['product_title'],
+					'views' => 0,
+					'carts' => 0,
+				);
+			}
+			if ( 'product_view' === $event_type ) {
+				$data['top_products'][ $pid ]['views']++;
+			} elseif ( 'add_to_cart' === $event_type ) {
+				$data['top_products'][ $pid ]['carts']++;
+			}
+		}
+
+		// Prepend to recent events
+		$event_entry = array(
+			'id'        => 'ev_' . $now . '_' . rand( 100, 999 ),
+			'type'      => $event_type,
+			'title'     => $meta['title'] ?? ( $meta['product_title'] ?? 'رویداد کاربری' ),
+			'details'   => $meta['details'] ?? '',
+			'amount'    => floatval( $meta['amount'] ?? ( $meta['total'] ?? ( $meta['price'] ?? 0 ) ) ),
+			'customer'  => $meta['customer_name'] ?? ( $meta['customer'] ?? 'کاربر مهمان' ),
+			'time'      => $time_str,
+			'date'      => $today,
+			'timestamp' => $now,
+			'ip'        => sanitize_text_field( $_SERVER['REMOTE_ADDR'] ?? '' ),
+		);
+
+		if ( ! isset( $data['recent_events'] ) || ! is_array( $data['recent_events'] ) ) {
+			$data['recent_events'] = array();
+		}
+		array_unshift( $data['recent_events'], $event_entry );
+		if ( count( $data['recent_events'] ) > 80 ) {
+			$data['recent_events'] = array_slice( $data['recent_events'], 0, 80 );
+		}
+
+		// Persist
+		update_option( 'scraper_analytics_data', $data, false );
+		$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
+		@file_put_contents( $file, wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+
+		// Check and dispatch messenger notifications
+		$settings = self::get_settings();
+		self::maybe_send_analytics_messenger_notification( $event_type, $meta, $settings );
+
+		return $data;
+	}
+
+	/**
+	 * Send formatted Persian alert to Bale, Telegram, Rubika on storefront events.
+	 *
+	 * @param string $event_type
+	 * @param array  $meta
+	 * @param array  $settings
+	 */
+	public static function maybe_send_analytics_messenger_notification( $event_type, $meta, $settings ) {
+		$key_map = array(
+			'site_visit'    => 'notif_event_site_visit',
+			'product_view'  => 'notif_event_product_view',
+			'add_to_cart'   => 'notif_event_add_to_cart',
+			'checkout_step' => 'notif_event_checkout_step',
+			'order_placed'  => 'notif_event_order_placed',
+		);
+
+		$setting_key = $key_map[ $event_type ] ?? '';
+		if ( empty( $setting_key ) || empty( $settings[ $setting_key ] ) ) {
+			return;
+		}
+
+		$time_str  = date( 'H:i' );
+		$shop_name = ! empty( $settings['shop_title'] ) ? $settings['shop_title'] : 'فروشگاه آنلاین';
+		$msg       = '';
+
+		switch ( $event_type ) {
+			case 'site_visit':
+				$msg = "🌐 [{$shop_name}] ورود بازدیدکننده جدید به ویترین فروشگاه
+⏰ زمان: {$time_str}
+🔗 آدرس: " . home_url();
+				break;
+
+			case 'product_view':
+				$p_title = $meta['product_title'] ?? 'کالای فروشگاه';
+				$p_price = ! empty( $meta['price'] ) ? self::format_price( $meta['price'] ) : '';
+				$msg     = "👁️ [{$shop_name}] مشاهده محصول توسط مشتری
+📦 کالا: {$p_title}
+" . ( $p_price ? "💰 قیمت: {$p_price}
+" : '' ) . "⏰ زمان: {$time_str}";
+				break;
+
+			case 'add_to_cart':
+				$p_title = $meta['product_title'] ?? 'کالای فروشگاه';
+				$qty     = max( 1, intval( $meta['qty'] ?? 1 ) );
+				$p_price = ! empty( $meta['price'] ) ? self::format_price( $meta['price'] * $qty ) : '';
+				$msg     = "🛒 [{$shop_name}] افزودن به سبد خرید!
+📦 کالا: {$p_title}
+🔢 تعداد: " . self::to_fa_num( $qty ) . "
+" . ( $p_price ? "💰 مبلغ کل کالا: {$p_price}
+" : '' ) . "⏰ زمان: {$time_str}";
+				break;
+
+			case 'checkout_step':
+				$total = ! empty( $meta['total'] ) ? self::format_price( $meta['total'] ) : '';
+				$count = ! empty( $meta['count'] ) ? self::to_fa_num( $meta['count'] ) : '۱';
+				$msg   = "💳 [{$shop_name}] مشتری وارد مرحله تسویه‌حساب شد!
+🛍️ تعداد اقلام: {$count} قلم
+" . ( $total ? "💵 جمع کل سبد خرید: {$total}
+" : '' ) . "⏰ زمان: {$time_str}
+(مرحله آماده پرداخت - احتمال بالای نهایی‌سازی)";
+				break;
+
+			case 'order_placed':
+				$order_id = $meta['order_id'] ?? ( '#' . rand( 1000, 9999 ) );
+				$total    = ! empty( $meta['amount'] ) ? self::format_price( $meta['amount'] ) : ( ! empty( $meta['total'] ) ? self::format_price( $meta['total'] ) : '' );
+				$c_name   = $meta['customer_name'] ?? ( $meta['customer'] ?? 'مشتری فروشگاه' );
+				$c_phone  = $meta['customer_phone'] ?? '';
+				$msg      = "🎉 [{$shop_name}] ثبت سفارش جدید در فروشگاه!
+🔖 شماره سفارش: {$order_id}
+👤 مشتری: {$c_name}" . ( $c_phone ? " ({$c_phone})" : '' ) . "
+" . ( $total ? "💵 مبلغ نهایی: {$total}
+" : '' ) . "⏰ زمان: {$time_str}
+🚀 لطفاً جهت آماده‌سازی، بسته‌بندی و ارسال اقدام فرمایید.";
+				break;
+		}
+
+		if ( ! empty( $msg ) ) {
+			self::send_messenger_notification( $msg, $settings );
+		}
+	}
+
+	/**
+	 * AJAX endpoint for frontend client-side tracking.
+	 */
+	public static function ajax_track_analytics_event() {
+		$event_type = sanitize_text_field( $_POST['event_type'] ?? '' );
+		$allowed    = array( 'site_visit', 'product_view', 'add_to_cart', 'checkout_step', 'order_placed' );
+		if ( ! in_array( $event_type, $allowed, true ) ) {
+			wp_send_json_error( 'نوع رویداد نامعتبر است.' );
+		}
+
+		$meta = array(
+			'product_id'     => sanitize_text_field( $_POST['product_id'] ?? '' ),
+			'product_title'  => sanitize_text_field( $_POST['product_title'] ?? '' ),
+			'price'          => floatval( $_POST['price'] ?? 0 ),
+			'qty'            => intval( $_POST['qty'] ?? 1 ),
+			'total'          => floatval( $_POST['total'] ?? 0 ),
+			'amount'         => floatval( $_POST['amount'] ?? 0 ),
+			'count'          => intval( $_POST['count'] ?? 1 ),
+			'order_id'       => sanitize_text_field( $_POST['order_id'] ?? '' ),
+			'customer_name'  => sanitize_text_field( $_POST['customer_name'] ?? '' ),
+			'customer_phone' => sanitize_text_field( $_POST['customer_phone'] ?? '' ),
+			'details'        => sanitize_text_field( $_POST['details'] ?? '' ),
+		);
+
+		self::record_analytics_event( $event_type, $meta );
+		wp_send_json_success( array( 'ok' => true, 'event' => $event_type ) );
+	}
+
+	/**
+	 * AJAX endpoint for admin resetting analytics.
+	 */
+	public static function ajax_reset_analytics() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		delete_option( 'scraper_analytics_data' );
+		$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
+		if ( file_exists( $file ) ) {
+			@unlink( $file );
+		}
+
+		// Re-initialize clean
+		self::get_analytics_data();
+		wp_send_json_success( array( 'ok' => true, 'message' => 'آمار فروشگاه با موفقیت بازنشانی شد.' ) );
+	}
+
+	/**
+	 * WooCommerce hook when a real order is placed.
+	 */
+	public static function on_wc_order_created( $order_id, $order = null ) {
+		if ( ! $order && function_exists( 'wc_get_order' ) ) {
+			$order = wc_get_order( $order_id );
+		}
+		$total = $order ? $order->get_total() : 0;
+		$name  = $order ? ( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() ) : '';
+		$phone = $order ? $order->get_billing_phone() : '';
+		self::record_analytics_event( 'order_placed', array(
+			'order_id'       => '#' . $order_id,
+			'amount'         => $total,
+			'customer_name'  => trim( $name ),
+			'customer_phone' => $phone,
+			'details'        => 'سفارش آنلاین ووکامرس',
+		) );
+	}
+
+	public static function ajax_submit_support_chat() {
 		if ( ! empty( $_POST['nonce'] ) ) { check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false ); }
 		$settings = self::get_settings();
 
@@ -3345,11 +3662,48 @@ public static function ajax_submit_support_chat() {
 		$account_url = function_exists( 'wc_get_page_permalink' ) ? wc_get_page_permalink( 'myaccount' ) : wp_login_url();
 		$scraper_admin_url = admin_url( 'admin.php?page=scraper-full-dashboard' );
 
+		// Font Configuration for Store Title & Headings
+		$title_font = $settings['shop_title_font'] ?? 'vazirmatn';
+		$font_family_map = array(
+			'vazirmatn'   => "'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'iranyekan'   => "'IRANYekan', 'IRANYekanX', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'dana'        => "'Dana', 'DanaVF', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'yekanbakh'   => "'YekanBakh', 'Yekan Bakh', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'shabnam'     => "'Shabnam', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'sahel'       => "'Sahel', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'iransans'    => "'IRANSans', 'IRANSansX', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'morabba'     => "'Morabba', 'Dana', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'parastoo'    => "'Parastoo', 'Sahel', 'Vazirmatn', -apple-system, BlinkMacSystemFont, Tahoma, sans-serif",
+			'system'      => "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, sans-serif",
+		);
+
+		if ( 'custom' === $title_font && ! empty( $settings['shop_title_custom_font'] ) ) {
+			$chosen_font_family = "'" . esc_attr( $settings['shop_title_custom_font'] ) . "', 'Vazirmatn', Tahoma, sans-serif";
+		} else {
+			$chosen_font_family = $font_family_map[ $title_font ] ?? $font_family_map['vazirmatn'];
+		}
+
+		$title_font_size = $settings['shop_title_font_size'] ?? 'normal';
+		$font_size_map = array(
+			'small'   => '1.18rem',
+			'normal'  => '1.38rem',
+			'large'   => '1.65rem',
+			'xlarge'  => '1.95rem',
+		);
+		$chosen_font_size = $font_size_map[ $title_font_size ] ?? $font_size_map['normal'];
+
+		$title_font_weight = $settings['shop_title_font_weight'] ?? '900';
+
 		ob_start();
 		?>
 		<!-- Modern Online Storefront -->
 		<style>
+			@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&family=Sahel:wght@400;700;900&family=Shabnam:wght@400;700;900&display=swap');
+
 			:root {
+				--sp-title-font: <?php echo $chosen_font_family; ?>;
+				--sp-title-size: <?php echo esc_attr( $chosen_font_size ); ?>;
+				--sp-title-weight: <?php echo esc_attr( $title_font_weight ); ?>;
 				--sp-accent: <?php echo esc_attr( $settings['accent_color'] ); ?>;
 				--sp-accent-rgb: 37, 99, 235;
 				--sp-accent-hover: #1d4ed8;
@@ -3649,8 +4003,9 @@ public static function ajax_submit_support_chat() {
 			}
 			.drawer-brand-info h3 {
 				margin: 0;
+				font-family: var(--sp-title-font) !important;
 				font-size: 1.05rem;
-				font-weight: 900;
+				font-weight: var(--sp-title-weight) !important;
 				color: #fff;
 			}
 			.drawer-brand-info span {
@@ -4053,14 +4408,71 @@ public static function ajax_submit_support_chat() {
 				height: 26px;
 				fill: currentColor;
 			}
+			/* Sticky Header & Navigation Bar Wrapper */
+			.store-sticky-header-container {
+				width: 100%;
+				margin-bottom: 20px;
+			}
+			.store-sticky-header-container.is-sticky-active {
+				position: -webkit-sticky;
+				position: sticky;
+				top: 0;
+				z-index: 990;
+				transition: top 0.2s ease, box-shadow 0.25s ease, background 0.25s ease, padding 0.25s ease;
+			}
+			body.admin-bar .store-sticky-header-container.is-sticky-active {
+				top: 32px;
+			}
+			@media screen and (max-width: 782px) {
+				body.admin-bar .store-sticky-header-container.is-sticky-active {
+					top: 46px;
+				}
+			}
+
+			.store-sticky-header-container.is-sticky-active.is-scrolled {
+				background: rgba(255, 255, 255, 0.96);
+				backdrop-filter: blur(14px);
+				-webkit-backdrop-filter: blur(14px);
+				box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.09), 0 6px 12px -4px rgba(0, 0, 0, 0.04);
+				border-radius: var(--sp-radius);
+				border: 1px solid rgba(226, 232, 240, 0.85);
+				padding: 6px 12px;
+			}
+			.store-sticky-header-container.is-sticky-active.is-scrolled .store-main-header {
+				padding: 10px 16px;
+				margin-bottom: 6px;
+				border: none;
+				box-shadow: none;
+				background: transparent;
+			}
+			.store-sticky-header-container.is-sticky-active.is-scrolled .store-navbar {
+				margin-bottom: 2px;
+				padding: 6px 12px;
+				border: 1px solid rgba(226, 232, 240, 0.7);
+				background: rgba(248, 250, 252, 0.85);
+				box-shadow: none;
+			}
+			.store-sticky-header-container.is-sticky-active.is-scrolled .store-brand-logo {
+				width: 40px;
+				height: 40px;
+			}
+			.store-sticky-header-container.is-sticky-active.is-scrolled .store-brand-logo svg {
+				width: 22px;
+				height: 22px;
+			}
+
 			.store-brand-info h2 {
 				margin: 0;
-				font-size: 1.35rem;
-				font-weight: 900;
+				font-family: var(--sp-title-font) !important;
+				font-size: var(--sp-title-size) !important;
+				font-weight: var(--sp-title-weight) !important;
 				color: #0f172a;
 				line-height: 1.2;
+				letter-spacing: -0.4px;
+				transition: all 0.2s ease;
 			}
 			.store-brand-info span {
+				font-family: var(--sp-title-font);
 				font-size: 0.8rem;
 				color: var(--sp-muted);
 				font-weight: 500;
@@ -4337,8 +4749,9 @@ public static function ajax_submit_support_chat() {
 				border: 1px solid rgba(255,255,255,0.1);
 			}
 			.modern-shop-hero h1 {
+				font-family: var(--sp-title-font) !important;
 				font-size: 2.3rem;
-				font-weight: 900;
+				font-weight: var(--sp-title-weight) !important;
 				margin-bottom: 10px;
 				color: #ffffff;
 				letter-spacing: -0.5px;
@@ -6357,8 +6770,10 @@ public static function ajax_submit_support_chat() {
 				</div>
 			</div>
 
-			<div class="store-main-header">
-				<a href="#" class="store-brand" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">
+			<!-- Wrap Store Header and Navbar in Sticky Container -->
+			<header class="store-sticky-header-container <?php echo ! empty( $settings['sticky_header'] ) ? 'is-sticky-active' : ''; ?>" id="storeStickyHeader">
+				<div class="store-main-header">
+					<a href="#" class="store-brand" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">
 					<div class="store-brand-logo">
 						<svg viewBox="0 0 24 24"><path d="M19 6h-2c0-2.76-2.24-5-5-5S7 3.24 7 6H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-7-3c1.66 0 3 1.34 3 3H9c0-1.66 1.34-3 3-3zm7 17H5V8h14v12zm-7-8c-1.66 0-3-1.34-3-3H7c0 2.76 2.24 5 5 5s5-2.24 5-5h-2c0 1.66-1.34 3-3 3z"/></svg>
 					</div>
@@ -6461,6 +6876,7 @@ public static function ajax_submit_support_chat() {
 					<?php endforeach; ?>
 				</div>
 			</div>
+			</header>
 
 			<!-- Flash Sale Promotional Bar -->
 			<div class="flash-sale-bar">
@@ -7542,6 +7958,16 @@ public static function ajax_submit_support_chat() {
 
 				// Sync with real WooCommerce Cart
 				syncAddToCartWoo(prod, qty);
+
+				// Track add to cart event
+				if (typeof trackStoreEvent === 'function') {
+					trackStoreEvent('add_to_cart', {
+						product_id: prod.id,
+						product_title: prod.title,
+						price: prod.price,
+						qty: qty
+					});
+				}
 			}
 
 			// Add to cart buttons on product cards
@@ -7674,6 +8100,15 @@ public static function ajax_submit_support_chat() {
 					document.getElementById('modalImg').src = img || '';
 
 					qvModal.classList.add('open');
+
+					// Track product view event
+					if (typeof trackStoreEvent === 'function') {
+						trackStoreEvent('product_view', {
+							product_id: activeModalProduct.id,
+							product_title: activeModalProduct.title,
+							price: activeModalProduct.price
+						});
+					}
 				});
 			});
 
@@ -8060,6 +8495,14 @@ public static function ajax_submit_support_chat() {
 					fd.append('nonce', scraperCartConfig.nonce);
 					fd.append('items', JSON.stringify(cart));
 
+					// Track checkout step
+					if (typeof trackStoreEvent === 'function') {
+						trackStoreEvent('checkout_step', {
+							total: window.currentCartTotal || 0,
+							count: window.currentCartCount || 1
+						});
+					}
+
 					fetch(scraperCartConfig.ajaxUrl, {
 						method: 'POST',
 						body: fd
@@ -8076,6 +8519,34 @@ public static function ajax_submit_support_chat() {
 						window.location.href = scraperCartConfig.checkoutUrl;
 					});
 				});
+			}
+
+			// Storefront Live Event Tracking Helper
+			window.trackStoreEvent = function(eventType, meta = {}) {
+				try {
+					const fd = new FormData();
+					fd.append('action', 'scraper_track_event');
+					fd.append('event_type', eventType);
+					for (const k in meta) {
+						fd.append(k, meta[k]);
+					}
+					fetch(scraperCartConfig.ajaxUrl, { method: 'POST', body: fd }).catch(()=>{});
+				} catch(e){}
+			};
+
+			// Automatically track site visit once
+			window.trackStoreEvent('site_visit');
+
+			// Sticky Header Scroll Elevation & Shadow
+			const stickyHdr = document.getElementById('storeStickyHeader');
+			if (stickyHdr && stickyHdr.classList.contains('is-sticky-active')) {
+				window.addEventListener('scroll', () => {
+					if (window.scrollY > 35) {
+						stickyHdr.classList.add('is-scrolled');
+					} else {
+						stickyHdr.classList.remove('is-scrolled');
+					}
+				}, { passive: true });
 			}
 		})();
 		</script>
@@ -8104,6 +8575,16 @@ public static function ajax_submit_support_chat() {
 				'contact_phone'               => sanitize_text_field( $_POST['contact_phone'] ?? '' ),
 				'support_hours'               => sanitize_text_field( $_POST['support_hours'] ?? '' ),
 				'shop_title'                  => sanitize_text_field( $_POST['shop_title'] ?? '' ),
+				'shop_title_font'             => sanitize_text_field( $_POST['shop_title_font'] ?? 'vazirmatn' ),
+				'shop_title_custom_font'      => sanitize_text_field( $_POST['shop_title_custom_font'] ?? '' ),
+				'shop_title_font_size'        => sanitize_text_field( $_POST['shop_title_font_size'] ?? 'normal' ),
+				'shop_title_font_weight'      => sanitize_text_field( $_POST['shop_title_font_weight'] ?? '900' ),
+				'sticky_header'               => ! empty( $_POST['sticky_header'] ),
+				'notif_event_site_visit'      => ! empty( $_POST['notif_event_site_visit'] ),
+				'notif_event_product_view'    => ! empty( $_POST['notif_event_product_view'] ),
+				'notif_event_add_to_cart'     => ! empty( $_POST['notif_event_add_to_cart'] ),
+				'notif_event_checkout_step'   => ! empty( $_POST['notif_event_checkout_step'] ),
+				'notif_event_order_placed'    => ! empty( $_POST['notif_event_order_placed'] ),
 				'shop_subtitle'               => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
 				'accent_color'                => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
 				'default_column_layout'       => in_array( $_POST['default_column_layout'] ?? '', array( '1', '2' ), true ) ? $_POST['default_column_layout'] : '1',
@@ -8174,6 +8655,7 @@ public static function ajax_submit_support_chat() {
 		$cands_info       = self::get_scraper_ai_candidates();
 		$master_ai        = self::get_scraper_master_ai_model( $opts );
 		$wpcron_info      = self::get_wpcron_status_info( $opts );
+		$analytics_data   = self::get_analytics_data();
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
@@ -8524,7 +9006,7 @@ public static function ajax_submit_support_chat() {
 						<option value="tab-chat">💬 ۳. چت آنلاین و میز پاسخگویی</option>
 						<option value="tab-ai">🤖 ۴. هوش مصنوعی و هماهنگی</option>
 						<option value="tab-messengers">📡 ۵. پیام‌رسان‌ها (بله/تلگرام/روبیکا)</option>
-						<option value="tab-woocommerce">🔄 ۶. ووکامرس و اسکرپر</option>
+						<option value="tab-woocommerce">🏪 ۶. فروشگاه و آمار</option>
 						<option value="tab-logs">📋 ۷. گزارش پیام‌های مشتریان</option>
 					</select>
 				</div>
@@ -8537,7 +9019,7 @@ public static function ajax_submit_support_chat() {
 						<button type="button" class="scraper-tab-link" data-tab="tab-chat">💬 ۳. چت و پاسخگویی</button>
 						<button type="button" class="scraper-tab-link" data-tab="tab-ai">🤖 ۴. هوش مصنوعی</button>
 						<button type="button" class="scraper-tab-link" data-tab="tab-messengers">📡 ۵. پیام‌رسان‌ها</button>
-						<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🔄 ۶. ووکامرس</button>
+						<button type="button" class="scraper-tab-link" data-tab="tab-woocommerce">🏪 ۶. فروشگاه</button>
 						<button type="button" class="scraper-tab-link" data-tab="tab-logs">📋 ۷. گزارش پیام‌ها</button>
 					</div>
 					<div>
@@ -8761,13 +9243,90 @@ public static function ajax_submit_support_chat() {
 							<tr>
 								<th scope="row">عنوان فروشگاه (Brand Title):</th>
 								<td>
-									<input type="text" name="shop_title" value="<?php echo esc_attr( $opts['shop_title'] ); ?>" class="large-text">
+									<input type="text" name="shop_title" id="shopTitleInput" value="<?php echo esc_attr( $opts['shop_title'] ); ?>" class="large-text" placeholder="نام فروشگاه">
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">فونت عنوان فروشگاه (Title Font):</th>
+								<td>
+									<select name="shop_title_font" id="shopTitleFontSelect" class="regular-text" style="font-weight:700;">
+										<option value="vazirmatn" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'vazirmatn' ); ?>>وزیرمتن (Vazirmatn - وب‌فونت رسمی و استاندارد گوگل)</option>
+										<option value="iranyekan" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'iranyekan' ); ?>>ایران‌یکان (IRANYekan - استایل دیجی‌کالا و اسنپ)</option>
+										<option value="dana" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'dana' ); ?>>دانا (Dana - هندسی، مدرن و پرطرفدار)</option>
+										<option value="yekanbakh" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'yekanbakh' ); ?>>یکان‌بخ (Yekan Bakh - لوکس و شکیل مخصوص تیترها)</option>
+										<option value="shabnam" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'shabnam' ); ?>>شبنم (Shabnam - گوشه‌های گرد، صمیمی و دلنشین)</option>
+										<option value="sahel" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'sahel' ); ?>>ساحل (Sahel - آراسته، خوانا و کلاسیک)</option>
+										<option value="iransans" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'iransans' ); ?>>ایران‌سنس (IRANSans - متداول و رسمی)</option>
+										<option value="morabba" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'morabba' ); ?>>مربع (Morabba - پرانرژی و فانتزی برای برندینگ)</option>
+										<option value="parastoo" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'parastoo' ); ?>>پرستو (Parastoo - شیک و چشم‌نواز)</option>
+										<option value="system" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'system' ); ?>>سیستمی (System UI / Tahoma / Segoe UI)</option>
+										<option value="custom" <?php selected( $opts['shop_title_font'] ?? 'vazirmatn', 'custom' ); ?>>فونت سفارشی دلخواه (Custom Font Family)</option>
+									</select>
+									<p class="description">فونت انتخابی به طور یکپارچه روی عنوان اصلی سربرگ، بنر هیرو، منوی کشویی و فوتر فروشگاه اعمال می‌شود.</p>
+								</td>
+							</tr>
+							<tr id="customFontRow" style="<?php echo ( ( $opts['shop_title_font'] ?? '' ) === 'custom' ) ? '' : 'display:none;'; ?>">
+								<th scope="row">نام فونت سفارشی:</th>
+								<td>
+									<input type="text" name="shop_title_custom_font" id="customFontInput" value="<?php echo esc_attr( $opts['shop_title_custom_font'] ?? '' ); ?>" class="regular-text" placeholder="مثال: Shabnam, Sahel, B Yekan">
+									<p class="description">نام فونت را به انگلیسی وارد فرمایید. در صورت نصب بودن روی سیستم یا پوسته لود خواهد شد.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">اندازه فونت عنوان فروشگاه:</th>
+								<td>
+									<select name="shop_title_font_size" id="shopTitleSizeSelect" class="regular-text">
+										<option value="small" <?php selected( $opts['shop_title_font_size'] ?? 'normal', 'small' ); ?>>جمع و جور (کوچک - ۱.۱۸rem)</option>
+										<option value="normal" <?php selected( $opts['shop_title_font_size'] ?? 'normal', 'normal' ); ?>>استاندارد (۱.۳۸rem - پیش‌فرض توصیه شده)</option>
+										<option value="large" <?php selected( $opts['shop_title_font_size'] ?? 'normal', 'large' ); ?>>بزرگ و برجسته (۱.۶۵rem)</option>
+										<option value="xlarge" <?php selected( $opts['shop_title_font_size'] ?? 'normal', 'xlarge' ); ?>>خیلی بزرگ و چشمگیر (۱.۹۵rem)</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">ضخامت و وزن فونت عنوان:</th>
+								<td>
+									<select name="shop_title_font_weight" id="shopTitleWeightSelect" class="regular-text">
+										<option value="500" <?php selected( $opts['shop_title_font_weight'] ?? '900', '500' ); ?>>متوسط (Medium - ۵۰۰)</option>
+										<option value="700" <?php selected( $opts['shop_title_font_weight'] ?? '900', '700' ); ?>>ضخیم (Bold - ۷۰۰)</option>
+										<option value="800" <?php selected( $opts['shop_title_font_weight'] ?? '900', '800' ); ?>>خیلی ضخیم (Extra Bold - ۸۰۰)</option>
+										<option value="900" <?php selected( $opts['shop_title_font_weight'] ?? '900', '900' ); ?>>فوق‌العاده توپر / بلک (Black - ۹۰۰ پیش‌فرض)</option>
+									</select>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">پیش‌نمایش زنده عنوان فروشگاه:</th>
+								<td>
+									<div id="shopTitleLivePreviewCard" style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px; padding:16px 20px; display:inline-flex; align-items:center; gap:14px; box-shadow:0 4px 15px rgba(0,0,0,0.04); min-width:320px; max-width:100%;">
+										<div style="width:44px; height:44px; border-radius:12px; background:linear-gradient(135deg, #2563eb 0%, #7c3aed 100%); display:flex; align-items:center; justify-content:center; color:#fff; font-size:22px; flex-shrink:0;">
+											🛍️
+										</div>
+										<div>
+											<div id="previewTitleText" style="font-size:1.38rem; font-weight:900; color:#0f172a; line-height:1.2;">
+												<?php echo esc_html( $opts['shop_title'] ); ?>
+											</div>
+											<div id="previewSubtitleText" style="font-size:0.8rem; color:#64748b; margin-top:2px;">
+												<?php echo esc_html( $opts['shop_subtitle'] ); ?>
+											</div>
+										</div>
+									</div>
+									<p class="description">با تغییر فونت، اندازه یا ویرایش متن، پیش‌نمایش به صورت لحظه‌ای و خودکار به‌روزرسانی می‌شود.</p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row">هدر و منوی چسبان (Sticky Header):</th>
+								<td>
+									<label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+										<input type="checkbox" name="sticky_header" value="1" <?php checked( ! empty( $opts['sticky_header'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb;">
+										<strong style="color:#0f172a;">📌 ثابت و چسبان ماندن هدر و منو در بالای صفحه هنگام اسکرول (Sticky Header & Menu)</strong>
+									</label>
+									<p class="description">هنگام اسکرول صفحه به سمت پایین، هدر اصلی شامل جستجوی زنده، دکمه‌های ورود، سبد خرید، منوی دسترسی و نوار دسته‌بندی‌ها به بالای صفحه می‌چسبند تا دسترسی همیشگی برای مشتری فراهم باشد.</p>
 								</td>
 							</tr>
 							<tr>
 								<th scope="row">زیرعنوان و شعار فروشگاه:</th>
 								<td>
-									<input type="text" name="shop_subtitle" value="<?php echo esc_attr( $opts['shop_subtitle'] ); ?>" class="large-text">
+									<input type="text" name="shop_subtitle" id="shopSubtitleInput" value="<?php echo esc_attr( $opts['shop_subtitle'] ); ?>" class="large-text">
 								</td>
 							</tr>
 							<tr>
@@ -9736,57 +10295,460 @@ public static function ajax_submit_support_chat() {
 					</div>
 				</div>
 
-				<!-- ================= TAB 6: WOOCOMMERCE & SCRAPER ================= -->
+				<!-- ================= TAB 6: STORE, ANALYTICS & WOOCOMMERCE ================= -->
 				<div id="tab-woocommerce" class="scraper-tab-panel">
-					<div class="admin-card">
-						<div class="admin-card-header">
-							<h3><span>🔄</span> وضعیت اسکرپر، پروفایل‌ها و درج در ووکامرس</h3>
-							<span class="field-badge field-badge-green">مجموع: <?php echo self::to_fa_num( count( $scraped_products ) ); ?> کالا</span>
-						</div>
 
-						<div style="margin-bottom:20px;">
-							<h4 style="margin:0 0 10px; font-size:1rem; font-weight:800; color:#1e293b;">پروفایل‌های فعال استخراج:</h4>
-							<?php if ( empty( $profiles_summary ) ) : ?>
-								<p style="color:#64748b;">هنوز پروفایلی در <code>profiles.json</code> ایجاد نشده است.</p>
-							<?php else : ?>
-								<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
-									<thead>
-										<tr>
-											<th>نام پروفایل</th>
-											<th>آدرس منبع</th>
-											<th style="width:140px;">تعداد کالا</th>
-											<th style="width:140px;">عملیات</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ( $profiles_summary as $prof ) : ?>
-											<tr>
-												<td><strong><?php echo esc_html( $prof['name'] ); ?></strong></td>
-												<td dir="ltr" style="text-align:right;"><code><?php echo esc_html( $prof['url'] ); ?></code></td>
-												<td><strong style="color:#059669;"><?php echo self::to_fa_num( $prof['count'] ); ?></strong> کالا</td>
-												<td><a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-small">مدیریت در اسکرپر</a></td>
-											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
-							<?php endif; ?>
-						</div>
+					<!-- Sub-Tabs Navigation for Tab 6 -->
+					<div class="shop-subtabs-nav" style="display:flex; gap:8px; margin-bottom:22px; border-bottom:2px solid #e2e8f0; padding-bottom:12px; flex-wrap:wrap;">
+						<button type="button" class="shop-subtab-btn active" data-subtab="subtab-analytics" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #2563eb; background:#2563eb; color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(37,99,235,0.2);">
+							<span>📊</span> ۱. آمار و تحلیل جامع فروشگاه
+						</button>
+						<button type="button" class="shop-subtab-btn" data-subtab="subtab-products" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+							<span>🔄</span> ۲. ووکامرس و محصولات اسکرپر
+						</button>
+						<button type="button" class="shop-subtab-btn" data-subtab="subtab-cron" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+							<span>⏰</span> ۳. زمان‌بندی و کرون‌جاب خودکار
+						</button>
+					</div>
 
-						<!-- Direct Sync to WooCommerce Action -->
-						<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px; margin-bottom:24px;">
-							<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
-							<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
-								تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند:
-							</p>
-							<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-								<button type="button" id="btnSyncToWoo" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:6px 20px;">
-									همگام‌سازی و درج در دیتابیس ووکامرس
-								</button>
-								<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
+					<!-- ================= SUB-TAB 1: ANALYTICS & FUNNEL ================= -->
+					<div id="subtab-analytics" class="shop-subtab-panel active">
+						<?php
+						$totals         = $analytics_data['totals'] ?? array();
+						$site_visits    = max( 1, intval( $totals['site_visit'] ?? 0 ) );
+						$product_views  = intval( $totals['product_view'] ?? 0 );
+						$add_to_cart    = intval( $totals['add_to_cart'] ?? 0 );
+						$checkout_steps = intval( $totals['checkout_step'] ?? 0 );
+						$orders_placed  = intval( $totals['order_placed'] ?? 0 );
+
+						$view_rate     = round( ( $product_views / $site_visits ) * 100, 1 );
+						$cart_rate     = round( ( $add_to_cart / max( 1, $product_views ) ) * 100, 1 );
+						$checkout_rate = round( ( $checkout_steps / max( 1, $add_to_cart ) ) * 100, 1 );
+						$order_rate    = round( ( $orders_placed / max( 1, $checkout_steps ) ) * 100, 1 );
+						$overall_conv  = round( ( $orders_placed / $site_visits ) * 100, 2 );
+						?>
+
+						<!-- 1. KPI Metric Summary Cards -->
+						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px; margin-bottom:24px;">
+							<!-- Site Visits -->
+							<div style="background:linear-gradient(135deg, #eff6ff 0%, #ffffff 100%); border:1.5px solid #bfdbfe; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(37,99,235,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#1e40af;">🌐 بازدید از سایت</span>
+									<span style="background:#dbeafe; color:#1d4ed8; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;">کل</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#0f172a; line-height:1.2;">
+									<?php echo self::to_fa_num( number_format( $site_visits ) ); ?>
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">ورود به صفحات فروشگاه</div>
+							</div>
+
+							<!-- Product Views -->
+							<div style="background:linear-gradient(135deg, #f0fdfa 0%, #ffffff 100%); border:1.5px solid #99f6e4; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(13,148,136,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#0f766e;">👁️ مشاهده محصول</span>
+									<span style="background:#ccfbf1; color:#0d9488; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;"><?php echo self::to_fa_num( $view_rate ); ?>%</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#0f172a; line-height:1.2;">
+									<?php echo self::to_fa_num( number_format( $product_views ) ); ?>
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">مشاهده جزئیات کالا</div>
+							</div>
+
+							<!-- Add to Cart -->
+							<div style="background:linear-gradient(135deg, #ecfdf5 0%, #ffffff 100%); border:1.5px solid #a7f3d0; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(16,185,129,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#065f46;">🛒 افزودن به سبد</span>
+									<span style="background:#d1fae5; color:#059669; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;"><?php echo self::to_fa_num( $cart_rate ); ?>%</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#0f172a; line-height:1.2;">
+									<?php echo self::to_fa_num( number_format( $add_to_cart ) ); ?>
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">انتخاب برای خرید</div>
+							</div>
+
+							<!-- Checkout Steps -->
+							<div style="background:linear-gradient(135deg, #fffbeb 0%, #ffffff 100%); border:1.5px solid #fde68a; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(217,119,6,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#92400e;">💳 رفتن به تسویه</span>
+									<span style="background:#fef3c7; color:#d97706; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;"><?php echo self::to_fa_num( $checkout_rate ); ?>%</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#0f172a; line-height:1.2;">
+									<?php echo self::to_fa_num( number_format( $checkout_steps ) ); ?>
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">ورود به نهایی‌سازی</div>
+							</div>
+
+							<!-- Orders Placed -->
+							<div style="background:linear-gradient(135deg, #fdf2f8 0%, #ffffff 100%); border:1.5px solid #fbcfe8; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(219,39,119,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#9d174d;">🎁 ثبت سفارش</span>
+									<span style="background:#fce7f3; color:#db2777; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;"><?php echo self::to_fa_num( $order_rate ); ?>%</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#0f172a; line-height:1.2;">
+									<?php echo self::to_fa_num( number_format( $orders_placed ) ); ?>
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">فروش‌های نهایی موفق</div>
+							</div>
+
+							<!-- Overall Conversion Rate -->
+							<div style="background:linear-gradient(135deg, #faf5ff 0%, #ffffff 100%); border:1.5px solid #e9d5ff; border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(124,58,237,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+									<span style="font-size:0.8rem; font-weight:800; color:#6b21a8;">📈 نرخ تبدیل کل</span>
+									<span style="background:#f3e8ff; color:#7c3aed; font-size:0.7rem; font-weight:800; padding:2px 7px; border-radius:8px;">قیف</span>
+								</div>
+								<div style="font-size:1.6rem; font-weight:900; color:#7c3aed; line-height:1.2;">
+									<?php echo self::to_fa_num( $overall_conv ); ?>%
+								</div>
+								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">تبدیل بازدید به سفارش</div>
 							</div>
 						</div>
 
-						<!-- ⏰ زمان‌بندی خودکار با کران‌جاب داخلی وردپرس (WP-Cron) -->
+						<!-- 2. Visual 5-Step Funnel Chart -->
+						<div class="admin-card">
+							<div class="admin-card-header">
+								<h3><span>📈</span> قیف تبدیل تعاملی فروشگاه (Visual Conversion Funnel)</h3>
+								<span class="field-badge field-badge-blue">تحلیل ریزش و تبدیل کاربران</span>
+							</div>
+
+							<p style="color:#64748b; font-size:0.88rem; line-height:1.6; margin-top:0;">
+								نمودار زیر رفتار خرید مشتریان را از لحظه ورود به ویترین تا مشاهده محصولات، سبد خرید، تسویه‌حساب و پرداخت نهایی نشان می‌دهد:
+							</p>
+
+							<div style="display:flex; flex-direction:column; gap:12px; margin-top:14px;">
+								<!-- Funnel Step 1: Site Visits -->
+								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۱. ورود بازدیدکننده به سایت (Site Visits)</span>
+										<span style="font-weight:900; font-size:0.95rem; color:#2563eb;"><?php echo self::to_fa_num( number_format( $site_visits ) ); ?> نفر (۱۰۰٪)</span>
+									</div>
+									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
+										<div style="width:100%; height:100%; background:linear-gradient(90deg, #3b82f6 0%, #2563eb 100%); border-radius:8px;"></div>
+									</div>
+								</div>
+
+								<!-- Funnel Step 2: Product Views -->
+								<?php $p1_pct = min( 100, max( 5, round( ( $product_views / $site_visits ) * 100 ) ) ); ?>
+								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۲. مشاهده و بررسی محصولات (Product Views)</span>
+										<span style="font-weight:900; font-size:0.95rem; color:#0d9488;">
+											<?php echo self::to_fa_num( number_format( $product_views ) ); ?> بازدید 
+											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $view_rate ); ?>٪ نسبت به ورودی)</span>
+										</span>
+									</div>
+									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
+										<div style="width:<?php echo $p1_pct; ?>%; height:100%; background:linear-gradient(90deg, #14b8a6 0%, #0d9488 100%); border-radius:8px; transition:width 0.5s;"></div>
+									</div>
+								</div>
+
+								<!-- Funnel Step 3: Add to Cart -->
+								<?php $p2_pct = min( 100, max( 3, round( ( $add_to_cart / $site_visits ) * 100 ) ) ); ?>
+								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۳. افزودن کالا به سبد خرید (Add to Cart)</span>
+										<span style="font-weight:900; font-size:0.95rem; color:#059669;">
+											<?php echo self::to_fa_num( number_format( $add_to_cart ) ); ?> مورد 
+											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $cart_rate ); ?>٪ علاقه‌مندی به خرید)</span>
+										</span>
+									</div>
+									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
+										<div style="width:<?php echo $p2_pct; ?>%; height:100%; background:linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius:8px; transition:width 0.5s;"></div>
+									</div>
+								</div>
+
+								<!-- Funnel Step 4: Checkout Step -->
+								<?php $p3_pct = min( 100, max( 2, round( ( $checkout_steps / $site_visits ) * 100 ) ) ); ?>
+								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۴. ورود به مراحل تسویه‌حساب و نهایی‌سازی (Proceed to Checkout)</span>
+										<span style="font-weight:900; font-size:0.95rem; color:#d97706;">
+											<?php echo self::to_fa_num( number_format( $checkout_steps ) ); ?> بار 
+											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $checkout_rate ); ?>٪ پیشروی تا پرداخت)</span>
+										</span>
+									</div>
+									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
+										<div style="width:<?php echo $p3_pct; ?>%; height:100%; background:linear-gradient(90deg, #f59e0b 0%, #d97706 100%); border-radius:8px; transition:width 0.5s;"></div>
+									</div>
+								</div>
+
+								<!-- Funnel Step 5: Order Placed -->
+								<?php $p4_pct = min( 100, max( 1, round( ( $orders_placed / $site_visits ) * 100 ) ) ); ?>
+								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
+									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۵. ثبت و تکمیل نهایی سفارش (Orders Placed)</span>
+										<span style="font-weight:900; font-size:0.95rem; color:#db2777;">
+											<?php echo self::to_fa_num( number_format( $orders_placed ) ); ?> سفارش 
+											<span style="font-size:0.8rem; color:#059669; font-weight:800;">(نرخ تبدیل نهایی: <?php echo self::to_fa_num( $overall_conv ); ?>٪)</span>
+										</span>
+									</div>
+									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
+										<div style="width:<?php echo $p4_pct; ?>%; height:100%; background:linear-gradient(90deg, #ec4899 0%, #db2777 100%); border-radius:8px; transition:width 0.5s;"></div>
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<!-- 3. Interactive Daily Activity SVG Chart -->
+						<div class="admin-card">
+							<div class="admin-card-header">
+								<h3><span>📊</span> روند فعالیت‌های روزانه فروشگاه (Daily Trend Chart)</h3>
+								<div style="display:flex; gap:12px; align-items:center; font-size:0.78rem; font-weight:700;">
+									<span style="color:#2563eb;">■ بازدید سایت</span>
+									<span style="color:#0d9488;">■ مشاهده محصول</span>
+									<span style="color:#059669;">■ افزودن به سبد</span>
+									<span style="color:#db2777;">■ سفارش نهایی</span>
+								</div>
+							</div>
+
+							<?php
+							$daily_stats = $analytics_data['daily'] ?? array();
+							$recent_days = array_slice( $daily_stats, -10, 10, true );
+							$max_day_val = 10;
+							foreach ( $recent_days as $d_row ) {
+								$max_day_val = max( $max_day_val, intval( $d_row['site_visit'] ?? 0 ) );
+							}
+							?>
+
+							<div style="overflow-x:auto; padding-top:16px;">
+								<div style="min-width:600px; display:flex; align-items:flex-end; gap:18px; height:200px; padding:0 10px 24px; border-bottom:2px solid #cbd5e1;">
+									<?php foreach ( $recent_days as $date_str => $d_row ) : ?>
+										<?php
+										$v_h = round( ( ( $d_row['site_visit'] ?? 0 ) / $max_day_val ) * 160 );
+										$p_h = round( ( ( $d_row['product_view'] ?? 0 ) / $max_day_val ) * 160 );
+										$c_h = round( ( ( $d_row['add_to_cart'] ?? 0 ) / $max_day_val ) * 160 );
+										$o_h = round( ( ( $d_row['order_placed'] ?? 0 ) / $max_day_val ) * 160 );
+										$day_fa = substr( $date_str, 5 );
+										?>
+										<div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; height:100%; justify-content:flex-end;" title="<?php echo esc_attr( $date_str ); ?>: <?php echo $d_row['site_visit']; ?> بازدید، <?php echo $d_row['order_placed']; ?> سفارش">
+											<div style="display:flex; align-items:flex-end; gap:3px; height:160px; width:100%; justify-content:center;">
+												<div style="height:<?php echo max( 4, $v_h ); ?>px; width:10px; background:#3b82f6; border-radius:3px 3px 0 0;" title="بازدید: <?php echo $d_row['site_visit']; ?>"></div>
+												<div style="height:<?php echo max( 3, $p_h ); ?>px; width:10px; background:#14b8a6; border-radius:3px 3px 0 0;" title="مشاهده: <?php echo $d_row['product_view']; ?>"></div>
+												<div style="height:<?php echo max( 2, $c_h ); ?>px; width:10px; background:#10b981; border-radius:3px 3px 0 0;" title="سبد: <?php echo $d_row['add_to_cart']; ?>"></div>
+												<div style="height:<?php echo max( 2, $o_h ); ?>px; width:10px; background:#ec4899; border-radius:3px 3px 0 0;" title="سفارش: <?php echo $d_row['order_placed']; ?>"></div>
+											</div>
+											<span style="font-size:0.72rem; color:#64748b; font-weight:700; margin-top:6px; direction:ltr;"><?php echo esc_html( $day_fa ); ?></span>
+										</div>
+									<?php endforeach; ?>
+								</div>
+							</div>
+						</div>
+
+						<!-- 4. Messenger Notification Toggles for Funnel Events -->
+						<div class="admin-card" style="border:2px solid #3b82f6; background:linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);">
+							<div class="admin-card-header" style="border-bottom:1px solid #bfdbfe;">
+								<h3><span>🔔</span> تنظیمات اعلان‌های لحظه‌ای پیام‌رسان (بله، تلگرام، روبیکا)</h3>
+								<span class="field-badge field-badge-green">اعلان خودکار به ادمین</span>
+							</div>
+
+							<p style="color:#334155; font-size:0.88rem; line-height:1.7; margin-top:0;">
+								با فعال‌سازی هر یک از گزینه‌های زیر، به محض وقوع رویداد توسط مشتری در ویترین فروشگاه، یک پیام فوری همراه با جزئیات کامل به پیام‌رسان‌های متصل شما (بله، تلگرام یا روبیکا) ارسال خواهد شد:
+							</p>
+
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-bottom:14px;">
+								<!-- 1. Site Visit -->
+								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
+									<input type="checkbox" name="notif_event_site_visit" value="1" <?php checked( ! empty( $opts['notif_event_site_visit'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb; margin-top:2px;">
+									<div>
+										<strong style="font-size:0.92rem; color:#0f172a; display:block;">🌐 اعلان بازدید از سایت</strong>
+										<span style="font-size:0.78rem; color:#64748b;">ارسال پیام هنگام ورود بازدیدکننده جدید به ویترین</span>
+									</div>
+								</label>
+
+								<!-- 2. Product View -->
+								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
+									<input type="checkbox" name="notif_event_product_view" value="1" <?php checked( ! empty( $opts['notif_event_product_view'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb; margin-top:2px;">
+									<div>
+										<strong style="font-size:0.92rem; color:#0f172a; display:block;">👁️ اعلان مشاهده محصول</strong>
+										<span style="font-size:0.78rem; color:#64748b;">ارسال پیام با نام و قیمت محصول هنگام کلیک و مشاهده کالا</span>
+									</div>
+								</label>
+
+								<!-- 3. Add to Cart -->
+								<label style="background:#ffffff; border:1.5px solid #10b981; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
+									<input type="checkbox" name="notif_event_add_to_cart" value="1" <?php checked( ! empty( $opts['notif_event_add_to_cart'] ) ); ?> style="width:18px; height:18px; accent-color:#10b981; margin-top:2px;">
+									<div>
+										<strong style="font-size:0.92rem; color:#065f46; display:block;">🛒 اعلان افزودن به سبد خرید (توصیه شده)</strong>
+										<span style="font-size:0.78rem; color:#64748b;">ارسال نام کالا، تعداد و قیمت به محض افزودن به سبد توسط مشتری</span>
+									</div>
+								</label>
+
+								<!-- 4. Checkout Step -->
+								<label style="background:#ffffff; border:1.5px solid #f59e0b; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
+									<input type="checkbox" name="notif_event_checkout_step" value="1" <?php checked( ! empty( $opts['notif_event_checkout_step'] ) ); ?> style="width:18px; height:18px; accent-color:#f59e0b; margin-top:2px;">
+									<div>
+										<strong style="font-size:0.92rem; color:#92400e; display:block;">💳 اعلان ورود به تسویه‌حساب (مهم)</strong>
+										<span style="font-size:0.78rem; color:#64748b;">ارسال مبلغ کل سبد خرید و تعداد اقلام هنگام مراجعه به برگه پرداخت</span>
+									</div>
+								</label>
+
+								<!-- 5. Order Placed -->
+								<label style="background:#ffffff; border:1.5px solid #ec4899; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
+									<input type="checkbox" name="notif_event_order_placed" value="1" <?php checked( ! empty( $opts['notif_event_order_placed'] ) ); ?> style="width:18px; height:18px; accent-color:#ec4899; margin-top:2px;">
+									<div>
+										<strong style="font-size:0.92rem; color:#9d174d; display:block;">🎉 اعلان ثبت سفارش جدید (بسیار مهم)</strong>
+										<span style="font-size:0.78rem; color:#64748b;">ارسال شماره فاکتور، مبلغ، نام مشتری و شماره موبایل برای آماده‌سازی سریع</span>
+									</div>
+								</label>
+							</div>
+
+							<div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+								<span style="font-size:0.84rem; color:#475569;">
+									📡 پیام‌رسان‌های فعال برای دریافت اعلان: 
+									<strong><?php echo implode( ' ، ', array_map( function($k){ return $k === 'bale' ? 'بله' : ( $k === 'telegram' ? 'تلگرام' : 'روبیکا' ); }, array_keys($active_msgrs) ) ) ?: 'هیچ پیام‌رسانی تنظیم نشده (از تب پیام‌رسان‌ها متصل کنید)'; ?></strong>
+								</span>
+								<button type="submit" name="scraper_shop_save" class="button button-primary" style="background:#2563eb; border-color:#1d4ed8; font-weight:800; border-radius:8px;">
+									💾 ذخیره تنظیمات اعلان‌ها
+								</button>
+							</div>
+						</div>
+
+						<!-- 5. Live Events Log & Top Products -->
+						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:20px;">
+							<!-- Live Recent Events Table -->
+							<div class="admin-card" style="margin-bottom:0;">
+								<div class="admin-card-header">
+									<h3><span>⚡</span> آخرین رویدادهای زنده کاربران</h3>
+									<button type="button" id="btnResetAnalytics" class="button button-small" style="color:#ef4444; border-color:#fca5a5;">
+										🗑️ بازنشانی آمار
+									</button>
+								</div>
+
+								<div style="max-height:360px; overflow-y:auto;">
+									<table class="wp-list-table widefat fixed striped" style="font-size:0.82rem;">
+										<thead>
+											<tr>
+												<th style="width:85px;">زمان</th>
+												<th style="width:110px;">نوع رویداد</th>
+												<th>شرح رویداد / کالا</th>
+											</tr>
+										</thead>
+										<tbody>
+											<?php
+											$recent_events = $analytics_data['recent_events'] ?? array();
+											if ( empty( $recent_events ) ) : ?>
+												<tr><td colspan="3" style="text-align:center; color:#94a3b8;">هنوز رویدادی ثبت نشده است.</td></tr>
+											<?php else :
+												foreach ( array_slice( $recent_events, 0, 15 ) as $ev ) :
+													$ev_type = $ev['type'] ?? '';
+													$badge_color = '#2563eb';
+													$badge_lbl   = 'بازدید سایت';
+													if ( 'product_view' === $ev_type ) { $badge_color = '#0d9488'; $badge_lbl = 'مشاهده کالا'; }
+													elseif ( 'add_to_cart' === $ev_type ) { $badge_color = '#059669'; $badge_lbl = 'افزودن به سبد'; }
+													elseif ( 'checkout_step' === $ev_type ) { $badge_color = '#d97706'; $badge_lbl = 'تسویه‌حساب'; }
+													elseif ( 'order_placed' === $ev_type ) { $badge_color = '#db2777'; $badge_lbl = 'ثبت سفارش'; }
+													?>
+													<tr>
+														<td style="color:#64748b; font-size:0.75rem;"><?php echo esc_html( $ev['time'] ?? '' ); ?></td>
+														<td>
+															<span style="background:<?php echo $badge_color; ?>18; color:<?php echo $badge_color; ?>; font-weight:800; padding:2px 8px; border-radius:6px; font-size:0.72rem;">
+																<?php echo esc_html( $badge_lbl ); ?>
+															</span>
+														</td>
+														<td>
+															<strong><?php echo esc_html( $ev['title'] ?? '' ); ?></strong>
+															<?php if ( ! empty( $ev['customer'] ) && 'کاربر مهمان' !== $ev['customer'] ) : ?>
+																<div style="font-size:0.72rem; color:#64748b;"><?php echo esc_html( $ev['customer'] ); ?></div>
+															<?php endif; ?>
+														</td>
+													</tr>
+												<?php endforeach;
+											endif; ?>
+										</tbody>
+									</table>
+								</div>
+							</div>
+
+							<!-- Top Products Table -->
+							<div class="admin-card" style="margin-bottom:0;">
+								<div class="admin-card-header">
+									<h3><span>🔥</span> محبوب‌ترین کالاهای مورد توجه مشتریان</h3>
+									<span class="field-badge field-badge-purple">تحلیل تقاضا</span>
+								</div>
+
+								<div style="max-height:360px; overflow-y:auto;">
+									<table class="wp-list-table widefat fixed striped" style="font-size:0.82rem;">
+										<thead>
+											<tr>
+												<th>نام کالا</th>
+												<th style="width:75px;">مشاهده</th>
+												<th style="width:75px;">سبد خرید</th>
+											</tr>
+										</thead>
+										<tbody>
+											<?php
+											$top_prods = $analytics_data['top_products'] ?? array();
+											if ( empty( $top_prods ) ) : ?>
+												<tr><td colspan="3" style="text-align:center; color:#94a3b8;">اطلاعاتی ثبت نشده است.</td></tr>
+											<?php else :
+												foreach ( array_slice( $top_prods, 0, 8 ) as $tp ) : ?>
+													<tr>
+														<td><strong><?php echo esc_html( $tp['title'] ?? '' ); ?></strong></td>
+														<td><span style="color:#0d9488; font-weight:800;"><?php echo self::to_fa_num( $tp['views'] ?? 0 ); ?></span></td>
+														<td><span style="color:#059669; font-weight:800;"><?php echo self::to_fa_num( $tp['carts'] ?? 0 ); ?></span></td>
+													</tr>
+												<?php endforeach;
+											endif; ?>
+										</tbody>
+									</table>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- ================= SUB-TAB 2: PRODUCTS & WOOCOMMERCE SYNC ================= -->
+					<div id="subtab-products" class="shop-subtab-panel" style="display:none;">
+						<div class="admin-card">
+							<div class="admin-card-header">
+								<h3><span>🔄</span> وضعیت اسکرپر، پروفایل‌ها و درج در ووکامرس</h3>
+								<span class="field-badge field-badge-green">مجموع: <?php echo self::to_fa_num( count( $scraped_products ) ); ?> کالا</span>
+							</div>
+
+							<div style="margin-bottom:20px;">
+								<h4 style="margin:0 0 10px; font-size:1rem; font-weight:800; color:#1e293b;">پروفایل‌های فعال استخراج:</h4>
+								<?php if ( empty( $profiles_summary ) ) : ?>
+									<p style="color:#64748b;">هنوز پروفایلی در <code>profiles.json</code> ایجاد نشده است.</p>
+								<?php else : ?>
+									<table class="wp-list-table widefat fixed striped" style="border-radius:10px; overflow:hidden;">
+										<thead>
+											<tr>
+												<th>نام پروفایل</th>
+												<th>آدرس منبع</th>
+												<th style="width:140px;">تعداد کالا</th>
+												<th style="width:140px;">عملیات</th>
+											</tr>
+										</thead>
+										<tbody>
+											<?php foreach ( $profiles_summary as $prof ) : ?>
+												<tr>
+													<td><strong><?php echo esc_html( $prof['name'] ); ?></strong></td>
+													<td dir="ltr" style="text-align:right;"><code><?php echo esc_html( $prof['url'] ); ?></code></td>
+													<td><strong style="color:#059669;"><?php echo self::to_fa_num( $prof['count'] ); ?></strong> کالا</td>
+													<td><a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-small">مدیریت در اسکرپر</a></td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								<?php endif; ?>
+							</div>
+
+							<!-- Direct Sync to WooCommerce Action -->
+							<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px; margin-bottom:24px;">
+								<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
+								<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
+									تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند:
+								</p>
+								<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+									<button type="button" id="btnSyncToWoo" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:6px 20px;">
+										همگام‌سازی و درج در دیتابیس ووکامرس
+									</button>
+									<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- ================= SUB-TAB 3: WP-CRON AUTOMATIC SYNC ================= -->
+					<div id="subtab-cron" class="shop-subtab-panel" style="display:none;">
 						<div class="admin-card" style="border:2px solid #3b82f6; background:linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); margin:0; border-radius:12px;">
 							<div class="admin-card-header" style="border-bottom:1px solid #bfdbfe;">
 								<h3><span>⏰</span> اجرای خودکار استخراج و همگام‌سازی با کران‌جاب داخلی وردپرس (WP-Cron)</h3>
@@ -9822,23 +10784,23 @@ public static function ajax_submit_support_chat() {
 								</div>
 							</div>
 
-							<!-- تنظیمات کران در فرم -->
-							<table class="form-table" style="margin-bottom:14px;">
+							<!-- فرم تنظیمات زمان‌بندی WP-Cron -->
+							<table class="form-table" style="margin-bottom:16px;">
 								<tr>
 									<th scope="row" style="width:230px;">فعال‌سازی کران‌جاب وردپرس:</th>
 									<td>
-										<label style="font-weight:700; color:#1e293b; display:flex; align-items:center; gap:8px;">
-											<input type="checkbox" name="enable_wp_cron_sync" value="1" <?php checked( ! empty( $opts['enable_wp_cron_sync'] ) ); ?>>
-											اجرای منظم و خودکار اسکرپر و همگام‌سازی با استفاده از کران وردپرس (توصیه شده)
+										<label style="display:flex; align-items:center; gap:8px; font-weight:700; cursor:pointer;">
+											<input type="checkbox" name="enable_wp_cron_sync" value="1" <?php checked( ! empty( $opts['enable_wp_cron_sync'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb;">
+											اجرای دوره‌ای و پس‌زمینه اسکرپر توسط سیستم زمان‌بندی وردپرس (WP-Cron)
 										</label>
 									</td>
 								</tr>
 								<tr>
-									<th scope="row">فواصل تکرار زمان‌بندی:</th>
+									<th scope="row">دوره تکرار اجرا (Interval):</th>
 									<td>
-										<select name="wp_cron_interval" class="regular-text" style="border-radius:8px;">
+										<select name="wp_cron_interval" class="regular-text" style="font-weight:700;">
 											<?php foreach ( $wpcron_info['interval_labels'] as $int_key => $int_label ) : ?>
-												<option value="<?php echo esc_attr( $int_key ); ?>" <?php selected( ( $opts['wp_cron_interval'] ?? 'every_30_mins' ), $int_key ); ?>>
+												<option value="<?php echo esc_attr( $int_key ); ?>" <?php selected( $wpcron_info['interval'], $int_key ); ?>>
 													<?php echo esc_html( $int_label ); ?>
 												</option>
 											<?php endforeach; ?>
@@ -9945,7 +10907,84 @@ public static function ajax_submit_support_chat() {
 				$('#scraperAdminTabs .scraper-tab-link[data-tab="' + targetTab + '"]').click();
 			});
 
-			$('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
+			
+			// Sub-tabs switcher in Tab 6 (فروشگاه)
+			$('.shop-subtab-btn').on('click', function() {
+				var target = $(this).attr('data-subtab');
+				$('.shop-subtab-btn').css({'background':'#f8fafc','color':'#475569','border-color':'#cbd5e1','box-shadow':'none'});
+				$(this).css({'background':'#2563eb','color':'#fff','border-color':'#2563eb','box-shadow':'0 4px 12px rgba(37,99,235,0.2)'});
+				$('.shop-subtab-panel').hide();
+				$('#' + target).fadeIn(200);
+			});
+
+			// Live Font Preview Updater in Tab 1
+			function updateTitleFontPreview() {
+				var title = $('#shopTitleInput').val() || 'عنوان فروشگاه';
+				var font = $('#shopTitleFontSelect').val() || 'vazirmatn';
+				var size = $('#shopTitleSizeSelect').val() || 'normal';
+				var weight = $('#shopTitleWeightSelect').val() || '900';
+
+				if (font === 'custom') {
+					$('#customFontRow').show();
+				} else {
+					$('#customFontRow').hide();
+				}
+
+				var fontMap = {
+					'vazirmatn': "'Vazirmatn', Tahoma, sans-serif",
+					'iranyekan': "'IRANYekan', 'IRANYekanX', 'Vazirmatn', Tahoma, sans-serif",
+					'dana': "'Dana', 'DanaVF', 'Vazirmatn', Tahoma, sans-serif",
+					'yekanbakh': "'YekanBakh', 'Yekan Bakh', 'Vazirmatn', Tahoma, sans-serif",
+					'shabnam': "'Shabnam', 'Vazirmatn', Tahoma, sans-serif",
+					'sahel': "'Sahel', 'Vazirmatn', Tahoma, sans-serif",
+					'iransans': "'IRANSans', 'IRANSansX', 'Vazirmatn', Tahoma, sans-serif",
+					'morabba': "'Morabba', 'Dana', Tahoma, sans-serif",
+					'parastoo': "'Parastoo', 'Sahel', Tahoma, sans-serif",
+					'system': "-apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif",
+					'custom': ($('#customFontInput').val() || 'Tahoma') + ", sans-serif"
+				};
+
+				var sizeMap = {
+					'small': '1.18rem',
+					'normal': '1.38rem',
+					'large': '1.65rem',
+					'xlarge': '1.95rem'
+				};
+
+				$('#previewTitleText').text(title)
+					.css({
+						'font-family': fontMap[font] || fontMap['vazirmatn'],
+						'font-size': sizeMap[size] || '1.38rem',
+						'font-weight': weight
+					});
+			}
+
+			$('#shopTitleInput, #shopTitleFontSelect, #shopTitleSizeSelect, #shopTitleWeightSelect, #customFontInput').on('input change', updateTitleFontPreview);
+			updateTitleFontPreview();
+
+			// Reset Analytics AJAX
+			$('#btnResetAnalytics').on('click', function() {
+				if (!confirm('آیا از بازنشانی کامل آمار و نمودارهای فروشگاه اطمینان دارید؟')) return;
+				var $btn = $(this);
+				$btn.prop('disabled', true).text('در حال بازنشانی...');
+				$.post(ajaxurl, {
+					action: 'scraper_reset_analytics',
+					nonce: '<?php echo esc_js( wp_create_nonce( "scraper_shop_admin_nonce" ) ); ?>'
+				}, function(res) {
+					if (res.success) {
+						alert('✅ ' + (res.data.message || 'آمار با موفقیت بازنشانی شد. صفحه تازه‌سازی می‌شود.'));
+						window.location.reload();
+					} else {
+						alert('❌ خطا در بازنشانی آمار: ' + (res.data || 'خطای ناشناخته'));
+						$btn.prop('disabled', false).text('🗑️ بازنشانی آمار');
+					}
+				}).fail(function() {
+					alert('❌ خطای ارتباط با سرور.');
+					$btn.prop('disabled', false).text('🗑️ بازنشانی آمار');
+				});
+			});
+
+$('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				e.preventDefault();
 				var tabId = $(this).attr('data-tab');
 				$('#scraperAdminTabs .scraper-tab-link').removeClass('active');

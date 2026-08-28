@@ -7188,6 +7188,125 @@ function vc_get_json(string $url, string $token = '', int $timeout = 25): array 
                         : ['ok' => false, 'code' => 0, 'error' => 'پاسخ نامعتبر', 'data' => null];
 }
 
+/** Store Online Chat Human Support Desk API */
+if (isset($_GET['store_chat_api']) || isset($_POST['store_chat_api'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $api_action = $_GET['store_chat_api'] ?: ($_POST['store_chat_api'] ?? 'get_threads');
+    $threads_file = __DIR__ . '/chat_threads.json';
+
+    // Auto-bootstrap WordPress if available
+    if (!function_exists('get_option')) {
+        $wp_loader_candidates = [
+            __DIR__ . '/wp-load.php',
+            dirname(__DIR__) . '/wp-load.php',
+            dirname(dirname(__DIR__)) . '/wp-load.php',
+            dirname(dirname(dirname(__DIR__))) . '/wp-load.php',
+        ];
+        foreach ($wp_loader_candidates as $loader) {
+            if (file_exists($loader)) {
+                @require_once $loader;
+                break;
+            }
+        }
+    }
+
+    $threads = [];
+    if (function_exists('get_option')) {
+        $threads = get_option('scraper_chat_threads', []);
+    }
+    if (empty($threads) && file_exists($threads_file)) {
+        $threads = @json_decode(file_get_contents($threads_file), true) ?: [];
+    }
+    if (!is_array($threads)) $threads = [];
+
+    if ($api_action === 'get_threads') {
+        $unread_total = 0;
+        foreach ($threads as $t) {
+            if (!empty($t['unread_admin'])) $unread_total++;
+        }
+        echo json_encode(['ok' => true, 'threads' => $threads, 'unread_total' => $unread_total], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    if ($api_action === 'send_reply') {
+        $thread_id = trim((string)($_POST['thread_id'] ?? ''));
+        $reply_text = trim((string)($_POST['reply_text'] ?? ''));
+        if ($thread_id === '' || $reply_text === '') {
+            echo json_encode(['ok' => false, 'error' => 'متن پاسخ یا شناسه گفتگو خالی است.'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        $now = time();
+        $time_str = date('H:i');
+        $found = false;
+        $updated_thread = null;
+
+        foreach ($threads as &$t) {
+            if (($t['id'] ?? '') === $thread_id) {
+                $t['unread_admin'] = false;
+                $t['status'] = 'replied';
+                $t['updated_at'] = $now;
+                $admin_msg = [
+                    'id' => 'msg_' . $now . '_' . rand(100, 999),
+                    'sender' => 'admin',
+                    'sender_name' => 'ادمین فروشگاه (پاسخ انسانی از اسکریپر)',
+                    'text' => $reply_text,
+                    'time' => $time_str,
+                    'timestamp' => $now,
+                ];
+                if (!isset($t['messages']) || !is_array($t['messages'])) {
+                    $t['messages'] = [];
+                }
+                $t['messages'][] = $admin_msg;
+                $found = true;
+                $updated_thread = $t;
+                break;
+            }
+        }
+        unset($t);
+
+        if (!$found) {
+            echo json_encode(['ok' => false, 'error' => 'گفتگوی مورد نظر یافت نشد.'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        // Save to JSON file and WP DB
+        @file_put_contents($threads_file, json_encode($threads, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+        if (function_exists('update_option')) {
+            update_option('scraper_chat_threads', $threads, false);
+        }
+
+        // Dispatch to Messengers (Bale, Telegram, Rubika)
+        $conn = [];
+        if (function_exists('loadConnections')) {
+            $conn = loadConnections();
+        } elseif (file_exists(__DIR__ . '/connections.json')) {
+            $conn = @json_decode(file_get_contents(__DIR__ . '/connections.json'), true) ?: [];
+        }
+
+        $c_name = $updated_thread['name'] ?? 'مشتری فروشگاه';
+        $c_phone = $updated_thread['phone'] ?? '';
+        $dispatch_msg = "🧑‍💼 پاسخ انسانی ادمین به مشتری (ثبت شده از اسکریپر):\n👤 مشتری: {$c_name}" . ($c_phone ? " ({$c_phone})" : '') . "\n💬 پاسخ: {$reply_text}\n⏰ زمان: {$time_str}";
+
+        // Telegram
+        $tg_bot = $conn['telegram_bot_token'] ?? ($conn['telegram_token'] ?? '');
+        $tg_chat = $conn['telegram_chat_id'] ?? '';
+        if ($tg_bot && $tg_chat) {
+            @file_get_contents('https://api.telegram.org/bot' . urlencode($tg_bot) . '/sendMessage?chat_id=' . urlencode($tg_chat) . '&text=' . urlencode($dispatch_msg));
+        }
+
+        // Bale
+        $bale_bot = $conn['bale_token'] ?? ($conn['bale_bot_token'] ?? '');
+        $bale_chat = $conn['bale_chat_id'] ?? '';
+        if ($bale_bot && $bale_chat) {
+            @file_get_contents('https://tapi.bale.ai/bot' . urlencode($bale_bot) . '/sendMessage?chat_id=' . urlencode($bale_chat) . '&text=' . urlencode($dispatch_msg));
+        }
+
+        echo json_encode(['ok' => true, 'thread' => $updated_thread, 'msg' => 'پاسخ با موفقیت به مشتری و پیام‌رسان‌ها ارسال شد.'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
 /** مقایسهٔ نسخه — هیچ چیزی دانلود یا نوشته نمی‌شود */
 if (isset($_GET['vc_check'])) {
     header('Content-Type: application/json; charset=UTF-8');
@@ -47433,6 +47552,78 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="smenu">
 <div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>💬 پاسخ دستی به مشتریان</h3><span class="arrow">▼</span></div>
 <div class="smenu-body" id="mrBody">
+<!-- Channel Toggle Bar: Store Customers vs Basalam -->
+<div style="display:flex;gap:8px;margin-bottom:12px;border-bottom:1.5px solid #334155;padding-bottom:10px;flex-wrap:wrap;">
+    <button type="button" id="mrTabStore" class="btn btn-blue" onclick="mrSwitchChannel('store')" style="padding:7px 16px;font-size:12px;font-weight:800;display:inline-flex;align-items:center;gap:6px;">
+        🛒 گفتگوهای مشتریان فروشگاه آنلاین
+        <span id="mrStoreUnreadBadge" style="background:#ef4444;color:#fff;font-size:10px;font-weight:800;padding:1px 6px;border-radius:10px;display:none;">۰</span>
+    </button>
+    <button type="button" id="mrTabBsl" class="btn btn-gray" onclick="mrSwitchChannel('bsl')" style="padding:7px 16px;font-size:12px;font-weight:800;display:inline-flex;align-items:center;gap:6px;">
+        🏪 چت‌های باسلام (چندغرفه)
+    </button>
+</div>
+
+<!-- CHANNEL 1: STORE ONLINE HUMAN SUPPORT DESK -->
+<div id="mrStoreDeskPane" style="display:block;">
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;line-height:1.8;">
+        پاسخگویی انسانی مستقیم به پیام‌های دریافتی از ویترین آنلاین فروشگاه. پاسخ‌های شما بلافاصله در چت مشتری نمایش داده شده و به پیام‌رسان‌ها (بله/تلگرام/روبیکا) ارسال می‌شود.
+    </div>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;min-height:360px;">
+        <!-- Store Customer Threads List -->
+        <div style="flex:1;min-width:240px;max-width:320px;border:1px solid #334155;border-radius:10px;background:#0b1220;display:flex;flex-direction:column;">
+            <div style="padding:8px;border-bottom:1px solid #1e293b;">
+                <input type="text" id="storeThreadSearch" placeholder="🔍 جستجوی نام یا شماره..." oninput="mrFilterStoreThreads()" style="background:#111c31;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:11px;width:100%;">
+            </div>
+            <div id="storeThreadsList" style="flex:1;max-height:340px;overflow-y:auto;padding:6px;display:flex;flex-direction:column;gap:5px;">
+                <div class="empty" style="padding:20px;text-align:center;color:#64748b;font-size:11px;">در حال بارگذاری گفتگوهای فروشگاه...</div>
+            </div>
+        </div>
+
+        <!-- Store Conversation View & Reply Composer -->
+        <div style="flex:1.8;min-width:280px;border:1px solid #334155;border-radius:10px;background:#0b1220;display:flex;flex-direction:column;">
+            <!-- Conversation Header -->
+            <div id="storeActiveHdr" style="padding:10px 14px;background:#16233d;border-bottom:1px solid #334155;border-radius:10px 10px 0 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <div style="width:32px;height:32px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;" id="storeActiveAvatar">👤</div>
+                    <div>
+                        <div style="font-size:12px;font-weight:800;color:#fff;" id="storeActiveName">یک گفتگو را از لیست انتخاب کنید</div>
+                        <div style="font-size:10px;color:#94a3b8;" id="storeActiveMeta">شماره تماس و وضعیت</div>
+                    </div>
+                </div>
+                <div id="storeActiveBadge"></div>
+            </div>
+
+            <!-- Messages Area -->
+            <div id="storeMsgsWrap" style="flex:1;height:240px;overflow-y:auto;padding:12px;background:#0f172a;display:flex;flex-direction:column;gap:8px;">
+                <div style="text-align:center;color:#64748b;font-size:11px;padding:30px 10px;">یک گفتگو را از لیست سمت راست انتخاب نمایید تا پیام‌ها نمایش داده شوند.</div>
+            </div>
+
+            <!-- Quick Replies Suggestion Bar -->
+            <div style="padding:6px 10px;background:#111c31;border-top:1px solid #1e293b;display:flex;gap:5px;flex-wrap:wrap;">
+                <button type="button" class="btn btn-gray" style="font-size:10px;padding:3px 8px;" onclick="mrInsertStoreQuick('سلام و درود، در حال بررسی سفارش شما هستیم.')">👋 در حال بررسی</button>
+                <button type="button" class="btn btn-gray" style="font-size:10px;padding:3px 8px;" onclick="mrInsertStoreQuick('بله، این کالا در انبار موجود و آماده ارسال فوری است.')">✅ موجودی کالا</button>
+                <button type="button" class="btn btn-gray" style="font-size:10px;padding:3px 8px;" onclick="mrInsertStoreQuick('جهت هماهنگی دقیق‌تر و ارسال فاکتور با شماره تماس شما تماس خواهیم گرفت.')">📞 هماهنگی تماس</button>
+                <button type="button" class="btn btn-gray" style="font-size:10px;padding:3px 8px;" onclick="mrInsertStoreQuick('سفارش شما با موفقیت ثبت شد و کد رهگیری پستی به زودی ارسال می‌گردد.')">📦 ثبت و ارسال</button>
+            </div>
+
+            <!-- Reply Input Box -->
+            <div style="padding:8px 10px;background:#16233d;border-radius:0 0 10px 10px;border-top:1px solid #334155;">
+                <div style="display:flex;gap:8px;align-items:flex-end;">
+                    <textarea id="storeReplyText" rows="2" placeholder="متن پاسخ انسانی به مشتری را بنویسید... (Ctrl+Enter برای ارسال سریع)" style="flex:1;background:#0b1220;color:#fff;border:1.5px solid #334155;border-radius:8px;padding:8px 12px;font-size:12px;font-family:inherit;resize:vertical;" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){mrSendStoreReply();}"></textarea>
+                    <button type="button" id="btnSendStoreReply" class="btn btn-green" onclick="mrSendStoreReply()" style="padding:10px 18px;font-weight:800;font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                        <span>ارسال</span> ↵
+                    </button>
+                </div>
+                <div id="storeReplyStatus" style="font-size:10px;margin-top:4px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- CHANNEL 2: BASALAM CHAT PANE -->
+<div id="mrBslPane" style="display:none;">
+
 <div style="font-size:10.5px;color:#64748b;margin-bottom:8px;line-height:1.8">
 گفتگوهایِ مشتریانِ <b>همهٔ غرفه‌ها</b> همین‌جا و زنده — بدونِ رفتن به پلتفرمِ باسلام.
 عددِ تویِ پرانتز = شمارهٔ غرفه (با رنگِ متفاوت). پاسخ‌ها در همان لاگِ پاسخ‌ها (نوعِ «دستی») ثبت می‌شوند.
@@ -47483,6 +47674,8 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <span id="mrInfo" style="font-size:9.5px;color:#64748b;flex:1"></span>
 </div>
 </div>
+</div>
+<!-- End Basalam Pane -->
 </div></div>
 
 <!-- v10.83 (97): مودالِ «پاسخ دستی به مشتریان» — گرهٔ زنده ازِ تنظیمات اینجا می‌آید -->
@@ -57787,6 +57980,240 @@ setInterval(mrPoll,1000);
 
 /* v10.83 (97): اتاقِ چت درِ مودال — گرهٔ زندهٔ #mrBody جابه‌جا می‌شود
    (نه کپی): همهٔ JSِ موجود (پُلیینگ، ارسال، تصویر) بدونِ تغییر کار می‌کند. */
+// =========================================================================
+// STORE ONLINE HUMAN SUPPORT DESK JAVASCRIPT
+// =========================================================================
+let MR_STORE_THREADS = [];
+let MR_SELECTED_THREAD = null;
+let MR_ACTIVE_CHANNEL = 'store'; // 'store' or 'bsl'
+
+function mrSwitchChannel(chan) {
+    MR_ACTIVE_CHANNEL = chan;
+    const tabStore = document.getElementById('mrTabStore');
+    const tabBsl = document.getElementById('mrTabBsl');
+    const paneStore = document.getElementById('mrStoreDeskPane');
+    const paneBsl = document.getElementById('mrBslPane');
+
+    if (chan === 'store') {
+        if (tabStore) tabStore.className = 'btn btn-blue';
+        if (tabBsl) tabBsl.className = 'btn btn-gray';
+        if (paneStore) paneStore.style.display = 'block';
+        if (paneBsl) paneBsl.style.display = 'none';
+        mrFetchStoreThreads();
+    } else {
+        if (tabStore) tabStore.className = 'btn btn-gray';
+        if (tabBsl) tabBsl.className = 'btn btn-blue';
+        if (paneStore) paneStore.style.display = 'none';
+        if (paneBsl) paneBsl.style.display = 'block';
+        mrLoadChats();
+  mrFetchStoreThreads();
+    }
+}
+
+async function mrFetchStoreThreads() {
+    try {
+        const res = await fetch('?store_chat_api=get_threads').then(r => r.json());
+        if (res && res.ok) {
+            MR_STORE_THREADS = res.threads || [];
+            mrRenderStoreThreads();
+
+            // Update badge
+            const badge = document.getElementById('mrStoreUnreadBadge');
+            const hdrBadge = document.getElementById('chatUnreadB');
+            if (badge) {
+                if (res.unread_total > 0) {
+                    badge.textContent = res.unread_total;
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+            if (hdrBadge && res.unread_total > 0) {
+                hdrBadge.textContent = res.unread_total;
+                hdrBadge.style.display = 'flex';
+            }
+        }
+    } catch(e){}
+}
+
+function mrFilterStoreThreads() {
+    mrRenderStoreThreads();
+}
+
+function mrRenderStoreThreads() {
+    const listEl = document.getElementById('storeThreadsList');
+    if (!listEl) return;
+
+    const q = (document.getElementById('storeThreadSearch')?.value || '').trim().toLowerCase();
+    const filtered = MR_STORE_THREADS.filter(t => {
+        if (!q) return true;
+        const name = (t.name || '').toLowerCase();
+        const phone = (t.phone || '').toLowerCase();
+        const lastMsg = ((t.messages && t.messages.length) ? t.messages[t.messages.length - 1].text : '').toLowerCase();
+        return name.includes(q) || phone.includes(q) || lastMsg.includes(q);
+    });
+
+    if (filtered.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center;color:#64748b;font-size:11px;padding:24px 10px;">هیچ گفتگویی یافت نشد.</div>';
+        return;
+    }
+
+    let html = '';
+    filtered.forEach(t => {
+        const isSelected = MR_SELECTED_THREAD && (MR_SELECTED_THREAD.id === t.id);
+        const lastMsg = (t.messages && t.messages.length) ? t.messages[t.messages.length - 1] : { text: '', time: '' };
+        const unread = t.unread_admin ? '<span style="width:8px;height:8px;background:#ef4444;border-radius:50%;display:inline-block;"></span>' : '';
+        const statusBadge = t.status === 'pending'
+            ? '<span style="background:#fee2e2;color:#dc2626;font-size:9px;padding:1px 5px;border-radius:4px;font-weight:700;">در انتظار</span>'
+            : '<span style="background:#ecfdf5;color:#059669;font-size:9px;padding:1px 5px;border-radius:4px;font-weight:700;">پاسخ‌داده</span>';
+
+        html += `
+        <div onclick="mrSelectStoreThread('${t.id}')" style="background:${isSelected ? '#1e293b' : '#111c31'};border:1px solid ${isSelected ? '#3b82f6' : '#1e293b'};border-radius:8px;padding:8px 10px;cursor:pointer;transition:all 0.15s;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                <div style="display:flex;align-items:center;gap:6px;">
+                    ${unread}
+                    <strong style="font-size:11.5px;color:#fff;">${t.name || 'کاربر مهمان'}</strong>
+                </div>
+                <span style="font-size:9.5px;color:#64748b;">${lastMsg.time || ''}</span>
+            </div>
+            <div style="font-size:10.5px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;">
+                ${lastMsg.text || 'شروع مکالمه'}
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:9.5px;color:#64748b;">
+                <span>${t.phone ? '📞 ' + t.phone : 'بدون شماره'}</span>
+                ${statusBadge}
+            </div>
+        </div>
+        `;
+    });
+
+    listEl.innerHTML = html;
+
+    // Keep active thread refreshed
+    if (MR_SELECTED_THREAD) {
+        const found = MR_STORE_THREADS.find(t => t.id === MR_SELECTED_THREAD.id);
+        if (found) {
+            MR_SELECTED_THREAD = found;
+            mrRenderStoreMessages();
+        }
+    } else if (filtered.length > 0) {
+        mrSelectStoreThread(filtered[0].id);
+    }
+}
+
+function mrSelectStoreThread(id) {
+    const thread = MR_STORE_THREADS.find(t => t.id === id);
+    if (!thread) return;
+    MR_SELECTED_THREAD = thread;
+    mrRenderStoreMessages();
+    mrRenderStoreThreads();
+}
+
+function mrRenderStoreMessages() {
+    if (!MR_SELECTED_THREAD) return;
+    const t = MR_SELECTED_THREAD;
+
+    const nameEl = document.getElementById('storeActiveName');
+    const metaEl = document.getElementById('storeActiveMeta');
+    const badgeEl = document.getElementById('storeActiveBadge');
+    const msgsWrap = document.getElementById('storeMsgsWrap');
+
+    if (nameEl) nameEl.textContent = t.name || 'کاربر مهمان';
+    if (metaEl) metaEl.textContent = (t.phone ? 'شماره تماس: ' + t.phone : 'بدون شماره') + (t.email ? ' | ' + t.email : '');
+    if (badgeEl) {
+        badgeEl.innerHTML = t.status === 'pending'
+            ? '<span style="background:#fee2e2;color:#dc2626;font-size:10px;padding:3px 8px;border-radius:6px;font-weight:800;">⏳ نیازمند پاسخ</span>'
+            : '<span style="background:#ecfdf5;color:#059669;font-size:10px;padding:3px 8px;border-radius:6px;font-weight:800;">✅ پاسخ داده شده</span>';
+    }
+
+    if (!msgsWrap) return;
+    const msgs = t.messages || [];
+    if (msgs.length === 0) {
+        msgsWrap.innerHTML = '<div style="text-align:center;color:#64748b;font-size:11px;padding:20px;">هیچ پیامی در این گفتگو ثبت نشده است.</div>';
+        return;
+    }
+
+    let html = '';
+    msgs.forEach(m => {
+        const isCustomer = m.sender === 'customer';
+        html += `
+        <div style="display:flex;justify-content:${isCustomer ? 'flex-start' : 'flex-end'};margin-bottom:4px;">
+            <div style="max-width:82%;background:${isCustomer ? '#1e293b' : '#2563eb'};color:#fff;border-radius:12px;padding:8px 12px;font-size:11.5px;line-height:1.6;box-shadow:0 2px 6px rgba(0,0,0,0.2);">
+                <div style="font-size:9.5px;color:${isCustomer ? '#94a3b8' : '#bfdbfe'};font-weight:700;margin-bottom:3px;display:flex;justify-content:space-between;gap:8px;">
+                    <span>${m.sender_name || (isCustomer ? 'مشتری' : 'ادمین')}</span>
+                    <span>${m.time || ''}</span>
+                </div>
+                <div style="white-space:pre-wrap;">${m.text || ''}</div>
+            </div>
+        </div>
+        `;
+    });
+
+    msgsWrap.innerHTML = html;
+    msgsWrap.scrollTop = msgsWrap.scrollHeight;
+}
+
+function mrInsertStoreQuick(text) {
+    const area = document.getElementById('storeReplyText');
+    if (!area) return;
+    area.value = text;
+    area.focus();
+}
+
+async function mrSendStoreReply() {
+    if (!MR_SELECTED_THREAD) {
+        alert('لطفاً ابتدا یک گفتگو را انتخاب نمایید.');
+        return;
+    }
+    const area = document.getElementById('storeReplyText');
+    const text = (area?.value || '').trim();
+    if (!text) {
+        alert('لطفاً متن پاسخ را بنویسید.');
+        return;
+    }
+
+    const btn = document.getElementById('btnSendStoreReply');
+    const status = document.getElementById('storeReplyStatus');
+    if (btn) btn.disabled = true;
+    if (status) { status.style.color = '#38bdf8'; status.textContent = 'در حال ارسال پاسخ به مشتری و پیام‌رسان‌ها...'; }
+
+    try {
+        const fd = new FormData();
+        fd.append('store_chat_api', 'send_reply');
+        fd.append('thread_id', MR_SELECTED_THREAD.id);
+        fd.append('reply_text', text);
+
+        const res = await fetch('', { method: 'POST', body: fd }).then(r => r.json());
+        if (res && res.ok) {
+            if (area) area.value = '';
+            if (status) { status.style.color = '#4ade80'; status.textContent = '✓ پاسخ با موفقیت به مشتری و پیام‌رسان‌ها ارسال شد.'; setTimeout(() => status.textContent = '', 4000); }
+            if (res.thread) {
+                MR_SELECTED_THREAD = res.thread;
+                const idx = MR_STORE_THREADS.findIndex(t => t.id === res.thread.id);
+                if (idx !== -1) MR_STORE_THREADS[idx] = res.thread;
+                mrRenderStoreMessages();
+                mrRenderStoreThreads();
+            }
+        } else {
+            alert('خطا در ارسال پاسخ: ' + (res.error || 'خطای سرور'));
+            if (status) { status.style.color = '#f87171'; status.textContent = 'خطا در ارسال پاسخ'; }
+        }
+    } catch(err) {
+        alert('خطای اتصال به سرور');
+        if (status) { status.style.color = '#f87171'; status.textContent = 'خطای اتصال'; }
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// Auto-poll store threads when visible
+setInterval(() => {
+    if (document.visibilityState === 'visible' && MR_ACTIVE_CHANNEL === 'store') {
+        mrFetchStoreThreads();
+    }
+}, 5000);
+
+
 function mrOpenModal(){
   const modal=$('mrModal'),body=$('mrBody');
   if(!modal||!body)return;
@@ -57806,6 +58233,8 @@ function mrOpenModal(){
   modal.style.display='flex';
   mrCloseDrawer(); /* v10.84 (98): مودال تازه باز شد — لیستِ کشویی بسته باشد */
   mrLoadChats();
+  mrFetchStoreThreads();
+  if (typeof mrSwitchChannel === 'function') mrSwitchChannel('store');
 }
 function mrCloseModal(){
   const modal=$('mrModal'),body=$('mrBody');

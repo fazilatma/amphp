@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.104';
+const APP_VERSION = '10.104.1';
 const APP_VERSION_DATE = '1405/06/08';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -27105,7 +27105,7 @@ if (isset($_GET['selftest'])) {
 
     /* ==== v10.104: resume checkpoint + BSL scard restore ==== */
     $add('10.104', 'نسخهٔ ۱۰.۱۰۴',
-         str_contains($selfSrc, "const APP_VERSION = '10.104';"));
+         str_contains($selfSrc, "const APP_VERSION = '10.104.1';"));
     $add('10.104', 'resume floor prevents current=0 regression',
          strpos($selfSrc, "\$GLOBALS['_bslResumeFloor']") !== false
          && strpos($selfSrc, "\$cWrite=max((int)\$c,\$__floor)") !== false);
@@ -68048,8 +68048,9 @@ function pollBslProgress() {
             }
         }
         // v7.48: Add only NEW log entries using total_log_count for proper sync
-        const logDiv=$('bR');
-        if(totalLogCount>bslLastLogCount) {
+        // v10.104b: logDiv بالاتر تعریف شده — redeclare نکن (SyntaxError کل اسکریپت را می‌کشت)
+        if(!logDiv){/* bR missing */}
+        if(totalLogCount>bslLastLogCount && logDiv) {
             // New entries exist. Figure out which part of recent_log is new.
             const newCount=totalLogCount-bslLastLogCount;
             // recent_log may be a slice of the full log.

@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.98';
+const APP_VERSION = '10.99';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -1954,6 +1954,267 @@ function wooDirectAvailable(): bool {
         || class_exists('WC_Product_Simple')
         || function_exists('wc_get_product');
 }
+
+/**
+ * v10.99: تشخیص محیط وردپرس/ووکامرس برای تست و راهنما.
+ * @return array{in_wp:bool,has_wc:bool,wc_version:string,php:string,hints:list<string>,flags:array}
+ */
+function wooEnvProbe(): array {
+    $hints = [];
+    $inWp = defined('ABSPATH') || defined('WPINC') || class_exists('WP_Query') || function_exists('get_option');
+    $hasWc = wooDirectAvailable();
+    $wcVer = '';
+    if (defined('WC_VERSION')) $wcVer = (string)WC_VERSION;
+    elseif (function_exists('WC') && is_object(WC()) && !empty(WC()->version)) $wcVer = (string)WC()->version;
+    elseif (class_exists('WooCommerce') && isset(WooCommerce::$instance) && is_object(WooCommerce::$instance) && !empty(WooCommerce::$instance->version)) {
+        $wcVer = (string)WooCommerce::$instance->version;
+    }
+    $flags = [
+        'ABSPATH' => defined('ABSPATH'),
+        'WooCommerce' => class_exists('WooCommerce'),
+        'WC_Product_Simple' => class_exists('WC_Product_Simple'),
+        'wc_get_product' => function_exists('wc_get_product'),
+        'WP_Query' => class_exists('WP_Query'),
+        'media_sideload_image' => function_exists('media_sideload_image'),
+    ];
+    if (!$inWp) {
+        $hints[] = 'این فایل خارج از وردپرس اجرا می‌شود — همگام «مستقیم» فقط وقتی اسکرپر داخل همان سایت ووکامرس (افزونه/embed ادمین) لود شود کار می‌کند.';
+        $hints[] = 'از پنل ادمین وردپرس → اسکرپر → «فعال‌سازی اتصال مستقیم» استفاده کنید یا حالت API با Key/Secret بگذارید.';
+    } elseif (!$hasWc) {
+        $hints[] = 'وردپرس لود است ولی ووکامرس یافت نشد — افزونه WooCommerce را نصب و فعال کنید.';
+    } else {
+        $hints[] = 'ووکامرس در همین پردازه در دسترس است — همگام مستقیم باید کار کند.';
+    }
+    return [
+        'in_wp' => $inWp,
+        'has_wc' => $hasWc,
+        'wc_version' => $wcVer,
+        'php' => PHP_VERSION,
+        'sapi' => PHP_SAPI,
+        'hints' => $hints,
+        'flags' => $flags,
+    ];
+}
+
+/**
+ * v10.99: تست اتصال ووکامرس — API و/یا مستقیم با جزئیات خطا.
+ * @param array $opts store_url, consumer_key, consumer_secret, mode=auto|api|direct|both
+ * @return array
+ */
+function wooTestConnection(array $opts = []): array {
+    $url = rtrim(trim((string)($opts['store_url'] ?? '')), '/');
+    $ck  = trim((string)($opts['consumer_key'] ?? ''));
+    $cs  = trim((string)($opts['consumer_secret'] ?? ''));
+    $mode = strtolower(trim((string)($opts['mode'] ?? 'both')));
+    if (!in_array($mode, ['auto', 'api', 'direct', 'both'], true)) $mode = 'both';
+
+    $env = wooEnvProbe();
+    $out = [
+        'ok' => false,
+        'message' => '',
+        'mode_requested' => $mode,
+        'env' => $env,
+        'api' => null,
+        'direct' => null,
+        'attempts' => [],
+        'hints' => $env['hints'],
+    ];
+
+    $doApi = in_array($mode, ['api', 'both', 'auto'], true);
+    $doDirect = in_array($mode, ['direct', 'both', 'auto'], true);
+    if ($mode === 'auto') {
+        /* اگر مستقیم آماده است اولویت با آن + API در صورت کلید */
+        $doDirect = true;
+        $doApi = ($ck !== '' && $cs !== '') || !$env['has_wc'];
+    }
+
+    /* ---- API REST ---- */
+    if ($doApi) {
+        $api = [
+            'ok' => false, 'via' => 'api', 'http_code' => 0, 'curl_error' => '',
+            'message' => '', 'detail' => '', 'version' => '', 'url' => '',
+            'steps' => [],
+        ];
+        if ($url === '') {
+            $api['message'] = 'آدرس فروشگاه خالی است';
+            $api['detail'] = 'store_url الزامی است (مثلاً https://shop.example.com)';
+            $api['steps'][] = ['step' => 'validate', 'ok' => false, 'info' => 'URL خالی'];
+        } elseif ($ck === '' || $cs === '') {
+            $api['message'] = 'Consumer Key یا Secret خالی است';
+            $api['detail'] = 'در ووکامرس: ووکامرس ← تنظیمات ← پیشرفته ← REST API ← افزودن کلید';
+            $api['steps'][] = ['step' => 'validate', 'ok' => false, 'info' => 'کلید ناقص'];
+        } else {
+            $api['steps'][] = ['step' => 'validate', 'ok' => true, 'info' => 'URL و کلیدها پر است'];
+            $ep = 'system_status';
+            $full = $url . '/wp-json/wc/v3/' . $ep;
+            $api['url'] = $full;
+            $t0 = microtime(true);
+            $r = wooReq($url, $ck, $cs, 'GET', $ep);
+            $ms = (int)round((microtime(true) - $t0) * 1000);
+            $api['http_code'] = (int)($r['code'] ?? 0);
+            $api['curl_error'] = (string)($r['error'] ?? '');
+            $api['latency_ms'] = $ms;
+            $raw = (string)($r['raw'] ?? '');
+            $body = is_array($r['body'] ?? null) ? $r['body'] : null;
+
+            if (!empty($r['ok']) && is_array($body)) {
+                $envB = is_array($body['environment'] ?? null) ? $body['environment'] : [];
+                $api['ok'] = true;
+                $api['version'] = (string)($envB['woocommerce_version'] ?? ($body['settings']['version'] ?? '?'));
+                $api['message'] = 'REST API متصل شد';
+                $api['detail'] = 'HTTP ' . $api['http_code'] . ' · ' . $ms . 'ms · WC ' . $api['version'];
+                if (!empty($envB['home_url'])) $api['home_url'] = $envB['home_url'];
+                if (!empty($envB['site_url'])) $api['site_url'] = $envB['site_url'];
+                $api['steps'][] = ['step' => 'system_status', 'ok' => true, 'info' => $api['detail']];
+                /* products count sample */
+                $t1 = microtime(true);
+                $rp = wooReq($url, $ck, $cs, 'GET', 'products?per_page=1');
+                $api['products_probe'] = [
+                    'ok' => !empty($rp['ok']),
+                    'http_code' => (int)($rp['code'] ?? 0),
+                    'latency_ms' => (int)round((microtime(true) - $t1) * 1000),
+                ];
+                $api['steps'][] = ['step' => 'products', 'ok' => !empty($rp['ok']), 'info' => 'HTTP ' . (int)($rp['code'] ?? 0)];
+            } else {
+                $code = (int)($r['code'] ?? 0);
+                $cerr = (string)($r['error'] ?? '');
+                $msgBody = '';
+                if (is_array($body)) {
+                    $msgBody = (string)($body['message'] ?? $body['code'] ?? '');
+                    if ($msgBody === '' && !empty($body['data']['status'])) $msgBody = 'status ' . $body['data']['status'];
+                } elseif ($raw !== '') {
+                    $msgBody = mb_substr(trim(strip_tags($raw)), 0, 180);
+                }
+                $api['ok'] = false;
+                if ($cerr !== '' && $code === 0) {
+                    $api['message'] = 'خطای شبکه/cURL';
+                    $api['detail'] = $cerr;
+                    if (stripos($cerr, 'resolve') !== false) $api['hint'] = 'DNS: دامنه resolve نشد — آدرس را چک کنید یا از اتصال غیرمستقیم هاست استفاده کنید.';
+                    elseif (stripos($cerr, 'timed out') !== false) $api['hint'] = 'تایم‌اوت: فایروال هاست یا بلاک IP مقصد.';
+                    elseif (stripos($cerr, 'SSL') !== false) $api['hint'] = 'مشکل گواهی SSL — روی بسیاری هاست‌ها CURLOPT_SSL_VERIFYPEER خاموش است؛ اگر باز خطا دیدید گواهی سایت را بررسی کنید.';
+                } elseif ($code === 401 || $code === 403) {
+                    $api['message'] = 'احراز هویت ناموفق (کلید اشتباه یا بدون دسترسی)';
+                    $api['detail'] = 'HTTP ' . $code . ($msgBody !== '' ? (' — ' . $msgBody) : '');
+                    $api['hint'] = 'کلید را با دسترسی Read/Write بسازید؛ Permalink وردپرس روی «نام نوشته» باشد؛ افزونه امنیتی REST را بلاک نکند.';
+                } elseif ($code === 404) {
+                    $api['message'] = 'endpoint ووکامرس پیدا نشد (404)';
+                    $api['detail'] = $full . ($msgBody !== '' ? (' — ' . $msgBody) : '');
+                    $api['hint'] = 'ووکامرس فعال است؟ پیوند یکتا را یک‌بار ذخیره کنید (تنظیمات ← پیوندهای یکتا). مسیر باید /wp-json/wc/v3/ باشد.';
+                } elseif ($code >= 500) {
+                    $api['message'] = 'خطای سرور مقصد';
+                    $api['detail'] = 'HTTP ' . $code . ($msgBody !== '' ? (' — ' . $msgBody) : '');
+                } elseif ($code === 0) {
+                    $api['message'] = 'پاسخی از سرور نیامد';
+                    $api['detail'] = $cerr !== '' ? $cerr : 'code=0';
+                } else {
+                    $api['message'] = 'پاسخ ناموفق';
+                    $api['detail'] = 'HTTP ' . $code . ($msgBody !== '' ? (' — ' . $msgBody) : ($cerr ?: ''));
+                }
+                $api['steps'][] = ['step' => 'system_status', 'ok' => false, 'info' => $api['detail']];
+                $api['raw_preview'] = mb_substr($raw, 0, 240);
+            }
+        }
+        $out['api'] = $api;
+        $out['attempts'][] = $api;
+    }
+
+    /* ---- Direct CRUD ---- */
+    if ($doDirect) {
+        $dir = [
+            'ok' => false, 'via' => 'direct', 'message' => '', 'detail' => '',
+            'version' => $env['wc_version'], 'steps' => [], 'product_id' => 0,
+        ];
+        $dir['steps'][] = ['step' => 'env', 'ok' => $env['in_wp'], 'info' => $env['in_wp'] ? 'داخل وردپرس' : 'خارج از وردپرس'];
+        if (!$env['in_wp']) {
+            $dir['message'] = 'همگام مستقیم اینجا در دسترس نیست';
+            $dir['detail'] = 'scraper4.php به‌صورت standalone اجرا می‌شود و کلاس‌های WC لود نیستند.';
+            $dir['hint'] = 'اسکرپر را از داخل افزونه وردپرس (منوی ادمین «پنل اسکرپر») باز کنید، یا دکمه «فعال‌سازی اتصال مستقیم از ادمین» را بزنید.';
+            $dir['steps'][] = ['step' => 'wc_load', 'ok' => false, 'info' => 'WooCommerce class missing'];
+        } elseif (!$env['has_wc']) {
+            $dir['message'] = 'ووکامرس فعال نیست';
+            $dir['detail'] = 'کلاس WooCommerce / wc_get_product یافت نشد';
+            $dir['hint'] = 'افزونه WooCommerce را نصب و فعال کنید.';
+            $dir['steps'][] = ['step' => 'wc_load', 'ok' => false, 'info' => implode(', ', array_keys(array_filter($env['flags'])))];
+        } else {
+            $dir['steps'][] = ['step' => 'wc_load', 'ok' => true, 'info' => 'WC ' . ($env['wc_version'] ?: '?')];
+            try {
+                /* شمارش محصولات */
+                $count = 0;
+                if (function_exists('wp_count_posts')) {
+                    $c = wp_count_posts('product');
+                    if (is_object($c)) $count = (int)($c->publish ?? 0) + (int)($c->draft ?? 0);
+                }
+                $dir['product_count_approx'] = $count;
+                $dir['steps'][] = ['step' => 'count', 'ok' => true, 'info' => '≈' . $count . ' محصول'];
+
+                /* upsert آزمایشی خیلی سبک — draft با sku یکتا سپس حذف */
+                $sku = 'amphp-ping-' . substr(md5((string)microtime(true)), 0, 8);
+                $wp = [
+                    'name' => 'AMPHP اتصال‌آزمایشی (حذف می‌شود)',
+                    'type' => 'simple',
+                    'status' => 'draft',
+                    'sku' => $sku,
+                    'regular_price' => '1000',
+                    'description' => 'تست اتصال مستقیم اسکرپر — خودکار حذف می‌شود',
+                    'short_description' => 'تست',
+                    'manage_stock' => false,
+                    'stock_status' => 'instock',
+                ];
+                $t0 = microtime(true);
+                $r = wooDirectUpsert($wp, null, 'amphp_conn_test');
+                $ms = (int)round((microtime(true) - $t0) * 1000);
+                $dir['latency_ms'] = $ms;
+                if (!empty($r['ok']) && !empty($r['body']['id'])) {
+                    $pid = (int)$r['body']['id'];
+                    $dir['product_id'] = $pid;
+                    $dir['steps'][] = ['step' => 'create_draft', 'ok' => true, 'info' => 'product #' . $pid . ' · ' . $ms . 'ms'];
+                    /* cleanup */
+                    $delOk = false;
+                    if (function_exists('wp_delete_post')) {
+                        $del = wp_delete_post($pid, true);
+                        $delOk = !empty($del);
+                    } elseif (function_exists('wp_trash_post')) {
+                        $delOk = (bool)wp_trash_post($pid);
+                    }
+                    $dir['steps'][] = ['step' => 'cleanup', 'ok' => $delOk, 'info' => $delOk ? 'پیش‌نویس حذف شد' : 'حذف نشد — دستی پاک کنید #' . $pid];
+                    $dir['ok'] = true;
+                    $dir['message'] = 'اتصال مستقیم موفق';
+                    $dir['detail'] = 'ساخت draft و ' . ($delOk ? 'حذف' : 'نگه‌داری') . ' محصول آزمایشی · WC ' . ($env['wc_version'] ?: '?') . ' · ' . $ms . 'ms';
+                } else {
+                    $dir['ok'] = false;
+                    $dir['message'] = 'ساخت محصول آزمایشی ناموفق';
+                    $dir['detail'] = (string)($r['error'] ?? 'unknown') . ' · code ' . (int)($r['code'] ?? 0);
+                    $dir['hint'] = 'کاربر PHP باید capability مدیریت محصول داشته باشد؛ اگر CLI/cron است ممکن است caps کم باشد.';
+                    $dir['steps'][] = ['step' => 'create_draft', 'ok' => false, 'info' => $dir['detail']];
+                }
+            } catch (Throwable $e) {
+                $dir['ok'] = false;
+                $dir['message'] = 'استثنای PHP در تست مستقیم';
+                $dir['detail'] = $e->getMessage();
+                $dir['steps'][] = ['step' => 'exception', 'ok' => false, 'info' => $e->getMessage()];
+            }
+        }
+        $out['direct'] = $dir;
+        $out['attempts'][] = $dir;
+    }
+
+    $apiOk = is_array($out['api']) && !empty($out['api']['ok']);
+    $dirOk = is_array($out['direct']) && !empty($out['direct']['ok']);
+    $out['ok'] = $apiOk || $dirOk;
+    if ($apiOk && $dirOk) $out['message'] = 'API و مستقیم هر دو سالم‌اند';
+    elseif ($apiOk) $out['message'] = 'اتصال API موفق' . ($doDirect && !$dirOk ? ' — مستقیم ناموفق/غیرفعال' : '');
+    elseif ($dirOk) $out['message'] = 'اتصال مستقیم موفق' . ($doApi && !$apiOk ? ' — API ناموفق/بدون کلید' : '');
+    else {
+        $out['message'] = 'هیچ مسیری متصل نشد';
+        if (is_array($out['api']) && !empty($out['api']['message'])) $out['hints'][] = 'API: ' . $out['api']['message'];
+        if (is_array($out['direct']) && !empty($out['direct']['message'])) $out['hints'][] = 'مستقیم: ' . $out['direct']['message'];
+    }
+    if ($apiOk && !empty($out['api']['version'])) $out['version'] = $out['api']['version'];
+    elseif ($dirOk && !empty($out['direct']['version'])) $out['version'] = $out['direct']['version'];
+
+    return $out;
+}
+
 /**
  * ترتیب تلاش: primary سپس fallback (در صورت نیاز).
  * @return list<string> e.g. ['direct','api']
@@ -26363,7 +26624,22 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
-            /* ==== ۱۰۸ (v10.98) ==== */
+            /* ==== ۱۰۹ (v10.99) ==== */
+    $add('10.99', 'نسخهٔ ۱۰.۹۹',
+         version_compare(APP_VERSION, '10.99', '>=')
+      && strpos($selfSrc, "{v:'10.99',") !== false);
+    $add('10.99', 'تست ووکامرس تفصیلی API+مستقیم',
+         strpos($selfSrc, 'function wooTestConnection') !== false
+      && strpos($selfSrc, 'function wooEnvProbe') !== false
+      && strpos($selfSrc, 'function renderWooTestReport') !== false);
+    $agentSrc = @file_get_contents(__DIR__ . '/agent.php') ?: '';
+    $add('10.99', 'پل ادمین اتصال مستقیم ووکامرس',
+         $agentSrc !== ''
+      && strpos($agentSrc, 'function ajax_test_woo_direct') !== false
+      && strpos($agentSrc, 'function ajax_enable_woo_direct') !== false
+      && strpos($agentSrc, 'btnEnableWooDirect') !== false);
+
+    /* ==== ۱۰۸ (v10.98) ==== */
     $add('10.98', 'نسخهٔ ۱۰.۹۸',
          version_compare(APP_VERSION, '10.98', '>=')
       && strpos($selfSrc, "{v:'10.98',") !== false);
@@ -36522,12 +36798,45 @@ if ($acId > 0 && !in_array($acId, $tried)) { if (!empty($cData) && is_array($cDa
 return ['ok' => false, 'error' => 'همه دسته‌های جایگزین ناموفق', 'tried' => $tried];
 }
 if (($_POST['action'] ?? '') === 'load_connections') { header('Content-Type: application/json; charset=UTF-8'); echo json_encode(['ok'=>true,'connections'=>loadConnections()], JSON_UNESCAPED_UNICODE); exit; }
-if (($_POST['action'] ?? '') === 'test_woo') {
-header('Content-Type: application/json; charset=UTF-8');
-$r = wooReq(trim($_POST['store_url']??''), trim($_POST['consumer_key']??''), trim($_POST['consumer_secret']??''), 'GET', 'system_status');
-if ($r['ok']) { $env=$r['body']['environment']??[]; echo json_encode(['ok'=>true,'message'=>'اتصال موفق!','version'=>$env['woocommerce_version']??'?'], JSON_UNESCAPED_UNICODE); }
-else { echo json_encode(['ok'=>false,'error'=>($r['code']===401?'کلید اشتباه':'خطا HTTP '.$r['code'])], JSON_UNESCAPED_UNICODE); }
-exit;
+if (($_POST['action'] ?? '') === 'test_woo' || isset($_GET['test_woo'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $mode = strtolower(trim((string)($_REQUEST['mode'] ?? 'both')));
+    /* اگر mode نفرستاده: از تنظیم ذخیره‌شده + both */
+    if ($mode === '' || $mode === 'auto') {
+        $cw = (loadConnections()['woocommerce'] ?? []) ?: [];
+        $sm = strtolower(trim((string)($cw['sync_mode'] ?? '')));
+        $mode = in_array($sm, ['api', 'direct'], true) ? 'both' : 'both';
+    }
+    $store = trim((string)($_REQUEST['store_url'] ?? ''));
+    $ck = trim((string)($_REQUEST['consumer_key'] ?? ''));
+    $cs = trim((string)($_REQUEST['consumer_secret'] ?? ''));
+    if ($store === '' || $ck === '' || $cs === '') {
+        $cw = (loadConnections()['woocommerce'] ?? []) ?: [];
+        if ($store === '') $store = trim((string)($cw['store_url'] ?? ''));
+        if ($ck === '') $ck = trim((string)($cw['consumer_key'] ?? ''));
+        if ($cs === '') $cs = trim((string)($cw['consumer_secret'] ?? ''));
+    }
+    /* اگر داخل WP هستیم و URL خالی → home */
+    if ($store === '' && function_exists('home_url')) {
+        $store = rtrim((string)home_url('/'), '/');
+    }
+    $res = wooTestConnection([
+        'store_url' => $store,
+        'consumer_key' => $ck,
+        'consumer_secret' => $cs,
+        'mode' => $mode,
+    ]);
+    /* سازگاری با UI قدیمی */
+    if (!empty($res['ok'])) {
+        $res['error'] = '';
+    } else {
+        $parts = [];
+        if (!empty($res['api']['message'])) $parts[] = 'API: ' . $res['api']['message'] . (!empty($res['api']['detail']) ? (' — ' . $res['api']['detail']) : '');
+        if (!empty($res['direct']['message'])) $parts[] = 'مستقیم: ' . $res['direct']['message'] . (!empty($res['direct']['detail']) ? (' — ' . $res['direct']['detail']) : '');
+        $res['error'] = $parts ? implode(' | ', $parts) : ($res['message'] ?? 'ناموفق');
+    }
+    echo json_encode($res, JSON_UNESCAPED_UNICODE);
+    exit;
 }
 if (($_POST['action'] ?? '') === 'test_basalam') {
 header('Content-Type: application/json; charset=UTF-8');
@@ -48042,8 +48351,17 @@ html[data-skin="gloss"] .progress-bar{
 <div class="crow"><label style="font-size:11px">شناسه دستی:</label><input type="number" id="wcCatManual" min="0" step="1" placeholder="مثلاً ۱۲۳" dir="ltr" style="max-width:140px" oninput="applyWcCatManual()"><button class="btn btn-cyan" onclick="applyWcCatManual(1)" style="flex:0;padding:8px;font-size:11px">✓ اعمال</button></div>
 <div style="font-size:10px;color:#64748b;margin:-4px 0 6px">💡 شناسهٔ عددی دسته را می‌توانید مستقیم بنویسید — در وردپرس: محصولات ← دسته‌ها</div>
 <div class="crow"><label><input type="checkbox" id="wcMS"> موجودی</label><input type="number" id="wcSQ" value="10" style="max-width:100px"></div>
-<div class="cact"><button class="btn btn-purple" onclick="testWoo()">🔗 تست</button><button class="btn btn-cyan" onclick="saveConn()">💾 ذخیره</button></div>
+<div class="cact" style="flex-wrap:wrap;gap:6px">
+<button class="btn btn-purple" onclick="testWoo('both')" title="تست API و مستقیم با جزئیات">🔗 تست کامل</button>
+<button class="btn btn-blue" onclick="testWoo('api')" title="فقط REST API">🔌 تست API</button>
+<button class="btn btn-green" onclick="testWoo('direct')" title="فقط CRUD مستقیم ووکامرس">⚡ تست مستقیم</button>
+<button class="btn btn-cyan" onclick="saveConn()">💾 ذخیره</button>
+</div>
 <div id="wcTR" style="margin-top:8px"></div>
+<div style="font-size:10px;color:#64748b;margin-top:6px;line-height:1.7">
+«مستقیم» فقط وقتی اسکرپر <b>داخل همان وردپرس/ووکامرس</b> اجرا شود سبز می‌شود.
+اگر standalone است از پنل ادمین افزونه → <b>فعال‌سازی اتصال مستقیم</b> استفاده کنید یا API را با Key/Secret تست کنید.
+</div>
 </div></div>
 
 <div class="smenu">
@@ -55692,6 +56010,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.99', t:'تست اتصال ووکامرس (API + مستقیم) با جزئیات خطا + پل ادمین', items:[
+    '🔗 تست کامل / API / مستقیم در بخش ووکامرس با گزارش گام‌به‌گام و راهنمای رفع خطا',
+    '⚡ تشخیص محیط وردپرس و امکان ساخت محصول آزمایشی برای تأیید CRUD مستقیم',
+    '🛠 از پنل ادمین افزونه می‌توان اتصال مستقیم را روی connections.json فعال کرد',
+  ]},
   {v:'10.98', t:'توضیح‌ساز: کشف و ذخیرهٔ تنوع‌ها (رنگ/سایز/…)', items:[
     '🎛 تولید محتوا حالا تنوع‌های واقعی را از وب/AI پیدا می‌کند و روی محصول می‌نشاند (variation_groups / variations_text)',
     '📤 ارسال باسلام و ووکامرس از همان تنوع‌ها استفاده می‌کند (توضیح + attributes)',
@@ -63267,7 +63590,71 @@ if($('wcN'))$('wcN').textContent=toFa(n)+'/'+toFa(total);
 if($('bsN'))$('bsN').textContent=toFa(n)+'/'+toFa(total);
 }
 const _u=update;update=function(){_u();updN();};
-function testWoo(){const s=$('wcS'),r=$('wcTR');s.textContent='\u062a\u0633\u062a...';s.className='cst tg';r.innerHTML='';const fd=new FormData();fd.append('action','test_woo');fd.append('store_url',$('wcUrl').value.trim());fd.append('consumer_key',$('wcCK').value.trim());fd.append('consumer_secret',$('wcCS').value.trim());fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{if(d.ok){s.textContent='\u2713';s.className='cst on';r.innerHTML='<div class="alert alert-success" style="padding:8px;font-size:11px">\u2713 '+esc(d.message)+(d.version?' | WC '+esc(d.version):'')+'</div>';saveConn();loadCats();}else{s.textContent='\u2717';s.className='cst off';r.innerHTML='<div style="background:#7f1d1d;color:#fca5a5;padding:8px;font-size:11px">\u2717 '+esc(d.error||'\u062e\u0637\u0627')+'</div>';}}).catch(()=>{s.textContent='\u2717';s.className='cst off';});}
+function testWoo(mode){
+  mode = mode || 'both';
+  const s=$('wcS'), r=$('wcTR');
+  if(s){ s.textContent='تست...'; s.className='cst tg'; }
+  if(r) r.innerHTML='<div style="color:#94a3b8;font-size:11px;padding:8px">⏳ در حال تست اتصال ووکامرس ('+esc(mode)+')…</div>';
+  const fd=new FormData();
+  fd.append('action','test_woo');
+  fd.append('mode', mode);
+  fd.append('store_url', ($('wcUrl')||{}).value ? $('wcUrl').value.trim() : '');
+  fd.append('consumer_key', ($('wcCK')||{}).value ? $('wcCK').value.trim() : '');
+  fd.append('consumer_secret', ($('wcCS')||{}).value ? $('wcCS').value.trim() : '');
+  fetch('',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{
+    if(!r) return;
+    if(!d){ if(s){s.textContent='✗';s.className='cst off';} r.innerHTML='<div style="background:#7f1d1d;color:#fca5a5;padding:8px;font-size:11px">✗ پاسخ خالی</div>'; return; }
+    const ok=!!d.ok;
+    if(s){ s.textContent=ok?'✓':'✗'; s.className=ok?'cst on':'cst off'; }
+    r.innerHTML = renderWooTestReport(d);
+    if(ok){ try{ saveConn(); }catch(e){} try{ if(d.api&&d.api.ok) loadCats(); }catch(e){} }
+  }).catch(err=>{
+    if(s){ s.textContent='✗'; s.className='cst off'; }
+    if(r) r.innerHTML='<div style="background:#7f1d1d;color:#fca5a5;padding:8px;font-size:11px">✗ خطای شبکه: '+esc(String(err&&err.message||err))+'</div>';
+  });
+}
+function renderWooTestReport(d){
+  const ok=!!d.ok;
+  let h='<div style="border:1px solid '+(ok?'#065f46':'#7f1d1d')+';border-radius:10px;padding:10px;background:#0b1324;font-size:11.5px;line-height:1.75">';
+  h+='<div style="font-weight:800;color:'+(ok?'#34d399':'#fca5a5')+';margin-bottom:6px">'+(ok?'✓ ':'✗ ')+esc(d.message|| (ok?'موفق':'ناموفق'))+(d.version?(' · WC '+esc(d.version)):'')+'</div>';
+  if(d.env){
+    h+='<div style="font-size:10.5px;color:#94a3b8;margin-bottom:8px">محیط: PHP '+esc(d.env.php||'?')
+      +' · '+(d.env.in_wp?'داخل وردپرس':'خارج از وردپرس')
+      +' · WC '+(d.env.has_wc?('هست'+(d.env.wc_version?(' '+esc(d.env.wc_version)):'')):'نیست')
+      +'</div>';
+  }
+  const block=(title,col,x)=>{
+    if(!x) return '';
+    let b='<div style="margin-top:8px;padding:8px;border-radius:8px;background:#0f172a;border:1px solid #1e293b">';
+    b+='<div style="font-weight:800;color:'+col+';margin-bottom:4px">'+title+' — '+(x.ok?'✓ موفق':'✗ ناموفق')+'</div>';
+    if(x.message) b+='<div style="color:#e2e8f0">'+esc(x.message)+'</div>';
+    if(x.detail) b+='<div style="color:#94a3b8;font-size:10.5px;margin-top:2px">'+esc(x.detail)+'</div>';
+    if(x.hint) b+='<div style="color:#fbbf24;font-size:10.5px;margin-top:4px">💡 '+esc(x.hint)+'</div>';
+    if(x.curl_error) b+='<div style="color:#f87171;font-size:10px;margin-top:3px;direction:ltr;text-align:left">cURL: '+esc(x.curl_error)+'</div>';
+    if(x.url) b+='<div style="color:#64748b;font-size:10px;margin-top:3px;direction:ltr;text-align:left;word-break:break-all">'+esc(x.url)+'</div>';
+    if(x.http_code) b+='<div style="color:#94a3b8;font-size:10px">HTTP '+esc(String(x.http_code))+(x.latency_ms?(' · '+x.latency_ms+'ms'):'')+'</div>';
+    if(Array.isArray(x.steps)&&x.steps.length){
+      b+='<div style="margin-top:6px;display:flex;flex-direction:column;gap:3px">';
+      x.steps.forEach(st=>{
+        b+='<div style="font-size:10px;color:'+(st.ok?'#86efac':'#fca5a5')+'">'+(st.ok?'✓':'✗')+' <b>'+esc(st.step||'')+'</b> — '+esc(st.info||'')+'</div>';
+      });
+      b+='</div>';
+    }
+    if(x.raw_preview) b+='<pre style="margin-top:6px;max-height:90px;overflow:auto;background:#020617;padding:6px;border-radius:6px;font-size:9.5px;color:#94a3b8;direction:ltr;text-align:left;white-space:pre-wrap">'+esc(x.raw_preview)+'</pre>';
+    b+='</div>';
+    return b;
+  };
+  h+=block('🔌 REST API','#38bdf8', d.api);
+  h+=block('⚡ مستقیم (CRUD)','#86efac', d.direct);
+  if(Array.isArray(d.hints)&&d.hints.length){
+    h+='<div style="margin-top:8px;font-size:10.5px;color:#cbd5e1"><b style="color:#fbbf24">راهنما</b><ul style="margin:4px 0 0;padding-right:18px">';
+    d.hints.forEach(x=>{ h+='<li style="margin-bottom:3px">'+esc(String(x))+'</li>'; });
+    h+='</ul></div>';
+  }
+  h+='</div>';
+  return h;
+}
+
 // v7.48: Searchable category dropdown for BaSalam
 let bslAllCats=[];
 let bslSelectedCatId=0;

@@ -209,6 +209,8 @@ class Scraper_Auto_Shop_Plugin {
 
 		// AJAX actions for syncing to WooCommerce
 		add_action( 'wp_ajax_scraper_sync_to_woo', array( __CLASS__, 'ajax_sync_to_woo' ) );
+		add_action( 'wp_ajax_scraper_test_woo_direct', array( __CLASS__, 'ajax_test_woo_direct' ) );
+		add_action( 'wp_ajax_scraper_enable_woo_direct', array( __CLASS__, 'ajax_enable_woo_direct' ) );
 
 		// Support chat AJAX endpoints (Customer & AI thread)
 		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
@@ -1146,6 +1148,176 @@ class Scraper_Auto_Shop_Plugin {
 	 *
 	 * @return array
 	 */
+
+	/**
+	 * v10.99: تست اتصال مستقیم ووکامرس از داخل ادمین وردپرس (همیشه in-process).
+	 */
+	public static function ajax_test_woo_direct() {
+		check_ajax_referer( 'scraper_woo_bridge', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'دسترسی غیرمجاز.' ), 403 );
+		}
+
+		$has_wc = class_exists( 'WooCommerce' ) || function_exists( 'wc_get_product' ) || class_exists( 'WC_Product_Simple' );
+		$env    = array(
+			'in_wp'      => true,
+			'has_wc'     => (bool) $has_wc,
+			'wc_version' => defined( 'WC_VERSION' ) ? WC_VERSION : '',
+			'php'        => PHP_VERSION,
+			'blog'       => function_exists( 'home_url' ) ? home_url( '/' ) : '',
+		);
+
+		if ( ! $has_wc ) {
+			wp_send_json_success( array(
+				'ok'      => false,
+				'message' => 'ووکامرس فعال نیست',
+				'detail'  => 'افزونه WooCommerce را نصب و فعال کنید؛ اتصال مستقیم فقط وقتی WC در همین PHP process باشد کار می‌کند.',
+				'hint'    => 'Plugins → Add New → WooCommerce',
+				'env'     => $env,
+				'direct'  => array( 'ok' => false, 'message' => 'WooCommerce missing', 'via' => 'direct' ),
+			) );
+		}
+
+		// Prefer scraper4 helpers when loadable under SCRAPER4_NO_RENDER.
+		self::load_scraper_ai_engine();
+		$result = null;
+		if ( function_exists( 'wooTestConnection' ) ) {
+			$conn = self::get_scraper_connections();
+			$w    = is_array( $conn['woocommerce'] ?? null ) ? $conn['woocommerce'] : array();
+			$home = function_exists( 'home_url' ) ? rtrim( (string) home_url( '/' ), '/' ) : '';
+			$result = wooTestConnection( array(
+				'store_url'       => $home !== '' ? $home : (string) ( $w['store_url'] ?? '' ),
+				'consumer_key'    => (string) ( $w['consumer_key'] ?? '' ),
+				'consumer_secret' => (string) ( $w['consumer_secret'] ?? '' ),
+				'mode'            => 'direct',
+			) );
+		} else {
+			$ok     = false;
+			$detail = '';
+			$pid    = 0;
+			try {
+				$product = new WC_Product_Simple();
+				$product->set_name( 'AMPHP admin connection ping' );
+				$product->set_status( 'draft' );
+				$product->set_catalog_visibility( 'hidden' );
+				$product->set_regular_price( '1000' );
+				$sku = 'amphp-admin-' . substr( md5( uniqid( (string) mt_rand(), true ) ), 0, 8 );
+				$product->set_sku( $sku );
+				$pid = (int) $product->save();
+				$ok  = $pid > 0;
+				if ( $pid > 0 && function_exists( 'wp_delete_post' ) ) {
+					wp_delete_post( $pid, true );
+				}
+				$detail = $ok
+					? ( 'پیش‌نویس #' . $pid . ' (SKU ' . $sku . ') ساخته و پاک شد' )
+					: 'WC_Product_Simple::save() مقدار خالی برگرداند';
+			} catch ( \Throwable $e ) {
+				$detail = $e->getMessage();
+			}
+			$result = array(
+				'ok'      => $ok,
+				'message' => $ok ? 'اتصال مستقیم موفق (از پنل ادمین)' : 'اتصال مستقیم ناموفق',
+				'detail'  => $detail,
+				'env'     => $env,
+				'direct'  => array(
+					'ok'      => $ok,
+					'message' => $ok ? 'OK' : 'FAIL',
+					'detail'  => $detail,
+					'via'     => 'direct',
+					'product' => $pid,
+				),
+			);
+		}
+
+		if ( is_array( $result ) && empty( $result['env'] ) ) {
+			$result['env'] = $env;
+		}
+		wp_send_json_success( $result );
+	}
+
+	/**
+	 * v10.99: فعال‌سازی همگام مستقیم در connections.json از پنل ادمین.
+	 * اسکراپر خارج از WP نمی‌تواند direct را اجرا کند — این دکمه مسیر ادمین را روشن می‌کند.
+	 */
+	public static function ajax_enable_woo_direct() {
+		check_ajax_referer( 'scraper_woo_bridge', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'دسترسی غیرمجاز.' ), 403 );
+		}
+
+		$has_wc = class_exists( 'WooCommerce' ) || function_exists( 'wc_get_product' );
+		$file   = plugin_dir_path( __FILE__ ) . 'connections.json';
+		// Prefer existing path used by get_scraper_connections
+		$locations = array(
+			dirname( __FILE__ ) . '/connections.json',
+			plugin_dir_path( __FILE__ ) . 'connections.json',
+		);
+		$existing = '';
+		foreach ( $locations as $loc ) {
+			if ( file_exists( $loc ) ) {
+				$existing = $loc;
+				break;
+			}
+		}
+		if ( $existing === '' ) {
+			$existing = $file;
+		}
+
+		$data = array();
+		if ( is_readable( $existing ) ) {
+			$raw = @file_get_contents( $existing );
+			$d   = @json_decode( (string) $raw, true );
+			if ( is_array( $d ) ) {
+				$data = $d;
+			}
+		}
+
+		$w = is_array( $data['woocommerce'] ?? null ) ? $data['woocommerce'] : array();
+		$w['enabled']   = 1;
+		$w['sync_mode'] = 'direct';
+		$fb = isset( $_POST['fallback'] ) ? sanitize_text_field( wp_unslash( $_POST['fallback'] ) ) : 'direct_then_api';
+		if ( ! in_array( $fb, array( 'api_then_direct', 'direct_then_api', 'none' ), true ) ) {
+			$fb = 'direct_then_api';
+		}
+		$w['sync_fallback'] = $fb;
+		if ( empty( $w['store_url'] ) && function_exists( 'home_url' ) ) {
+			$w['store_url'] = rtrim( (string) home_url( '/' ), '/' );
+		}
+		// Keep keys if already set; do not wipe secrets.
+		$data['woocommerce'] = $w;
+
+		$json = wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		$ok   = false;
+		if ( function_exists( 'WP_Filesystem' ) ) {
+			// best-effort plain write
+		}
+		$ok = (bool) @file_put_contents( $existing, $json . "\n", LOCK_EX );
+
+		if ( ! $ok ) {
+			wp_send_json_error( array(
+				'message' => 'نوشتن connections.json ناموفق — مجوز نوشتن پوشه پلاگین را بررسی کنید',
+				'file'    => $existing,
+			) );
+		}
+
+		wp_send_json_success( array(
+			'ok'          => true,
+			'message'     => 'همگام مستقیم فعال شد' . ( $has_wc ? '' : ' (توجه: ووکامرس هنوز فعال نیست)' ),
+			'sync_mode'   => 'direct',
+			'fallback'    => $fb,
+			'store_url'   => $w['store_url'] ?? '',
+			'file'        => basename( $existing ),
+			'path'        => $existing,
+			'has_wc'      => (bool) $has_wc,
+			'woocommerce' => array(
+				'enabled'       => 1,
+				'sync_mode'     => 'direct',
+				'sync_fallback' => $fb,
+				'store_url'     => $w['store_url'] ?? '',
+			),
+		) );
+	}
+
 	public static function get_scraper_connections() {
 		$locations = array(
 			dirname( __FILE__ ) . '/connections.json',
@@ -5903,6 +6075,15 @@ img{max-width:100%;height:auto}
 		$analytics_data   = self::get_display_analytics_data();
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
+
+		// v10.99: وضعیت اتصال مستقیم ووکامرس (از connections.json + محیط WP)
+		$woo_conn_all = self::get_scraper_connections();
+		$woo_conn     = is_array( $woo_conn_all['woocommerce'] ?? null ) ? $woo_conn_all['woocommerce'] : array();
+		$woo_has_wc   = class_exists( 'WooCommerce' ) || function_exists( 'wc_get_product' );
+		$woo_sync_mode = (string) ( $woo_conn['sync_mode'] ?? 'api' );
+		$woo_enabled  = ! empty( $woo_conn['enabled'] );
+		$woo_store    = (string) ( $woo_conn['store_url'] ?? ( function_exists( 'home_url' ) ? home_url( '/' ) : '' ) );
+		$woo_direct_ready = $woo_has_wc && $woo_enabled && in_array( $woo_sync_mode, array( 'direct', 'auto' ), true );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
 		?>
 		<div class="wrap scraper-admin-dashboard" style="direction:rtl; text-align:right; font-family:system-ui, -apple-system, sans-serif; max-width:1240px; margin-top:20px;">
@@ -8636,18 +8817,70 @@ img{max-width:100%;height:auto}
 							</div>
 
 							<!-- Direct Sync to WooCommerce Action -->
-							<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px; margin-bottom:24px;">
-								<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
-								<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
-									تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند:
-								</p>
-								<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-									<button type="button" id="btnSyncToWoo" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:6px 20px;">
-										همگام‌سازی و درج در دیتابیس ووکامرس
-									</button>
-									<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
+						<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px; margin-bottom:24px;">
+							<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
+							<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
+								تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند.
+							</p>
+							<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+								<button type="button" id="btnSyncToWoo" class="button button-secondary" style="font-weight:800; border-color:#2563eb; color:#2563eb; padding:6px 20px;">
+									همگام‌سازی و درج در دیتابیس ووکامرس
+								</button>
+								<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
+							</div>
+						</div>
+
+						<!-- v10.99: پل اتصال مستقیم ووکامرس از پنل ادمین -->
+						<div id="amphpWooBridgeCard" style="background:linear-gradient(135deg,#eff6ff 0%,#f0fdf4 100%); border:2px solid #3b82f6; border-radius:14px; padding:20px 22px; margin-bottom:24px;">
+							<div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+								<div>
+									<h4 style="margin:0 0 6px; font-size:1.05rem; font-weight:900; color:#1e3a8a;">🔌 اتصال مستقیم ووکامرس (از داخل وردپرس)</h4>
+									<p style="margin:0; color:#334155; font-size:0.88rem; line-height:1.7; max-width:640px;">
+										اسکرپر خارج از وردپرس نمی‌تواند «direct» را اجرا کند. از این بخش اتصال in-process را <strong>تست</strong> و در <code>connections.json</code> با <code>sync_mode=direct</code> <strong>فعال</strong> کنید.
+									</p>
+								</div>
+								<span class="field-badge <?php echo $woo_direct_ready ? 'field-badge-green' : 'field-badge-blue'; ?>" id="amphpWooBridgeBadge">
+									<?php echo $woo_direct_ready ? 'آماده · direct' : ( $woo_has_wc ? 'WC هست · نیاز به فعال‌سازی' : 'ووکامرس نیست' ); ?>
+								</span>
+							</div>
+							<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:14px; font-size:0.84rem;">
+								<div style="background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
+									<div style="color:#64748b; font-weight:700;">WooCommerce</div>
+									<div style="font-weight:900; color:<?php echo $woo_has_wc ? '#059669' : '#dc2626'; ?>;">
+										<?php echo $woo_has_wc ? ( 'فعال' . ( defined( 'WC_VERSION' ) ? ' · ' . esc_html( WC_VERSION ) : '' ) ) : 'غیرفعال / نصب‌نشده'; ?>
+									</div>
+								</div>
+								<div style="background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
+									<div style="color:#64748b; font-weight:700;">sync_mode</div>
+									<div style="font-weight:900; color:#0f172a;" id="amphpWooSyncModeLabel"><?php echo esc_html( $woo_sync_mode !== '' ? $woo_sync_mode : 'api' ); ?></div>
+								</div>
+								<div style="background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
+									<div style="color:#64748b; font-weight:700;">enabled</div>
+									<div style="font-weight:900; color:<?php echo $woo_enabled ? '#059669' : '#b45309'; ?>;" id="amphpWooEnabledLabel"><?php echo $woo_enabled ? 'بله' : 'خیر'; ?></div>
+								</div>
+								<div style="background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
+									<div style="color:#64748b; font-weight:700;">store_url</div>
+									<div style="font-weight:800; color:#0f172a; direction:ltr; text-align:right; word-break:break-all;" id="amphpWooStoreLabel"><?php echo esc_html( $woo_store !== '' ? $woo_store : '—' ); ?></div>
 								</div>
 							</div>
+							<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+								<label style="font-size:0.85rem; font-weight:700; color:#334155;">fallback:
+									<select id="amphpWooFallback" style="margin-right:6px; font-weight:700;">
+										<option value="direct_then_api" selected>direct_then_api</option>
+										<option value="api_then_direct">api_then_direct</option>
+										<option value="none">none</option>
+									</select>
+								</label>
+								<button type="button" id="btnTestWooDirect" class="button button-secondary" style="font-weight:800; border-color:#059669; color:#059669;">
+									🧪 تست اتصال مستقیم
+								</button>
+								<button type="button" id="btnEnableWooDirect" class="button button-primary" style="font-weight:800; background:#2563eb; border:none;">
+									⚡ فعال‌سازی اتصال مستقیم
+								</button>
+								<span id="amphpWooBridgeStatus" style="font-size:0.88rem; font-weight:700;"></span>
+							</div>
+							<pre id="amphpWooBridgeReport" style="display:none; margin:8px 0 0; max-height:280px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:10px; padding:12px 14px; font-size:0.78rem; line-height:1.55; direction:ltr; text-align:left; white-space:pre-wrap; word-break:break-word;"></pre>
+						</div>
 						</div>
 					</div>
 				</div>
@@ -9774,8 +10007,7 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 			});
 
 			// Sync to WooCommerce Button
-			$('#btnSyncToWoo').on('click', function(e){
-				e.preventDefault();
+						$('#btnSyncToWoo').on('click', function(){
 				var $btn = $(this);
 				var $status = $('#syncWooStatus');
 				$btn.prop('disabled', true).text('در حال همگام‌سازی... ⏳');
@@ -9799,6 +10031,79 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 					error: function(){
 						$btn.prop('disabled', false).text('همگام‌سازی و درج در دیتابیس ووکامرس');
 						$status.html('<span style="color:#dc2626; font-weight:700;">❌ خطای ارتباط با سرور.</span>');
+					}
+				});
+			});
+
+			/* v10.99: تست / فعال‌سازی اتصال مستقیم ووکامرس */
+			var amphpWooNonce = '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>';
+			function amphpShowWooReport(obj) {
+				var $pre = $('#amphpWooBridgeReport');
+				try {
+					$pre.text(typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)).show();
+				} catch (e) {
+					$pre.text(String(obj)).show();
+				}
+			}
+			$('#btnTestWooDirect').on('click', function(){
+				var $btn = $(this);
+				var $st = $('#amphpWooBridgeStatus');
+				$btn.prop('disabled', true).text('در حال تست...');
+				$st.html('<span style="color:#2563eb;">آزمایش ایجاد draft و پاک‌سازی...</span>');
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: { action: 'scraper_test_woo_direct', nonce: amphpWooNonce },
+					success: function(res){
+						$btn.prop('disabled', false).text('🧪 تست اتصال مستقیم');
+						var d = (res && res.data) ? res.data : res;
+						var ok = !!(res && res.success && d && (d.ok === true || (d.direct && d.direct.ok)));
+						var msg = (d && (d.message || (d.direct && d.direct.message))) || (ok ? 'OK' : 'ناموفق');
+						$st.html(ok
+							? '<span style="color:#16a34a;">✅ ' + msg + '</span>'
+							: '<span style="color:#dc2626;">❌ ' + msg + '</span>');
+						amphpShowWooReport(d);
+					},
+					error: function(xhr){
+						$btn.prop('disabled', false).text('🧪 تست اتصال مستقیم');
+						$st.html('<span style="color:#dc2626;">❌ خطای ارتباط</span>');
+						amphpShowWooReport({ http: xhr.status, body: xhr.responseText });
+					}
+				});
+			});
+			$('#btnEnableWooDirect').on('click', function(){
+				var $btn = $(this);
+				var $st = $('#amphpWooBridgeStatus');
+				if (!window.confirm('sync_mode=direct در connections.json نوشته شود؟')) return;
+				$btn.prop('disabled', true).text('در حال فعال‌سازی...');
+				$st.html('<span style="color:#2563eb;">نوشتن connections.json...</span>');
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_enable_woo_direct',
+						nonce: amphpWooNonce,
+						fallback: $('#amphpWooFallback').val() || 'direct_then_api'
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('⚡ فعال‌سازی اتصال مستقیم');
+						var d = (res && res.data) ? res.data : {};
+						if (res && res.success) {
+							$st.html('<span style="color:#16a34a;">✅ ' + (d.message || 'فعال شد') + '</span>');
+							$('#amphpWooSyncModeLabel').text(d.sync_mode || 'direct');
+							$('#amphpWooEnabledLabel').text('بله').css('color', '#059669');
+							if (d.store_url) $('#amphpWooStoreLabel').text(d.store_url);
+							$('#amphpWooBridgeBadge').text('آماده · direct').removeClass('field-badge-blue').addClass('field-badge-green');
+						} else {
+							var err = (typeof d === 'string') ? d : (d.message || 'خطا');
+							$st.html('<span style="color:#dc2626;">❌ ' + err + '</span>');
+						}
+						amphpShowWooReport(d);
+					},
+					error: function(xhr){
+						$btn.prop('disabled', false).text('⚡ فعال‌سازی اتصال مستقیم');
+						$st.html('<span style="color:#dc2626;">❌ خطای ارتباط</span>');
+						amphpShowWooReport({ http: xhr.status, body: xhr.responseText });
 					}
 				});
 			});

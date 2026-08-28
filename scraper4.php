@@ -292,8 +292,8 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.103';
-const APP_VERSION_DATE = '1405/06/07';
+const APP_VERSION = '10.104';
+const APP_VERSION_DATE = '1405/06/08';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -27103,6 +27103,21 @@ if (isset($_GET['selftest'])) {
           && strpos($selfSrc, "\$stPgQ === (string)(\$running['id'] ?? '')") !== false
           && strpos($selfSrc, "\$chk['resume_from'] ?? \$chk['current'] ?? 0") !== false));
 
+    /* ==== v10.104: resume checkpoint + BSL scard restore ==== */
+    $add('10.104', 'نسخهٔ ۱۰.۱۰۴',
+         str_contains($selfSrc, "const APP_VERSION = '10.104';"));
+    $add('10.104', 'resume floor prevents current=0 regression',
+         strpos($selfSrc, "\$GLOBALS['_bslResumeFloor']") !== false
+         && strpos($selfSrc, "\$cWrite=max((int)\$c,\$__floor)") !== false);
+    $add('10.104', 'BSL detail lists restored on resume',
+         strpos($selfSrc, "\$bslSentList=\$bslPrevProg['sent_details']") !== false
+         || strpos($selfSrc, "bslPrevProg['sent_details']") !== false);
+    $add('10.104', 'scope shop loop honors resume start',
+         strpos($selfSrc, "if((\$si+1)<\$bslResumeStart)continue;") !== false);
+    $add('10.104', 'poll keeps non-empty scard details',
+         strpos($selfSrc, '_keepDet') !== false
+         && strpos($selfSrc, "arr.length===0 && (prev||[]).length>0") !== false);
+
     /* ==== ۶۹ (v10.55) ==== */
     $add('10.55', 'نسخهٔ ۱۰.۵۵',
          str_contains($selfSrc, "const APP_VERSION = '10.55';"));
@@ -33619,9 +33634,12 @@ function queueStallCheck(string $which, int $staleAfter = 300): array {
 
     // فقط ردیف در انتظار — اگر پردازنده‌ای زنده نیست باید راهش انداخت
     if ($lockFresh) return ['stalled' => false, 'reason' => 'پردازنده فعال است'];
+    /* v10.104: ردیف waiting هم ممکن است current داشته باشد (ادامهٔ failed) */
+    $__wCur = max(0, (int)($waiting['current'] ?? 0));
     return ['stalled' => true, 'kind' => 'waiting', 'idle' => 0,
         'queue_id' => $waiting['id'] ?? '', 'lock_held' => false,
-        'current' => 0, 'total' => (int)($waiting['total'] ?? 0)];
+        'current' => $__wCur, 'resume_from' => $__wCur,
+        'total' => (int)($waiting['total'] ?? 0)];
 }
 
 /** اگر صف گیر کرده باشد، پردازش را دوباره راه می‌اندازد */
@@ -40025,23 +40043,32 @@ global $wooLog,$wooSentList,$wooUpdatedList,$wooSkippedList,$wooFailedList;
 if($log!==null){$wooLog[]=$log;}
 $totalLog=count($wooLog);
 $recentSlice=$totalLog>200?array_slice($wooLog,-200):$wooLog;
-$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$c,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$wooSentList,'updated_details'=>$wooUpdatedList,'skipped_details'=>$wooSkippedList,'failed_details'=>$wooFailedList];
+/* v10.104: چک‌پوینت را با current=0 bootstrap پایین نیاور */
+$__floor=(int)($GLOBALS['_wooResumeFloor']??0);
+$cWrite=max((int)$c,$__floor);
+$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$wooSentList,'updated_details'=>$wooUpdatedList,'skipped_details'=>$wooSkippedList,'failed_details'=>$wooFailedList];
 /* v10.56 (۷۰): فایلِ پیشرفتِ ووکامرس هم مالکیتِ ردیفِ صف را نشان می‌دهد —
    برای اینکه ادامهٔ بعدی مطمئن باشد چک‌پوینت مالِ همین ردیف است. */
 if(!empty($GLOBALS['_wooQueueIdNow']))$d['queue_id']=$GLOBALS['_wooQueueIdNow'];
 if(!empty($extra))$d=array_merge($d,$extra);
 writeProgress(WOO_PROGRESS_FILE,$d);
 clearstatcache();
-/* v10.56 (۷۰): «current»ِ ردیفِ صف را هم با هر ضربان به‌روز نگه می‌داریم
-   (همانِ کارِ وِرکرِ باسلام) — تا در نبودِ پُلِ مرورگر، ردیفِ صف جایِ
-   درستِ کار را نشان بدهد. */
+/* v10.56/v10.104: current فقط بالا می‌رود؛ جزئیات کارت هم در ردیف صف */
 if(!empty($GLOBALS['_wooQueueIdNow'])){
 try{
 $__wq=wooReadQueue();$__wchg=false;
 foreach($__wq['entries'] as &$__we){
 if($__we['id']===$GLOBALS['_wooQueueIdNow']){
-if(((int)$c)!==(int)($__we['current']??0)){($__we['current']=(int)$c);($__wchg=true);}
+$__prevC=(int)($__we['current']??0);
+if($cWrite>$__prevC){($__we['current']=$cWrite);($__wchg=true);}
+$__bootZero=((int)$s+(int)$u+(int)$sk+(int)$f)===0 && $__floor>0;
+if(!$__bootZero){
 $__we['sent']=$s;$__we['updated']=$u;$__we['skipped']=$sk;$__we['failed']=$f;
+}
+if(is_array($wooSentList)&&count($wooSentList)>0){$__we['sent_details']=$wooSentList;$__wchg=true;}
+if(is_array($wooUpdatedList)&&count($wooUpdatedList)>0)$__we['updated_details']=$wooUpdatedList;
+if(is_array($wooSkippedList)&&count($wooSkippedList)>0)$__we['skipped_details']=$wooSkippedList;
+if(is_array($wooFailedList)&&count($wooFailedList)>0)$__we['failed_details']=$wooFailedList;
 break;
 }
 }
@@ -40141,12 +40168,37 @@ $wooPostStart=max(0,(int)($_POST['start_index']??0));
 $wooPostQid=trim((string)($_POST['queue_id']??''));
 if($wooPostStart>0&&$wooRunId!==''&&($wooPostQid===''||$wooPostQid===$wooRunId))$wooResumeStart=max($wooResumeStart,$wooPostStart);
 $wooResumeStart=max(0,min($wooResumeStart,$total+1));
+/* v10.104: current ردیف صف هم مبنا */
+if($wooRunId!==''){
+foreach((array)(wooReadQueue()['entries']??[]) as $__weR){
+if((string)($__weR['id']??'')===$wooRunId){
+$__ec=max(0,(int)($__weR['current']??0));
+if($__ec>$wooResumeStart){$wooResumeStart=$__ec;$wooResumeCounters=true;}
+if(empty($wooPrevProg['sent_details'])&&!empty($__weR['sent_details'])){
+$wooPrevProg['sent_details']=$__weR['sent_details']??[];
+$wooPrevProg['updated_details']=$__weR['updated_details']??[];
+$wooPrevProg['skipped_details']=$__weR['skipped_details']??[];
+$wooPrevProg['failed_details']=$__weR['failed_details']??[];
+if(!isset($wooPrevProg['sent'])){$wooPrevProg['sent']=$__weR['sent']??0;$wooPrevProg['updated']=$__weR['updated']??0;$wooPrevProg['skipped']=$__weR['skipped']??0;$wooPrevProg['failed']=$__weR['failed']??0;$wooResumeCounters=true;}
+}
+break;
+}
+}
+}
+$GLOBALS['_wooResumeFloor']=max(0,(int)$wooResumeStart);
 if($wooResumeStart>0&&$wooResumeCounters){
 $sent=(int)($wooPrevProg['sent']??0);$updated=(int)($wooPrevProg['updated']??0);
 $skipped=(int)($wooPrevProg['skipped']??0);$fail=(int)($wooPrevProg['failed']??0);
+if(!empty($wooPrevProg['sent_details'])&&is_array($wooPrevProg['sent_details']))$wooSentList=$wooPrevProg['sent_details'];
+if(!empty($wooPrevProg['updated_details'])&&is_array($wooPrevProg['updated_details']))$wooUpdatedList=$wooPrevProg['updated_details'];
+if(!empty($wooPrevProg['skipped_details'])&&is_array($wooPrevProg['skipped_details']))$wooSkippedList=$wooPrevProg['skipped_details'];
+if(!empty($wooPrevProg['failed_details'])&&is_array($wooPrevProg['failed_details']))$wooFailedList=$wooPrevProg['failed_details'];
 }
 
-wooBackendProgress(0,0,0,0,$total,0,'',['✅ [v8.22 woo_backend] شروع — '.$total.' محصول']);
+$__wooStartMsg=$wooResumeStart>0
+  ?('✅ [v8.22 woo_backend] ادامه از #'.$wooResumeStart.' — '.$total.' محصول')
+  :('✅ [v8.22 woo_backend] شروع — '.$total.' محصول');
+wooBackendProgress($sent,$updated,$skipped,$fail,$total,max($wooResumeStart,0),'',[$__wooStartMsg]);
 
 foreach($pd as $i=>$p){
 /* v10.56 (۷۰): محصولاتِ قبلِ چک‌پوینت را رد کن (در اجرأ قبلی انجام شده‌اند). */
@@ -42334,7 +42386,18 @@ global $bslLog,$bslSentList,$bslUpdatedList,$bslSkippedList,$bslFailedList,$bslQ
 if($log!==null){$bslLog[]=$log;}
 $totalLog=count($bslLog);
 $recentSlice=$totalLog>200?array_slice($bslLog,-200):$bslLog;
-$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$c,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList];
+/* v10.104: چک‌پوینت را هرگز با ضربانِ bootstrap (current=0) پایین نیاور —
+   وگرنه resume از صفر شروع می‌شود و کارت‌های قبلی از بین می‌روند. */
+$__floor=(int)($GLOBALS['_bslResumeFloor']??0);
+$cWrite=max((int)$c,$__floor);
+/* v10.104: در bootstrap بعد از resume، شمارنده‌های ۰ را در progress نگه ندار */
+$__sW=(int)$s;$__uW=(int)$u;$__skW=(int)$sk;$__fW=(int)$f;
+if($__floor>0 && ($__sW+$__uW+$__skW+$__fW)===0 && !empty($GLOBALS['_bslResumeCounters'])){
+$__rc=$GLOBALS['_bslResumeCounters'];
+$__sW=(int)($__rc['sent']??0);$__uW=(int)($__rc['updated']??0);
+$__skW=(int)($__rc['skipped']??0);$__fW=(int)($__rc['failed']??0);
+}
+$d=['running'=>true,'sent'=>$__sW,'updated'=>$__uW,'skipped'=>$__skW,'failed'=>$__fW,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList];
 if($bslQueueId!='')$d['queue_id']=$bslQueueId;
 /* v10.23 (۳۶ه): شمارنده‌های هر غرفه در هر ضربانِ پیشرفت هم می‌روند تا صف
    بتواند «زنده» نشانشان بدهد، نه فقط در پایانِ کار. */
@@ -42343,17 +42406,24 @@ if($__ss)$d['shop_stats']=$__ss;
 if(!empty($extra))$d=array_merge($d,$extra);
 writeProgress(BSL_PROGRESS_FILE,$d);
 clearstatcache();
-/* v10.56 (۷۰): «current»ِ ردیفِ صف را هم با هر ضربان به‌روز نگه می‌داریم.
-   قبلاً این فقط هنگام پُلِ مرورگر یا در پایان نوشته می‌شد — پس در ارسالِ
-   طولانیِ رهاشده (بدونِ مرورگر) ردیف صفر می‌ماند و هر کسِ آن را بخواند
-   (نگهبان، پمپ، مدیرِ وظایف) می‌فهمد هنوز از اول شروع نشده. */
+/* v10.56/v10.104: current ردیف صف فقط بالا می‌رود (هرگز رگرس به ۰).
+   جزئیات کارت‌ها هم در ردیف صف نگه داشته می‌شود تا گزارش پروفایل زنده بماند. */
 if(isset($GLOBALS['_bslQueueIdNow'])){
 try{
 $__q=bslReadQueue();$__chg=false;
 foreach($__q['entries'] as &$__e){
 if($__e['id']===$GLOBALS['_bslQueueIdNow']){
-if(((int)$c)!==(int)($__e['current']??0)){($__e['current']=(int)$c);($__chg=true);}
+$__prevC=(int)($__e['current']??0);
+if($cWrite>$__prevC){($__e['current']=$cWrite);($__chg=true);}
+/* v10.104: شمارنده‌های bootstrap(۰) را روی ردیف resume ننویس */
+$__bootZero=((int)$s+(int)$u+(int)$sk+(int)$f)===0 && $__floor>0;
+if(!$__bootZero){
 $__e['sent']=$s;$__e['updated']=$u;$__e['skipped']=$sk;$__e['failed']=$f;
+}
+if(is_array($bslSentList)&&count($bslSentList)>0){$__e['sent_details']=$bslSentList;$__chg=true;}
+if(is_array($bslUpdatedList)&&count($bslUpdatedList)>0)$__e['updated_details']=$bslUpdatedList;
+if(is_array($bslSkippedList)&&count($bslSkippedList)>0)$__e['skipped_details']=$bslSkippedList;
+if(is_array($bslFailedList)&&count($bslFailedList)>0)$__e['failed_details']=$bslFailedList;
 break;
 }
 }
@@ -42456,11 +42526,36 @@ if($bslPrevQid===$bslQueueId){
 $bslResumeStart=(int)($bslPrevProg['current']??0);
 $bslResumeCounters=isset($bslPrevProg['sent']);
 }
+/* v10.104: current ردیف صف هم مبنا — حتی اگر progress قبل از POST پاک شده */
+$bslEntryCur=max(0,(int)($nextEntry['current']??0));
+if($bslEntryCur>$bslResumeStart){$bslResumeStart=$bslEntryCur;$bslResumeCounters=true;}
 $bslPostStart=max(0,(int)($_POST['start_index']??0));
 $bslPostQid=trim((string)($_POST['queue_id']??''));
 if($bslPostStart>0&&($bslPostQid===''||$bslPostQid===$bslQueueId))$bslResumeStart=max($bslResumeStart,$bslPostStart);
 $bslResumeStart=max(0,$bslResumeStart);
 $GLOBALS['_bslQueueIdNow']=$bslQueueId;
+$GLOBALS['_bslResumeFloor']=$bslResumeStart;
+/* snapshot جزئیات قبل از unlink — بعد از resume بازیابی می‌شود */
+if(empty($bslPrevProg['sent_details'])&&!empty($nextEntry['sent_details'])){
+$bslPrevProg['sent_details']=$nextEntry['sent_details']??[];
+$bslPrevProg['updated_details']=$nextEntry['updated_details']??[];
+$bslPrevProg['skipped_details']=$nextEntry['skipped_details']??[];
+$bslPrevProg['failed_details']=$nextEntry['failed_details']??[];
+if(!isset($bslPrevProg['sent'])){$bslPrevProg['sent']=$nextEntry['sent']??0;$bslPrevProg['updated']=$nextEntry['updated']??0;$bslPrevProg['skipped']=$nextEntry['skipped']??0;$bslPrevProg['failed']=$nextEntry['failed']??0;$bslResumeCounters=true;}
+}
+if($bslResumeStart>0){
+$GLOBALS['_bslResumeCounters']=[
+ 'sent'=>(int)($bslPrevProg['sent']??$nextEntry['sent']??0),
+ 'updated'=>(int)($bslPrevProg['updated']??$nextEntry['updated']??0),
+ 'skipped'=>(int)($bslPrevProg['skipped']??$nextEntry['skipped']??0),
+ 'failed'=>(int)($bslPrevProg['failed']??$nextEntry['failed']??0),
+];
+/* جزئیات را همین‌جا در لیست‌های سراسری بنشان تا bootstrap scard را پاک نکند */
+if(!empty($bslPrevProg['sent_details'])&&is_array($bslPrevProg['sent_details']))$bslSentList=$bslPrevProg['sent_details'];
+if(!empty($bslPrevProg['updated_details'])&&is_array($bslPrevProg['updated_details']))$bslUpdatedList=$bslPrevProg['updated_details'];
+if(!empty($bslPrevProg['skipped_details'])&&is_array($bslPrevProg['skipped_details']))$bslSkippedList=$bslPrevProg['skipped_details'];
+if(!empty($bslPrevProg['failed_details'])&&is_array($bslPrevProg['failed_details']))$bslFailedList=$bslPrevProg['failed_details'];
+}
 @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
 if(!file_exists($nextEntry['products_file'])){
 $queue['entries'][$nextIdx]['status']='failed';
@@ -42616,9 +42711,39 @@ $pd=$verifyProducts;$total=count($pd);$sent=0;$updated=0;$skipped=0;$fail=0;
    قبلاً فرستاده شده باشد با جستجو آپدیت می‌شود و تکراری ساخته نمی‌شود.
    فهرستِ جزئیاتِ بخشِ اول در فایلِ پیشرفت جایی نمی‌گیرد؛ کلِ نهایی درست است. */
 $bslResumeStart=min($bslResumeStart,$total+1);
+/* v10.104: کف چک‌پوینت — ضربان‌های bootstrap دیگر current را صفر نمی‌کنند */
+$GLOBALS['_bslResumeFloor']=max(0,(int)$bslResumeStart);
 if($bslResumeStart>0&&$bslResumeCounters){
 $sent=(int)($bslPrevProg['sent']??0);$updated=(int)($bslPrevProg['updated']??0);
 $skipped=(int)($bslPrevProg['skipped']??0);$fail=(int)($bslPrevProg['failed']??0);
+$GLOBALS['_bslResumeCounters']=['sent'=>$sent,'updated'=>$updated,'skipped'=>$skipped,'failed'=>$fail];
+/* کارت‌های تکی محصول از اجرای قبلی را برگردان تا گزارش scard از بین نرود */
+if(!empty($bslPrevProg['sent_details'])&&is_array($bslPrevProg['sent_details']))$bslSentList=$bslPrevProg['sent_details'];
+if(!empty($bslPrevProg['updated_details'])&&is_array($bslPrevProg['updated_details']))$bslUpdatedList=$bslPrevProg['updated_details'];
+if(!empty($bslPrevProg['skipped_details'])&&is_array($bslPrevProg['skipped_details']))$bslSkippedList=$bslPrevProg['skipped_details'];
+if(!empty($bslPrevProg['failed_details'])&&is_array($bslPrevProg['failed_details']))$bslFailedList=$bslPrevProg['failed_details'];
+}
+/* اگر progress خالی بود ولی ردیف صف جزئیات داشت (pause/restart) */
+if($bslResumeStart>0&&empty($bslSentList)&&empty($bslUpdatedList)){
+try{
+$__qD=bslReadQueue();
+foreach((array)($__qD['entries']??[]) as $__eD){
+if((string)($__eD['id']??'')===(string)$bslQueueId){
+if(!empty($__eD['sent_details'])&&is_array($__eD['sent_details']))$bslSentList=$__eD['sent_details'];
+if(!empty($__eD['updated_details'])&&is_array($__eD['updated_details']))$bslUpdatedList=$__eD['updated_details'];
+if(!empty($__eD['skipped_details'])&&is_array($__eD['skipped_details']))$bslSkippedList=$__eD['skipped_details'];
+if(!empty($__eD['failed_details'])&&is_array($__eD['failed_details']))$bslFailedList=$__eD['failed_details'];
+if($sent===0&&isset($__eD['sent']))$sent=(int)$__eD['sent'];
+if($updated===0&&isset($__eD['updated']))$updated=(int)$__eD['updated'];
+if($skipped===0&&isset($__eD['skipped']))$skipped=(int)$__eD['skipped'];
+if($fail===0&&isset($__eD['failed']))$fail=(int)$__eD['failed'];
+break;
+}
+}
+}catch(Exception $__exD){}
+}
+if($bslResumeStart>0){
+bslBackendProgress($sent,$updated,$skipped,$fail,$total,$bslResumeStart,'',['🔄 ادامه از محصول #'.$bslResumeStart.' — کارت‌های قبلی: '.(count($bslSentList)+count($bslUpdatedList)+count($bslSkippedList)+count($bslFailedList))]);
 }
 $bslExisting=[];$bslExistingNorm=[];$bslArchivedMap=[];
 // v8.22: Phase 1 removed — per-product search replaces bulk loading
@@ -43039,8 +43164,14 @@ $sShopName=$__scopeName!==''?$__scopeName:(string)$__scopeShop['shop_name'];
 if($sShopName==='')$sShopName='غرفهٔ '.$__scopeVid;
 $sOpts=['round'=>(int)($cn['basalam']['price_round']??0),'profile'=>((string)($nextEntry['profile_key']??''))!==''?(loadProfiles()[$nextEntry['profile_key']]??null):null,'stock'=>(int)($cn['basalam']['stock']??10),'preparation_days'=>(int)($cn['basalam']['preparation_days']??3),'weight'=>(int)($cn['basalam']['weight']??500),'package_weight'=>(int)($cn['basalam']['package_weight']??((int)($cn['basalam']['weight']??500)+100)),'category_id'=>(int)($cn['basalam']['category_id']??0),'auto_category'=>$autoCat,'fallback_cat_ids'=>$bslFallbackCats,'flat_cats'=>$bslFlatCats,'cdata'=>($cData??[])];
 $sStop=false;$sDone=0;
-bslBackendProgress(0,0,0,0,$total,0,'',['🏪 [غرفهٔ '.$sShopName.'] شروعِ ارسالِ اختصاصی — '.$total.' محصول — فاصله: '.$bslDelayMs.'ms']);
+/* v10.104: ادامه از چک‌پوینت — غرفهٔ اختصاصی هم از صفر شروع نکند */
+$__scopeStartMsg=$bslResumeStart>0
+  ?('🏪 [غرفهٔ '.$sShopName.'] ادامه از #'.$bslResumeStart.' — '.$total.' محصول')
+  :('🏪 [غرفهٔ '.$sShopName.'] شروعِ ارسالِ اختصاصی — '.$total.' محصول — فاصله: '.$bslDelayMs.'ms');
+bslBackendProgress($sent,$updated,$skipped,$fail,$total,max($bslResumeStart,0),'',[$__scopeStartMsg]);
 foreach($pd as $si=>$p){
+/* v10.104: محصولات قبل از چک‌پوینت را رد کن */
+if(($si+1)<$bslResumeStart)continue;
 clearstatcache(true,BSL_STOP_FILE);
 if(file_exists(BSL_STOP_FILE)){$sStop=true;break;}
 $srAll=bslUpsertManyShops($p,[$__scopeShop],$sOpts,1);
@@ -67856,28 +67987,38 @@ function pollBslProgress() {
         const logs = d.recent_log || [];
         const totalLogCount = d.total_log_count || 0;
         const startedAt = d.started_at || 0;
-        // Store detail lists for report modals — available during processing now
-        if(d.sent_details) bslReportData.sent=d.sent_details;
-        if(d.updated_details) bslReportData.updated=d.updated_details;
-        if(d.skipped_details) bslReportData.skipped=d.skipped_details;
-        if(d.failed_details) bslReportData.failed=d.failed_details;
-        // v7.82: Render product cards from detail lists
+        // v10.104: جزئیات کارت — آرایهٔ خالی bootstrap را روی گزارش زنده ننویس
+        // (قبلاً if(d.sent_details) با [] هم truthy بود و scardها را پاک می‌کرد)
+        const _keepDet=(arr,prev)=>{
+            if(!Array.isArray(arr)) return prev||[];
+            if(arr.length===0 && (prev||[]).length>0) return prev;
+            return arr;
+        };
+        if(d.sent_details!==undefined) bslReportData.sent=_keepDet(d.sent_details,bslReportData.sent);
+        if(d.updated_details!==undefined) bslReportData.updated=_keepDet(d.updated_details,bslReportData.updated);
+        if(d.skipped_details!==undefined) bslReportData.skipped=_keepDet(d.skipped_details,bslReportData.skipped);
+        if(d.failed_details!==undefined) bslReportData.failed=_keepDet(d.failed_details,bslReportData.failed);
+        // v7.82/v10.104: Render product cards — full rebuild if count dropped (resume)
         const totalCards=bslReportData.sent.length+bslReportData.updated.length+bslReportData.skipped.length+bslReportData.failed.length;
-        if(totalCards>bslLastCardCount){
-            const logDiv=$('bR');
-            // Render new cards from ALL detail lists
+        const logDiv=$('bR');
+        if(logDiv && totalCards>0 && (totalCards>bslLastCardCount || (bslLastCardCount>0 && logDiv.querySelectorAll('.scard').length===0))){
             const allItems=[];
             bslReportData.sent.forEach(x=>{allItems.push(Object.assign({result:'ok'},x));});
             bslReportData.updated.forEach(x=>{allItems.push(Object.assign({result:'update'},x));});
             bslReportData.skipped.forEach(x=>{allItems.push(Object.assign({result:'skip'},x));});
             bslReportData.failed.forEach(x=>{allItems.push(Object.assign({result:'fail'},x));});
-            // Only render new cards
-            for(let ci=bslLastCardCount;ci<allItems.length;ci++){
-                const item=allItems[ci];
-                logDiv.insertAdjacentHTML("beforeend",renderSendCard(item));
+            const needFull = bslLastCardCount===0 || logDiv.querySelectorAll('.scard').length===0 || totalCards<bslLastCardCount;
+            if(needFull){
+                // نگه داشتن بنرهای وضعیت غیر-کارت
+                const keep=[];
+                Array.from(logDiv.children).forEach(n=>{if(!n.classList||!n.classList.contains('scard'))keep.push(n.outerHTML);});
+                logDiv.innerHTML=keep.join('')+allItems.map(renderSendCard).join('');
+            }else{
+                for(let ci=bslLastCardCount;ci<allItems.length;ci++){
+                    logDiv.insertAdjacentHTML("beforeend",renderSendCard(allItems[ci]));
+                }
             }
             bslLastCardCount=totalCards;
-            // Trim for performance
             const logNodes=logDiv.children;
             if(logNodes.length>300){for(let j=0;j<logNodes.length-300;j++)logNodes[0].remove();}
             scrollElBottom(logDiv);
@@ -68219,23 +68360,34 @@ function pollWooProgress(){
         const logs=d.recent_log||[];
         const totalLogCount=d.total_log_count||0;
         const startedAt=d.started_at||0;
-        // Store detail lists for report modals
-        if(d.sent_details)wooReportData.sent=d.sent_details;
-        if(d.updated_details)wooReportData.updated=d.updated_details;
-        if(d.skipped_details)wooReportData.skipped=d.skipped_details;
-        if(d.failed_details)wooReportData.failed=d.failed_details;
-        // v8.06: Render product cards from detail lists
+        // v10.104: جزئیات کارت ووکامرس — آرایهٔ خالی bootstrap را ننویس
+        const _keepW=(arr,prev)=>{
+            if(!Array.isArray(arr)) return prev||[];
+            if(arr.length===0 && (prev||[]).length>0) return prev;
+            return arr;
+        };
+        if(d.sent_details!==undefined)wooReportData.sent=_keepW(d.sent_details,wooReportData.sent);
+        if(d.updated_details!==undefined)wooReportData.updated=_keepW(d.updated_details,wooReportData.updated);
+        if(d.skipped_details!==undefined)wooReportData.skipped=_keepW(d.skipped_details,wooReportData.skipped);
+        if(d.failed_details!==undefined)wooReportData.failed=_keepW(d.failed_details,wooReportData.failed);
+        // v8.06/v10.104: Render product cards
         const totalCards=wooReportData.sent.length+wooReportData.updated.length+wooReportData.skipped.length+wooReportData.failed.length;
-        if(totalCards>wooLastCardCount){
-            const logDiv=$('wR');
+        const logDiv=$('wR');
+        if(logDiv && totalCards>0 && (totalCards>wooLastCardCount || (wooLastCardCount>0 && logDiv.querySelectorAll('.scard').length===0))){
             const allItems=[];
             wooReportData.sent.forEach(x=>{allItems.push(Object.assign({result:'ok'},x));});
             wooReportData.updated.forEach(x=>{allItems.push(Object.assign({result:'update'},x));});
             wooReportData.skipped.forEach(x=>{allItems.push(Object.assign({result:'skip'},x));});
             wooReportData.failed.forEach(x=>{allItems.push(Object.assign({result:'fail'},x));});
-            for(let ci=wooLastCardCount;ci<allItems.length;ci++){
-                const item=allItems[ci];
-                logDiv.insertAdjacentHTML('beforeend',renderSendCard(item));
+            const needFull=wooLastCardCount===0||logDiv.querySelectorAll('.scard').length===0||totalCards<wooLastCardCount;
+            if(needFull){
+                const keep=[];
+                Array.from(logDiv.children).forEach(n=>{if(!n.classList||!n.classList.contains('scard'))keep.push(n.outerHTML);});
+                logDiv.innerHTML=keep.join('')+allItems.map(renderSendCard).join('');
+            }else{
+                for(let ci=wooLastCardCount;ci<allItems.length;ci++){
+                    logDiv.insertAdjacentHTML('beforeend',renderSendCard(allItems[ci]));
+                }
             }
             wooLastCardCount=totalCards;
             const logNodes=logDiv.children;
@@ -69538,6 +69690,20 @@ function showBslQueueDetail(qid){
         const failedMap={};
         (e.failed_details||[]).forEach(f=>{failedMap[f.key||f.title]=f;});
         let detailHtml='';
+        /* v10.104: گزارش کارت‌محصول تکی برای همین پروفایل/وظیفه */
+        {
+            const _sc=[];
+            (e.sent_details||[]).forEach(x=>_sc.push(Object.assign({result:'ok'},x)));
+            (e.updated_details||[]).forEach(x=>_sc.push(Object.assign({result:'update'},x)));
+            (e.skipped_details||[]).forEach(x=>_sc.push(Object.assign({result:'skip'},x)));
+            (e.failed_details||[]).forEach(x=>_sc.push(Object.assign({result:'fail'},x)));
+            if(_sc.length && typeof renderSendCard==='function'){
+                detailHtml+='<div style="margin-bottom:12px;max-height:340px;overflow-y:auto;padding:6px;background:#0f172a;border:1px solid #334155;border-radius:8px">';
+                detailHtml+='<div style="color:#67e8f9;font-weight:700;margin-bottom:8px;font-size:12px">🃏 گزارش کارت محصول ('+toFa(_sc.length)+')</div>';
+                _sc.forEach(it=>{detailHtml+=renderSendCard(it);});
+                detailHtml+='</div>';
+            }
+        }
         /* v10.102: گزارش بایگانی/حذف ناموجود */
         if(e.retire_report||e.kind==='retire'||e.trigger==='retire'){
             detailHtml+='<div style="margin-bottom:10px;padding:10px;background:#42200640;border:1px solid #78350f;border-radius:8px;color:#fbbf24;font-size:12px;font-weight:700;line-height:1.8">🗂 گزارش بایگانی/حذف محصولات ناموجود یا حذف‌شده از مبدأ — هر ردیف یک محصول</div>';

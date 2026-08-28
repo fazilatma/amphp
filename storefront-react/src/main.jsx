@@ -549,6 +549,7 @@ function MenuDrawer({ open, onClose, settings, categories, onCat, cartCount, onO
 function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckout }) {
   const [full, setFull] = useState(product);
   const [loading, setLoading] = useState(false);
+  const [aiFilling, setAiFilling] = useState(false);
   const [imgIdx, setImgIdx] = useState(0);
   const [qty, setQty] = useState(1);
 
@@ -556,10 +557,13 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
     setFull(product);
     setImgIdx(0);
     setQty(1);
+    setAiFilling(false);
     if (!product?.id || !ajax?.ajaxUrl) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      const leanDesc = String(product.description || product.short_desc || '').trim();
+      if (!leanDesc) setAiFilling(true);
       try {
         const fd = new FormData();
         fd.append('action', 'scraper_get_product');
@@ -569,11 +573,21 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
         const det = data?.data?.product || data?.product;
         if (!cancelled && data?.success && det && typeof det === 'object') {
           setFull((prev) => ({ ...prev, ...det }));
+          if (det.ai_filled || (det.description || det.short_desc || '').trim()) {
+            setAiFilling(false);
+          } else if (det.ai_pending) {
+            setAiFilling(true);
+          } else {
+            setAiFilling(false);
+          }
         }
       } catch (_) {
         /* keep lean payload */
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setAiFilling(false);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -589,6 +603,7 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
   const descHtml = desc ? renderMarkdown(desc) : null;
   const inStock = p.in_stock !== false;
   const vars = (p.variations_text || '').trim();
+  const showAiBadge = !!(p.ai_filled || aiFilling);
 
   const addN = () => {
     for (let i = 0; i < qty; i++) onAdd(p);
@@ -659,13 +674,13 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
           </div>
         </div>
         <section className="sf-pdp-desc">
-          <h2>توضیحات محصول</h2>
+          <h2>توضیحات محصول {showAiBadge ? <span className="sf-pdp-ai-badge">{aiFilling ? '✨ در حال تکمیل با هوش مصنوعی…' : '✨ تکمیل‌شده با AI'}</span> : null}</h2>
           {descHtml ? (
             <div className="sf-pdp-desc-body sf-bubble-md" dangerouslySetInnerHTML={{ __html: descHtml }} />
           ) : (
             <p className="sf-pdp-desc-empty">
-              {loading
-                ? 'در حال دریافت توضیحات…'
+              {aiFilling || loading
+                ? '✨ هوش مصنوعی در حال نوشتن توضیحات این کالا است…'
                 : 'توضیحات تکمیلی این کالا به‌زودی تکمیل می‌شود. اصالت کالا و ارسال سریع تضمین شده است.'}
             </p>
           )}

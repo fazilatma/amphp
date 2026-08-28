@@ -1443,3 +1443,5 @@
   .sf-pdp-actions { flex-direction: column; }
   .sf-pdp-actions .sf-btn { flex: 1 1 auto; width: 100%; }
 }
+
+.sf-pdp-ai-badge{display:inline-block;margin-right:8px;font-size:.72rem;font-weight:600;color:#a78bfa;background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.35);border-radius:999px;padding:2px 10px;vertical-align:middle}

@@ -1007,6 +1007,27 @@ function StoreApp({ boot }) {
   const searchRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchFocus, setSearchFocus] = useState(false);
+  // close expanded search on outside click
+  useEffect(() => {
+    const onDoc = (e) => {
+      try {
+        if (!searchRef.current) return;
+        if (searchRef.current.contains(e.target)) return;
+        if (!query.trim()) {
+          setSearchOpen(false);
+          setSearchFocus(false);
+        } else {
+          setSearchOpen(false);
+        }
+      } catch (err) {}
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('touchstart', onDoc, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('touchstart', onDoc);
+    };
+  }, [query]);
 
   useAdminBarOffset();
   const { progress, scrolled } = useScrollProgress();
@@ -1285,28 +1306,65 @@ function StoreApp({ boot }) {
                 </div>
               </a>
 
-              <div className={`sf-search ${searchFocus || (searchOpen && query) ? 'is-open' : ''}`} ref={searchRef}>
-                <span className="ico" aria-hidden>🔍</span>
+              <div className={`sf-search ${searchFocus || searchOpen ? 'is-open' : 'is-collapsed'}`} ref={searchRef}>
+                <button
+                  type="button"
+                  className="sf-search-toggle"
+                  aria-label={searchOpen || searchFocus ? 'بستن جستجو' : 'باز کردن جستجو'}
+                  aria-expanded={searchOpen || searchFocus}
+                  title="جستجو"
+                  onClick={() => {
+                    if (searchOpen || searchFocus) {
+                      setSearchOpen(false);
+                      setSearchFocus(false);
+                    } else {
+                      setSearchOpen(true);
+                      setSearchFocus(true);
+                      requestAnimationFrame(() => {
+                        try { searchRef.current?.querySelector('input')?.focus(); } catch (e) {}
+                      });
+                    }
+                  }}
+                >
+                  <span className="ico" aria-hidden>🔍</span>
+                </button>
+                <div className="sf-search-panel">
                 <input
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); setSearchOpen(true); setPage(1); }}
                   onFocus={() => { setSearchFocus(true); setSearchOpen(true); }}
+                  onBlur={() => {
+                    // allow click on dropdown items
+                    setTimeout(() => {
+                      try {
+                        if (searchRef.current && !searchRef.current.contains(document.activeElement)) {
+                          if (!query.trim()) { setSearchFocus(false); setSearchOpen(false); }
+                        }
+                      } catch (e) {}
+                    }, 120);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       setSearchOpen(false);
+                      setSearchFocus(false);
                       document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }
-                    if (e.key === 'Escape') { setSearchOpen(false); setQuery(''); }
+                    if (e.key === 'Escape') {
+                      setSearchOpen(false);
+                      setSearchFocus(false);
+                      setQuery('');
+                    }
                   }}
                   placeholder="جستجو در کالاها، برندها و دسته‌ها..."
                   aria-label="جستجوی محصولات"
                   aria-autocomplete="list"
                   aria-expanded={searchOpen && !!query}
                   autoComplete="off"
+                  tabIndex={(searchOpen || searchFocus) ? 0 : -1}
                 />
                 {query ? (
-                  <button type="button" className="clear" onClick={() => { setQuery(''); setSearchOpen(false); }} aria-label="پاک کردن">✕</button>
+                  <button type="button" className="clear" onClick={() => { setQuery(''); setSearchOpen(true); setSearchFocus(true); }} aria-label="پاک کردن">✕</button>
                 ) : null}
                 {searchOpen && query.trim() ? (
                   <div className="sf-search-drop" role="listbox">
@@ -1366,6 +1424,7 @@ function StoreApp({ boot }) {
                     )}
                   </div>
                 ) : null}
+                </div>
               </div>
 
               <div className="sf-actions">

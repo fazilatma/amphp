@@ -106,6 +106,13 @@ const CATFIX_STOP_FILE     = __DIR__ . '/catfix_stop.json';
 const CATFIX_LOCK_FILE     = __DIR__ . '/catfix.lock';
 const CATFIX_MAX_PAGES     = 40;   // صفحاتِ فهرستِ محصولاتِ ردشده
 
+/* v10.97: توضیح‌ساز هوشمند — کارِ پس‌زمینهٔ سرور با صف/گزارش کارتی */
+const AICONTENT_PROGRESS_FILE = __DIR__ . '/aicontent_progress.json';
+const AICONTENT_RESULT_FILE   = __DIR__ . '/aicontent_result.json';
+const AICONTENT_STOP_FILE     = __DIR__ . '/aicontent_stop.json';
+const AICONTENT_LOCK_FILE     = __DIR__ . '/aicontent.lock';
+const AICONTENT_ITEMS_FILE    = __DIR__ . '/aicontent_items.json'; /* جزئیات هر محصول برای مودال */
+
 /* v10.24 (۳۷الف): اولویتِ کارهای پس‌زمینه.
  *
  *  تا اینجا فقط «کارهای زمان‌بندی‌شده» (jobs) اولویت داشتند — ترتیبشان در
@@ -285,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.96';
+const APP_VERSION = '10.97';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -4603,6 +4610,217 @@ function aiAutoFillMissingAcrossProfiles(?array $cn = null, int $limit = 0): arr
         $stats['saved'] = true;
     }
     $stats['log'] = array_slice($stats['log'], -30);
+    return $stats;
+}
+
+
+/* ---- v10.97: توضیح‌ساز هوشمند (server-side job + product cards log) ---- */
+function aicontentProgress(array $patch): void {
+    $cur = [];
+    if (is_file(AICONTENT_PROGRESS_FILE)) {
+        $d = json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true);
+        if (is_array($d)) $cur = $d;
+    }
+    $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
+    if (isset($patch['log_add'])) {
+        foreach ((array)$patch['log_add'] as $l) {
+            if (is_array($l)) $log[] = array_merge(['t' => time()], $l);
+            else $log[] = ['t' => time(), 'm' => (string)$l];
+        }
+        if (count($log) > 500) $log = array_slice($log, -500);
+        unset($patch['log_add']);
+    }
+    $cur = array_merge($cur, $patch);
+    $cur['log'] = $log;
+    $cur['ts'] = time();
+    @file_put_contents(AICONTENT_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+function aicontentStopRequested(): bool { return is_file(AICONTENT_STOP_FILE); }
+function aicontentClearStop(): void { @unlink(AICONTENT_STOP_FILE); }
+function aicontentItemsRead(): array {
+    if (!is_file(AICONTENT_ITEMS_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(AICONTENT_ITEMS_FILE), true);
+    return is_array($d) ? $d : [];
+}
+function aicontentItemsWrite(array $items): void {
+    if (count($items) > 300) $items = array_slice($items, -300);
+    @file_put_contents(AICONTENT_ITEMS_FILE, json_encode($items, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+function aicontentItemPush(array $item): void {
+    $items = aicontentItemsRead();
+    $items[] = $item;
+    aicontentItemsWrite($items);
+}
+
+/**
+ * اجرای پس‌زمینه: پر کردن محصولاتِ بدون محتوا + ثبت کارت/گزارش.
+ */
+function aicontentRun(?array $cn = null, int $limit = 0): array {
+    $cn = $cn ?? loadConnections();
+    $cfg = aiContentAutoCfg($cn);
+    $per = $limit > 0 ? $limit : (int)$cfg['per_run'];
+    $per = max(1, min(80, $per));
+    $web = !empty($cfg['web_search']);
+    $mapBsl = !empty($cfg['bsl_cats']);
+    $t0 = time();
+    $maxSec = 240;
+
+    $stats = [
+        'ok' => true, 'scanned' => 0, 'needed' => 0, 'filled' => 0, 'skipped' => 0,
+        'failed' => 0, 'profiles' => 0, 'items' => [], 'took' => 0, 'msg' => '',
+        'stopped' => false,
+    ];
+    $profiles = loadProfiles();
+    if (!is_array($profiles) || !$profiles) {
+        $stats['ok'] = false;
+        $stats['error'] = 'پروفایلی نیست';
+        aicontentProgress(['phase' => 'error', 'log_add' => ['❌ پروفایلی نیست']]);
+        return $stats;
+    }
+
+    /* شمارش نیازها برای نوار پیشرفت */
+    $queue = [];
+    foreach ($profiles as $pk => $prof) {
+        if (!is_array($prof)) continue;
+        foreach ((array)($prof['products'] ?? []) as $i => $entry) {
+            $isPair = is_array($entry) && count($entry) === 2 && is_array($entry[1] ?? null);
+            $p = $isPair ? $entry[1] : (is_array($entry) ? $entry : null);
+            if (!is_array($p) || !aiProductNeedsContent($p)) continue;
+            $queue[] = ['pk' => $pk, 'i' => $i, 'pair' => $isPair, 'title' => (string)($p['title'] ?? $p['name'] ?? '')];
+            if (count($queue) >= $per) break 2;
+        }
+    }
+    $total = count($queue);
+    aicontentProgress([
+        'running' => true, 'done' => false, 'phase' => 'fill',
+        'total' => $total, 'current' => 0, 'filled' => 0, 'failed' => 0, 'skipped' => 0,
+        'last_title' => '',
+        'log_add' => ['🚀 شروع توضیح‌ساز — ' . $total . ' محصول در صف (سقف ' . $per . ')'],
+    ]);
+    if ($total === 0) {
+        $stats['msg'] = 'محصولی برای تولید محتوا نبود';
+        aicontentProgress(['phase' => 'done', 'log_add' => ['ℹ️ ' . $stats['msg']]]);
+        return $stats;
+    }
+
+    $dirtyProfiles = [];
+    $itemsOut = aicontentItemsRead(); /* keep history; append new run marker */
+    $runId = 'r' . $t0 . '_' . substr(md5((string)microtime(true)), 0, 6);
+    aicontentItemPush([
+        'id' => $runId . '_head', 'kind' => 'run', 'run_id' => $runId,
+        'at' => $t0, 'title' => 'شروع نوبت', 'status' => 'info',
+        'summary' => $total . ' محصول در صف',
+    ]);
+
+    foreach ($queue as $qi => $job) {
+        if (aicontentStopRequested()) {
+            $stats['stopped'] = true;
+            aicontentProgress(['phase' => 'stopping', 'log_add' => ['⏹ توقف به درخواست کاربر']]);
+            break;
+        }
+        if ((time() - $t0) >= $maxSec) {
+            aicontentProgress(['log_add' => ['⏱ سقف زمانی نوبت — ادامه در اجرای بعد']]);
+            break;
+        }
+        $pk = $job['pk'];
+        $i = $job['i'];
+        /* reload profile product fresh */
+        if (!isset($profiles[$pk]) || !is_array($profiles[$pk])) continue;
+        $products = $profiles[$pk]['products'] ?? [];
+        if (!isset($products[$i])) continue;
+        $entry = $products[$i];
+        $isPair = is_array($entry) && count($entry) === 2 && is_array($entry[1] ?? null);
+        $p = $isPair ? $entry[1] : (is_array($entry) ? $entry : null);
+        if (!is_array($p)) continue;
+
+        $title = trim((string)($p['title'] ?? $p['name'] ?? $job['title'] ?? ''));
+        $stats['scanned']++;
+        $stats['needed']++;
+        $curN = $qi + 1;
+        aicontentProgress([
+            'current' => $curN, 'total' => $total, 'phase' => 'fill',
+            'last_title' => mb_substr($title, 0, 80),
+            'log_add' => [['m' => '⏳ ' . mb_substr($title, 0, 50), 'item_id' => '', 'status' => 'running']],
+        ]);
+
+        $itemId = $runId . '_' . $qi;
+        $item = [
+            'id' => $itemId, 'kind' => 'product', 'run_id' => $runId,
+            'at' => time(), 'profile_key' => $pk,
+            'profile_name' => (string)($profiles[$pk]['name'] ?? $pk),
+            'title' => $title, 'status' => 'pending',
+            'short_description' => '', 'description_html' => '',
+            'category' => '', 'bsl_category_id' => 0, 'bsl_category_name' => '',
+            'model' => '', 'error' => '', 'summary' => '',
+        ];
+        try {
+            $r = aiFillProductContent($p, $web, $mapBsl, $cn);
+            if (!empty($r['filled'])) {
+                $p2 = $r['product'];
+                if ($isPair) $products[$i][1] = $p2;
+                else $products[$i] = $p2;
+                $profiles[$pk]['products'] = $products;
+                $profiles[$pk]['updatedAt'] = time();
+                $dirtyProfiles[$pk] = true;
+                $stats['filled']++;
+                $item['status'] = 'ok';
+                $item['short_description'] = (string)($p2['shortDesc'] ?? $p2['short_desc'] ?? '');
+                $item['description_html'] = (string)($p2['longDesc'] ?? $p2['long_desc'] ?? '');
+                $item['category'] = (string)($p2['category'] ?? '');
+                $item['bsl_category_id'] = (int)($p2['bsl_category_id'] ?? 0);
+                $item['bsl_category_name'] = (string)($p2['bsl_category_name'] ?? '');
+                $item['model'] = (string)($r['model'] ?? $p2['ai_content_model'] ?? '');
+                $cid = $item['bsl_category_id'];
+                $item['summary'] = 'پر شد' . ($cid ? (" · باسلام #{$cid}") : '');
+                aicontentProgress([
+                    'filled' => $stats['filled'], 'current' => $curN,
+                    'log_add' => [['m' => '✓ ' . mb_substr($title, 0, 40) . ($cid ? " → #{$cid}" : ''), 'item_id' => $itemId, 'status' => 'ok']],
+                ]);
+            } else {
+                $stats['failed']++;
+                $err = (string)($r['error'] ?? 'بدون تغییر');
+                $item['status'] = !empty($r['skipped']) ? 'skip' : 'fail';
+                $item['error'] = $err;
+                $item['summary'] = $err;
+                if (!empty($r['skipped'])) $stats['skipped']++;
+                aicontentProgress([
+                    'failed' => $stats['failed'], 'current' => $curN,
+                    'log_add' => [['m' => '✗ ' . mb_substr($title, 0, 36) . ' — ' . mb_substr($err, 0, 40), 'item_id' => $itemId, 'status' => 'fail']],
+                ]);
+            }
+        } catch (Throwable $e) {
+            $stats['failed']++;
+            $item['status'] = 'fail';
+            $item['error'] = $e->getMessage();
+            $item['summary'] = $e->getMessage();
+            aicontentProgress([
+                'failed' => $stats['failed'],
+                'log_add' => [['m' => '✗ ' . mb_substr($e->getMessage(), 0, 80), 'item_id' => $itemId, 'status' => 'fail']],
+            ]);
+        }
+        aicontentItemPush($item);
+        $stats['items'][] = ['id' => $itemId, 'title' => $title, 'status' => $item['status']];
+    }
+
+    if ($dirtyProfiles) {
+        /* reload disk & merge only dirty profiles' products we hold */
+        $onDisk = loadProfiles();
+        foreach ($dirtyProfiles as $pk => $_) {
+            if (isset($profiles[$pk])) $onDisk[$pk] = $profiles[$pk];
+        }
+        saveProfiles($onDisk);
+        $stats['saved'] = true;
+    }
+    $stats['profiles'] = count($dirtyProfiles);
+    $stats['took'] = time() - $t0;
+    $stats['msg'] = 'پر شد: ' . $stats['filled'] . ' · ناموفق: ' . $stats['failed']
+        . ($stats['stopped'] ? ' · متوقف' : '');
+    aicontentProgress([
+        'phase' => 'done',
+        'filled' => $stats['filled'], 'failed' => $stats['failed'],
+        'current' => min($total, (int)($stats['scanned'])),
+        'log_add' => ['🏁 ' . $stats['msg'] . ' · ' . $stats['took'] . 'ث'],
+    ]);
     return $stats;
 }
 
@@ -19360,6 +19578,17 @@ function tasksRegistry(): array {
                 return ['اصلاح‌شده' => (int)($p['fixed'] ?? 0), 'ناموفق' => (int)($p['failed'] ?? 0)];
             },
         ],
+        /* v10.97: توضیح‌ساز هوشمند — صف/گزارش کارتی در مدیر وظیفه */
+        'aicontent' => [
+            'title' => 'توضیح‌ساز هوشمند', 'icon' => '📝', 'file' => AICONTENT_PROGRESS_FILE,
+            'stop' => 'aicontent_stop', 'tab' => 'هوش مصنوعی',
+            'pane' => 'settings', 'smenu' => 'هوش مصنوعی', 'ai' => 'content_gen',
+            'el' => 'aiContentJobBox', 'open' => 'aicontentOpen', 'resume' => 'aicontent_start=1',
+            'stat' => function (array $p): array {
+                return ['پرشد' => (int)($p['filled'] ?? 0), 'ناموفق' => (int)($p['failed'] ?? 0),
+                        'رد' => (int)($p['skipped'] ?? 0)];
+            },
+        ],
     ];
 }
 
@@ -19583,8 +19812,13 @@ function tasksBuildRow(string $key, array $def, int $now): array {
     /* لاگِ این کار — هر کار شکلِ خودش را دارد (log یا recent_log) */
     $log = [];
     $raw = is_array($p['log'] ?? null) ? $p['log'] : (is_array($p['recent_log'] ?? null) ? $p['recent_log'] : []);
-    foreach (array_slice($raw, -6) as $l)
-        $log[] = is_array($l) ? (string)($l['m'] ?? '') : (string)$l;
+    foreach (array_slice($raw, -12) as $l) {
+        if (is_array($l)) {
+            $msg = (string)($l['m'] ?? '');
+            if (!empty($l['item_id'])) $msg .= ' · 🔎' . (string)$l['item_id'];
+            $log[] = $msg;
+        } else $log[] = (string)$l;
+    }
     /* v10.23 (۳۶ج): «ادامه» فقط برای کارِ رهاشده یا تمام‌شده معنا دارد؛ روی
        کارِ در حال اجرا نشان دادنش فقط باعثِ اجرای موازیِ ناخواسته می‌شود. */
     $resumeUrl = ($st === 'stale' || $st === 'done' || $st === 'idle')
@@ -19765,7 +19999,8 @@ if (isset($_GET['tasks_stop'])) {
             'dedup_stop' => DEDUP_STOP_FILE, 'agent_stop' => AGENT_STOP_FILE, 'ai_test_stop' => AI_TEST_STOP_FILE,
             'catfix_stop' => CATFIX_STOP_FILE,                 // v10.23 (۳۶د)
             'selagent_stop' => SELAGENT_STOP_FILE,             // v10.25 (۳۸د)
-            'manual_sync_stop' => MANUAL_SYNC_STOP_FILE];      // v10.35 (۴۷ه)
+            'manual_sync_stop' => MANUAL_SYNC_STOP_FILE,      // v10.35 (۴۷ه)
+            'aicontent_stop' => AICONTENT_STOP_FILE];   // v10.97
     $sf = $map[(string)$reg[$key]['stop']] ?? '';
     if ($sf === '') { echo json_encode(['ok' => false, 'error' => 'این کار توقفِ دستی ندارد'], JSON_UNESCAPED_UNICODE); exit; }
     @file_put_contents($sf, json_encode(['at' => time()]));
@@ -25841,7 +26076,21 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
-            /* ==== ۱۰۶ (v10.96) ==== */
+            /* ==== ۱۰۷ (v10.97) ==== */
+    $add('10.97', 'نسخهٔ ۱۰.۹۷',
+         version_compare(APP_VERSION, '10.97', '>=')
+      && strpos($selfSrc, "{v:'10.97',") !== false);
+    $add('10.97', 'توضیح‌ساز پس‌زمینه + رجیستری مدیر وظیفه',
+         strpos($selfSrc, 'function aicontentRun') !== false
+      && strpos($selfSrc, 'AICONTENT_PROGRESS_FILE') !== false
+      && strpos($selfSrc, "'aicontent' =>") !== false
+      && strpos($selfSrc, 'aicontent_start') !== false);
+    $add('10.97', 'مودال/کارت جزئیات محصول توضیح‌ساز',
+         strpos($selfSrc, 'id="aicontentModal"') !== false
+      && strpos($selfSrc, 'function aicontentShowItem') !== false
+      && strpos($selfSrc, 'aicontent_items') !== false);
+
+    /* ==== ۱۰۶ (v10.96) ==== */
     $add('10.96', 'نسخهٔ ۱۰.۹۶ در APP_VERSION و CHANGELOG',
          version_compare(APP_VERSION, '10.96', '>=')
       && strpos($selfSrc, "{v:'10.96',") !== false
@@ -38137,18 +38386,136 @@ if (isset($_GET['ai_generate_product_content']) || ($_POST['action'] ?? '') === 
     exit;
 }
 
-/* v10.83: اجرای فوری تولید خودکار برای محصولاتِ بدون محتوا (همهٔ پروفایل‌ها) */
+/* v10.83/v10.97: اجرای تولید محتوا — مسیرِ هم‌زمان (سازگاری) و پس‌زمینهٔ سرور */
 if (isset($_GET['ai_content_auto_run']) || ($_POST['action'] ?? '') === 'ai_content_auto_run') {
+    /* پیش‌فرض: پس‌زمینه (مدیر وظیفه). sync=1 برای اجرای هم‌زمان قدیمی */
+    if (empty($_REQUEST['sync'])) {
+        $_GET['aicontent_start'] = '1';
+        if (!isset($_REQUEST['limit']) && isset($_GET['limit'])) { /* keep */ }
+        /* jump by setting flag — handled in next if */
+    } else {
+        header('Content-Type: application/json; charset=UTF-8');
+        @set_time_limit(300);
+        $cn = loadConnections();
+        $lim = max(1, min(40, (int)($_REQUEST['limit'] ?? (aiContentAutoCfg($cn)['per_run'] ?? 8))));
+        $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
+        $stats = aiAutoFillMissingAcrossProfiles($cn, $lim);
+        echo json_encode($stats, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
+/* v10.97: توضیح‌ساز هوشمند — شروع پس‌زمینه (مدیر وظیفه + صف کارتی) */
+if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_start'
+    || ((isset($_GET['ai_content_auto_run']) || ($_POST['action'] ?? '') === 'ai_content_auto_run') && empty($_REQUEST['sync']))) {
     header('Content-Type: application/json; charset=UTF-8');
-    @set_time_limit(300);
+    $lockFp = fopen(AICONTENT_LOCK_FILE, 'c');
+    if (!$lockFp || !flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if ($lockFp) fclose($lockFp);
+        echo json_encode(['ok' => false, 'running' => true,
+            'error' => 'توضیح‌ساز همین حالا در جریان است'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    @set_time_limit(0); @ignore_user_abort(true);
+    aicontentClearStop();
     $cn = loadConnections();
-    $lim = max(1, min(40, (int)($_REQUEST['limit'] ?? (aiContentAutoCfg($cn)['per_run'] ?? 8))));
-    /* force enabled for manual run */
-    $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
-    $stats = aiAutoFillMissingAcrossProfiles($cn, $lim);
-    echo json_encode($stats, JSON_UNESCAPED_UNICODE);
+    $lim = max(1, min(80, (int)($_REQUEST['limit'] ?? (aiContentAutoCfg($cn)['per_run'] ?? 8))));
+    @unlink(AICONTENT_PROGRESS_FILE);
+    @unlink(AICONTENT_RESULT_FILE);
+    aicontentProgress([
+        'running' => true, 'done' => false, 'started_at' => time(),
+        'total' => 0, 'current' => 0, 'filled' => 0, 'failed' => 0, 'skipped' => 0,
+        'phase' => 'start', 'limit' => $lim,
+        'log_add' => ['🚀 صف توضیح‌ساز آماده شد (سقف ' . $lim . ')'],
+    ]);
+    $early = json_encode(['ok' => true, 'started' => true, 'limit' => $lim], JSON_UNESCAPED_UNICODE);
+    header('Connection: close');
+    header('Content-Length: ' . strlen($early));
+    echo $early;
+    @ob_flush(); @flush();
+    if (function_exists('fastcgi_finish_request')) @fastcgi_finish_request();
+    register_shutdown_function(function () use ($lockFp) {
+        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(AICONTENT_LOCK_FILE);
+    });
+    try {
+        $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
+        $rep = aicontentRun($cn, $lim);
+    } catch (Throwable $e) {
+        aicontentProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
+            'log_add' => ['❌ ' . $e->getMessage()]]);
+        aicontentClearStop();
+        exit;
+    }
+    @file_put_contents(AICONTENT_RESULT_FILE, json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    $stopped = aicontentStopRequested();
+    aicontentClearStop();
+    aicontentProgress([
+        'running' => false, 'done' => true, 'stopped' => $stopped,
+        'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'filled' => $rep['filled'] ?? 0, 'failed' => $rep['failed'] ?? 0,
+        'skipped' => $rep['skipped'] ?? 0,
+        'total' => max((int)($rep['needed'] ?? 0), (int)($rep['scanned'] ?? 0)),
+        'current' => (int)($rep['scanned'] ?? 0),
+        'phase' => 'done',
+        'log_add' => [empty($rep['ok']) ? ('❌ ' . ($rep['error'] ?? 'ناموفق')) : ('🏁 ' . ($rep['msg'] ?? 'پایان'))],
+    ]);
     exit;
 }
+if (isset($_GET['aicontent_status'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $st = [];
+    if (is_file(AICONTENT_PROGRESS_FILE)) {
+        $d = json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true);
+        if (is_array($d)) $st = $d;
+    }
+    $log = is_array($st['log'] ?? null) ? $st['log'] : [];
+    $since = max(0, (int)($_GET['since'] ?? 0));
+    $st['log_total'] = count($log);
+    $st['log'] = $since > 0 ? array_slice($log, $since) : array_slice($log, -80);
+    if (!empty($st['running']) && !is_file(AICONTENT_LOCK_FILE)
+        && (time() - (int)($st['ts'] ?? 0)) > 180) {
+        $st['running'] = false; $st['done'] = true; $st['stale'] = true;
+    }
+    $st['ok'] = true;
+    $st['has_result'] = is_file(AICONTENT_RESULT_FILE);
+    echo json_encode($st, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+if (isset($_GET['aicontent_result'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!is_file(AICONTENT_RESULT_FILE)) {
+        echo json_encode(['ok' => false, 'error' => 'هنوز گزارشی نیست'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    echo (string)@file_get_contents(AICONTENT_RESULT_FILE);
+    exit;
+}
+if (isset($_GET['aicontent_items'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $items = aicontentItemsRead();
+    $id = trim((string)($_GET['id'] ?? ''));
+    if ($id !== '') {
+        foreach ($items as $it) {
+            if (is_array($it) && (string)($it['id'] ?? '') === $id) {
+                echo json_encode(['ok' => true, 'item' => $it], JSON_UNESCAPED_UNICODE); exit;
+            }
+        }
+        echo json_encode(['ok' => false, 'error' => 'مورد یافت نشد'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    $limit = max(1, min(200, (int)($_GET['limit'] ?? 80)));
+    $items = array_values(array_filter($items, function ($x) {
+        return is_array($x) && (($x['kind'] ?? '') === 'product');
+    }));
+    $items = array_slice(array_reverse($items), 0, $limit);
+    echo json_encode(['ok' => true, 'items' => $items, 'total' => count($items)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+if (isset($_GET['aicontent_stop'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @file_put_contents(AICONTENT_STOP_FILE, json_encode(['at' => time()]));
+    aicontentProgress(['log_add' => ['⏹ درخواست توقف ثبت شد']]);
+    echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if (isset($_GET['ai_content_auto_status'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $cn = loadConnections();
@@ -48024,9 +48391,25 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
           سقف هر نوبت:
           <input type="number" id="aiContentAutoPerRun" value="8" min="1" max="40" style="width:56px;background:#111c31;border:1px solid #334155;border-radius:6px;color:#e2e8f0;padding:3px 6px" onchange="aiContentAutoSave()">
         </label>
-        <button type="button" class="btn btn-emerald" onclick="aiContentAutoRunNow()" style="font-size:10.5px;padding:4px 10px">▶ الان برای محصولاتِ ناقص اجرا کن</button>
+        <button type="button" class="btn btn-emerald" onclick="aiContentAutoRunNow()" style="font-size:10.5px;padding:4px 10px">▶ اجرا در پس‌زمینه (مدیر وظیفه)</button>
+        <button type="button" class="btn btn-gray" onclick="aicontentOpen()" style="font-size:10.5px;padding:4px 10px">📋 صف و گزارش</button>
         <span id="aiContentAutoStat" style="font-size:10px;color:#64748b"></span>
       </div>
+    </div>
+
+    <div id="aiContentJobBox" style="background:#0b1324;border:1px solid #1e293b;border-radius:8px;padding:10px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <div style="font-size:11.5px;color:#a7f3d0;font-weight:800">📝 صف توضیح‌ساز (سرورساید)</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span id="aicontentJobBadge" style="font-size:10px;color:#64748b">—</span>
+          <button type="button" class="btn btn-gray" style="font-size:9.5px;padding:2px 8px" onclick="aicontentRefreshLog()">↻</button>
+          <button type="button" class="btn btn-red" style="font-size:9.5px;padding:2px 8px" onclick="aicontentStop()">⏹ توقف</button>
+        </div>
+      </div>
+      <div id="aicontentProgLine" style="font-size:10.5px;color:#94a3b8;margin-bottom:6px"></div>
+      <div class="tmbar mini" id="aicontentBarWrap" style="display:none;margin-bottom:8px"><i id="aicontentBar" style="width:0%"></i></div>
+      <div id="aicontentCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;max-height:280px;overflow-y:auto"></div>
+      <div style="font-size:10px;color:#64748b;margin-top:6px;line-height:1.6">هر کارت = یک محصول. کلیک → جزئیات (توضیح، دسته، شناسهٔ باسلام). وضعیت در «مدیر وظیفه» هم دیده می‌شود.</div>
     </div>
 
     <div style="display:flex;gap:8px">
@@ -48925,6 +49308,16 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <!-- End Basalam Pane -->
 </div></div>
 
+<!-- v10.97: مودال جزئیات کارت توضیح‌ساز -->
+<div id="aicontentModal" class="bsl-modal" style="display:none;z-index:10060" onclick="if(event.target===this)aicontentCloseModal()">
+  <div class="bsl-modal-box" style="max-width:640px;width:94vw;max-height:88vh;display:flex;flex-direction:column;background:#0f172a;border:1px solid #334155;border-radius:12px;overflow:hidden">
+    <div class="bsl-modal-head" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#1e293b;border-bottom:1px solid #334155">
+      <div style="font-weight:800;color:#e2e8f0;font-size:13px" id="aicontentModalTitle">جزئیات محصول</div>
+      <button type="button" class="btn btn-gray" onclick="aicontentCloseModal()" style="font-size:11px;padding:4px 10px">✕</button>
+    </div>
+    <div id="aicontentModalBody" style="padding:14px;overflow:auto;flex:1;font-size:12px;line-height:1.75;color:#cbd5e1"></div>
+  </div>
+</div>
 <!-- v10.83 (97): مودالِ «پاسخ دستی به مشتریان» — گرهٔ زنده ازِ تنظیمات اینجا می‌آید -->
 <div id="mrModal" class="bsl-modal-overlay" style="display:none" onclick="if(event.target===this)mrCloseModal()">
 <div class="bsl-modal" style="max-width:900px">
@@ -55002,6 +55395,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.97', t:'توضیح‌ساز سرورساید + جستجوی ذره‌بین ویترین', items:[
+    '📝 توضیح‌ساز هوشمند به‌صورت کار پس‌زمینهٔ سرور (مدیر وظیفه) با صف و گزارش کارتی',
+    '🃏 هر محصول یک کارت — کلیک برای مودال جزئیات (توضیح، دسته، شناسه باسلام)',
+    '🔍 ویترین: تک‌باکس جستجو مخفی؛ با زدن ذره‌بین باز می‌شود و با محیط هماهنگ است',
+  ]},
   {v:'10.96', t:'تولید خودکار محتوا (همیشه-فعال) + دستهٔ برگ باسلام + حالت همگام‌سازی ووکامرس', items:[
     '✅ تیک «همیشه فعال» در تب تولید محتوا: برای همهٔ پروفایل‌ها، محصولاتِ بدون توضیح/دسته با AI پر می‌شوند (پیش‌فرض روشن)',
     '🟢 نگاشت دسته به فرمت باسلام (شناسهٔ برگ / bsl_category_id) — ارسال سریع‌تر بدون auto-match دوباره',
@@ -64266,8 +64664,24 @@ function tmCard(t){
       +(t.resumable
         ? 'با «▶ ادامه» قفلش برداشته و همان کار دوباره شروع می‌شود؛ یا با «پاک» فقط ردش را ببرید.'
         : 'با «پاک» آزادش کنید تا بتوانید از تبِ خودش دوباره شروع کنید.')+'</div>';
-  if((t.log||[]).length)
-    h+='<div class="tmlog">'+t.log.map(l=>esc(l)).join('\n')+'</div>';
+  if((t.log||[]).length){
+    if(t.key==='aicontent'){
+      h+='<div class="tmlog" style="display:flex;flex-direction:column;gap:4px">';
+      t.log.forEach(l=>{
+        const s=String(l||'');
+        const m=s.match(/🔎([\w-]+)/);
+        if(m){
+          h+='<button type="button" onclick="event.stopPropagation();aicontentShowItem(\''+jsAttr(m[1])+'\')" '
+            +'style="text-align:right;background:#111c31;border:1px solid #334155;border-radius:6px;padding:5px 8px;color:#e2e8f0;font-size:10.5px;cursor:pointer">'
+            +esc(s.replace(/\s·\s🔎[\w-]+/,''))+' <span style="color:#67e8f9">جزئیات</span></button>';
+        } else h+='<div style="font-size:10.5px;color:#94a3b8">'+esc(s)+'</div>';
+      });
+      h+='</div>';
+      h+='<button type="button" class="btn btn-blue" style="margin-top:8px;font-size:10px;padding:4px 10px" onclick="event.stopPropagation();aicontentOpen()">📋 صف کارت‌های محصول</button>';
+    } else {
+      h+='<div class="tmlog">'+t.log.map(l=>esc(l)).join('\n')+'</div>';
+    }
+  }
   return h+'</div></div>';   /* بستنِ .tmc-body و .tmc */
 }
 
@@ -64530,16 +64944,136 @@ function aiContentAutoRefreshStat(){
 }
 function aiContentAutoRunNow(){
   const el=$('aiContentAutoStat');
-  if(el)el.textContent='⏳ در حال تولید…';
+  if(el)el.textContent='⏳ شروع پس‌زمینه…';
   const lim=parseInt(($('aiContentAutoPerRun')||{}).value)||8;
-  fetch('?ai_content_auto_run=1&limit='+encodeURIComponent(lim)).then(r=>r.json()).then(d=>{
+  fetch('?aicontent_start=1&limit='+encodeURIComponent(lim)).then(r=>r.json()).then(d=>{
     if(!d){showToast('پاسخ خالی',1);return;}
-    const msg='پر شد: '+toFa(d.filled||0)+' · ناموفق: '+toFa(d.failed||0)+' · نیاز: '+toFa(d.needed||0);
-    showToast(d.ok!==false?('🤖 '+msg):('خطا: '+(d.error||'')), !d.ok);
-    if(el)el.textContent=msg;
+    if(d.running&&d.error){showToast(d.error,1);if(el)el.textContent=d.error;return;}
+    if(d.ok||d.started){
+      showToast('📝 توضیح‌ساز در پس‌زمینه شروع شد — مدیر وظیفه را ببینید');
+      if(el)el.textContent='در حال اجرا در سرور…';
+      aicontentWatch(true);
+      try{ if(typeof tmOpen==='function' && typeof tmPulse==='function'){ tmPulse(); } }catch(e){}
+    }else showToast('خطا: '+(d.error||'?'),1);
     aiContentAutoRefreshStat();
   }).catch(()=>{showToast('خطا شبکه',1);if(el)el.textContent='';});
 }
+let _aicWatch=null,_aicLogSince=0;
+function aicontentOpen(){
+  try{
+    if(typeof switchMainTab==='function') switchMainTab('settings');
+    if(typeof toggleSmenu==='function'){
+      /* ensure AI smenu open */
+      document.querySelectorAll('.smenu-hdr').forEach(h=>{
+        if((h.textContent||'').indexOf('هوش مصنوعی')>=0){
+          const b=h.parentElement&&h.parentElement.querySelector('.smenu-body');
+          if(b&&getComputedStyle(b).display==='none') h.click();
+        }
+      });
+    }
+    if(typeof aiTab==='function') aiTab('content_gen');
+  }catch(e){}
+  const box=$('aiContentJobBox');
+  if(box){ box.scrollIntoView({behavior:'smooth',block:'nearest'}); box.style.boxShadow='0 0 0 2px #34d399'; setTimeout(()=>{box.style.boxShadow='';},1600); }
+  aicontentRefreshLog();
+  aicontentWatch(true);
+}
+function aicontentStop(){
+  fetch('?aicontent_stop=1').then(r=>r.json()).then(d=>{
+    showToast(d&&d.ok?'⏹ توقف ثبت شد':('خطا'), !(d&&d.ok));
+    aicontentWatch(true);
+  }).catch(()=>showToast('خطا شبکه',1));
+}
+function aicontentWatch(force){
+  if(_aicWatch) clearInterval(_aicWatch);
+  const tick=()=>{
+    fetch('?aicontent_status=1&since=0').then(r=>r.json()).then(d=>{
+      if(!d)return;
+      const badge=$('aicontentJobBadge');
+      const line=$('aicontentProgLine');
+      const barW=$('aicontentBarWrap');
+      const bar=$('aicontentBar');
+      const run=!!d.running && !d.done;
+      if(badge){
+        badge.innerHTML=run
+          ? '<span style="color:#4ade80">● در حال اجرا</span>'
+          : (d.done?'<span style="color:#94a3b8">✓ تمام</span>':'<span style="color:#64748b">○ بی‌کار</span>');
+      }
+      if(line){
+        const bits=[];
+        if(d.phase) bits.push(esc(d.phase));
+        if(d.total>0) bits.push(toFa(d.current||0)+' از '+toFa(d.total));
+        if(d.filled) bits.push('پرشد '+toFa(d.filled));
+        if(d.failed) bits.push('ناموفق '+toFa(d.failed));
+        if(d.last_title) bits.push('↳ '+esc(d.last_title));
+        line.textContent=bits.join(' · ');
+      }
+      if(barW&&bar){
+        if(run||d.done){
+          barW.style.display='block';
+          const pct=d.total>0?Math.min(100,Math.round(100*(d.current||0)/d.total)):(run?15:100);
+          bar.style.width=pct+'%';
+        }else barW.style.display='none';
+      }
+      if(!run){ aicontentRefreshLog(); if(_aicWatch){clearInterval(_aicWatch);_aicWatch=null;} }
+    }).catch(()=>{});
+  };
+  tick();
+  if(force!==false) _aicWatch=setInterval(tick, 2500);
+}
+function aicontentRefreshLog(){
+  fetch('?aicontent_items=1&limit=60').then(r=>r.json()).then(d=>{
+    const box=$('aicontentCards'); if(!box)return;
+    const items=(d&&d.items)||[];
+    if(!items.length){ box.innerHTML='<div style="grid-column:1/-1;color:#64748b;font-size:11px;padding:12px;text-align:center">هنوز کارتی نیست — یک نوبت اجرا کنید.</div>'; return; }
+    box.innerHTML=items.map(it=>{
+      const st=it.status||'';
+      const col=st==='ok'?'#065f46':(st==='fail'?'#7f1d1d':(st==='skip'?'#334155':'#1e3a5f'));
+      const bdr=st==='ok'?'#34d399':(st==='fail'?'#f87171':'#475569');
+      const cid=it.bsl_category_id?('#'+it.bsl_category_id):'';
+      return '<button type="button" class="aic-card" data-id="'+esc(it.id||'')+'" onclick="aicontentShowItem(\''+jsAttr(it.id||'')+'\')" '
+        +'style="text-align:right;background:#0f172a;border:1px solid '+bdr+';border-radius:10px;padding:8px 9px;cursor:pointer;color:#e2e8f0">'
+        +'<div style="font-size:11px;font-weight:800;line-height:1.45;max-height:2.8em;overflow:hidden">'+esc(it.title||'—')+'</div>'
+        +'<div style="font-size:9.5px;color:#94a3b8;margin-top:4px">'+esc(it.profile_name||it.profile_key||'')+'</div>'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:4px">'
+        +'<span style="font-size:9px;background:'+col+';color:#fff;padding:1px 6px;border-radius:6px">'+esc(st||'—')+'</span>'
+        +'<span style="font-size:9.5px;color:#a7f3d0">'+esc(cid|| (it.category||'').slice(0,18))+'</span>'
+        +'</div></button>';
+    }).join('');
+  }).catch(()=>{});
+}
+function aicontentShowItem(id){
+  if(!id)return;
+  fetch('?aicontent_items=1&id='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{
+    if(!d||!d.ok||!d.item){showToast('مورد یافت نشد',1);return;}
+    const it=d.item;
+    const m=$('aicontentModal'), body=$('aicontentModalBody'), tit=$('aicontentModalTitle');
+    if(tit) tit.textContent=it.title||'جزئیات';
+    if(body){
+      body.innerHTML=
+        '<div style="margin-bottom:10px;font-size:11px;color:#94a3b8">'
+        +esc(it.profile_name||'')+' · وضعیت: <b style="color:#e2e8f0">'+esc(it.status||'')+'</b>'
+        +(it.model?(' · مدل: '+esc(it.model)):'')
+        +'</div>'
+        +(it.error?('<div style="background:#450a0a;border:1px solid #7f1d1d;border-radius:8px;padding:8px;margin-bottom:10px;color:#fecaca">'+esc(it.error)+'</div>'):'')
+        +'<div style="margin-bottom:8px"><b style="color:#67e8f9">دسته:</b> '+esc(it.category||'—')
+        +(it.bsl_category_id?(' <span style="color:#a7f3d0">· باسلام #'+it.bsl_category_id+(it.bsl_category_name?(' — '+esc(it.bsl_category_name)):'' )+'</span>'):'')
+        +'</div>'
+        +'<div style="margin-bottom:8px"><b style="color:#94a3b8">معرفی کوتاه</b><div style="background:#111c31;border-radius:8px;padding:8px;margin-top:4px;white-space:pre-wrap">'+esc(it.short_description||'—')+'</div></div>'
+        +'<div><b style="color:#94a3b8">توضیحات HTML</b>'
+        +'<div style="background:#fff;color:#0f172a;border-radius:8px;padding:12px;margin-top:4px;max-height:280px;overflow:auto;font-size:12px;line-height:1.8">'+(it.description_html||'<span style="color:#94a3b8">—</span>')+'</div></div>';
+    }
+    if(m){ m.style.display='flex'; m.style.alignItems='center'; m.style.justifyContent='center';
+      m.style.position='fixed'; m.style.inset='0'; m.style.background='rgba(0,0,0,.55)';
+      document.body.classList.add('modal-open');
+    }
+  }).catch(()=>showToast('خطا شبکه',1));
+}
+function aicontentCloseModal(){
+  const m=$('aicontentModal'); if(m) m.style.display='none';
+  document.body.classList.remove('modal-open');
+}
+
 
 function aiRunContentGen(){
   const inp = $('aiGenProdTitle');

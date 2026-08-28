@@ -1143,11 +1143,19 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
 function StoreApp({ boot }) {
   const settings = boot.settings || {};
+  const meta = boot.meta || {};
   const products = Array.isArray(boot.products) ? boot.products : [];
+  /* v13.3.1: total_count = کل کاتالوگ (هم‌تراز پروفایل‌های اسکریپر) */
+  const catalogTotal = Math.max(
+    Number(meta.total_count) || 0,
+    Number(meta.count) || 0,
+    products.length,
+  );
   const ajax = boot.ajax || {};
   const currency = settings.currency_symbol || 'تومان';
   const palette = settings.store_palette || 'digikala-red';
   const accent = settings.accent_color || PALETTE_ACCENTS[palette] || '#ef394e';
+  const pageSize = Math.max(8, Math.min(60, Number(settings.products_per_page) || PAGE_SIZE));
 
   const categories = useMemo(() => {
     const map = {};
@@ -1307,9 +1315,9 @@ function StoreApp({ boot }) {
     return list;
   }, [products, query, cat, sort]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageSafe = clamp(page, 1, totalPages);
-  const pageItems = filtered.slice((pageSafe - 1) * PAGE_SIZE, pageSafe * PAGE_SIZE);
+  const pageItems = filtered.slice((pageSafe - 1) * pageSize, pageSafe * pageSize);
 
   useEffect(() => { setPage(1); }, [query, cat, sort]);
 
@@ -1694,7 +1702,7 @@ function StoreApp({ boot }) {
                 </button>
                 <button type="button" className={`sf-nav-link ${cat === 'all' && !query ? 'active' : ''}`} onClick={() => { setCat('all'); setQuery(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>🏠 صفحه اصلی</button>
                 <button type="button" className="sf-nav-link" onClick={() => document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' })}>
-                  🛍️ همه محصولات ({toFa(products.length)})
+                  🛍️ همه محصولات ({toFa(catalogTotal)})
                 </button>
                 <button type="button" className="sf-nav-link" onClick={() => { setSort('price-asc'); document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' }); }}>
                   🔥 پیشنهادهای اقتصادی
@@ -1710,7 +1718,7 @@ function StoreApp({ boot }) {
                   <div style={{ padding: '6px 10px', fontWeight: 800, fontSize: '.82rem', color: '#64748b' }}>دسته‌بندی‌های کالا</div>
                   <button type="button" className={`sf-mega-item ${cat === 'all' ? 'active' : ''}`} onClick={() => { setCat('all'); setMegaOpen(false); }}>
                     <span>همه دسته‌ها</span>
-                    <span className="sf-mega-count">{toFa(products.length)}</span>
+                    <span className="sf-mega-count">{toFa(catalogTotal)}</span>
                   </button>
                   {Object.entries(categories).map(([name, count]) => (
                     <button type="button" key={name} className={`sf-mega-item ${cat === name ? 'active' : ''}`} onClick={() => { setCat(name); setMegaOpen(false); document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' }); }}>
@@ -1742,7 +1750,7 @@ function StoreApp({ boot }) {
           </div>
           <div className="sf-hero-side" aria-hidden>
             <div className="sf-hero-badge">
-              <div className="big">{toFa(products.length || 0)}+</div>
+              <div className="big">{toFa(catalogTotal || 0)}+</div>
               <div className="sub">کالای آماده ارسال</div>
             </div>
           </div>
@@ -1808,7 +1816,7 @@ function StoreApp({ boot }) {
 
         {settings.show_animated_stats !== false ? (
           <div className="sf-kpis">
-            <div className="sf-kpi"><div className="n">{toFa(products.length || 0)}</div><div className="l">کالای متنوع</div></div>
+            <div className="sf-kpi"><div className="n">{toFa(catalogTotal || 0)}</div><div className="l">کالای متنوع</div></div>
             <div className="sf-kpi"><div className="n">{toFa(Object.keys(categories).length || 0)}</div><div className="l">دسته‌بندی</div></div>
             <div className="sf-kpi"><div className="n">{toFa(amazing.length || 0)}</div><div className="l">پیشنهاد ویژه</div></div>
             <div className="sf-kpi"><div className="n">۲۴/۷</div><div className="l">پشتیبانی</div></div>
@@ -1818,7 +1826,7 @@ function StoreApp({ boot }) {
         <div className="sf-toolbar" id="sfProducts">
           <h3>
             {cat === 'all' ? 'همه محصولات' : cat}
-            <span style={{ color: '#94a3b8', fontWeight: 800, fontSize: '.9rem' }}> ({toFa(filtered.length)})</span>
+            <span style={{ color: '#94a3b8', fontWeight: 800, fontSize: '.9rem' }}> ({toFa(filtered.length)}{catalogTotal > filtered.length ? ` از ${toFa(catalogTotal)}` : ''})</span>
           </h3>
           <div className="sf-toolbar-controls">
             <select className="sf-select" value={sort} onChange={(e) => setSort(e.target.value)}>

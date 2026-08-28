@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.9
+ * Version: 13.3.10
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -2173,7 +2173,7 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return array
 	 */
 	public static function get_scraper_ai_candidates() {
-		self::load_scraper_ai_engine();
+		// Do not force-load scraper4.php here — JSON fallback is enough for chat/AJAX.
 		$plugin_dir = plugin_dir_path( __FILE__ );
 
 		// 1. Check if scraper4 functions are actively loaded
@@ -2387,11 +2387,36 @@ class Scraper_Auto_Shop_Plugin {
 		$plugin_dir = plugin_dir_path( __FILE__ );
 		$prov_data  = array();
 		if ( function_exists( 'aiProvidersLoad' ) ) {
-			$prov_data = aiProvidersLoad();
+			try {
+				$prov_data = aiProvidersLoad();
+			} catch ( \Throwable $e ) {
+				$prov_data = array();
+			}
 		}
-		if ( empty( $prov_data ) ) {
-			$prov_file = $plugin_dir . 'ai_providers.json';
-			$prov_data = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
+		if ( empty( $prov_data ) || ! is_array( $prov_data ) ) {
+			$prov_candidates = array(
+				$plugin_dir . 'ai_providers.json',
+				dirname( $plugin_dir ) . '/ai_providers.json',
+				$plugin_dir . 'scraper/ai_providers.json',
+				$plugin_dir . 'data/ai_providers.json',
+			);
+			// Also next to scraper4.php if agent is in a subfolder.
+			$scraper = $plugin_dir . 'scraper4.php';
+			if ( is_file( $scraper ) ) {
+				$prov_candidates[] = dirname( $scraper ) . '/ai_providers.json';
+			}
+			foreach ( $prov_candidates as $prov_file ) {
+				if ( is_readable( $prov_file ) ) {
+					$decoded = @json_decode( (string) file_get_contents( $prov_file ), true );
+					if ( is_array( $decoded ) && ! empty( $decoded ) ) {
+						$prov_data = $decoded;
+						break;
+					}
+				}
+			}
+		}
+		if ( ! is_array( $prov_data ) ) {
+			$prov_data = array();
 		}
 
 		$provider_id = '';
@@ -2477,7 +2502,7 @@ class Scraper_Auto_Shop_Plugin {
 			'model_id'      => $model_id ?: 'meta-llama/llama-3.3-70b-instruct:free',
 			'key'           => $master_key ?: 'openrouter::meta-llama/llama-3.3-70b-instruct:free',
 			'model_name'    => $model_name ?: 'Llama 3.3 70B (رایگان)',
-			'provider_name' => ( is_array( $prov_cfg ) ? ( $prov_cfg['name'] ?? null ) : null ) ?? ( $master_cand['providerName'] ?? ucfirst( $provider_id ?: 'openrouter' ) ),
+			'provider_name' => ( is_array( $prov_cfg ) && ! empty( $prov_cfg['name'] ) ) ? (string) $prov_cfg['name'] : ( ( is_array( $master_cand ) && ! empty( $master_cand['providerName'] ) ) ? (string) $master_cand['providerName'] : ucfirst( $provider_id ?: 'openrouter' ) ),
 			'api_key'       => $api_key,
 			'endpoint'      => trim( (string) $endpoint ),
 			'provider'      => $prov_cfg,
@@ -2538,7 +2563,7 @@ class Scraper_Auto_Shop_Plugin {
 		}
 		$response = wp_remote_post( $endpoint, array(
 			'method'    => 'POST',
-			'timeout'   => 45,
+			'timeout'   => 28,
 			'headers'   => $headers,
 			'body'      => function_exists( 'wp_json_encode' ) ? wp_json_encode( $payload ) : json_encode( $payload ),
 			'sslverify' => false,
@@ -2593,7 +2618,12 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		$site_name = function_exists( 'get_bloginfo' ) ? ( get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' ) ) : ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' );
-		$catalog_ctx = self::build_catalog_context_for_ai( 40 );
+		$catalog_ctx = '';
+		try {
+			$catalog_ctx = self::build_catalog_context_for_ai( 25 );
+		} catch ( \Throwable $e ) {
+			$catalog_ctx = '(کاتالوگ موقتاً در دسترس نیست)';
+		}
 		$threshold = number_format( (float) ( $settings['free_shipping_threshold'] ?? 400000 ) );
 		$currency  = $settings['currency_symbol'] ?? 'تومان';
 
@@ -2631,8 +2661,7 @@ class Scraper_Auto_Shop_Plugin {
 			return $fast;
 		}
 
-		// Optional: scraper4 engine (key rotation / DoH) only if fast path failed and engine is cheap to load.
-		self::load_scraper_ai_engine();
+		// Optional scraper4 engine — only if already loaded (never require 4MB scraper4 mid-AJAX).
 		if ( function_exists( 'aiProviderCall' ) && is_array( $prov_cfg ) && ! empty( $prov_cfg ) ) {
 			if ( empty( $prov_cfg['id'] ) && ! empty( $master_ai['provider_id'] ) ) {
 				$prov_cfg['id'] = $master_ai['provider_id'];
@@ -2702,7 +2731,15 @@ class Scraper_Auto_Shop_Plugin {
 		$has_greeting = (bool) preg_match( '/(سلام|درود|وقت بخیر|صبح بخیر|عصر بخیر|روز بخیر|سلام علیکم)/u', $msg_lower );
 		$greeting_prefix = $has_greeting ? "سلام {$name_greeting}، به {$site_name} خوش آمدید! 🌸 " : '';
 
-		$products = self::get_all_scraped_products();
+		$products = array();
+		try {
+			$products = self::get_all_scraped_products();
+			if ( ! is_array( $products ) ) {
+				$products = array();
+			}
+		} catch ( \Throwable $e ) {
+			$products = array();
+		}
 
 		// Stopwords that shouldn't match product titles
 		$stop_words = array(
@@ -2902,33 +2939,73 @@ class Scraper_Auto_Shop_Plugin {
 	 * AJAX endpoint for live testing AI chat in Admin Tab 4.
 	 */
 	public static function ajax_test_ai_chat() {
-		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		// Never let notices/fatals turn into jQuery "connection error".
+		while ( function_exists( 'ob_get_level' ) && ob_get_level() > 0 ) {
+			@ob_end_clean();
+		}
+		@ob_start();
+		@ini_set( 'display_errors', '0' );
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 120 );
+		}
+
+		if ( ! empty( $_POST['nonce'] ) ) {
+			check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false );
+		}
 		if ( ! current_user_can( 'manage_options' ) ) {
+			while ( ob_get_level() > 0 ) { @ob_end_clean(); }
 			wp_send_json_error( 'دسترسی غیرمجاز.' );
 		}
 
-		$message = sanitize_text_field( $_POST['message'] ?? '' );
-		if ( empty( $message ) ) {
+		$message = sanitize_text_field( wp_unslash( $_POST['message'] ?? '' ) );
+		if ( $message === '' ) {
+			while ( ob_get_level() > 0 ) { @ob_end_clean(); }
 			wp_send_json_error( 'متن پیام خالی است.' );
 		}
 
-		$settings = self::get_settings();
-		$t0 = microtime( true );
-		$reply = self::generate_ai_support_reply( $message, 'کاربر آزمایشی', $settings );
+		$settings   = self::get_settings();
+		$t0         = microtime( true );
+		$reply      = '';
+		$master_ai  = array();
+		$model_label = 'مدل هوشمند مستر اسکرپر';
+		$err        = '';
+
+		try {
+			$master_ai = self::get_scraper_master_ai_model( $settings );
+			$model_label = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : $model_label;
+			$reply = self::generate_ai_support_reply( $message, 'کاربر آزمایشی', $settings );
+		} catch ( \Throwable $e ) {
+			$err = $e->getMessage();
+			error_log( 'AMPHP ajax_test_ai_chat: ' . $err );
+			try {
+				$reply = self::generate_smart_local_reply( $message, 'کاربر آزمایشی', $settings );
+				$model_label = 'پاسخ محلی (fallback)';
+			} catch ( \Throwable $e2 ) {
+				$reply = 'خطا در تولید پاسخ: ' . $e2->getMessage();
+			}
+		}
+
+		if ( ! is_string( $reply ) || trim( $reply ) === '' ) {
+			$reply = 'پاسخی از مدل مستر دریافت نشد. کلید API ارائه‌دهندهٔ مستر را در اسکرپر (ai_providers.json) یا فیلد کلید AI افزونه بررسی کنید.'
+				. ( $err !== '' ? ( ' جزئیات: ' . $err ) : '' );
+		}
+
 		$time_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
-
-		$master_ai = self::get_scraper_master_ai_model( $settings );
-		$model_label = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'مدل هوشمند مستر اسکرپر';
-
+		while ( function_exists( 'ob_get_level' ) && ob_get_level() > 0 ) {
+			@ob_end_clean();
+		}
 		wp_send_json_success( array(
 			'reply'     => $reply,
 			'model'     => $model_label,
-			'provider'  => $master_ai['provider_name'] ?? 'اسکرپر',
-			'key'       => $master_ai['key'] ?? '',
-			'score'     => $master_ai['score'] ?? 0.889,
-			'is_pinned' => $master_ai['is_pinned'] ?? false,
-			'source'    => $master_ai['source'] ?? 'scraper4_master',
+			'provider'  => is_array( $master_ai ) ? ( $master_ai['provider_name'] ?? 'اسکرپر' ) : 'اسکرپر',
+			'key'       => is_array( $master_ai ) ? ( $master_ai['key'] ?? '' ) : '',
+			'score'     => is_array( $master_ai ) ? ( $master_ai['score'] ?? 0 ) : 0,
+			'is_pinned' => is_array( $master_ai ) ? ( ! empty( $master_ai['is_pinned'] ) ) : false,
+			'source'    => is_array( $master_ai ) ? ( $master_ai['source'] ?? 'scraper4_master' ) : 'local',
 			'took_ms'   => $time_ms,
+			'api_ready' => is_array( $master_ai ) && ! empty( $master_ai['api_key'] ),
+			'endpoint'  => is_array( $master_ai ) ? (string) ( $master_ai['endpoint'] ?? '' ) : '',
+			'error'     => $err,
 		) );
 	}
 
@@ -6674,7 +6751,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.9' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.10' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6878,7 +6955,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.9',
+				'version'     => '13.3.10',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -6904,7 +6981,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.9 -->
+		<!-- AMPHP Storefront v13.3.10 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -7058,7 +7135,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.9' );
+		$parts = array( '13.3.10' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -10994,6 +11071,8 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				$.ajax({
 					url: ajaxurl,
 					type: 'POST',
+					timeout: 120000,
+					dataType: 'json',
 					data: {
 						action: 'scraper_test_ai_chat',
 						nonce: adminNonce,
@@ -11001,17 +11080,22 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 					},
 					success: function(res){
 						$btn.prop('disabled', false).text('🚀 پرسش از مدل مستر (Master AI)');
-						if (res.success && res.data) {
-							$text.text(res.data.reply);
-							$badge.text('مدل مستر: ' + (res.data.model || 'هوشمند') + ' (' + (res.data.provider || 'اسکرپر') + ')');
-							$time.text(res.data.took_ms + ' میلی‌ثانیه');
+						if (res && res.success && res.data) {
+							$text.text(res.data.reply || '(پاسخ خالی)');
+							var meta = 'مدل مستر: ' + (res.data.model || 'هوشمند') + ' (' + (res.data.provider || 'اسکرپر') + ')';
+							if (res.data.api_ready === false) meta += ' — ⚠️ کلید API خالی';
+							$badge.text(meta);
+							$time.text((res.data.took_ms || 0) + ' میلی‌ثانیه');
 						} else {
-							$text.html('<span style="color:#dc2626;">خطا: ' + (res.data || 'عدم دریافت پاسخ.') + '</span>');
+							var err = (res && res.data) ? (typeof res.data === 'string' ? res.data : (res.data.message || JSON.stringify(res.data))) : 'عدم دریافت پاسخ.';
+							$text.html('<span style="color:#dc2626;">خطا: ' + err + '</span>');
 						}
 					},
-					error: function(){
+					error: function(xhr, status, err){
 						$btn.prop('disabled', false).text('🚀 پرسش از مدل مستر (Master AI)');
-						$text.html('<span style="color:#dc2626;">خطای ارتباط با سرور.</span>');
+						var body = (xhr && xhr.responseText) ? String(xhr.responseText).replace(/<[^>]+>/g,' ').slice(0, 280) : '';
+						var hint = status === 'timeout' ? 'زمان انتظار تمام شد (timeout).' : ('HTTP ' + (xhr && xhr.status ? xhr.status : '?') + ' / ' + (err || status || ''));
+						$text.html('<span style="color:#dc2626;">خطای ارتباط با سرور: ' + hint + (body ? ('<br><small style="color:#64748b;direction:ltr;display:block;margin-top:8px;text-align:left;">' + $('<div/>').text(body).html() + '</small>') : '') + '</span>');
 					}
 				});
 			});

@@ -45971,6 +45971,12 @@ function arenaAiAnswer(string $text, array $history = []): array {
                 try {
                     $r = aiProviderCall($mp, $cand['model'], $payload, $net);
                 } catch (\Throwable $e) { $r = []; }
+                /* برخی ارائه‌دهنده‌ها پارامتر tools را نمی‌شناسند و کلِ درخواست را
+                   رد می‌کنند — یک بار هم بدونِ ابزار امتحان می‌کنیم تا زنجیره نبندد. */
+                if (empty($r['ok']) && $round === 0) {
+                    $plain = $payload; unset($plain['tools']);
+                    try { $r = aiProviderCall($mp, $cand['model'], $plain, $net); } catch (\Throwable $e) { $r = []; }
+                }
                 if (empty($r['ok']) || empty($r['body']) || !is_array($r['body'])) break;
                 $choice = $r['body']['choices'][0] ?? null;
                 $message = is_array($choice['message'] ?? null) ? $choice['message'] : [];

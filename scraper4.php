@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.99';
+const APP_VERSION = '10.100';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -17100,6 +17100,103 @@ if (isset($_GET['manual_sync'])) {
         if (!in_array($_msTarget, ['woo', 'bsl', 'both', 'none'], true)) $_msTarget = 'woo';
         $_msResults['target'] = $_msTarget;
 
+        /* v10.100: OOS روی دیسک + بایگانی/حذف removed_items قبل از صف ارسال */
+        if (!empty($_msEx['ok']) && is_array($_msProf['products'] ?? null)) {
+            $_msOos = [];
+            foreach ($_msProf['products'] as $_ent) {
+                $_pk = ''; $_pp = null;
+                if (is_array($_ent) && count($_ent) >= 2 && is_string($_ent[0]) && is_array($_ent[1])) {
+                    $_pk = (string)$_ent[0]; $_pp = $_ent[1];
+                } elseif (is_array($_ent)) {
+                    $_pk = (string)($_ent['key'] ?? ''); $_pp = $_ent;
+                }
+                if ($_pk === '' || !is_array($_pp)) continue;
+                if (array_key_exists('in_stock', $_pp) && empty($_pp['in_stock'])) {
+                    $_msOos[] = [
+                        'title' => (string)($_pp['title'] ?? $_pp['name'] ?? $_pk),
+                        'key' => $_pk,
+                        'link' => (string)($_pp['link'] ?? ''),
+                        'image' => (string)($_pp['image'] ?? ''),
+                        'price' => (string)($_pp['price'] ?? ''),
+                        'reason' => 'ناموجود (in_stock=false)',
+                    ];
+                }
+            }
+            if ($_msOos) {
+                if (!isset($_msEx['removed_items']) || !is_array($_msEx['removed_items'])) $_msEx['removed_items'] = [];
+                $_seenK = [];
+                foreach ($_msEx['removed_items'] as $_ri) {
+                    if (is_array($_ri) && !empty($_ri['key'])) $_seenK[(string)$_ri['key']] = true;
+                }
+                foreach ($_msOos as $_oi) {
+                    if (!empty($_seenK[$_oi['key']])) continue;
+                    $_msEx['removed_items'][] = $_oi;
+                    $_seenK[$_oi['key']] = true;
+                }
+                $_msEx['removed'] = count($_msEx['removed_items']);
+                manualSyncProgress([], '⛔ ' . count($_msOos) . ' کالای ناموجود روی دیسک → فهرست بازنشستگی');
+            }
+        }
+        if (!empty($_msEx['ok']) && !empty($_msEx['removed_items']) && is_array($_msEx['removed_items'])) {
+            try {
+                $_msCnR = $_msCn;
+                $_msRetMode = (string)($_msCnR['retire_mode'] ?? 'off');
+                $_msAuW = !empty($_msSyncCfg['wooAddUpdate']);
+                $_msAuB = !empty($_msSyncCfg['bslAddUpdate']);
+                $_msAuT = [];
+                if ($_msAuW && ($_msTarget === 'woo' || $_msTarget === 'both')) $_msAuT[] = 'woo';
+                if ($_msAuB && ($_msTarget === 'bsl' || $_msTarget === 'both')) $_msAuT[] = 'bsl';
+                if (!$_msAuT && $_msTarget !== 'none') {
+                    if ($_msTarget === 'woo' || $_msTarget === 'both') $_msAuT[] = 'woo';
+                    if ($_msTarget === 'bsl' || $_msTarget === 'both') $_msAuT[] = 'bsl';
+                }
+                $_msRetTarget = $_msTarget;
+                $_msRetPer = null;
+                if ($_msAuT) {
+                    $_msRetTarget = count($_msAuT) === 2 ? 'both' : $_msAuT[0];
+                    $_msRetPer = [
+                        'woo' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($_msCnR, 'woo') : 'delete',
+                        'bsl' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($_msCnR, 'bsl') : 'delete',
+                    ];
+                    if ($_msRetMode === 'off') $_msRetMode = 'delete';
+                }
+                if ($_msRetMode !== 'off' && $_msRetTarget !== 'none' && function_exists('retireRemoved')) {
+                    manualSyncProgress([], '🗄 بازنشستگی ' . count($_msEx['removed_items']) . ' مورد ناموجود/حذف‌شده…');
+                    $_msRt = retireRemoved(
+                        $_msCnR, $_msEx['removed_items'], $_msRetTarget, $_msRetMode,
+                        (int)($_msEx['extracted'] ?? 0), false, (string)$_msName, $_msRetPer, $_msKey
+                    );
+                    $_msResults['retire'] = [
+                        'mode' => $_msRetMode, 'target' => $_msRetTarget,
+                        'checked' => (int)($_msRt['checked'] ?? 0),
+                        'retired' => (int)($_msRt['retired'] ?? 0),
+                        'not_found' => (int)($_msRt['not_found'] ?? 0),
+                        'failed' => (int)($_msRt['failed'] ?? 0),
+                        'skipped' => (string)($_msRt['skipped'] ?? ''),
+                    ];
+                    if ($_msRetPer) {
+                        $_msResults['retire']['woo_action'] = $_msRetPer['woo'];
+                        $_msResults['retire']['bsl_action'] = $_msRetPer['bsl'];
+                    }
+                    if (!empty($_msRt['skipped'])) {
+                        manualSyncProgress([], '⏭ بازنشستگی: ' . (string)$_msRt['skipped']);
+                    } else {
+                        manualSyncProgress([], '✅ بازنشستگی: ' . (int)($_msRt['retired'] ?? 0)
+                            . ' انجام · ' . (int)($_msRt['not_found'] ?? 0) . ' یافت‌نشد · '
+                            . (int)($_msRt['failed'] ?? 0) . ' خطا');
+                    }
+                    try { if (function_exists('notifRetire')) notifRetire($_msCnR, $_msRt, $_msName); } catch (Throwable $e) {}
+                } else {
+                    manualSyncProgress([], 'ℹ️ بازنشستگی خاموش یا مقصد none');
+                }
+            } catch (Throwable $e) {
+                manualSyncProgress([], '⚠️ بازنشستگی: ' . mb_substr($e->getMessage(), 0, 180));
+                $_msResults['retire_error'] = $e->getMessage();
+            }
+        } elseif (!empty($_msEx['ok'])) {
+            manualSyncProgress([], '✓ موردی برای بایگانی/حذف از مبدأ نبود');
+        }
+
         /* محصولات برای ارسال */
         $_msProducts = [];
         if (is_array($_msProf['products'] ?? null)) {
@@ -26623,6 +26720,14 @@ if (isset($_GET['selftest'])) {
           && strpos($selfSrc, 'خطای شبکه: ') !== false);
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
+
+            /* ==== ۱۱۰ (v10.100) ==== */
+    $add('10.100', 'نسخهٔ ۱۰.۱۰۰',
+         version_compare(APP_VERSION, '10.100', '>=')
+      && strpos($selfSrc, "{v:'10.100',") !== false);
+    $add('10.100', 'همگام دستی محصولات ناموجود را بازنشسته می‌کند',
+         strpos($selfSrc, 'v10.100: OOS روی دیسک') !== false
+      && strpos($selfSrc, "ناموجود (in_stock=false)") !== false);
 
             /* ==== ۱۰۹ (v10.99) ==== */
     $add('10.99', 'نسخهٔ ۱۰.۹۹',
@@ -56010,6 +56115,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.100', t:'صفحه محصول + چت کالا + بایگانی ناموجودها در همگام', items:[
+    '🛍 کلیک روی نام/تصویر → صفحه محصول با توضیح کامل، گالری، سفارش',
+    '💬 دکمه «بپرس» روی کارت برای آوردن کالا در چت پشتیبانی',
+    '🗄 همگام دستی: محصولات حذف/ناموجود مبدأ در باسلام بایگانی و در ووکامرس حذف می‌شوند',
+  ]},
   {v:'10.99', t:'تست اتصال ووکامرس (API + مستقیم) با جزئیات خطا + پل ادمین', items:[
     '🔗 تست کامل / API / مستقیم در بخش ووکامرس با گزارش گام‌به‌گام و راهنمای رفع خطا',
     '⚡ تشخیص محیط وردپرس و امکان ساخت محصول آزمایشی برای تأیید CRUD مستقیم',

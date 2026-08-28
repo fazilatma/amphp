@@ -263,6 +263,8 @@ class Scraper_Auto_Shop_Plugin {
 		add_action( 'wp_ajax_nopriv_scraper_custom_checkout_place_order', array( __CLASS__, 'ajax_custom_checkout_place_order' ) );
 		add_action( 'wp_ajax_scraper_get_payment_gateways', array( __CLASS__, 'ajax_get_payment_gateways' ) );
 		add_action( 'wp_ajax_nopriv_scraper_get_payment_gateways', array( __CLASS__, 'ajax_get_payment_gateways' ) );
+		add_action( 'wp_ajax_scraper_get_product', array( __CLASS__, 'ajax_get_product' ) );
+		add_action( 'wp_ajax_nopriv_scraper_get_product', array( __CLASS__, 'ajax_get_product' ) );
 
 		// Filters for WooCommerce Cart & Checkout guarantees
 		add_action( 'woocommerce_before_calculate_totals', array( __CLASS__, 'fix_cart_item_prices' ), 20, 1 );
@@ -4035,6 +4037,100 @@ class Scraper_Auto_Shop_Plugin {
 		) );
 	}
 
+
+	/**
+	 * v10.100: جزئیات کامل یک محصول برای صفحه/مودال ویترین (توضیح، گالری، …).
+	 * بوت اولیه lean است؛ این endpoint سنگین را on-demand می‌آورد.
+	 */
+	public static function ajax_get_product() {
+		$id = sanitize_text_field( wp_unslash( $_REQUEST['id'] ?? $_REQUEST['product_id'] ?? '' ) );
+		if ( $id === '' ) {
+			wp_send_json_error( array( 'message' => 'شناسه محصول خالی است' ), 400 );
+		}
+		$products = self::get_all_scraped_products();
+		$found    = null;
+		foreach ( (array) $products as $p ) {
+			if ( ! is_array( $p ) ) {
+				continue;
+			}
+			$pid = (string) ( $p['id'] ?? '' );
+			if ( $pid === $id || (string) ( $p['key'] ?? '' ) === $id ) {
+				$found = $p;
+				break;
+			}
+		}
+		if ( ! $found ) {
+			// fallback: partial title match only if exact id miss and looks like hash
+			wp_send_json_error( array( 'message' => 'محصول یافت نشد', 'id' => $id ), 404 );
+		}
+
+		$gallery = array();
+		if ( ! empty( $found['gallery'] ) && is_array( $found['gallery'] ) ) {
+			foreach ( $found['gallery'] as $g ) {
+				$u = esc_url_raw( (string) $g );
+				if ( $u !== '' ) {
+					$gallery[] = $u;
+				}
+			}
+		}
+		if ( ! empty( $found['images'] ) && is_array( $found['images'] ) ) {
+			foreach ( $found['images'] as $g ) {
+				$u = esc_url_raw( (string) $g );
+				if ( $u !== '' && ! in_array( $u, $gallery, true ) ) {
+					$gallery[] = $u;
+				}
+			}
+		}
+		$img = esc_url_raw( (string) ( $found['image'] ?? '' ) );
+		if ( $img !== '' && ! in_array( $img, $gallery, true ) ) {
+			array_unshift( $gallery, $img );
+		}
+		if ( ! $gallery && $img ) {
+			$gallery = array( $img );
+		}
+
+		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
+		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
+		$desc_clean = wp_strip_all_tags( $desc );
+		$short_clean = wp_strip_all_tags( $short );
+		if ( $desc_clean === '' && $short_clean !== '' ) {
+			$desc_clean = $short_clean;
+		}
+
+		$specs = array();
+		if ( ! empty( $found['specs'] ) && is_array( $found['specs'] ) ) {
+			$specs = $found['specs'];
+		} elseif ( ! empty( $found['attributes'] ) && is_array( $found['attributes'] ) ) {
+			$specs = $found['attributes'];
+		}
+		$variations_text = (string) ( $found['variations_text'] ?? '' );
+		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
+			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
+		}
+
+		$out = array(
+			'id'                   => (string) ( $found['id'] ?? $id ),
+			'title'                => (string) ( $found['title'] ?? '' ),
+			'has_price'            => ! empty( $found['has_price'] ),
+			'price'                => floatval( $found['price'] ?? 0 ),
+			'price_formatted'      => (string) ( $found['price_formatted'] ?? '' ),
+			'old_price'            => floatval( $found['old_price'] ?? 0 ),
+			'old_price_formatted'  => (string) ( $found['old_price_formatted'] ?? '' ),
+			'has_discount'         => ! empty( $found['has_discount'] ),
+			'discount_pct'         => intval( $found['discount_pct'] ?? 0 ),
+			'image'                => $img,
+			'gallery'              => array_values( array_slice( $gallery, 0, 12 ) ),
+			'category'             => (string) ( $found['category'] ?? 'عمومی' ),
+			'description'          => $desc_clean,
+			'short_desc'           => $short_clean,
+			'in_stock'             => isset( $found['in_stock'] ) ? (bool) $found['in_stock'] : true,
+			'specs'                => $specs,
+			'variations_text'      => $variations_text,
+			'variation_groups'     => is_array( $found['variation_groups'] ?? null ) ? $found['variation_groups'] : array(),
+		);
+		wp_send_json_success( array( 'product' => $out ) );
+	}
+
 	public static function ajax_submit_support_chat() {
 		if ( ! empty( $_POST['nonce'] ) ) { check_ajax_referer( 'scraper_support_chat_nonce', 'nonce', false ); }
 		$settings = self::get_settings();
@@ -4049,6 +4145,25 @@ class Scraper_Auto_Shop_Plugin {
 		$email   = sanitize_email( $_POST['email'] ?? '' );
 		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
+		$product_id    = sanitize_text_field( $_POST['product_id'] ?? '' );
+		$product_title = sanitize_text_field( $_POST['product_title'] ?? '' );
+		$product_ctx   = sanitize_textarea_field( $_POST['product_context'] ?? '' );
+		if ( $product_title !== '' || $product_ctx !== '' ) {
+			$ctx_block = "\n\n[زمینه محصول]";
+			if ( $product_title !== '' ) {
+				$ctx_block .= "\nنام: " . $product_title;
+			}
+			if ( $product_id !== '' ) {
+				$ctx_block .= "\nشناسه: " . $product_id;
+			}
+			if ( $product_ctx !== '' ) {
+				$ctx_block .= "\n" . $product_ctx;
+			}
+			// پیام کاربر دست‌نخورده برای نمایش؛ زمینه فقط به AI می‌رود
+			$GLOBALS['_amphp_chat_product_ctx'] = $ctx_block;
+			$GLOBALS['_amphp_chat_product_title'] = $product_title;
+			$GLOBALS['_amphp_chat_product_id'] = $product_id;
+		}
 
 		if ( empty( $message ) ) {
 			wp_send_json_error( 'لطفاً متن پیام یا سوال خود را بنویسید.' );
@@ -4133,10 +4248,21 @@ class Scraper_Auto_Shop_Plugin {
 			'time'        => $time_str,
 			'timestamp'   => $now_time,
 		);
+		if ( ! empty( $GLOBALS['_amphp_chat_product_id'] ) || ! empty( $GLOBALS['_amphp_chat_product_title'] ) ) {
+			$customer_msg['product_id']    = (string) ( $GLOBALS['_amphp_chat_product_id'] ?? '' );
+			$customer_msg['product_title'] = (string) ( $GLOBALS['_amphp_chat_product_title'] ?? '' );
+			if ( empty( $thread['subject'] ) && ! empty( $customer_msg['product_title'] ) ) {
+				$thread['subject'] = 'سوال درباره: ' . $customer_msg['product_title'];
+			}
+		}
 		$thread['messages'][] = $customer_msg;
 
 		// 2. Generate Master AI Reply if enabled
-		$ai_reply  = self::generate_ai_support_reply( $message, $thread['name'], $settings );
+		$_ai_msg = $message;
+		if ( ! empty( $GLOBALS['_amphp_chat_product_ctx'] ) ) {
+			$_ai_msg .= (string) $GLOBALS['_amphp_chat_product_ctx'];
+		}
+		$ai_reply  = self::generate_ai_support_reply( $_ai_msg, $thread['name'], $settings );
 		$master_ai = self::get_scraper_master_ai_model();
 		$model_lbl = ! empty( $master_ai['model_name'] ) ? $master_ai['model_name'] : 'هوش مصنوعی پشتیبان';
 
@@ -4180,6 +4306,14 @@ class Scraper_Auto_Shop_Plugin {
 "
 			. "{$message}
 ";
+
+		if ( ! empty( $GLOBALS['_amphp_chat_product_title'] ) ) {
+			$formatted_text .= "\n🛍 محصول: " . (string) $GLOBALS['_amphp_chat_product_title'];
+			if ( ! empty( $GLOBALS['_amphp_chat_product_id'] ) ) {
+				$formatted_text .= " (" . (string) $GLOBALS['_amphp_chat_product_id'] . ")";
+			}
+			$formatted_text .= "\n";
+		}
 
 		if ( ! empty( $ai_reply ) ) {
 			$formatted_text .= "━━━━━━━━━━━━━━━━━━━
@@ -5644,7 +5778,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'   => '13.1.8',
+				'version'   => '13.2.0',
 				'engine'    => 'react',
 				'count'     => count( $safe_products ),
 				'is_admin'  => current_user_can( 'manage_options' ),

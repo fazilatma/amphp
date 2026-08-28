@@ -387,7 +387,7 @@ function ToastHost({ toasts, dismiss }) {
   );
 }
 
-function ProductCard({ p, cols, currency, wish, onWish, onQuick, onAdd, showSpecial, template }) {
+function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial, template }) {
   const templatePill = {
     digikala: '🚚 ارسال امروز با اکسپرس',
     snappshop: '⚡ تحویل فوری با اسنپ',
@@ -396,14 +396,18 @@ function ProductCard({ p, cols, currency, wish, onWish, onQuick, onAdd, showSpec
     technolife: '⚡ گارانتی اصالت کالا',
     digistyle: '✨ کالکشن ویژه',
   }[template];
+  const inStock = p.in_stock !== false;
 
   return (
     <article className="sf-card" data-id={p.id}>
-      <div className="sf-thumb">
-        <button type="button" className={`sf-wish ${wish ? 'on' : ''}`} onClick={() => onWish(p.id)} aria-label="علاقه‌مندی">
+      <div className="sf-thumb sf-thumb-click" role="link" tabIndex={0}
+        onClick={() => onOpen(p)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(p); } }}
+      >
+        <button type="button" className={`sf-wish ${wish ? 'on' : ''}`} onClick={(e) => { e.stopPropagation(); onWish(p.id); }} aria-label="علاقه‌مندی">
           {wish ? '♥' : '♡'}
         </button>
-        <span className="sf-stock">موجود در انبار</span>
+        <span className={`sf-stock ${inStock ? '' : 'out'}`}>{inStock ? 'موجود در انبار' : 'ناموجود'}</span>
         {p.has_discount && p.discount_pct ? (
           <span className="sf-disc">{toFa(p.discount_pct)}٪ تخفیف</span>
         ) : null}
@@ -422,7 +426,7 @@ function ProductCard({ p, cols, currency, wish, onWish, onQuick, onAdd, showSpec
       </div>
       <div className="sf-card-body">
         <div className="sf-card-cat">{p.category || 'عمومی'}{templatePill ? ` · ${templatePill}` : ''}</div>
-        <h3 className="sf-card-title" title={p.title}>{p.title}</h3>
+        <h3 className="sf-card-title sf-card-title-link" title={p.title} onClick={() => onOpen(p)}>{p.title}</h3>
         <div className="sf-price-row">
           <div>
             {p.has_discount && (p.old_price_formatted || p.old_price) ? (
@@ -433,8 +437,9 @@ function ProductCard({ p, cols, currency, wish, onWish, onQuick, onAdd, showSpec
             <div className="sf-price">{p.price_formatted || formatMoney(p.price, currency)}</div>
           </div>
         </div>
-        <div className="sf-card-actions">
-          <button type="button" className="sf-btn ghost" onClick={() => onQuick(p)}>مشاهده مشخصات</button>
+        <div className="sf-card-actions sf-card-actions-3">
+          <button type="button" className="sf-btn ghost" onClick={() => onOpen(p)}>مشاهده جزئیات</button>
+          <button type="button" className="sf-btn ask" onClick={() => onAsk(p)} title="سوال درباره این کالا در چت پشتیبانی">💬 بپرس</button>
           <button type="button" className="sf-btn primary" onClick={() => onAdd(p)}>افزودن به سبد</button>
         </div>
       </div>
@@ -541,32 +546,148 @@ function MenuDrawer({ open, onClose, settings, categories, onCat, cartCount, onO
   );
 }
 
-function QuickView({ product, currency, onClose, onAdd }) {
+function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckout }) {
+  const [full, setFull] = useState(product);
+  const [loading, setLoading] = useState(false);
+  const [imgIdx, setImgIdx] = useState(0);
+  const [qty, setQty] = useState(1);
+
+  useEffect(() => {
+    setFull(product);
+    setImgIdx(0);
+    setQty(1);
+    if (!product?.id || !ajax?.ajaxUrl) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const fd = new FormData();
+        fd.append('action', 'scraper_get_product');
+        fd.append('id', product.id);
+        const res = await fetch(ajax.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const det = data?.data?.product || data?.product;
+        if (!cancelled && data?.success && det && typeof det === 'object') {
+          setFull((prev) => ({ ...prev, ...det }));
+        }
+      } catch (_) {
+        /* keep lean payload */
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [product?.id]);
+
   if (!product) return null;
+  const p = full || product;
+  const gallery = Array.isArray(p.gallery) && p.gallery.length
+    ? p.gallery
+    : (p.image ? [p.image] : []);
+  const mainImg = gallery[imgIdx] || gallery[0] || p.image || '';
+  const desc = (p.description || p.short_desc || '').trim();
+  const descHtml = desc ? renderMarkdown(desc) : null;
+  const inStock = p.in_stock !== false;
+  const vars = (p.variations_text || '').trim();
+
+  const addN = () => {
+    for (let i = 0; i < qty; i++) onAdd(p);
+  };
+
   return (
-    <div className="sf-modal" role="dialog" aria-modal="true">
-      <div className="sf-overlay" onClick={onClose} />
-      <div className="sf-modal-card">
-        <button type="button" className="sf-close sf-modal-close" onClick={onClose}>✕</button>
-        <div className="sf-modal-grid">
-          <div className="sf-modal-img">
-            {product.image ? <img src={product.image} alt={product.title} /> : <div style={{ fontSize: '4rem' }}>📦</div>}
-          </div>
-          <div className="sf-modal-info">
-            <div className="cat">{product.category || 'عمومی'}</div>
-            <h3>{product.title}</h3>
-            {product.has_discount && (product.old_price_formatted || product.old_price) ? (
-              <div className="sf-old">{product.old_price_formatted || formatMoney(product.old_price, currency)}</div>
-            ) : null}
-            <div className="sf-price" style={{ fontSize: '1.35rem', marginTop: 4 }}>
-              {product.price_formatted || formatMoney(product.price, currency)}
+    <div className="sf-pdp" role="dialog" aria-modal="true" aria-label="صفحه محصول">
+      <div className="sf-pdp-bar">
+        <button type="button" className="sf-checkout-back" onClick={onClose}>→ بازگشت به فروشگاه</button>
+        <div className="sf-pdp-bar-title">{p.title}</div>
+        <button type="button" className="sf-btn ask" onClick={() => onAsk(p)}>💬 سوال درباره کالا</button>
+      </div>
+      <div className="sf-pdp-body sf-container">
+        <div className="sf-pdp-grid">
+          <div className="sf-pdp-gallery">
+            <div className="sf-pdp-main">
+              {mainImg
+                ? <img src={mainImg} alt={p.title} />
+                : <div className="sf-pdp-ph">📦</div>}
+              {loading ? <span className="sf-pdp-loading">بارگذاری جزئیات…</span> : null}
             </div>
-            <div className="desc">{product.description || 'توضیحات تکمیلی این کالا به‌زودی تکمیل می‌شود. اصالت کالا و ارسال سریع تضمین شده است.'}</div>
-            <button type="button" className="sf-btn primary lg" onClick={() => { onAdd(product); onClose(); }}>افزودن به سبد خرید</button>
+            {gallery.length > 1 ? (
+              <div className="sf-pdp-thumbs">
+                {gallery.map((g, i) => (
+                  <button key={g + i} type="button" className={i === imgIdx ? 'on' : ''} onClick={() => setImgIdx(i)}>
+                    <img src={g} alt="" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="sf-pdp-info">
+            <div className="sf-pdp-cat">{p.category || 'عمومی'}</div>
+            <h1>{p.title}</h1>
+            <div className={`sf-pdp-stock ${inStock ? 'ok' : 'no'}`}>{inStock ? '✓ موجود در انبار' : 'ناموجود'}</div>
+            {p.has_discount && (p.old_price_formatted || p.old_price) ? (
+              <div className="sf-old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
+            ) : null}
+            <div className="sf-price sf-pdp-price">
+              {p.price_formatted || formatMoney(p.price, currency)}
+              {p.has_discount && p.discount_pct ? (
+                <span className="sf-disc-inline">{toFa(p.discount_pct)}٪</span>
+              ) : null}
+            </div>
+            {vars ? <div className="sf-pdp-vars"><strong>تنوع‌ها:</strong> {vars}</div> : null}
+            <div className="sf-pdp-qty">
+              <span>تعداد:</span>
+              <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))}>−</button>
+              <strong>{toFa(qty)}</strong>
+              <button type="button" onClick={() => setQty((q) => Math.min(20, q + 1))}>＋</button>
+            </div>
+            <div className="sf-pdp-actions">
+              <button type="button" className="sf-btn primary lg" disabled={!inStock} onClick={addN}>
+                افزودن به سبد خرید
+              </button>
+              <button type="button" className="sf-btn ghost lg" disabled={!inStock} onClick={() => { addN(); onCheckout?.(); }}>
+                خرید فوری
+              </button>
+              <button type="button" className="sf-btn ask lg" onClick={() => onAsk(p)}>
+                💬 بپرس از پشتیبانی
+              </button>
+            </div>
+            <div className="sf-pdp-trust">
+              <span>🚚 ارسال سریع</span>
+              <span>✅ ضمانت اصالت</span>
+              <span>↩️ ۷ روز بازگشت</span>
+            </div>
           </div>
         </div>
+        <section className="sf-pdp-desc">
+          <h2>توضیحات محصول</h2>
+          {descHtml ? (
+            <div className="sf-pdp-desc-body sf-bubble-md" dangerouslySetInnerHTML={{ __html: descHtml }} />
+          ) : (
+            <p className="sf-pdp-desc-empty">
+              {loading
+                ? 'در حال دریافت توضیحات…'
+                : 'توضیحات تکمیلی این کالا به‌زودی تکمیل می‌شود. اصالت کالا و ارسال سریع تضمین شده است.'}
+            </p>
+          )}
+        </section>
       </div>
     </div>
+  );
+}
+
+function QuickView({ product, currency, onClose, onAdd, onAsk, ajax, onCheckout }) {
+  /* v13.2: مودال سریع دیگر lean نیست — همان صفحه محصول */
+  if (!product) return null;
+  return (
+    <ProductPage
+      product={product}
+      currency={currency}
+      ajax={ajax}
+      onClose={onClose}
+      onAdd={onAdd}
+      onAsk={onAsk}
+      onCheckout={onCheckout}
+    />
   );
 }
 
@@ -891,16 +1012,30 @@ function CheckoutPage({
   );
 }
 
-function SupportChat({ settings, ajax }) {
+function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal }) {
   const enabled = !!settings.enable_support_chat;
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ctx, setCtx] = useState(null);
   const [msgs, setMsgs] = useState(() => ([
     { id: 'w1', role: 'bot', text: settings.chat_welcome_message || 'سلام! خوش آمدید 👋 سوال خود را بنویسید.' },
   ]));
   const boxRef = useRef(null);
   const pos = settings.chat_button_position === 'right' ? 'right' : 'left';
+
+  useEffect(() => {
+    if (productCtx && productCtx.id) {
+      setCtx(productCtx);
+      setOpen(true);
+      setMsgs((m) => {
+        const note = `🛍 درباره «${productCtx.title || 'این کالا'}» سوال دارید؟ بپرسید.`;
+        if (m.some((x) => x.id === `ctx-${productCtx.id}`)) return m;
+        return [...m, { id: `ctx-${productCtx.id}`, role: 'bot', text: note }];
+      });
+      if (!text) setText(`درباره «${productCtx.title || 'این کالا'}» می‌خواستم بپرسم: `);
+    }
+  }, [productCtx, openSignal]);
 
   useEffect(() => {
     if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
@@ -912,13 +1047,23 @@ function SupportChat({ settings, ajax }) {
     const msg = text.trim();
     if (!msg || busy) return;
     setText('');
-    setMsgs((m) => [...m, { id: `u${Date.now()}`, role: 'user', text: msg }]);
+    const display = ctx?.title ? `${msg}` : msg;
+    setMsgs((m) => [...m, { id: `u${Date.now()}`, role: 'user', text: display }]);
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_submit_support_chat');
       fd.append('nonce', ajax.chatNonce || '');
       fd.append('message', msg);
+      if (ctx?.id) {
+        fd.append('product_id', String(ctx.id));
+        fd.append('product_title', String(ctx.title || ''));
+        const bits = [];
+        if (ctx.price_formatted || ctx.price) bits.push(`قیمت: ${ctx.price_formatted || ctx.price}`);
+        if (ctx.category) bits.push(`دسته: ${ctx.category}`);
+        if (ctx.description) bits.push(`توضیح: ${String(ctx.description).slice(0, 280)}`);
+        fd.append('product_context', bits.join(' | '));
+      }
       const res = await fetch(ajax.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
       const reply =
@@ -947,6 +1092,16 @@ function SupportChat({ settings, ajax }) {
             <span>{settings.chat_window_title || 'پشتیبانی آنلاین'}</span>
             <button type="button" onClick={() => setOpen(false)} style={{ color: '#fff', fontWeight: 900 }}>✕</button>
           </div>
+          {ctx?.title ? (
+            <div className="sf-chat-product">
+              {ctx.image ? <img src={ctx.image} alt="" /> : <span className="ph">📦</span>}
+              <div>
+                <strong>{ctx.title}</strong>
+                <small>{ctx.price_formatted || ''}</small>
+              </div>
+              <button type="button" className="sf-close" title="حذف زمینه کالا" onClick={() => { setCtx(null); onClearProduct?.(); }}>✕</button>
+            </div>
+          ) : null}
           <div className="sf-chat-msgs" ref={boxRef}>
             {msgs.map((m) => (
               <MdBubble key={m.id} role={m.role} text={m.text} />
@@ -956,7 +1111,7 @@ function SupportChat({ settings, ajax }) {
           <div className="sf-chat-input">
             <textarea
               value={text}
-              placeholder="پیام خود را بنویسید..."
+              placeholder={ctx ? `سوال درباره «${ctx.title}»…` : 'پیام خود را بنویسید...'}
               rows={1}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
@@ -999,6 +1154,9 @@ function StoreApp({ boot }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [megaOpen, setMegaOpen] = useState(false);
   const [quick, setQuick] = useState(null);
+  const [productPage, setProductPage] = useState(null);
+  const [chatProduct, setChatProduct] = useState(null);
+  const [chatSignal, setChatSignal] = useState(0);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [checkoutDoneSeed, setCheckoutDoneSeed] = useState(null);
@@ -1186,8 +1344,17 @@ function StoreApp({ boot }) {
     });
   };
 
-  const openQuick = (p) => {
-    setQuick(p);
+  const openProduct = useCallback((p) => {
+    if (!p) return;
+    setProductPage(p);
+    setQuick(null);
+    setCartOpen(false);
+    setMenuOpen(false);
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set('product', String(p.id || ''));
+      window.history.pushState({ amphpProduct: p.id }, '', u.pathname + '?' + u.searchParams.toString() + (u.hash || ''));
+    } catch {}
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_track_event');
@@ -1197,7 +1364,61 @@ function StoreApp({ boot }) {
       fd.append('price', p.price || 0);
       fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' }).catch(() => {});
     } catch {}
-  };
+    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
+  }, [ajax.ajaxUrl]);
+
+  const closeProduct = useCallback(() => {
+    setProductPage(null);
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has('product')) {
+        u.searchParams.delete('product');
+        const q = u.searchParams.toString();
+        window.history.pushState({}, '', u.pathname + (q ? '?' + q : '') + (u.hash || ''));
+      }
+    } catch {}
+  }, []);
+
+  const openQuick = (p) => openProduct(p);
+
+  const askAboutProduct = useCallback((p) => {
+    if (!p) return;
+    setChatProduct({
+      id: p.id,
+      title: p.title,
+      image: p.image,
+      price: p.price,
+      price_formatted: p.price_formatted,
+      category: p.category,
+      description: p.description,
+    });
+    setChatSignal((n) => n + 1);
+  }, []);
+
+  /* deep-link ?product=id */
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href);
+      const pid = u.searchParams.get('product');
+      if (!pid || !products.length) return;
+      const found = products.find((x) => String(x.id) === String(pid));
+      if (found) setProductPage(found);
+    } catch {}
+  }, [products]);
+
+  useEffect(() => {
+    const onPop = () => {
+      try {
+        const u = new URL(window.location.href);
+        const pid = u.searchParams.get('product');
+        if (!pid) { setProductPage(null); return; }
+        const found = products.find((x) => String(x.id) === String(pid));
+        if (found) setProductPage(found);
+      } catch {}
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [products]);
 
   const checkout = async () => {
     if (!cart.length) return;
@@ -1269,7 +1490,7 @@ function StoreApp({ boot }) {
 
   return (
     <div
-      className={`sf-app${checkoutOpen ? ' is-checkout' : ''}${scrolled ? ' is-scrolled' : ''}`}
+      className={`sf-app${checkoutOpen ? ' is-checkout' : ''}${scrolled ? ' is-scrolled' : ''}${productPage ? ' is-pdp' : ''}`}
       data-palette={palette}
       data-template={settings.store_template || 'digikala'}
       style={{ ['--sf-accent']: accent }}
@@ -1295,7 +1516,7 @@ function StoreApp({ boot }) {
         <div className="sf-container">
           <header className="sf-header" ref={megaRef}>
             <div className="sf-header-main">
-              <a className="sf-brand" href="#" onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+              <a className="sf-brand" href="#" onClick={(e) => { e.preventDefault(); closeProduct(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                 <div className="sf-brand-logo" aria-hidden>د</div>
                 <div className="sf-brand-info">
                   <h1>{settings.shop_title || 'فروشگاه آنلاین'}</h1>
@@ -1615,8 +1836,9 @@ function StoreApp({ boot }) {
               currency={currency}
               wish={!!wish[p.id]}
               onWish={toggleWish}
-              onQuick={openQuick}
+              onOpen={openProduct}
               onAdd={addToCart}
+              onAsk={askAboutProduct}
               showSpecial={!!settings.show_special_badge}
               template={settings.store_template}
             />
@@ -1730,8 +1952,33 @@ function StoreApp({ boot }) {
         accountUrl={boot.urls?.account || '#'}
         adminUrl={boot.urls?.admin || ''}
       />
-      <QuickView product={quick} currency={currency} onClose={() => setQuick(null)} onAdd={addToCart} />
-      <SupportChat settings={settings} ajax={ajax} />
+      {productPage ? (
+        <ProductPage
+          product={productPage}
+          currency={currency}
+          ajax={ajax}
+          onClose={closeProduct}
+          onAdd={addToCart}
+          onAsk={askAboutProduct}
+          onCheckout={() => { setCheckoutOpen(true); setCartOpen(false); }}
+        />
+      ) : null}
+      <QuickView
+        product={quick}
+        currency={currency}
+        ajax={ajax}
+        onClose={() => setQuick(null)}
+        onAdd={addToCart}
+        onAsk={askAboutProduct}
+        onCheckout={() => { setCheckoutOpen(true); setCartOpen(false); }}
+      />
+      <SupportChat
+        settings={settings}
+        ajax={ajax}
+        productCtx={chatProduct}
+        openSignal={chatSignal}
+        onClearProduct={() => setChatProduct(null)}
+      />
     </div>
   );
 }

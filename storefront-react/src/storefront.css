@@ -2057,3 +2057,21 @@
   font-weight: 800;
   color: #64748b;
 }
+
+
+/* v13.3.16 — Neshan reverse geocode address preview */
+.sf-co-neshan-addr {
+  background: linear-gradient(135deg, #f0fdf4, #ecfeff);
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 6px 0 10px;
+}
+.sf-co-neshan-line {
+  margin: 4px 0 0;
+  font-size: .84rem;
+  font-weight: 700;
+  color: #14532d;
+  line-height: 1.55;
+}
+.sf-co-neshan-line strong { color: #166534; }

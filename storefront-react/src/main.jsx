@@ -1540,34 +1540,65 @@ function CheckoutPage({
     document.head.appendChild(s);
   });
 
+  const [geoLabel, setGeoLabel] = useState(''); // Neshan reverse address preview
+
   const reverseGeocode = async (lat, lng) => {
     const fd = new FormData();
     fd.append('action', 'scraper_neshan_geocode');
     fd.append('mode', 'reverse');
-    fd.append('lat', String(lat));
-    fd.append('lng', String(lng));
+    fd.append('lat', String(Number(lat).toFixed(7)));
+    fd.append('lng', String(Number(lng).toFixed(7)));
     const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
     const data = await res.json().catch(() => ({}));
-    if (!data?.success) throw new Error(data?.data || 'geocode failed');
+    if (!data?.success) throw new Error(typeof data?.data === 'string' ? data.data : 'خطا در تبدیل مختصات به آدرس (نشان)');
     return data.data || {};
+  };
+
+  /** Apply Neshan reverse-geocode result onto checkout form */
+  const applyNeshanGeo = (geo, lat, lng, { keepAddressIfEmpty = false } = {}) => {
+    const formatted = geo.formatted || geo.formatted_address || geo.address || '';
+    const province = geo.province || '';
+    const city = geo.city || '';
+    const neigh = geo.neighbourhood || '';
+    const route = geo.route_name || '';
+    setGeoLabel(formatted || [route, neigh, city].filter(Boolean).join('، '));
+    setForm((f) => {
+      const next = {
+        ...f,
+        lat: String(lat),
+        lng: String(lng),
+        province: province || f.province,
+        city: city || f.city,
+      };
+      if (formatted) {
+        next.address = formatted;
+      } else if (!keepAddressIfEmpty && (route || neigh)) {
+        next.address = [route, neigh, city].filter(Boolean).join('، ');
+      }
+      return next;
+    });
+    if (province) {
+      const local = IRAN_CITIES[province] || [];
+      setCityOptions(local);
+      if (city && local.length && !local.includes(city)) {
+        setCityManual(true);
+      } else if (city && local.includes(city)) {
+        setCityManual(false);
+      }
+    }
   };
 
   const applyMapPoint = async (lat, lng) => {
     setForm((f) => ({ ...f, lat: String(lat), lng: String(lng) }));
+    setGeoLabel('در حال دریافت آدرس از نشان…');
     try {
       setMapBusy(true);
       const geo = await reverseGeocode(lat, lng);
-      setForm((f) => ({
-        ...f,
-        lat: String(lat), lng: String(lng),
-        address: geo.formatted || f.address || '',
-        province: geo.province || f.province,
-        city: geo.city || f.city,
-      }));
-      if (geo.province) setCityOptions(IRAN_CITIES[geo.province] || []);
-      toast?.('موقعیت روی نقشه ثبت شد', 'ok');
-    } catch {
-      toast?.('موقعیت ذخیره شد', 'ok');
+      applyNeshanGeo(geo, lat, lng);
+      toast?.(geo.formatted ? 'آدرس از نشان دریافت شد' : 'موقعیت ثبت شد', 'ok');
+    } catch (e) {
+      setGeoLabel('');
+      toast?.(e?.message || 'خطا در سرویس تبدیل مختصات نشان', 'err');
     } finally { setMapBusy(false); }
   };
 
@@ -1814,20 +1845,24 @@ function CheckoutPage({
               {showMap ? (
                 <div className="sf-co-map-wrap">
                   <div className="sf-co-map-head">
-                    <strong>📍 انتخاب مقصد روی نقشه</strong>
+                    <strong>📍 مقصد روی نقشه · تبدیل مختصات به آدرس (نشان)</strong>
                     <button type="button" className="sf-btn ghost sm" onClick={() => setMapOpen((v) => !v)}>
                       {mapOpen ? 'بستن نقشه' : 'باز کردن نقشه'}
                     </button>
                   </div>
                   {form.lat && form.lng ? (
-                    <p className="sf-co-hint">مختصات: {form.lat}, {form.lng}</p>
+                    <div className="sf-co-neshan-addr">
+                      <p className="sf-co-hint">مختصات: <span dir="ltr">{Number(form.lat).toFixed(5)}, {Number(form.lng).toFixed(5)}</span></p>
+                      {geoLabel ? <p className="sf-co-neshan-line"><strong>آدرس نشان:</strong> {geoLabel}</p> : null}
+                      {mapBusy ? <p className="sf-co-hint">⏳ تبدیل مختصات به آدرس (Neshan Reverse)…</p> : null}
+                    </div>
                   ) : (
-                    <p className="sf-co-hint">با کلیک یا کشیدن نشانگر، آدرس دقیق‌تر و هزینه ارسال به‌روز می‌شود.</p>
+                    <p className="sf-co-hint">با کلیک یا کشیدن نشانگر، سرویس <strong>تبدیل مختصات به آدرس نشان</strong> آدرس کامل را پر می‌کند.</p>
                   )}
                   {mapOpen ? (
                     <div className="sf-co-map-panel">
                       <div className="sf-co-map-search">
-                        <input value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="جستجوی آدرس با نشان…" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchMap(); } }} />
+                        <input value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="جستجوی مکان در نشان…" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchMap(); } }} />
                         <button type="button" className="sf-btn primary sm" disabled={mapBusy} onClick={searchMap}>{mapBusy ? '…' : 'جستجو'}</button>
                       </div>
                       {mapResults.length ? (
@@ -1839,10 +1874,8 @@ function CheckoutPage({
                                   markerRef.current.setLatLng([it.lat, it.lng]);
                                   mapInst.current.setView([it.lat, it.lng], 15);
                                 }
+                                /* full address via Neshan reverse geocoding */
                                 applyMapPoint(it.lat, it.lng);
-                                if (it.address) set('address', it.address);
-                                if (it.province) onProvinceChange(it.province);
-                                if (it.city) set('city', it.city);
                               }}>
                                 <strong>{it.title || it.address}</strong>
                                 {it.address && it.title !== it.address ? <small>{it.address}</small> : null}

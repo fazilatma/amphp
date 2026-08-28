@@ -16,7 +16,7 @@ function readFont(){if(SERVER_FONT&&F[SERVER_FONT])return SERVER_FONT;try{var v=
 function applyFont(k,save){if(!F[k])k="vazirmatn";var f=F[k];if(save){try{localStorage.setItem(KEY,k);}catch(e){}}try{document.documentElement.style.setProperty("--app-font",f.stack);if(document.body)document.body.style.fontFamily=f.stack;}catch(e){}if(f.css){var lid="appFontLink_"+k;if(!document.getElementById(lid)){var l=document.createElement("link");l.id=lid;l.rel="stylesheet";l.href=f.css;head().appendChild(l);}}window.APP_FONT_CURRENT=k;return k;}
 window.appFontApply=applyFont;window.appFontCurrent=readFont;applyFont(readFont(),false);
 })();</script>
-<link rel="stylesheet" href="/?amphp_sf=storefront.css&ver=13.3.15" id="amphp-storefront-css">
+<link rel="stylesheet" href="/?amphp_sf=storefront.css&ver=13.3.16" id="amphp-storefront-css">
 <style>
 html,body{margin:0;padding:0;background:#f4f6fb;font-family:Tahoma,'Segoe UI',system-ui,sans-serif}
 *{box-sizing:border-box}
@@ -30,7 +30,7 @@ html,body{margin:0;padding:0;background:#f4f6fb;font-family:Tahoma,'Segoe UI',sy
 </div>
 <script>try{localStorage.setItem('scraper_font','system');}catch(e){}</script>
 <script src="/boot-sample.js"></script>
-<script src="/?amphp_sf=storefront.js&ver=13.3.15" id="amphp-storefront-js"></script>
+<script src="/?amphp_sf=storefront.js&ver=13.3.16" id="amphp-storefront-js"></script>
 <script>
 (function(){
   setTimeout(function(){

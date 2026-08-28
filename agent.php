@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.1.1
+ * Version: 13.1.2
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -175,6 +175,9 @@ class Scraper_Auto_Shop_Plugin {
 
 		// WooCommerce shop page takeover
 		add_filter( 'template_include', array( __CLASS__, 'maybe_takeover_shop_template' ), 99 );
+
+		// Serve storefront JS/CSS via PHP (works even if static files blocked or not yet synced)
+		add_action( 'init', array( __CLASS__, 'maybe_serve_storefront_asset' ), 0 );
 
 		// Complete suppression of legacy WordPress theme header & menu when custom storefront is enabled
 		add_action( 'wp_head', array( __CLASS__, 'inject_custom_header_suppression_css' ), 1 );
@@ -4656,10 +4659,22 @@ class Scraper_Auto_Shop_Plugin {
 		$settings = self::get_settings();
 		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
 		$site     = get_bloginfo( 'name' );
-		$css_url  = self::storefront_asset_url( 'storefront.css' );
-		$js_url   = self::storefront_asset_url( 'storefront.js' );
-		$ver      = '13.1.1';
+		// Prefer PHP proxy URLs so shop works even when /asset/*.js is missing or blocked by host.
+		$ver      = '13.1.2';
+		$css_url  = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
+		$js_url   = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
+		// If assets missing on disk, fail early with actionable HTML (no endless spinner).
+		$js_path  = self::storefront_asset_path( 'storefront.js' );
+		$css_path = self::storefront_asset_path( 'storefront.css' );
 		$shop_html = self::render_shop_shortcode( true ); // skip asset tags; we print once below
+		if ( ! $js_path ) {
+			$shop_html = '<div style="max-width:640px;margin:48px auto;padding:24px;background:#fef2f2;border:1px solid #fecaca;border-radius:16px;font-family:Tahoma,sans-serif;direction:rtl;text-align:right;line-height:1.8">'
+				. '<div style="font-size:1.1rem;font-weight:900;color:#b91c1c;margin-bottom:8px">فایل‌های ویترین روی سرور پیدا نشد</div>'
+				. '<p style="margin:0 0 10px;color:#7f1d1d;font-weight:700">پوشه <code>asset/js/storefront/</code> یا <code>includes/storefront/</code> باید همراه agent.php آپلود شود (شامل storefront.js و storefront.css).</p>'
+				. '<p style="margin:0;color:#64748b;font-size:.88rem">مسیر افزونه: <code style="direction:ltr;display:inline-block">' . esc_html( plugin_dir_path( __FILE__ ) ) . '</code></p>'
+				. '</div>';
+		}
+
 		$adminbar  = '';
 		if ( is_user_logged_in() && current_user_can( 'manage_options' ) ) {
 			// Minimal admin bar only (no theme).
@@ -4676,7 +4691,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.1' );
+		header( 'X-AMPHP-Storefront: bare-v13.1.2' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -4708,7 +4723,7 @@ img{max-width:100%;height:auto}
     var el = document.getElementById('amphp-storefront-root');
     if (!el || el.getAttribute('data-mounted') === '1') return;
     if (el.querySelector('.amphp-sf-bootwait')) {
-      el.innerHTML = '<div style="padding:28px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">فروشگاه بارگذاری نشد.<br><span style="font-weight:600;color:#64748b;font-size:.85rem">فایل JS پیدا نشد یا خطا دارد. مسیر: <?php echo esc_js( $js_url ); ?></span></div>';
+      el.innerHTML = '<div style="padding:28px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">فروشگاه بارگذاری نشد.<br><span style="font-weight:600;color:#64748b;font-size:.85rem">اسکریپت لود نشد. اگر تازه آپدیت کرده‌اید کش را پاک کنید.<br>URL: <?php echo esc_js( $js_url ); ?></span></div>';
     }
   }, 8000);
 })();
@@ -4816,7 +4831,7 @@ img{max-width:100%;height:auto}
 				'checkoutUrl'=> esc_url_raw( $checkout ),
 			),
 			'meta'     => array(
-				'version'   => '13.1.1',
+				'version'   => '13.1.2',
 				'engine'    => 'react',
 				'count'     => count( $safe_products ),
 				'is_admin'  => current_user_can( 'manage_options' ),
@@ -4825,7 +4840,7 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver     = '13.1.1';
+		$ver     = '13.1.2';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
@@ -4837,7 +4852,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.1.1 -->
+		<!-- AMPHP Storefront v13.1.2 -->
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
 		<?php endif; ?>
@@ -4867,19 +4882,98 @@ img{max-width:100%;height:auto}
 	}
 
 	/**
-	 * Resolve storefront build asset URL (works as WP plugin main file).
+	 * Candidate filesystem paths for a storefront build file.
+	 *
+	 * @param string $file basename e.g. storefront.js
+	 * @return string[]
+	 */
+	public static function storefront_asset_paths( $file ) {
+		$file = basename( (string) $file );
+		$base = plugin_dir_path( __FILE__ );
+		return array_values( array_filter( array(
+			$base . 'asset/js/storefront/' . $file,
+			$base . 'includes/storefront/' . $file,
+			$base . 'storefront/' . $file,
+			dirname( $base ) . '/asset/js/storefront/' . $file,
+		) ) );
+	}
+
+	/**
+	 * Absolute path to first existing storefront asset, or empty string.
+	 *
+	 * @param string $file
+	 * @return string
+	 */
+	public static function storefront_asset_path( $file ) {
+		foreach ( self::storefront_asset_paths( $file ) as $p ) {
+			if ( $p && is_readable( $p ) ) {
+				return $p;
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Public URL for storefront CSS/JS — prefers direct file, falls back to PHP proxy.
+	 * Proxy avoids 404 when static files were not uploaded or host blocks plugin JS.
 	 *
 	 * @param string $file
 	 * @return string
 	 */
 	public static function storefront_asset_url( $file ) {
-		$path = plugin_dir_path( __FILE__ ) . 'asset/js/storefront/' . ltrim( $file, '/' );
-		$url  = plugins_url( 'asset/js/storefront/' . ltrim( $file, '/' ), __FILE__ );
-		if ( file_exists( $path ) ) {
-			return $url;
+		$file = basename( (string) $file );
+		$ver  = '13.1.2';
+		// Always serve via PHP proxy:
+		// 1) Hosts often 404/block direct /wp-content/plugins/.../asset/*.js
+		// 2) Deployments that only copy agent.php still work if includes/storefront/ is present
+		// 3) Single reliable URL regardless of rewrite / CDN quirks
+		return add_query_arg(
+			array(
+				'amphp_sf' => $file,
+				'ver'      => $ver,
+			),
+			home_url( '/' )
+		);
+	}
+
+	/**
+	 * Stream storefront.js / storefront.css with correct MIME (no theme, no WP chrome).
+	 */
+	public static function maybe_serve_storefront_asset() {
+		if ( empty( $_GET['amphp_sf'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
 		}
-		// Dev fallback: relative to current script if copied outside WP.
-		return $url;
+		$file = basename( sanitize_text_field( wp_unslash( $_GET['amphp_sf'] ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! in_array( $file, array( 'storefront.js', 'storefront.css' ), true ) ) {
+			status_header( 404 );
+			header( 'Content-Type: text/plain; charset=UTF-8' );
+			echo 'AMPHP storefront: invalid asset';
+			exit;
+		}
+		$path = self::storefront_asset_path( $file );
+		if ( ! $path ) {
+			status_header( 404 );
+			header( 'Content-Type: text/plain; charset=UTF-8' );
+			header( 'X-AMPHP-Asset: missing' );
+			echo 'AMPHP storefront asset missing on disk: ' . $file . "\n";
+			echo "Expected under plugin:\n";
+			foreach ( self::storefront_asset_paths( $file ) as $p ) {
+				echo ' - ' . $p . "\n";
+			}
+			echo "Upload asset/js/storefront/ or includes/storefront/ from the plugin package.\n";
+			exit;
+		}
+
+		$mime = ( 'storefront.css' === $file ) ? 'text/css; charset=UTF-8' : 'application/javascript; charset=UTF-8';
+		status_header( 200 );
+		header( 'Content-Type: ' . $mime );
+		header( 'X-Content-Type-Options: nosniff' );
+		header( 'X-AMPHP-Asset: ' . $path );
+		header( 'Cache-Control: public, max-age=86400' );
+		header( 'Expires: ' . gmdate( 'D, d M Y H:i:s', time() + 86400 ) . ' GMT' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		echo file_get_contents( $path );
+		exit;
 	}
 
 	/**
@@ -4894,11 +4988,10 @@ img{max-width:100%;height:auto}
 		}
 		$css = self::storefront_asset_url( 'storefront.css' );
 		$js  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.1.1';
+		$ver = '13.1.2';
 		wp_register_style( 'amphp-storefront', $css, array(), $ver );
 		wp_enqueue_style( 'amphp-storefront' );
 		wp_register_script( 'amphp-storefront', $js, array(), $ver, true );
-		wp_script_add_data( 'amphp-storefront', 'defer', true );
 		wp_enqueue_script( 'amphp-storefront' );
 	}
 

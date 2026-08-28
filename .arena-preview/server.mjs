@@ -21,7 +21,24 @@ const mime = {
 
 const server = http.createServer((req, res) => {
   try {
-    let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+    const rawUrl = req.url || '/';
+    const u = new URL(rawUrl, 'http://127.0.0.1');
+    // Mirror WP PHP proxy: /?amphp_sf=storefront.js
+    if (u.searchParams.get('amphp_sf')) {
+      const f = path.basename(u.searchParams.get('amphp_sf'));
+      const candidates = [
+        path.join(ROOT, 'asset/js/storefront', f),
+        path.join(ROOT, 'includes/storefront', f),
+      ];
+      const hit = candidates.find((c) => fs.existsSync(c));
+      if (!hit) { res.writeHead(404); res.end('missing '+f); return; }
+      const ext = path.extname(hit).toLowerCase();
+      res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+      fs.createReadStream(hit).pipe(res);
+      return;
+    }
+
+    let urlPath = decodeURIComponent(u.pathname);
     if (urlPath === '/') urlPath = '/index.html';
 
     let filePath;

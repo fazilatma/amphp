@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.100';
+const APP_VERSION = '10.101';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -17100,102 +17100,47 @@ if (isset($_GET['manual_sync'])) {
         if (!in_array($_msTarget, ['woo', 'bsl', 'both', 'none'], true)) $_msTarget = 'woo';
         $_msResults['target'] = $_msTarget;
 
-        /* v10.100: OOS روی دیسک + بایگانی/حذف removed_items قبل از صف ارسال */
-        if (!empty($_msEx['ok']) && is_array($_msProf['products'] ?? null)) {
-            $_msOos = [];
-            foreach ($_msProf['products'] as $_ent) {
-                $_pk = ''; $_pp = null;
-                if (is_array($_ent) && count($_ent) >= 2 && is_string($_ent[0]) && is_array($_ent[1])) {
-                    $_pk = (string)$_ent[0]; $_pp = $_ent[1];
-                } elseif (is_array($_ent)) {
-                    $_pk = (string)($_ent['key'] ?? ''); $_pp = $_ent;
-                }
-                if ($_pk === '' || !is_array($_pp)) continue;
-                if (array_key_exists('in_stock', $_pp) && empty($_pp['in_stock'])) {
-                    $_msOos[] = [
-                        'title' => (string)($_pp['title'] ?? $_pp['name'] ?? $_pk),
-                        'key' => $_pk,
-                        'link' => (string)($_pp['link'] ?? ''),
-                        'image' => (string)($_pp['image'] ?? ''),
-                        'price' => (string)($_pp['price'] ?? ''),
-                        'reason' => 'ناموجود (in_stock=false)',
-                    ];
-                }
-            }
-            if ($_msOos) {
-                if (!isset($_msEx['removed_items']) || !is_array($_msEx['removed_items'])) $_msEx['removed_items'] = [];
-                $_seenK = [];
-                foreach ($_msEx['removed_items'] as $_ri) {
-                    if (is_array($_ri) && !empty($_ri['key'])) $_seenK[(string)$_ri['key']] = true;
-                }
-                foreach ($_msOos as $_oi) {
-                    if (!empty($_seenK[$_oi['key']])) continue;
-                    $_msEx['removed_items'][] = $_oi;
-                    $_seenK[$_oi['key']] = true;
-                }
-                $_msEx['removed'] = count($_msEx['removed_items']);
-                manualSyncProgress([], '⛔ ' . count($_msOos) . ' کالای ناموجود روی دیسک → فهرست بازنشستگی');
-            }
-        }
-        if (!empty($_msEx['ok']) && !empty($_msEx['removed_items']) && is_array($_msEx['removed_items'])) {
+        /* v10.101: بازنشستگی مشترک (کرون + دستی) — removed + OOS */
+        if (!empty($_msEx['ok'])) {
             try {
-                $_msCnR = $_msCn;
-                $_msRetMode = (string)($_msCnR['retire_mode'] ?? 'off');
-                $_msAuW = !empty($_msSyncCfg['wooAddUpdate']);
-                $_msAuB = !empty($_msSyncCfg['bslAddUpdate']);
-                $_msAuT = [];
-                if ($_msAuW && ($_msTarget === 'woo' || $_msTarget === 'both')) $_msAuT[] = 'woo';
-                if ($_msAuB && ($_msTarget === 'bsl' || $_msTarget === 'both')) $_msAuT[] = 'bsl';
-                if (!$_msAuT && $_msTarget !== 'none') {
-                    if ($_msTarget === 'woo' || $_msTarget === 'both') $_msAuT[] = 'woo';
-                    if ($_msTarget === 'bsl' || $_msTarget === 'both') $_msAuT[] = 'bsl';
-                }
-                $_msRetTarget = $_msTarget;
-                $_msRetPer = null;
-                if ($_msAuT) {
-                    $_msRetTarget = count($_msAuT) === 2 ? 'both' : $_msAuT[0];
-                    $_msRetPer = [
-                        'woo' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($_msCnR, 'woo') : 'delete',
-                        'bsl' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($_msCnR, 'bsl') : 'delete',
-                    ];
-                    if ($_msRetMode === 'off') $_msRetMode = 'delete';
-                }
-                if ($_msRetMode !== 'off' && $_msRetTarget !== 'none' && function_exists('retireRemoved')) {
-                    manualSyncProgress([], '🗄 بازنشستگی ' . count($_msEx['removed_items']) . ' مورد ناموجود/حذف‌شده…');
-                    $_msRt = retireRemoved(
-                        $_msCnR, $_msEx['removed_items'], $_msRetTarget, $_msRetMode,
-                        (int)($_msEx['extracted'] ?? 0), false, (string)$_msName, $_msRetPer, $_msKey
-                    );
+                /* پروفایل تازه از دیسک بعد از extract */
+                $_msProfRet = is_array($_msProf) ? $_msProf : [];
+                $_msRetPack = retireAfterExtract($_msCn, $_msProfRet, $_msEx, (string)$_msTarget, $_msSyncCfg, (string)$_msKey);
+                if (!empty($_msRetPack['result'])) {
+                    $_msRt = $_msRetPack['result'];
                     $_msResults['retire'] = [
-                        'mode' => $_msRetMode, 'target' => $_msRetTarget,
+                        'mode' => $_msRetPack['mode'],
+                        'target' => $_msRetPack['target'],
                         'checked' => (int)($_msRt['checked'] ?? 0),
                         'retired' => (int)($_msRt['retired'] ?? 0),
                         'not_found' => (int)($_msRt['not_found'] ?? 0),
                         'failed' => (int)($_msRt['failed'] ?? 0),
-                        'skipped' => (string)($_msRt['skipped'] ?? ''),
+                        'skipped' => (string)($_msRetPack['skipped'] ?? ''),
+                        'oos_merged' => (int)($_msRetPack['oos_merged'] ?? 0),
+                        'woo_action' => $_msRetPack['woo_action'] ?? '',
+                        'bsl_action' => $_msRetPack['bsl_action'] ?? '',
                     ];
-                    if ($_msRetPer) {
-                        $_msResults['retire']['woo_action'] = $_msRetPer['woo'];
-                        $_msResults['retire']['bsl_action'] = $_msRetPer['bsl'];
+                    if (!empty($_msRetPack['oos_merged'])) {
+                        manualSyncProgress([], '⛔ ' . (int)$_msRetPack['oos_merged'] . ' کالای ناموجود روی دیسک → بازنشستگی');
                     }
-                    if (!empty($_msRt['skipped'])) {
-                        manualSyncProgress([], '⏭ بازنشستگی: ' . (string)$_msRt['skipped']);
+                    if (!empty($_msRetPack['skipped'])) {
+                        manualSyncProgress([], '⏭ بازنشستگی: ' . (string)$_msRetPack['skipped']);
                     } else {
                         manualSyncProgress([], '✅ بازنشستگی: ' . (int)($_msRt['retired'] ?? 0)
                             . ' انجام · ' . (int)($_msRt['not_found'] ?? 0) . ' یافت‌نشد · '
                             . (int)($_msRt['failed'] ?? 0) . ' خطا');
                     }
-                    try { if (function_exists('notifRetire')) notifRetire($_msCnR, $_msRt, $_msName); } catch (Throwable $e) {}
-                } else {
-                    manualSyncProgress([], 'ℹ️ بازنشستگی خاموش یا مقصد none');
+                } elseif (($_msRetPack['skipped'] ?? '') === 'no_items') {
+                    manualSyncProgress([], '✓ موردی برای بایگانی/حذف از مبدأ نبود');
+                } elseif (!empty($_msRetPack['skipped'])) {
+                    manualSyncProgress([], 'ℹ️ بازنشستگی: ' . (string)$_msRetPack['skipped']);
                 }
             } catch (Throwable $e) {
                 manualSyncProgress([], '⚠️ بازنشستگی: ' . mb_substr($e->getMessage(), 0, 180));
                 $_msResults['retire_error'] = $e->getMessage();
             }
-        } elseif (!empty($_msEx['ok'])) {
-            manualSyncProgress([], '✓ موردی برای بایگانی/حذف از مبدأ نبود');
         }
+
 
         /* محصولات برای ارسال */
         $_msProducts = [];
@@ -17978,33 +17923,26 @@ if (!empty($srcN['sent'])) $pResult['src_notified'] = $srcN['sent'];
    است: اگر فقط تیکِ باسلام روشن باشد، نباید چیزی از ووکامرس حذف شود.
    محافظِ ۳۰٪/۵۰ مورد سرِ جایش می‌ماند و هر اقدام لاگ و گزارش می‌شود.
    ================================================================= */
-$retireMode = (string)($cn['retire_mode'] ?? 'off');
-$_auWoo = !empty($syncCfg['wooAddUpdate']);
-$_auBsl = !empty($syncCfg['bslAddUpdate']);
-$_auTargets = [];
-if ($_auWoo && ($target === 'woo' || $target === 'both')) $_auTargets[] = 'woo';
-if ($_auBsl && ($target === 'bsl' || $target === 'both')) $_auTargets[] = 'bsl';
-$_retireTarget = $target; $_retirePer = null;
-if ($_auTargets) {
-    $_retireTarget = count($_auTargets) === 2 ? 'both' : $_auTargets[0];
-    $_retirePer = ['woo' => retireAddUpdateAction($cn, 'woo'),
-                   'bsl' => retireAddUpdateAction($cn, 'bsl')];
-    if ($retireMode === 'off') $retireMode = 'delete';   // تیک روشن ⇒ اقدام لازم است
-}
-if ($retireMode !== 'off' && !empty($exRes['removed_items'])) {
-    $rt = retireRemoved($cn, $exRes['removed_items'], $_retireTarget, $retireMode,
-                        (int)($exRes['extracted'] ?? 0), false, (string)($profile['name'] ?? $key),
-                        $_retirePer, $key);   // v10.35 (۴۷ج): کلیدِ پروفایل برای بررسیِ مالکیت
-    $pResult['retire'] = ['mode' => $retireMode, 'retired' => (int)($rt['retired'] ?? 0),
-        'not_found' => (int)($rt['not_found'] ?? 0), 'failed' => (int)($rt['failed'] ?? 0)];
-    if ($_retirePer !== null) {
-        $pResult['retire']['by_addupdate'] = true;
-        $pResult['retire']['target'] = $_retireTarget;
-        $pResult['retire']['woo_action'] = $_retirePer['woo'];
-        $pResult['retire']['bsl_action'] = $_retirePer['bsl'];
-    }
-    if (!empty($rt['skipped'])) $pResult['retire']['skipped'] = $rt['skipped'];
-    notifRetire($cn, $rt, $profile['name'] ?? $key);
+/* v10.101: همگام خودکار — بایگانی/حذف ناموجود و حذف‌شده‌های مبدأ (مثل دستی) */
+$_retPack = retireAfterExtract($cn, $profile, $exRes, (string)$target, $syncCfg, (string)$key);
+if (!empty($_retPack['result'])) {
+    $rt = $_retPack['result'];
+    $pResult['retire'] = [
+        'mode' => $_retPack['mode'],
+        'target' => $_retPack['target'],
+        'retired' => (int)($rt['retired'] ?? 0),
+        'not_found' => (int)($rt['not_found'] ?? 0),
+        'failed' => (int)($rt['failed'] ?? 0),
+        'checked' => (int)($rt['checked'] ?? 0),
+        'items' => count($_retPack['items'] ?? []),
+        'oos_merged' => (int)($_retPack['oos_merged'] ?? 0),
+        'woo_action' => $_retPack['woo_action'] ?? '',
+        'bsl_action' => $_retPack['bsl_action'] ?? '',
+        'auto' => true,
+    ];
+    if (!empty($_retPack['skipped'])) $pResult['retire']['skipped'] = $_retPack['skipped'];
+} elseif (!empty($_retPack['skipped']) && $_retPack['skipped'] !== 'no_items') {
+    $pResult['retire'] = ['skipped' => $_retPack['skipped'], 'auto' => true];
 }
 
 $profiles = loadProfiles();
@@ -26721,6 +26659,15 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
+            /* ==== ۱۱۱ (v10.101) ==== */
+    $add('10.101', 'نسخهٔ ۱۰.۱۰۱',
+         version_compare(APP_VERSION, '10.101', '>=')
+      && strpos($selfSrc, "{v:'10.101',") !== false);
+    $add('10.101', 'بازنشستگی مشترک کرون و دستی',
+         strpos($selfSrc, 'function retireAfterExtract') !== false
+      && strpos($selfSrc, 'function collectOosRetireItems') !== false
+      && strpos($selfSrc, 'retireAfterExtract($cn, $profile, $exRes') !== false);
+
             /* ==== ۱۱۰ (v10.100) ==== */
     $add('10.100', 'نسخهٔ ۱۰.۱۰۰',
          version_compare(APP_VERSION, '10.100', '>=')
@@ -34554,10 +34501,119 @@ function retirePlanTake(string $token, bool $consume = true): ?array {
     return $plan;
 }
 
+
 /**
- * محصولات رفته از مبدأ را روی مقصد بازنشسته می‌کند.
- * $items همان removed_items استخراج است.
+ * v10.101: اقلام بازنشستگی از پروفایل — کالاهای in_stock=false روی دیسک.
+ * حذف‌شده‌ها/بی‌قیمت از extractLiveCompare می‌آیند؛ ناموجودیِ جزئیات فقط
+ * پرچم in_stock را می‌گذارد و تا حالا به removed_items نمی‌رفت.
  */
+function collectOosRetireItems(array $profile): array {
+    $out = [];
+    foreach ((array)($profile['products'] ?? []) as $ent) {
+        $pk = ''; $pp = null;
+        if (is_array($ent) && count($ent) >= 2 && is_string($ent[0]) && is_array($ent[1])) {
+            $pk = (string)$ent[0]; $pp = $ent[1];
+        } elseif (is_array($ent)) {
+            $pk = (string)($ent['key'] ?? ''); $pp = $ent;
+        }
+        if ($pk === '' || !is_array($pp)) continue;
+        if (array_key_exists('in_stock', $pp) && empty($pp['in_stock'])) {
+            $out[] = [
+                'title'  => (string)($pp['title'] ?? $pp['name'] ?? $pk),
+                'key'    => $pk,
+                'link'   => (string)($pp['link'] ?? ''),
+                'image'  => (string)($pp['image'] ?? ''),
+                'price'  => (string)($pp['price'] ?? ''),
+                'reason' => 'ناموجود (in_stock=false)',
+            ];
+        }
+    }
+    return $out;
+}
+
+/** ادغام removed_items استخراج با اقلام OOS بدون تکرار کلید */
+function mergeRetireItems(array $removed, array $extra): array {
+    $seen = [];
+    $out = [];
+    foreach (array_merge(array_values($removed), array_values($extra)) as $it) {
+        if (!is_array($it)) continue;
+        $k = (string)($it['key'] ?? '');
+        $t = trim((string)($it['title'] ?? ''));
+        $id = $k !== '' ? ('k:' . $k) : ('t:' . mb_strtolower($t));
+        if ($id === 'k:' || $id === 't:') continue;
+        if (isset($seen[$id])) continue;
+        $seen[$id] = true;
+        $out[] = $it;
+    }
+    return $out;
+}
+
+/**
+ * v10.101: پس از استخراج (کرون یا دستی) — بایگانی/حذف ناموجودها روی مقصد.
+ * مقصد از target پروفایل + تیک add/update؛ اگر تیک نبود ولی target هست،
+ * همان مقصد با اقدام پیش‌فرض retire می‌شود (دیگر فقط با retire_mode سراسری نیست).
+ *
+ * @return array{items:list, result:?array, mode:string, target:string, skipped:string}
+ */
+function retireAfterExtract(array $cn, array $profile, array $exRes, string $target, array $syncCfg, string $profileKey = ''): array {
+    $empty = ['items' => [], 'result' => null, 'mode' => 'off', 'target' => $target, 'skipped' => ''];
+    if (empty($exRes['ok'])) {
+        $empty['skipped'] = 'extract_not_ok';
+        return $empty;
+    }
+    if (!in_array($target, ['woo', 'bsl', 'both'], true)) {
+        $empty['skipped'] = 'target_none';
+        return $empty;
+    }
+    $removed = is_array($exRes['removed_items'] ?? null) ? $exRes['removed_items'] : [];
+    $oos = collectOosRetireItems($profile);
+    $items = mergeRetireItems($removed, $oos);
+    if (!$items) {
+        $empty['skipped'] = 'no_items';
+        return $empty;
+    }
+
+    $mode = (string)($cn['retire_mode'] ?? 'off');
+    $auW = !empty($syncCfg['wooAddUpdate']);
+    $auB = !empty($syncCfg['bslAddUpdate']);
+    $auT = [];
+    if ($auW && ($target === 'woo' || $target === 'both')) $auT[] = 'woo';
+    if ($auB && ($target === 'bsl' || $target === 'both')) $auT[] = 'bsl';
+    /* مقصد روشن است ⇒ بازنشستگی همان مقصد حتی بدون تیک add/update */
+    if (!$auT) {
+        if ($target === 'woo' || $target === 'both') $auT[] = 'woo';
+        if ($target === 'bsl' || $target === 'both') $auT[] = 'bsl';
+    }
+    $retTarget = count($auT) === 2 ? 'both' : $auT[0];
+    $per = [
+        'woo' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($cn, 'woo') : 'delete',
+        'bsl' => function_exists('retireAddUpdateAction') ? retireAddUpdateAction($cn, 'bsl') : 'delete',
+    ];
+    if ($mode === 'off') $mode = 'delete';
+
+    $name = (string)($profile['name'] ?? $profileKey);
+    $pk = $profileKey !== '' ? $profileKey : (string)($profile['key'] ?? '');
+    $rt = retireRemoved(
+        $cn, $items, $retTarget, $mode,
+        (int)($exRes['extracted'] ?? 0), false, $name, $per, $pk
+    );
+    try {
+        if (function_exists('notifRetire')) notifRetire($cn, $rt, $name);
+    } catch (Throwable $e) {}
+
+    return [
+        'items' => $items,
+        'result' => $rt,
+        'mode' => $mode,
+        'target' => $retTarget,
+        'skipped' => (string)($rt['skipped'] ?? ''),
+        'oos_merged' => count($oos),
+        'removed_src' => count($removed),
+        'woo_action' => $per['woo'],
+        'bsl_action' => $per['bsl'],
+    ];
+}
+
 function retireRemoved(array $cn, array $items, string $target, string $mode,
                        int $extracted, bool $dryRun = false, string $profileName = '',
                        ?array $perTarget = null, string $profileKey = ''): array {
@@ -56115,6 +56171,10 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.101', t:'همگام خودکار: بایگانی/حذف ناموجودها مثل دستی', items:[
+    '🗄 کرون پس از استخراج، removed + in_stock=false را روی باسلام/ووکامرس بازنشسته می‌کند',
+    '♻️ منطق مشترک retireAfterExtract برای دستی و خودکار',
+  ]},
   {v:'10.100', t:'صفحه محصول + چت کالا + بایگانی ناموجودها در همگام', items:[
     '🛍 کلیک روی نام/تصویر → صفحه محصول با توضیح کامل، گالری، سفارش',
     '💬 دکمه «بپرس» روی کارت برای آوردن کالا در چت پشتیبانی',

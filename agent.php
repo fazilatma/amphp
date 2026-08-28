@@ -93,6 +93,10 @@ class Scraper_Auto_Shop_Plugin {
 			'telegram_chat_id'            => '',
 			'rubika_token'                => '',
 			'rubika_chat_id'              => '',
+
+			// WordPress Internal Cron (WP-Cron) Integration
+			'enable_wp_cron_sync'         => true,
+			'wp_cron_interval'            => 'every_30_mins',
 		);
 	}
 
@@ -132,6 +136,7 @@ class Scraper_Auto_Shop_Plugin {
 	 * immediately and cleanly revert to their original state without lingering filters.
 	 */
 	public static function on_deactivate() {
+		wp_clear_scheduled_hook( 'scraper_auto_shop_cron_sync' );
 		delete_transient( 'scraper_shop_cached_products' );
 		wp_cache_flush();
 	}
@@ -179,6 +184,12 @@ class Scraper_Auto_Shop_Plugin {
 		add_action( 'wp_ajax_scraper_pin_master_model', array( __CLASS__, 'ajax_pin_master_model' ) );
 		add_action( 'wp_ajax_scraper_upload_ai_config', array( __CLASS__, 'ajax_upload_ai_config' ) );
 		add_action( 'wp_ajax_scraper_export_ai_config', array( __CLASS__, 'ajax_export_ai_config' ) );
+
+		// WordPress Internal Cron (WP-Cron) Integration for scraper automation
+		add_filter( 'cron_schedules', array( __CLASS__, 'filter_cron_schedules' ) );
+		add_action( 'scraper_auto_shop_cron_sync', array( __CLASS__, 'execute_scraper_cron_job' ) );
+		add_action( 'wp_ajax_scraper_run_wpcron_now', array( __CLASS__, 'ajax_run_wpcron_now' ) );
+		self::sync_wp_cron_schedule();
 
 		// WooCommerce Real Cart Session Sync endpoints
 		add_action( 'wp_ajax_scraper_wc_add_to_cart', array( __CLASS__, 'ajax_wc_add_to_cart' ) );
@@ -2189,6 +2200,194 @@ class Scraper_Auto_Shop_Plugin {
 		header( 'Content-Disposition: attachment; filename="scraper_ai_config_' . date( 'Y_m_d_His' ) . '.json"' );
 		echo wp_json_encode( $export, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
 		exit;
+	}
+
+	/**
+	 * Filter custom recurrence intervals for WordPress WP-Cron.
+	 *
+	 * @param array $schedules
+	 * @return array
+	 */
+	public static function filter_cron_schedules( $schedules ) {
+		if ( ! isset( $schedules['every_15_mins'] ) ) {
+			$schedules['every_15_mins'] = array(
+				'interval' => 15 * MINUTE_IN_SECONDS,
+				'display'  => 'هر ۱۵ دقیقه یک‌بار (بسیار پرسرعت)',
+			);
+		}
+		if ( ! isset( $schedules['every_30_mins'] ) ) {
+			$schedules['every_30_mins'] = array(
+				'interval' => 30 * MINUTE_IN_SECONDS,
+				'display'  => 'هر ۳۰ دقیقه یک‌بار (توصیه شده)',
+			);
+		}
+		if ( ! isset( $schedules['every_2_hours'] ) ) {
+			$schedules['every_2_hours'] = array(
+				'interval' => 2 * HOUR_IN_SECONDS,
+				'display'  => 'هر ۲ ساعت یک‌بار',
+			);
+		}
+		if ( ! isset( $schedules['every_6_hours'] ) ) {
+			$schedules['every_6_hours'] = array(
+				'interval' => 6 * HOUR_IN_SECONDS,
+				'display'  => 'هر ۶ ساعت یک‌بار',
+			);
+		}
+		return $schedules;
+	}
+
+	/**
+	 * Synchronize WP-Cron schedule with plugin settings.
+	 *
+	 * @param array|null $settings
+	 */
+	public static function sync_wp_cron_schedule( $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		$hook      = 'scraper_auto_shop_cron_sync';
+		$enabled   = ! empty( $settings['enable_wp_cron_sync'] );
+		$interval  = ! empty( $settings['wp_cron_interval'] ) ? $settings['wp_cron_interval'] : 'every_30_mins';
+		$timestamp = wp_next_scheduled( $hook );
+
+		if ( ! $enabled ) {
+			if ( $timestamp ) {
+				wp_clear_scheduled_hook( $hook );
+			}
+			return;
+		}
+
+		if ( $timestamp ) {
+			$event = wp_get_scheduled_event( $hook );
+			if ( $event && ( $event->schedule ?? '' ) !== $interval ) {
+				wp_clear_scheduled_hook( $hook );
+				wp_schedule_event( time() + 60, $interval, $hook );
+			}
+		} else {
+			wp_schedule_event( time() + 60, $interval, $hook );
+		}
+	}
+
+	/**
+	 * Execute scraper4.php cron job from WordPress internal WP-Cron system.
+	 *
+	 * @return array
+	 */
+	public static function execute_scraper_cron_job() {
+		@set_time_limit( 300 );
+		$t0 = microtime( true );
+		$scraper_cron_url = plugins_url( 'scraper4.php?cron_run=1', __FILE__ );
+
+		$response = wp_remote_get( $scraper_cron_url, array(
+			'timeout'   => 45,
+			'blocking'  => true,
+			'sslverify' => false,
+		) );
+
+		$success     = false;
+		$status_code = 0;
+		$message     = '';
+
+		if ( ! is_wp_error( $response ) ) {
+			$status_code = (int) wp_remote_retrieve_response_code( $response );
+			$body        = wp_remote_retrieve_body( $response );
+			$data        = @json_decode( $body, true );
+
+			if ( $status_code === 200 ) {
+				$success = true;
+				$message = ! empty( $data['note'] ) ? $data['note'] : 'کران‌جاب اسکرپر۴ با موفقیت اجرا گردید.';
+			} else {
+				$message = 'پاسخ HTTP غیرمنتظره با کد وضعیت ' . $status_code;
+			}
+		} else {
+			$message = 'خطای اتصال به اسکرپر: ' . $response->get_error_message();
+		}
+
+		$plugin_dir     = plugin_dir_path( __FILE__ );
+		$cron_last_file = $plugin_dir . 'cron_last_run.json';
+		$cron_last_data = array();
+		if ( file_exists( $cron_last_file ) ) {
+			$cron_last_data = @json_decode( file_get_contents( $cron_last_file ), true ) ?: array();
+		}
+
+		$took_sec = round( microtime( true ) - $t0, 2 );
+
+		$record = array(
+			'time'        => time(),
+			'date_fa'     => date_i18n( 'Y/m/d H:i:s' ),
+			'status'      => $success ? 'success' : 'error',
+			'http_code'   => $status_code,
+			'took_sec'    => $took_sec,
+			'message'     => $message,
+			'cron_result' => $cron_last_data,
+		);
+
+		update_option( 'scraper_wpcron_last_run', $record );
+		return $record;
+	}
+
+	/**
+	 * AJAX endpoint to run scraper cron immediately on admin button click.
+	 */
+	public static function ajax_run_wpcron_now() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+
+		$res = self::execute_scraper_cron_job();
+
+		$next_ts = wp_next_scheduled( 'scraper_auto_shop_cron_sync' );
+		$next_human = $next_ts ? human_time_diff( time(), $next_ts ) : 'تنظیم نشده';
+
+		wp_send_json_success( array(
+			'message'    => $res['message'],
+			'status'     => $res['status'],
+			'took_sec'   => $res['took_sec'],
+			'last_run'   => $res['date_fa'],
+			'next_human' => $next_human,
+		) );
+	}
+
+	/**
+	 * Retrieve WP-Cron status and schedule details for admin display.
+	 *
+	 * @param array|null $settings
+	 * @return array
+	 */
+	public static function get_wpcron_status_info( $settings = null ) {
+		if ( null === $settings ) {
+			$settings = self::get_settings();
+		}
+
+		$hook       = 'scraper_auto_shop_cron_sync';
+		$is_enabled = ! empty( $settings['enable_wp_cron_sync'] );
+		$interval   = ! empty( $settings['wp_cron_interval'] ) ? $settings['wp_cron_interval'] : 'every_30_mins';
+		$next_ts    = wp_next_scheduled( $hook );
+
+		$interval_labels = array(
+			'every_15_mins' => 'هر ۱۵ دقیقه یک‌بار (بسیار پرسرعت)',
+			'every_30_mins' => 'هر ۳۰ دقیقه یک‌بار (توصیه شده)',
+			'hourly'        => 'هر ۱ ساعت یک‌بار',
+			'every_2_hours' => 'هر ۲ ساعت یک‌بار',
+			'every_6_hours' => 'هر ۶ ساعت یک‌بار',
+			'twicedaily'    => 'هر ۱۲ ساعت یک‌بار',
+			'daily'         => 'روزانه (یک‌بار در ۲۴ ساعت)',
+		);
+
+		$last_run = get_option( 'scraper_wpcron_last_run', array() );
+
+		return array(
+			'is_active'       => ( $is_enabled && ! empty( $next_ts ) ),
+			'is_enabled'      => $is_enabled,
+			'interval'        => $interval,
+			'interval_label'  => $interval_labels[ $interval ] ?? $interval,
+			'next_timestamp'  => $next_ts,
+			'next_human'      => $next_ts ? ( 'در ' . human_time_diff( time(), $next_ts ) . ' دیگر' ) : 'تعریف نشده',
+			'last_run'        => $last_run,
+			'interval_labels' => $interval_labels,
+		);
 	}
 
 public static function ajax_submit_support_chat() {
@@ -7956,8 +8155,13 @@ public static function ajax_submit_support_chat() {
 				'telegram_chat_id'            => sanitize_text_field( $_POST['telegram_chat_id'] ?? '' ),
 				'rubika_token'                => sanitize_text_field( $_POST['rubika_token'] ?? '' ),
 				'rubika_chat_id'              => sanitize_text_field( $_POST['rubika_chat_id'] ?? '' ),
+
+				// WordPress Cron (WP-Cron) Integration
+				'enable_wp_cron_sync'         => ! empty( $_POST['enable_wp_cron_sync'] ),
+				'wp_cron_interval'            => sanitize_text_field( $_POST['wp_cron_interval'] ?? 'every_30_mins' ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
+			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;
 		}
 
@@ -7969,6 +8173,7 @@ public static function ajax_submit_support_chat() {
 		$chat_threads     = self::get_chat_threads();
 		$cands_info       = self::get_scraper_ai_candidates();
 		$master_ai        = self::get_scraper_master_ai_model( $opts );
+		$wpcron_info      = self::get_wpcron_status_info( $opts );
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
@@ -9568,7 +9773,7 @@ public static function ajax_submit_support_chat() {
 						</div>
 
 						<!-- Direct Sync to WooCommerce Action -->
-						<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px;">
+						<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px 20px; margin-bottom:24px;">
 							<h4 style="margin:0 0 8px; font-size:1rem; font-weight:800; color:#0f172a;">درج مستقیم در دیتابیس محصولات ووکامرس</h4>
 							<p style="color:#64748b; font-size:0.88rem; margin:0 0 14px;">
 								تمامی محصولات استخراج‌شده را با قیمت‌های تعدیل‌شده به صورت کالای رسمی ووکامرس در دیتابیس وردپرس درج می‌کند:
@@ -9579,6 +9784,81 @@ public static function ajax_submit_support_chat() {
 								</button>
 								<span id="syncWooStatus" style="font-size:0.88rem; font-weight:700;"></span>
 							</div>
+						</div>
+
+						<!-- ⏰ زمان‌بندی خودکار با کران‌جاب داخلی وردپرس (WP-Cron) -->
+						<div class="admin-card" style="border:2px solid #3b82f6; background:linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); margin:0; border-radius:12px;">
+							<div class="admin-card-header" style="border-bottom:1px solid #bfdbfe;">
+								<h3><span>⏰</span> اجرای خودکار استخراج و همگام‌سازی با کران‌جاب داخلی وردپرس (WP-Cron)</h3>
+								<span class="field-badge" style="background:<?php echo $wpcron_info['is_active'] ? '#10b981' : '#64748b'; ?>; color:#fff;">
+									<?php echo $wpcron_info['is_active'] ? '🟢 کران‌جاب وردپرس فعال و زمان‌بندی‌شده' : '⚪ کران‌جاب وردپرس غیرفعال'; ?>
+								</span>
+							</div>
+
+							<p style="color:#475569; font-size:0.9rem; line-height:1.7; margin-top:0;">
+								<strong>بدون نیاز به تنظیمات پیچیده cPanel یا هاست!</strong> سیستم کران‌جاب داخلی وردپرس (WP-Cron) به صورت کاملاً خودکار و در بازه‌های مشخص، فرآیند اجرای کران‌جاب این صفحه (<code>scraper4.php?cron_run=1</code>)، استخراج محصولات جدید، بررسی تغییر قیمت‌ها و همگام‌سازی را در پس‌زمینه انجام می‌دهد.
+							</p>
+
+							<!-- وضعیت زنده کران‌جاب -->
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
+								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
+									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">⏱️ زمان اجرای بعدی:</div>
+									<div style="font-size:1.05rem; font-weight:900; color:#2563eb;" id="wpCronNextRunText">
+										<?php echo esc_html( $wpcron_info['next_human'] ); ?>
+									</div>
+									<div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
+										(بازه: <?php echo esc_html( $wpcron_info['interval_label'] ); ?>)
+									</div>
+								</div>
+
+								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
+									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">📋 آخرین اجرای خودکار:</div>
+									<div style="font-size:0.95rem; font-weight:800; color:#1e293b;" id="wpCronLastRunText">
+										<?php echo ! empty( $wpcron_info['last_run']['date_fa'] ) ? esc_html( $wpcron_info['last_run']['date_fa'] ) : 'هنوز اجرا نشده'; ?>
+									</div>
+									<div style="font-size:0.75rem; color:<?php echo ( ( $wpcron_info['last_run']['status'] ?? '' ) === 'success' ) ? '#059669' : '#64748b'; ?>; margin-top:2px;">
+										<?php echo ! empty( $wpcron_info['last_run']['took_sec'] ) ? ( 'مدت زمان: ' . esc_html( $wpcron_info['last_run']['took_sec'] ) . ' ثانیه' ) : '—'; ?>
+									</div>
+								</div>
+							</div>
+
+							<!-- تنظیمات کران در فرم -->
+							<table class="form-table" style="margin-bottom:14px;">
+								<tr>
+									<th scope="row" style="width:230px;">فعال‌سازی کران‌جاب وردپرس:</th>
+									<td>
+										<label style="font-weight:700; color:#1e293b; display:flex; align-items:center; gap:8px;">
+											<input type="checkbox" name="enable_wp_cron_sync" value="1" <?php checked( ! empty( $opts['enable_wp_cron_sync'] ) ); ?>>
+											اجرای منظم و خودکار اسکرپر و همگام‌سازی با استفاده از کران وردپرس (توصیه شده)
+										</label>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row">فواصل تکرار زمان‌بندی:</th>
+									<td>
+										<select name="wp_cron_interval" class="regular-text" style="border-radius:8px;">
+											<?php foreach ( $wpcron_info['interval_labels'] as $int_key => $int_label ) : ?>
+												<option value="<?php echo esc_attr( $int_key ); ?>" <?php selected( ( $opts['wp_cron_interval'] ?? 'every_30_mins' ), $int_key ); ?>>
+													<?php echo esc_html( $int_label ); ?>
+												</option>
+											<?php endforeach; ?>
+										</select>
+										<p class="description">تعیین بازه تکرار اجرای خودکار کران اسکرپر در سیستم وردپرس.</p>
+									</td>
+								</tr>
+							</table>
+
+							<!-- دکمه اجرای دستی همین حالا -->
+							<div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:10px; padding:14px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+								<div>
+									<strong style="color:#1e293b; font-size:0.92rem; display:block;">آزمایش و اجرای فوری کران‌جاب:</strong>
+									<span style="color:#64748b; font-size:0.82rem;">می‌توانید بدون معطلی برای رسیدن زمان‌بندی، کران‌جاب اسکرپر را همین الان اجرا و نتیجه را بررسی نمایید.</span>
+								</div>
+								<button type="button" id="btnRunWpCronNow" class="button button-primary" style="background:#2563eb; border-color:#1d4ed8; font-weight:800; padding:6px 20px; border-radius:8px;">
+									⚡ اجرای دستی کران‌جاب همین حالا (Run Now)
+								</button>
+							</div>
+							<div id="wpCronRunNowStatus" style="display:none; margin-top:10px; padding:10px 14px; border-radius:8px; font-size:0.88rem;"></div>
 						</div>
 					</div>
 				</div>
@@ -10551,6 +10831,39 @@ public static function ajax_submit_support_chat() {
 			// Refresh desk button
 			$('#btnRefreshAdminDesk').on('click', function(){
 				location.reload();
+			});
+
+			// Run WP-Cron Immediately Button
+			$('#btnRunWpCronNow').on('click', function(e){
+				e.preventDefault();
+				var $btn = $(this);
+				var $status = $('#wpCronRunNowStatus');
+
+				$btn.prop('disabled', true).text('در حال اجرای کران‌جاب اسکرپر... ⏳');
+				$status.show().css({'background': '#eff6ff', 'color': '#1d4ed8', 'border': '1px solid #bfdbfe'}).html('در حال فراخوانی کران‌جاب وردپرس و اجرای عملیات استخراج اسکرپر۴... ⏳');
+
+				$.ajax({
+					url: ajaxurl,
+					type: 'POST',
+					data: {
+						action: 'scraper_run_wpcron_now',
+						nonce: adminNonce
+					},
+					success: function(res){
+						$btn.prop('disabled', false).text('⚡ اجرای دستی کران‌جاب همین حالا (Run Now)');
+						if (res.success && res.data) {
+							$status.css({'background': '#f0fdf4', 'color': '#15803d', 'border': '1px solid #bbf7d0'}).html('✅ ' + (res.data.message || 'کران‌جاب با موفقیت اجرا گردید.') + ' (زمان: ' + res.data.took_sec + ' ثانیه)');
+							$('#wpCronLastRunText').text(res.data.last_run);
+							$('#wpCronNextRunText').text('در ' + res.data.next_human + ' دیگر');
+						} else {
+							$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطا در اجرا: ' + (res.data || 'عملیات با خطا مواجه شد.'));
+						}
+					},
+					error: function(){
+						$btn.prop('disabled', false).text('⚡ اجرای دستی کران‌جاب همین حالا (Run Now)');
+						$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطای ارتباط با سرور هنگام اجرای کران‌جاب.');
+					}
+				});
 			});
 
 			// Test Messengers Button

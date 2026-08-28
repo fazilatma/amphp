@@ -1484,7 +1484,6 @@ function StoreApp({ boot }) {
   const [query, setQuery] = useState('');
   const [cat, setCat] = useState('all');
   const [sort, setSort] = useState('default');
-  const [srcFilter, setSrcFilter] = useState('all');
   const [page, setPage] = useState(1);
   const [cols, setCols] = useState(() => loadLS(COLS_KEY, settings.default_column_layout || '4') || '4');
   const [cart, setCart] = useState(() => loadLS(CART_KEY, []));
@@ -1613,18 +1612,10 @@ function StoreApp({ boot }) {
     }
   }, []);
 
-  const hasMixedSources = useMemo(
-    () => products.some((p) => p.source === 'woocommerce') && products.some((p) => p.source === 'scraper' || !p.source),
-    [products],
-  );
-  const catalogMode = settings.catalog_source || (hasMixedSources ? 'merge' : 'scraper');
-
   const filtered = useMemo(() => {
     const q = normalizeSearch(query);
     let list = products.filter((p) => {
       if (cat !== 'all' && (p.category || 'عمومی') !== cat) return false;
-      if (srcFilter === 'scraper' && p.source === 'woocommerce') return false;
-      if (srcFilter === 'woocommerce' && p.source !== 'woocommerce') return false;
       if (!q) return true;
       return productMatchesQuery(p, q);
     });
@@ -1634,13 +1625,13 @@ function StoreApp({ boot }) {
     if (sort === 'popular') list = [...list].sort((a, b) => productVisualMeta(b).sold - productVisualMeta(a).sold);
     if (sort === 'discount') list = [...list].sort((a, b) => (Number(b.discount_pct) || 0) - (Number(a.discount_pct) || 0));
     return list;
-  }, [products, query, cat, sort, srcFilter]);
+  }, [products, query, cat, sort]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageSafe = clamp(page, 1, totalPages);
   const pageItems = filtered.slice((pageSafe - 1) * pageSize, pageSafe * pageSize);
 
-  useEffect(() => { setPage(1); }, [query, cat, sort, srcFilter]);
+  useEffect(() => { setPage(1); }, [query, cat, sort]);
 
   const cartCount = cart.reduce((s, it) => s + (it.qty || 1), 0);
 
@@ -2071,10 +2062,7 @@ function StoreApp({ boot }) {
       <main className="sf-container sf-home-dense">
         <section className="sf-hero sf-hero-rich" aria-label="بنر فروشگاه">
           <div className="sf-hero-content">
-            <div className="sf-hero-kicker">
-              ویترین آنلاین · ارسال سراسری
-              {catalogMode === 'merge' ? ' · 🔀 ادغام اسکرپر+ووکامرس' : catalogMode === 'woocommerce' ? ' · 🛒 ووکامرس' : ''}
-            </div>
+            <div className="sf-hero-kicker">ویترین آنلاین · ارسال سراسری</div>
             <h2>{settings.shop_title || 'فروشگاه آنلاین'}</h2>
             <p>{settings.shop_subtitle || 'خرید مطمئن با ارسال سریع، ضمانت اصالت و بهترین قیمت'}</p>
             {settings.show_features_banner !== false ? (
@@ -2258,13 +2246,6 @@ function StoreApp({ boot }) {
             <span style={{ color: '#94a3b8', fontWeight: 800, fontSize: '.9rem' }}> ({toFa(filtered.length)}{catalogTotal > filtered.length ? ` از ${toFa(catalogTotal)}` : ''})</span>
           </h3>
           <div className="sf-toolbar-controls">
-            {(hasMixedSources || catalogMode === 'merge') ? (
-              <select className="sf-select" value={srcFilter} onChange={(e) => setSrcFilter(e.target.value)} title="فیلتر منبع">
-                <option value="all">همه منابع</option>
-                <option value="scraper">فقط اسکرپر</option>
-                <option value="woocommerce">فقط ووکامرس</option>
-              </select>
-            ) : null}
             <select className="sf-select" value={sort} onChange={(e) => setSort(e.target.value)}>
               <option value="default">مرتب‌سازی پیش‌فرض</option>
               <option value="price-asc">ارزان‌ترین</option>

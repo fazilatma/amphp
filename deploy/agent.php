@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.5
+ * Version: 13.3.6
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -163,7 +163,7 @@ class Scraper_Auto_Shop_Plugin {
 			$opts = array_merge( $defaults, $opts );
 		}
 
-		/* v13.3.5: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
+		/* v13.3.6: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
 		try {
 			$cn = self::get_scraper_connections();
 			if ( is_array( $cn ) ) {
@@ -687,7 +687,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( function_exists( 'wc_get_products' ) ) {
 			$wc_prods = wc_get_products( array(
-				'limit'   => -1, /* v13.3.5: همهٔ محصولات ووکامرس */
+				'limit'   => -1, /* v13.3.6: همهٔ محصولات ووکامرس */
 				'status'  => 'publish',
 				'orderby' => 'date',
 				'order'   => 'DESC',
@@ -747,7 +747,7 @@ class Scraper_Auto_Shop_Plugin {
 			$raw_posts = get_posts( array(
 				'post_type'      => 'product',
 				'post_status'    => 'publish',
-				'posts_per_page' => -1, /* v13.3.5 all */
+				'posts_per_page' => -1, /* v13.3.6 all */
 			) );
 
 			if ( ! empty( $raw_posts ) ) {
@@ -795,7 +795,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.5: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
+	 * v13.3.6: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
 	 * مسیر پروفایل مثل get_profiles_summary چندجا چک می‌شود.
 	 *
 	 * @return array
@@ -823,7 +823,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.5: منبع کاتالوگ ویترین — scraper | woocommerce | merge
+	 * v13.3.6: منبع کاتالوگ ویترین — scraper | woocommerce | merge
 	 */
 	public static function resolve_catalog_source( $settings = null ) {
 		if ( ! is_array( $settings ) ) {
@@ -1096,7 +1096,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
-		/* v13.3.5: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
+		/* v13.3.6: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
 		$need_woo = ( $source === 'merge' ) || empty( $products );
 		if ( $need_woo ) {
 			$woo_list = self::get_woocommerce_native_products();
@@ -1672,7 +1672,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.5: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
+	 * v13.3.6: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
 	 *
 	 * @param string $font_key
 	 * @return bool
@@ -4570,7 +4570,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 
 	/**
-	 * v13.3.5: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
+	 * v13.3.6: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
 	 *
 	 * @param string $html Raw AI / stored description.
 	 * @return string Safe HTML fragment.
@@ -4689,7 +4689,7 @@ class Scraper_Auto_Shop_Plugin {
 		delete_transient( $lock_key );
 
 		if ( $filled_prod && is_array( $filled_prod ) ) {
-			/* v13.3.5: HTML خام entity-encoded را قبل از ذخیره پاک کن */
+			/* v13.3.6: HTML خام entity-encoded را قبل از ذخیره پاک کن */
 			foreach ( array( 'long_desc', 'longDesc', 'description', 'desc' ) as $fk ) {
 				if ( ! empty( $filled_prod[ $fk ] ) && is_string( $filled_prod[ $fk ] ) ) {
 					$filled_prod[ $fk ] = self::sanitize_product_description_html( $filled_prod[ $fk ] );
@@ -4907,7 +4907,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
 		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
-		// v13.3.5: HTML واقعی برای PDP (نه entity-encoded)
+		// v13.3.6: HTML واقعی برای PDP (نه entity-encoded)
 		$desc_out = self::sanitize_product_description_html( $desc );
 		$short_clean = trim( html_entity_decode( wp_strip_all_tags( $short ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 		if ( $desc_out === '' && $short_clean !== '' ) {
@@ -4925,7 +4925,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
 			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
 		}
-		/* v13.3.5: متن تنوع بلند (جمله) را نشان نده */
+		/* v13.3.6: متن تنوع بلند (جمله) را نشان نده */
 		if ( $variations_text !== '' && mb_strlen( $variations_text, 'UTF-8' ) > 160 ) {
 			$variations_text = '';
 		}
@@ -6397,7 +6397,7 @@ class Scraper_Auto_Shop_Plugin {
 		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
 		$site     = get_bloginfo( 'name' );
 		// Prefer PHP proxy URLs so shop works even when /asset/*.js is missing or blocked by host.
-		$ver = '13.3.5';
+		$ver = '13.3.6';
 		$css_url  = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url   = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Fail only if neither disk files NOR embedded payload exist (v13.1.5+ embeds JS/CSS).
@@ -6426,7 +6426,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.5' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.6' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6487,7 +6487,7 @@ img{max-width:100%;height:auto}
 		$products = self::get_all_scraped_products();
 		$total_catalog = is_array( $products ) ? count( $products ) : 0;
 
-		/* v13.3.5: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
+		/* v13.3.6: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
 		   payload lean است (بدون گالری/توضیح بلند) تا TTFB سبک بماند. */
 		$safe_products = array();
 		foreach ( (array) $products as $p ) {
@@ -6630,7 +6630,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.5',
+				'version'     => '13.3.6',
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
 				'total_count' => isset( $total_catalog ) ? (int) $total_catalog : count( $safe_products ),
@@ -6643,7 +6643,7 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.3.5';
+		$ver = '13.3.6';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
@@ -6655,7 +6655,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.5 -->
+		<!-- AMPHP Storefront v13.3.6 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -6737,7 +6737,7 @@ img{max-width:100%;height:auto}
 			'yekan'     => array( 'label' => 'یکان', 'stack' => 'Yekan,' . $fb, 'css' => '', 'face' => '' ),
 			'estedad'   => array( 'label' => 'استعداد', 'stack' => 'Estedad,' . $fb, 'css' => '', 'face' => '' ),
 		);
-		/* v13.3.5: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
+		/* v13.3.6: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
 		$server_key = 'vazirmatn';
 		try {
 			$st = self::get_settings();
@@ -6877,7 +6877,7 @@ img{max-width:100%;height:auto}
 	 */
 	public static function storefront_asset_url( $file ) {
 		$file = basename( (string) $file );
-		$ver = '13.3.5';
+		$ver = '13.3.6';
 		return add_query_arg(
 			array(
 				'amphp_sf' => $file,
@@ -7083,7 +7083,7 @@ img{max-width:100%;height:auto}
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			delete_transient( 'scraper_shop_cached_products' );
-			/* v13.3.5: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
+			/* v13.3.6: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
 			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
 			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;
@@ -7489,79 +7489,67 @@ img{max-width:100%;height:auto}
 							<span class="field-badge field-badge-blue">طراحی لوکس اختصاصی</span>
 						</div>
 
-						<!-- 🎛️ سیستم کنترل دوگانه وضعیت فروشگاه (۴ حالت ممکن) -->
-\t\t\t\t\t\t<?php
-\t\t\t\t\t\t$__cs = sanitize_key( (string) ( $opts['catalog_source'] ?? '' ) );
-\t\t\t\t\t\tif ( ! in_array( $__cs, array( 'scraper', 'woocommerce', 'merge' ), true ) ) {
-\t\t\t\t\t\t\t$__cs = ! empty( $opts['enable_scraped_products'] ) ? 'scraper' : 'woocommerce';
-\t\t\t\t\t\t}
-\t\t\t\t\t\t$__mp = sanitize_key( (string) ( $opts['catalog_merge_prefer'] ?? 'scraper' ) );
-\t\t\t\t\t\tif ( ! in_array( $__mp, array( 'scraper', 'woocommerce', 'keep_both' ), true ) ) {
-\t\t\t\t\t\t\t$__mp = 'scraper';
-\t\t\t\t\t\t}
-\t\t\t\t\t\t?>
-\t\t\t\t\t\t<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
-\t\t\t\t\t\t\t<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-\t\t\t\t\t\t\t\t<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">
-\t\t\t\t\t\t\t\t\t<span>🎛️</span> کنترل قالب و منبع محصولات ویترین
-\t\t\t\t\t\t\t\t</h4>
-\t\t\t\t\t\t\t\t<span style="background:#7c3aed; color:#fff; font-size:0.75rem; font-weight:800; padding:4px 12px; border-radius:20px;">
-\t\t\t\t\t\t\t\t\tv13.3.5 · ادغام اسکرپر + ووکامرس
-\t\t\t\t\t\t\t\t</span>
-\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t<p style="margin:0 0 16px; font-size:0.88rem; color:#334155; line-height:1.7;">
-\t\t\t\t\t\t\t\tظاهر ویترین را با تیک زیر، و <strong>منبع کالاهای نمایش‌داده‌شده</strong> را با سه حالت اسکرپر / ووکامرس / <strong>ادغام هر دو</strong> تنظیم کنید.
-\t\t\t\t\t\t\t</p>
-
-\t\t\t\t\t\t\t<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-bottom:16px;">
-\t\t\t\t\t\t\t\t<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; transition:all 0.2s;" id="labelStoreTakeover">
-\t\t\t\t\t\t\t\t\t<div style="display:flex; align-items:center; gap:10px;">
-\t\t\t\t\t\t\t\t\t\t<input type="checkbox" name="enable_shop_takeover" id="chkStoreTakeover" value="1" <?php checked( ! empty( $opts['enable_shop_takeover'] ) ); ?> style="width:20px; height:20px; accent-color:#2563eb;">
-\t\t\t\t\t\t\t\t\t\t<strong style="font-size:1rem; color:#0f172a;">فعال‌سازی پوسته، هدر و منوی مدرن اختصاصی</strong>
-\t\t\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t\t\t<div style="font-size:0.82rem; color:#64748b; line-height:1.65; padding-right:30px;">
-\t\t\t\t\t\t\t\t\t\t✅ هدر و منوی قالب وردپرس برداشته و هدر اختصاصی فعال می‌شود.<br>
-\t\t\t\t\t\t\t\t\t\t❌ با برداشتن، ظاهر به قالب اصلی وردپرس برمی‌گردد.
-\t\t\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t\t</label>
-
-\t\t\t\t\t\t\t\t<div style="background:#ffffff; border:1.5px solid #a78bfa; border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:12px;" id="labelCatalogSource">
-\t\t\t\t\t\t\t\t\t<strong style="font-size:1rem; color:#0f172a;">📦 منبع محصولات ویترین</strong>
-\t\t\t\t\t\t\t\t\t<p style="margin:0; font-size:0.8rem; color:#64748b; line-height:1.6;">کدام کالاها در فروشگاه React نمایش داده شوند؟</p>
-
-\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo $__cs === 'scraper' ? '#10b981' : '#e2e8f0'; ?>; background:<?php echo $__cs === 'scraper' ? '#ecfdf5' : '#f8fafc'; ?>; cursor:pointer;">
-\t\t\t\t\t\t\t\t\t\t<input type="radio" name="catalog_source" id="catSrcScraper" value="scraper" <?php checked( $__cs, 'scraper' ); ?> style="margin-top:3px; accent-color:#10b981;">
-\t\t\t\t\t\t\t\t\t\t<span><strong style="color:#047857;">فقط پروفایل‌های اسکرپر</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">محصولات profiles.json با ضریب سود اسکرپر</span></span>
-\t\t\t\t\t\t\t\t\t</label>
-
-\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo $__cs === 'woocommerce' ? '#2563eb' : '#e2e8f0'; ?>; background:<?php echo $__cs === 'woocommerce' ? '#eff6ff' : '#f8fafc'; ?>; cursor:pointer;">
-\t\t\t\t\t\t\t\t\t\t<input type="radio" name="catalog_source" id="catSrcWoo" value="woocommerce" <?php checked( $__cs, 'woocommerce' ); ?> style="margin-top:3px; accent-color:#2563eb;">
-\t\t\t\t\t\t\t\t\t\t<span><strong style="color:#1d4ed8;">فقط محصولات ووکامرس</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">کاتالوگ publish دیتابیس ووکامرس</span></span>
-\t\t\t\t\t\t\t\t\t</label>
-
-\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo $__cs === 'merge' ? '#7c3aed' : '#e2e8f0'; ?>; background:<?php echo $__cs === 'merge' ? '#f5f3ff' : '#f8fafc'; ?>; cursor:pointer;">
-\t\t\t\t\t\t\t\t\t\t<input type="radio" name="catalog_source" id="catSrcMerge" value="merge" <?php checked( $__cs, 'merge' ); ?> style="margin-top:3px; accent-color:#7c3aed;">
-\t\t\t\t\t\t\t\t\t\t<span><strong style="color:#6d28d9;">🔀 ادغام اسکرپر + ووکامرس</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">هر دو منبع در یک ویترین</span></span>
-\t\t\t\t\t\t\t\t\t</label>
-
-\t\t\t\t\t\t\t\t\t<div id="mergePreferBox" style="margin-top:4px; padding:12px; border-radius:10px; background:#faf5ff; border:1px dashed #c4b5fd; <?php echo $__cs === 'merge' ? '' : 'display:none;'; ?>">
-\t\t\t\t\t\t\t\t\t\t<div style="font-size:0.8rem; font-weight:800; color:#5b21b6; margin-bottom:8px;">در صورت تکراری بودن کالا (عنوان/SKU یکسان):</div>
-\t\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; margin-bottom:6px; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="scraper" <?php checked( $__mp, 'scraper' ); ?> style="accent-color:#7c3aed;"> اولویت با <strong>اسکرپر</strong></label>
-\t\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; margin-bottom:6px; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="woocommerce" <?php checked( $__mp, 'woocommerce' ); ?> style="accent-color:#7c3aed;"> اولویت با <strong>ووکامرس</strong></label>
-\t\t\t\t\t\t\t\t\t\t<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="keep_both" <?php checked( $__mp, 'keep_both' ); ?> style="accent-color:#7c3aed;"> <strong>هر دو را نگه دار</strong></label>
-\t\t\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t\t\t<input type="checkbox" name="enable_scraped_products" id="chkScrapedProducts" value="1" <?php checked( $__cs !== 'woocommerce' ); ?> style="display:none;" aria-hidden="true">
-\t\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t</div>
-
-\t\t\t\t\t\t\t<div id="boxDualStateIndicator" style="background:#ffffff; border:1.5px dashed #2563eb; border-radius:12px; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-\t\t\t\t\t\t\t\t<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-\t\t\t\t\t\t\t\t\t<span style="font-size:0.85rem; color:#64748b;">وضعیت فعال فروشگاه:</span>
-\t\t\t\t\t\t\t\t\t<strong id="dualStateTitle" style="font-size:0.95rem; color:#1d4ed8;">—</strong>
-\t\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t\t\t<div id="dualStateDesc" style="font-size:0.84rem; color:#475569; line-height:1.5; width:100%;">—</div>
-\t\t\t\t\t\t\t</div>
-\t\t\t\t\t\t</div>
+						<?php
+						$catalog_src = sanitize_key( (string) ( $opts['catalog_source'] ?? '' ) );
+						if ( ! in_array( $catalog_src, array( 'scraper', 'woocommerce', 'merge' ), true ) ) {
+							$catalog_src = ! empty( $opts['enable_scraped_products'] ) ? 'scraper' : 'woocommerce';
+						}
+						$merge_pref = sanitize_key( (string) ( $opts['catalog_merge_prefer'] ?? 'scraper' ) );
+						if ( ! in_array( $merge_pref, array( 'scraper', 'woocommerce', 'keep_both' ), true ) ) {
+							$merge_pref = 'scraper';
+						}
+						?>
+						<!-- v13.3.6: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
+						<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
+							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+								<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">
+									<span>🎛️</span> کنترل قالب و منبع محصولات ویترین
+								</h4>
+								<span style="background:#7c3aed; color:#fff; font-size:0.75rem; font-weight:800; padding:4px 12px; border-radius:20px;">ادغام اسکرپر + ووکامرس</span>
+							</div>
+							<p style="margin:0 0 16px; font-size:0.88rem; color:#334155; line-height:1.7;">
+								ظاهر ویترین را با تیک زیر، و <strong>منبع کالاهای نمایش‌داده‌شده</strong> را با سه حالت اسکرپر / ووکامرس / <strong>ادغام هر دو</strong> تنظیم کنید.
+							</p>
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-bottom:16px;">
+								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:10px;" id="labelStoreTakeover">
+									<div style="display:flex; align-items:center; gap:10px;">
+										<input type="checkbox" name="enable_shop_takeover" id="chkStoreTakeover" value="1" <?php checked( ! empty( $opts['enable_shop_takeover'] ) ); ?> style="width:20px; height:20px; accent-color:#2563eb;">
+										<strong style="font-size:1rem; color:#0f172a;">فعال‌سازی پوسته، هدر و منوی مدرن اختصاصی</strong>
+									</div>
+									<div style="font-size:0.82rem; color:#64748b; line-height:1.65; padding-right:30px;">
+										✅ هدر و منوی قالب وردپرس برداشته و هدر اختصاصی فعال می‌شود.<br>
+										❌ با برداشتن، ظاهر به قالب اصلی وردپرس برمی‌گردد.
+									</div>
+								</label>
+								<div style="background:#ffffff; border:1.5px solid #a78bfa; border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:12px;" id="labelCatalogSource">
+									<strong style="font-size:1rem; color:#0f172a;">📦 منبع محصولات ویترین</strong>
+									<p style="margin:0; font-size:0.8rem; color:#64748b; line-height:1.6;">کدام کالاها در فروشگاه React نمایش داده شوند؟</p>
+									<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo ( 'scraper' === $catalog_src ) ? '#10b981' : '#e2e8f0'; ?>; background:<?php echo ( 'scraper' === $catalog_src ) ? '#ecfdf5' : '#f8fafc'; ?>; cursor:pointer;">
+										<input type="radio" name="catalog_source" id="catSrcScraper" value="scraper" <?php checked( $catalog_src, 'scraper' ); ?> style="margin-top:3px; accent-color:#10b981;">
+										<span><strong style="color:#047857;">فقط پروفایل‌های اسکرپر</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">محصولات profiles.json با ضریب سود اسکرپر</span></span>
+									</label>
+									<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo ( 'woocommerce' === $catalog_src ) ? '#2563eb' : '#e2e8f0'; ?>; background:<?php echo ( 'woocommerce' === $catalog_src ) ? '#eff6ff' : '#f8fafc'; ?>; cursor:pointer;">
+										<input type="radio" name="catalog_source" id="catSrcWoo" value="woocommerce" <?php checked( $catalog_src, 'woocommerce' ); ?> style="margin-top:3px; accent-color:#2563eb;">
+										<span><strong style="color:#1d4ed8;">فقط محصولات ووکامرس</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">کاتالوگ publish دیتابیس ووکامرس</span></span>
+									</label>
+									<label style="display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; border:1.5px solid <?php echo ( 'merge' === $catalog_src ) ? '#7c3aed' : '#e2e8f0'; ?>; background:<?php echo ( 'merge' === $catalog_src ) ? '#f5f3ff' : '#f8fafc'; ?>; cursor:pointer;">
+										<input type="radio" name="catalog_source" id="catSrcMerge" value="merge" <?php checked( $catalog_src, 'merge' ); ?> style="margin-top:3px; accent-color:#7c3aed;">
+										<span><strong style="color:#6d28d9;">ادغام اسکرپر + ووکامرس</strong><span style="display:block; font-size:0.78rem; color:#64748b; margin-top:2px;">هر دو منبع در یک ویترین</span></span>
+									</label>
+									<div id="mergePreferBox" style="margin-top:4px; padding:12px; border-radius:10px; background:#faf5ff; border:1px dashed #c4b5fd;<?php echo ( 'merge' === $catalog_src ) ? '' : ' display:none;'; ?>">
+										<div style="font-size:0.8rem; font-weight:800; color:#5b21b6; margin-bottom:8px;">در صورت تکراری بودن کالا (عنوان/SKU یکسان):</div>
+										<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; margin-bottom:6px; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="scraper" <?php checked( $merge_pref, 'scraper' ); ?> style="accent-color:#7c3aed;"> اولویت با <strong>اسکرپر</strong></label>
+										<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; margin-bottom:6px; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="woocommerce" <?php checked( $merge_pref, 'woocommerce' ); ?> style="accent-color:#7c3aed;"> اولویت با <strong>ووکامرس</strong></label>
+										<label style="display:flex; gap:8px; align-items:center; font-size:0.8rem; cursor:pointer;"><input type="radio" name="catalog_merge_prefer" value="keep_both" <?php checked( $merge_pref, 'keep_both' ); ?> style="accent-color:#7c3aed;"> <strong>هر دو را نگه دار</strong></label>
+									</div>
+									<input type="checkbox" name="enable_scraped_products" id="chkScrapedProducts" value="1" <?php checked( 'woocommerce' !== $catalog_src ); ?> style="position:absolute;left:-9999px;opacity:0;width:1px;height:1px;" tabindex="-1" aria-hidden="true">
+								</div>
+							</div>
+							<div id="boxDualStateIndicator" style="background:#ffffff; border:1.5px dashed #2563eb; border-radius:12px; padding:14px 18px; display:flex; flex-wrap:wrap; gap:12px;">
+								<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"><span style="font-size:0.85rem; color:#64748b;">وضعیت فعال فروشگاه:</span> <strong id="dualStateTitle" style="font-size:0.95rem; color:#1d4ed8;">—</strong></div>
+								<div id="dualStateDesc" style="font-size:0.84rem; color:#475569; line-height:1.5; width:100%;">—</div>
+							</div>
+						</div>
 
 						<!-- Visual eCommerce Storefront Templates Selector -->
 						<div style="margin-bottom:24px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:20px;">
@@ -10666,34 +10654,35 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				});
 			});
 
-\t\t\tfunction updateDualStateUI() {
-\t\t\t\tvar hasTakeover = $('#chkStoreTakeover').is(':checked');
-\t\t\t\tvar catSrc = $('input[name="catalog_source"]:checked').val() || 'scraper';
-\t\t\t\tvar $box = $('#boxDualStateIndicator');
-\t\t\t\tvar $title = $('#dualStateTitle');
-\t\t\t\tvar $desc = $('#dualStateDesc');
-\t\t\t\t$('#labelStoreTakeover').css('border-color', hasTakeover ? '#2563eb' : '#cbd5e1');
-\t\t\t\t$('#labelCatalogSource').css('border-color', catSrc === 'merge' ? '#7c3aed' : (catSrc === 'woocommerce' ? '#2563eb' : '#10b981'));
-\t\t\t\t$('#mergePreferBox').toggle(catSrc === 'merge');
-\t\t\t\t$('#chkScrapedProducts').prop('checked', catSrc !== 'woocommerce');
-\t\t\t\tvar themeTxt = hasTakeover ? 'ویترین و هدر اختصاصی React' : 'قالب و هدر اصلی وردپرس';
-\t\t\t\tif (catSrc === 'merge') {
-\t\t\t\t\t$box.css({background: '#f5f3ff', borderColor: '#7c3aed'});
-\t\t\t\t\t$title.css('color', '#6d28d9').html('🔀 ' + themeTxt + ' + ادغام کاتالوگ');
-\t\t\t\t\t$desc.html('محصولات پروفایل‌های اسکرپر و کالاهای publish ووکامرس با هم در ویترین می‌آیند. تکراری‌ها طبق «اولویت ادغام» مدیریت می‌شوند.');
-\t\t\t\t} else if (catSrc === 'woocommerce') {
-\t\t\t\t\t$box.css({background: hasTakeover ? '#eff6ff' : '#f8fafc', borderColor: '#2563eb'});
-\t\t\t\t\t$title.css('color', '#1d4ed8').html('🛒 ' + themeTxt + ' + محصولات ووکامرس');
-\t\t\t\t\t$desc.html('کاتالوگ ویترین مستقیماً از دیتابیس ووکامرس خوانده می‌شود.');
-\t\t\t\t} else {
-\t\t\t\t\t$box.css({background: hasTakeover ? '#ecfdf5' : '#fffbeb', borderColor: '#10b981'});
-\t\t\t\t\t$title.css('color', '#047857').html('🌟 ' + themeTxt + ' + محصولات اسکرپر');
-\t\t\t\t\t$desc.html('محصولات profiles.json اسکرپر در ویترین نمایش می‌یابند. اگر خالی باشد، fallback به ووکامرس.');
-\t\t\t\t}
-\t\t\t}
-\t\t\t$('#chkStoreTakeover').on('change', updateDualStateUI);
-\t\t\t$('input[name="catalog_source"], input[name="catalog_merge_prefer"]').on('change', updateDualStateUI);
-\t\t\tupdateDualStateUI();
+						function updateDualStateUI() {
+				var hasTakeover = $('#chkStoreTakeover').is(':checked');
+				var catSrc = $('input[name="catalog_source"]:checked').val() || 'scraper';
+				var $box = $('#boxDualStateIndicator');
+				var $title = $('#dualStateTitle');
+				var $desc = $('#dualStateDesc');
+				$('#labelStoreTakeover').css('border-color', hasTakeover ? '#2563eb' : '#cbd5e1');
+				$('#labelCatalogSource').css('border-color', catSrc === 'merge' ? '#7c3aed' : (catSrc === 'woocommerce' ? '#2563eb' : '#10b981'));
+				$('#mergePreferBox').toggle(catSrc === 'merge');
+				$('#chkScrapedProducts').prop('checked', catSrc !== 'woocommerce');
+				var themeTxt = hasTakeover ? 'ویترین و هدر اختصاصی React' : 'قالب و هدر اصلی وردپرس';
+				if (catSrc === 'merge') {
+					$box.css({background: '#f5f3ff', borderColor: '#7c3aed'});
+					$title.css('color', '#6d28d9').html('🔀 ' + themeTxt + ' + ادغام کاتالوگ');
+					$desc.html('محصولات پروفایل‌های اسکرپر و کالاهای publish ووکامرس با هم در ویترین می‌آیند. تکراری‌ها طبق «اولویت ادغام» مدیریت می‌شوند.');
+				} else if (catSrc === 'woocommerce') {
+					$box.css({background: hasTakeover ? '#eff6ff' : '#f8fafc', borderColor: '#2563eb'});
+					$title.css('color', '#1d4ed8').html('🛒 ' + themeTxt + ' + محصولات ووکامرس');
+					$desc.html('کاتالوگ ویترین مستقیماً از دیتابیس ووکامرس خوانده می‌شود.');
+				} else {
+					$box.css({background: hasTakeover ? '#ecfdf5' : '#fffbeb', borderColor: '#10b981'});
+					$title.css('color', '#047857').html('🌟 ' + themeTxt + ' + محصولات اسکرپر');
+					$desc.html('محصولات profiles.json اسکرپر در ویترین نمایش می‌یابند. اگر خالی باشد، fallback به ووکامرس.');
+				}
+			}
+			$('#chkStoreTakeover').on('change', updateDualStateUI);
+			$('input[name="catalog_source"], input[name="catalog_merge_prefer"]').on('change', updateDualStateUI);
+			updateDualStateUI();
+
 
 			// Quick Preset Questions
 			$('.btn-quick-preset').on('click', function(e){

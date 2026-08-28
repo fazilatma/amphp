@@ -2238,6 +2238,18 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return array
 	 */
 	public static function filter_cron_schedules( $schedules ) {
+		if ( ! isset( $schedules['every_minute'] ) ) {
+			$schedules['every_minute'] = array(
+				'interval' => 60,
+				'display'  => '⚡ هر ۱ دقیقه یک‌بار (فوق‌سریع - مخصوص پاسخ آنی و اعلان‌های مشتری)',
+			);
+		}
+		if ( ! isset( $schedules['every_5_mins'] ) ) {
+			$schedules['every_5_mins'] = array(
+				'interval' => 5 * MINUTE_IN_SECONDS,
+				'display'  => 'هر ۵ دقیقه یک‌بار (سریع)',
+			);
+		}
 		if ( ! isset( $schedules['every_15_mins'] ) ) {
 			$schedules['every_15_mins'] = array(
 				'interval' => 15 * MINUTE_IN_SECONDS,
@@ -2305,6 +2317,21 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	public static function execute_scraper_cron_job() {
 		@set_time_limit( 300 );
+
+		// Concurrency protection: prevent overlapping executions if a previous scrape is still running
+		if ( get_transient( 'scraper_cron_is_executing' ) ) {
+			self::process_pending_chat_alerts();
+			return array(
+				'time'      => time(),
+				'date_fa'   => date_i18n( 'Y/m/d H:i:s' ),
+				'status'    => 'skipped',
+				'http_code' => 200,
+				'took_sec'  => 0.05,
+				'message'   => 'کران قبلی هنوز فعال است؛ برای جلوگیری از بار اضافی اسکرپ رد شد، اما صف اعلان پیام‌ها بررسی و ارسال گردید.',
+			);
+		}
+		set_transient( 'scraper_cron_is_executing', 1, 120 ); // Lock for 2 minutes
+
 		$t0 = microtime( true );
 		$scraper_cron_url = plugins_url( 'scraper4.php?cron_run=1', __FILE__ );
 
@@ -2353,7 +2380,49 @@ class Scraper_Auto_Shop_Plugin {
 		);
 
 		update_option( 'scraper_wpcron_last_run', $record );
+		delete_transient( 'scraper_cron_is_executing' );
+		self::process_pending_chat_alerts();
 		return $record;
+	}
+
+	/**
+	 * Process any pending un-notified chat messages or retries.
+	 */
+	public static function process_pending_chat_alerts() {
+		$threads_file = plugin_dir_path( __FILE__ ) . 'chat_threads.json';
+		if ( ! file_exists( $threads_file ) ) {
+			return;
+		}
+		$threads = @json_decode( file_get_contents( $threads_file ), true );
+		if ( ! is_array( $threads ) ) {
+			return;
+		}
+
+		$changed = false;
+		$settings = self::get_settings();
+
+		foreach ( $threads as $sid => &$thr ) {
+			if ( ! empty( $thr['unread_by_admin'] ) && empty( $thr['last_notified_time'] ) ) {
+				$msg_count = count( $thr['messages'] ?? array() );
+				$last_msg  = $thr['messages'][ $msg_count - 1 ]['message'] ?? '';
+				if ( ! empty( $last_msg ) ) {
+					$alert_text = "🚨 یادآوری پیام معلق مشتری (کران‌جاب ۱ دقیقه‌ای):\n"
+						. "👤 مشتری: " . ( $thr['name'] ?? 'ناشناس' ) . "\n"
+						. "📞 تماس: " . ( $thr['phone'] ?? '—' ) . "\n"
+						. "💬 متن پیام: «{$last_msg}»\n"
+						. "⏰ زمان ارسال: " . ( $thr['last_time'] ?? '' ) . "\n"
+						. "🔗 پاسخ سریع در پیشخوان وردپرس";
+					self::send_message_to_messengers( $alert_text, $settings );
+					$thr['last_notified_time'] = time();
+					$changed = true;
+				}
+			}
+		}
+		unset( $thr );
+
+		if ( $changed ) {
+			@file_put_contents( $threads_file, json_encode( $threads, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+		}
 	}
 
 	/**
@@ -2396,6 +2465,8 @@ class Scraper_Auto_Shop_Plugin {
 		$next_ts    = wp_next_scheduled( $hook );
 
 		$interval_labels = array(
+			'every_minute'  => '⚡ هر ۱ دقیقه یک‌بار (فوق‌سریع - پاسخ آنی به پیام مشتریان)',
+			'every_5_mins'  => 'هر ۵ دقیقه یک‌بار (سریع)',
 			'every_15_mins' => 'هر ۱۵ دقیقه یک‌بار (بسیار پرسرعت)',
 			'every_30_mins' => 'هر ۳۰ دقیقه یک‌بار (توصیه شده)',
 			'hourly'        => 'هر ۱ ساعت یک‌بار',
@@ -10788,6 +10859,20 @@ class Scraper_Auto_Shop_Plugin {
 								</button>
 							</div>
 							<div id="wpCronRunNowStatus" style="display:none; margin-top:10px; padding:10px 14px; border-radius:8px; font-size:0.88rem;"></div>
+
+							<!-- راهنمای تضمینی کران‌جاب ۱ دقیقه‌ای سرور -->
+							<div style="background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:10px; padding:16px 18px; margin-top:18px;">
+								<div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+									<span style="font-size:1.3rem;">⚡</span>
+									<strong style="color:#0f172a; font-size:0.95rem;">راهکار تضمینی اجرای دقیق راس هر ۱ دقیقه (حتی بدون هیچ بازدیدکننده):</strong>
+								</div>
+								<p style="color:#475569; font-size:0.86rem; line-height:1.7; margin:0 0 10px 0;">
+									<strong>نکته مهم:</strong> اعلان پیام‌های مشتری به محض ارسال در چت، به صورت <strong>کاملاً آنی (زیر ۱ ثانیه)</strong> به پیام‌رسان‌های بله، تلگرام و روبیکا فرستاده می‌شود. علاوه بر آن، با انتخاب بازه «هر ۱ دقیقه یک‌بار»، کران‌جاب هر ۶۰ ثانیه صف پیام‌های معلق را بازرسی می‌کند. برای اینکه این چرخه حتی وقتی هیچ کاربری در سایت آنلاین نیست دقیقاً کار کند، می‌توانید دستور زیر را در بخش <strong>Cron Jobs کنترل‌پنل هاست (cPanel / DirectAdmin)</strong> قرار دهید:
+								</p>
+								<div style="background:#0f172a; color:#38bdf8; font-family:monospace; padding:12px 16px; border-radius:8px; font-size:0.88rem; direction:ltr; text-align:left; user-select:all; overflow-x:auto; border:1px solid #334155;">
+									* * * * * wget -q -O - "<?php echo esc_url( site_url( '/wp-cron.php?doing_wp_cron' ) ); ?>" >/dev/null 2>&1
+								</div>
+							</div>
 						</div>
 					</div>
 

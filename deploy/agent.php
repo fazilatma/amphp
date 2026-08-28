@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.14
+ * Version: 13.3.15
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -101,6 +101,9 @@ class Scraper_Auto_Shop_Plugin {
 			'ai_image_batch_size'         => 8,
 			'ai_image_sideload'           => true,
 			'ai_image_search_lang'        => 'fa',
+			'enable_google_image_search'  => true,
+			'google_cse_api_key'          => '',
+			'google_cse_cx'               => '',
 
 			// Pricing & Profit
 			'price_markup_percent'        => 20,
@@ -2023,6 +2026,7 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return array list of [url, title, source]
 	 */
 	public static function search_product_image_candidates( $title, $category = '' ) {
+		$settings = self::get_settings();
 		$q = trim( $title . ( $category ? ' ' . $category : '' ) . ' محصول' );
 		$q = preg_replace( '/\s+/u', ' ', $q );
 		$out = array();
@@ -2033,8 +2037,11 @@ class Scraper_Auto_Shop_Plugin {
 			if ( $url === '' || self::is_bad_product_image( $url ) ) {
 				return;
 			}
-			// skip logos / icons by size hints in URL
 			if ( preg_match( '/\/(logo|icon|sprite|favicon|banner)s?\//i', $url ) ) {
+				return;
+			}
+			// skip google UI chrome
+			if ( preg_match( '/google\.(com|co\.[a-z]+)\/(logos|images\/branding|gen_204)/i', $url ) ) {
 				return;
 			}
 			$key = md5( preg_replace( '/\?.*$/', '', $url ) );
@@ -2045,67 +2052,134 @@ class Scraper_Auto_Shop_Plugin {
 			$out[] = array( 'url' => $url, 'title' => (string) $t, 'source' => (string) $src );
 		};
 
-		// 1) DuckDuckGo image JSON (no key)
-		try {
-			$ddg = add_query_arg( array(
-				'q'    => $q,
-				'iax'  => 'images',
-				'ia'   => 'images',
-				'o'    => 'json',
-				'vqd'  => '1',
-			), 'https://duckduckgo.com/' );
-			// Better: i.js endpoint needs vqd — use HTML lite scrape of bing images + ddg
-		} catch ( \Throwable $e ) {}
+		$ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+		$hdrs = array(
+			'Accept-Language' => 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+			'Accept'          => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+			'Cache-Control'   => 'no-cache',
+		);
 
-		// Bing image search HTML
-		try {
-			$bing_url = 'https://www.bing.com/images/search?q=' . rawurlencode( $q ) . '&qft=+filterui:photo-photo&form=IRFLTR';
-			$res = wp_remote_get( $bing_url, array(
-				'timeout'    => 12,
-				'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-				'headers'    => array(
-					'Accept-Language' => 'fa-IR,fa;q=0.9,en;q=0.8',
-					'Accept'          => 'text/html',
-				),
-			) );
-			if ( ! is_wp_error( $res ) && wp_remote_retrieve_response_code( $res ) < 400 ) {
-				$body = (string) wp_remote_retrieve_body( $res );
-				// murl":"https://...
-				if ( preg_match_all( '/murl&quot;:&quot;(https?:\\\\\/\\\\\/[^&]+)&quot;/', $body, $mm ) ) {
-					foreach ( $mm[1] as $raw ) {
-						$u = str_replace( array( '\\/', '\\u0026' ), array( '/', '&' ), $raw );
-						$u = html_entity_decode( urldecode( $u ) );
-						$add( $u, $title, 'bing' );
-						if ( count( $out ) >= 12 ) {
-							break;
+		/* ---- 1) Google Custom Search API (optional keys) — most reliable ---- */
+		$gkey = trim( (string) ( $settings['google_cse_api_key'] ?? '' ) );
+		$gcx  = trim( (string) ( $settings['google_cse_cx'] ?? '' ) );
+		if ( $gkey !== '' && $gcx !== '' ) {
+			try {
+				$api = add_query_arg( array(
+					'key'        => $gkey,
+					'cx'         => $gcx,
+					'q'          => $q,
+					'searchType' => 'image',
+					'num'        => 10,
+					'safe'       => 'active',
+					'imgType'    => 'photo',
+					'hl'         => 'fa',
+				), 'https://www.googleapis.com/customsearch/v1' );
+				$res = wp_remote_get( $api, array(
+					'timeout'    => 12,
+					'user-agent' => 'AMPHP-Storefront/13.3',
+					'headers'    => array( 'Accept' => 'application/json' ),
+				) );
+				if ( ! is_wp_error( $res ) && wp_remote_retrieve_response_code( $res ) < 400 ) {
+					$data = json_decode( (string) wp_remote_retrieve_body( $res ), true );
+					foreach ( (array) ( $data['items'] ?? array() ) as $item ) {
+						$u = $item['link'] ?? '';
+						if ( empty( $u ) && ! empty( $item['image']['contextLink'] ) ) {
+							/* prefer direct image link */
+						}
+						$add( $u, $item['title'] ?? $title, 'google_cse' );
+						if ( ! empty( $item['image']['thumbnailLink'] ) ) {
+							/* thumb only as last resort — skip small thumbs */
 						}
 					}
 				}
-				if ( count( $out ) < 4 && preg_match_all( '/"murl":"(https?:\\\\\/\\\\\/[^"]+)"/', $body, $mm2 ) ) {
-					foreach ( $mm2[1] as $raw ) {
-						$u = stripcslashes( $raw );
-						$u = str_replace( '\\/', '/', $u );
-						$add( $u, $title, 'bing' );
-						if ( count( $out ) >= 12 ) {
-							break;
-						}
-					}
-				}
-				// mediaurl=
-				if ( count( $out ) < 4 && preg_match_all( '/mediaurl=([^&"]+)/i', $body, $mm3 ) ) {
-					foreach ( $mm3[1] as $enc ) {
-						$u = urldecode( $enc );
-						$add( $u, $title, 'bing' );
-						if ( count( $out ) >= 12 ) {
-							break;
-						}
-					}
-				}
-			}
-		} catch ( \Throwable $e ) {}
+			} catch ( \Throwable $e ) {}
+		}
 
-		// DuckDuckGo HTML
-		if ( count( $out ) < 3 ) {
+		/* ---- 2) Google Images HTML (tbm=isch) — no API key ---- */
+		if ( ! empty( $settings['enable_google_image_search'] ) && count( $out ) < 8 ) {
+			try {
+				$gurl = 'https://www.google.com/search?' . http_build_query( array(
+					'tbm' => 'isch',
+					'q'   => $q,
+					'hl'  => 'fa',
+					'safe'=> 'active',
+					'ibs' => 'ft',
+				) );
+				$res = wp_remote_get( $gurl, array(
+					'timeout'     => 14,
+					'redirection' => 3,
+					'user-agent'  => $ua,
+					'headers'     => $hdrs,
+				) );
+				if ( ! is_wp_error( $res ) && wp_remote_retrieve_response_code( $res ) < 400 ) {
+					$body = (string) wp_remote_retrieve_body( $res );
+					self::parse_google_images_html( $body, $add, $title );
+				}
+				/* fallback endpoint sometimes used by clients */
+				if ( count( $out ) < 3 ) {
+					$gurl2 = 'https://www.google.com/search?' . http_build_query( array(
+						'tbm'  => 'isch',
+						'q'    => $q,
+						'hl'   => 'en',
+						'safe' => 'active',
+						'tbs'  => 'itp:photo,isz:m',
+					) );
+					$res2 = wp_remote_get( $gurl2, array(
+						'timeout'    => 12,
+						'user-agent' => $ua,
+						'headers'    => $hdrs,
+					) );
+					if ( ! is_wp_error( $res2 ) && wp_remote_retrieve_response_code( $res2 ) < 400 ) {
+						self::parse_google_images_html( (string) wp_remote_retrieve_body( $res2 ), $add, $title );
+					}
+				}
+			} catch ( \Throwable $e ) {}
+		}
+
+		/* ---- 3) Bing image search HTML ---- */
+		if ( count( $out ) < 6 ) {
+			try {
+				$bing_url = 'https://www.bing.com/images/search?q=' . rawurlencode( $q ) . '&qft=+filterui:photo-photo&form=IRFLTR';
+				$res = wp_remote_get( $bing_url, array(
+					'timeout'    => 12,
+					'user-agent' => $ua,
+					'headers'    => $hdrs,
+				) );
+				if ( ! is_wp_error( $res ) && wp_remote_retrieve_response_code( $res ) < 400 ) {
+					$body = (string) wp_remote_retrieve_body( $res );
+					if ( preg_match_all( '/murl&quot;:&quot;(https?:\\\\\/\\\\\/[^&]+)&quot;/', $body, $mm ) ) {
+						foreach ( $mm[1] as $raw ) {
+							$u = str_replace( array( '\\/', '\\u0026' ), array( '/', '&' ), $raw );
+							$u = html_entity_decode( urldecode( $u ) );
+							$add( $u, $title, 'bing' );
+							if ( count( $out ) >= 14 ) {
+								break;
+							}
+						}
+					}
+					if ( count( $out ) < 8 && preg_match_all( '/"murl":"(https?:\\\\\/\\\\\/[^"]+)"/', $body, $mm2 ) ) {
+						foreach ( $mm2[1] as $raw ) {
+							$u = str_replace( '\\/', '/', stripcslashes( $raw ) );
+							$add( $u, $title, 'bing' );
+							if ( count( $out ) >= 14 ) {
+								break;
+							}
+						}
+					}
+					if ( count( $out ) < 8 && preg_match_all( '/mediaurl=([^&"]+)/i', $body, $mm3 ) ) {
+						foreach ( $mm3[1] as $enc ) {
+							$add( urldecode( $enc ), $title, 'bing' );
+							if ( count( $out ) >= 14 ) {
+								break;
+							}
+						}
+					}
+				}
+			} catch ( \Throwable $e ) {}
+		}
+
+		/* ---- 4) DuckDuckGo HTML ---- */
+		if ( count( $out ) < 4 ) {
 			try {
 				$ddg_url = 'https://duckduckgo.com/html/?q=' . rawurlencode( $q . ' filetype:jpg' );
 				$res = wp_remote_get( $ddg_url, array(
@@ -2120,7 +2194,7 @@ class Scraper_Auto_Shop_Plugin {
 							if ( preg_match( '/\.(jpe?g|png|webp)/i', $u ) ) {
 								$add( $u, $title, 'ddg' );
 							}
-							if ( count( $out ) >= 10 ) {
+							if ( count( $out ) >= 12 ) {
 								break;
 							}
 						}
@@ -2129,25 +2203,24 @@ class Scraper_Auto_Shop_Plugin {
 			} catch ( \Throwable $e ) {}
 		}
 
-		// Wikimedia / Commons API (free, stable)
-		if ( count( $out ) < 5 ) {
+		/* ---- 5) Wikimedia Commons ---- */
+		if ( count( $out ) < 6 ) {
 			try {
 				$api = add_query_arg( array(
-					'action'    => 'query',
-					'format'    => 'json',
-					'generator' => 'search',
-					'gsrsearch' => $title,
-					'gsrlimit'  => 8,
-					'gsrnamespace' => 6, // File
-					'prop'      => 'imageinfo',
-					'iiprop'    => 'url|mime|size',
-					'iiurlwidth'=> 800,
+					'action'       => 'query',
+					'format'       => 'json',
+					'generator'    => 'search',
+					'gsrsearch'    => $title,
+					'gsrlimit'     => 8,
+					'gsrnamespace' => 6,
+					'prop'         => 'imageinfo',
+					'iiprop'       => 'url|mime|size',
+					'iiurlwidth'   => 800,
 				), 'https://commons.wikimedia.org/w/api.php' );
 				$res = wp_remote_get( $api, array( 'timeout' => 10, 'user-agent' => 'AMPHP-Storefront/13.3' ) );
 				if ( ! is_wp_error( $res ) ) {
 					$data = json_decode( (string) wp_remote_retrieve_body( $res ), true );
-					$pages = $data['query']['pages'] ?? array();
-					foreach ( (array) $pages as $pg ) {
+					foreach ( (array) ( $data['query']['pages'] ?? array() ) as $pg ) {
 						$info = $pg['imageinfo'][0] ?? null;
 						if ( ! $info ) {
 							continue;
@@ -2156,15 +2229,14 @@ class Scraper_Auto_Shop_Plugin {
 						if ( $mime && strpos( $mime, 'image/' ) !== 0 ) {
 							continue;
 						}
-						$u = $info['thumburl'] ?? $info['url'] ?? '';
-						$add( $u, $pg['title'] ?? $title, 'wikimedia' );
+						$add( $info['thumburl'] ?? $info['url'] ?? '', $pg['title'] ?? $title, 'wikimedia' );
 					}
 				}
 			} catch ( \Throwable $e ) {}
 		}
 
-		// Openverse (Creative Commons) API
-		if ( count( $out ) < 6 ) {
+		/* ---- 6) Openverse ---- */
+		if ( count( $out ) < 8 ) {
 			try {
 				$ov = add_query_arg( array(
 					'q'         => $title,
@@ -2179,14 +2251,77 @@ class Scraper_Auto_Shop_Plugin {
 				if ( ! is_wp_error( $res ) && wp_remote_retrieve_response_code( $res ) < 400 ) {
 					$data = json_decode( (string) wp_remote_retrieve_body( $res ), true );
 					foreach ( (array) ( $data['results'] ?? array() ) as $row ) {
-						$u = $row['url'] ?? $row['thumbnail'] ?? '';
-						$add( $u, $row['title'] ?? $title, 'openverse' );
+						$add( $row['url'] ?? $row['thumbnail'] ?? '', $row['title'] ?? $title, 'openverse' );
 					}
 				}
 			} catch ( \Throwable $e ) {}
 		}
 
-		return array_slice( $out, 0, 12 );
+		/* Prefer google sources first in list */
+		usort( $out, function( $a, $b ) {
+			$rank = array( 'google_cse' => 0, 'google' => 1, 'bing' => 2, 'ddg' => 3, 'openverse' => 4, 'wikimedia' => 5 );
+			$ra = $rank[ $a['source'] ?? '' ] ?? 9;
+			$rb = $rank[ $b['source'] ?? '' ] ?? 9;
+			return $ra <=> $rb;
+		} );
+
+		return array_slice( $out, 0, 14 );
+	}
+
+	/**
+	 * Extract original image URLs from Google Images HTML / embedded JSON.
+	 *
+	 * @param string   $body
+	 * @param callable $add function($url,$title,$src)
+	 * @param string   $title
+	 */
+	public static function parse_google_images_html( $body, $add, $title = '' ) {
+		if ( ! is_callable( $add ) || $body === '' ) {
+			return;
+		}
+		/* Classic: "ou":"https://..." original url in AF_initData / scripts */
+		if ( preg_match_all( '/"ou"\s*:\s*"(https?:\\\\\/\\\\\/[^"]+)"/', $body, $m ) ) {
+			foreach ( $m[1] as $raw ) {
+				$u = stripcslashes( $raw );
+				$u = str_replace( '\\/', '/', $u );
+				$add( $u, $title, 'google' );
+			}
+		}
+		if ( preg_match_all( '/"ou":"(https?:\\\\\/\\\\\/[^"]+)"/', $body, $m2 ) ) {
+			foreach ( $m2[1] as $raw ) {
+				$u = str_replace( '\\/', '/', stripcslashes( $raw ) );
+				$add( $u, $title, 'google' );
+			}
+		}
+		/* ["http…jpg", width, height] patterns in side-channel data */
+		if ( preg_match_all( '/\["(https?:\\\\\/\\\\\/[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)"\s*,\s*\d+\s*,\s*\d+\]/i', $body, $m3 ) ) {
+			foreach ( $m3[1] as $raw ) {
+				$u = str_replace( '\\/', '/', stripcslashes( $raw ) );
+				$add( $u, $title, 'google' );
+			}
+		}
+		/* imgurl= query param */
+		if ( preg_match_all( '/(?:imgurl|imgrefurl)=([^&"\'<>\s]+)/i', $body, $m4 ) ) {
+			foreach ( $m4[1] as $enc ) {
+				$u = urldecode( html_entity_decode( $enc ) );
+				if ( preg_match( '/^https?:\/\//i', $u ) && preg_match( '/\.(jpe?g|png|webp)/i', $u ) ) {
+					$add( $u, $title, 'google' );
+				}
+			}
+		}
+		/* data-src / unescaped https images in JSON blobs */
+		if ( preg_match_all( '/https?:\/\/[^"\'\\\s<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^"\'\\\s<>]*)?/i', $body, $m5 ) ) {
+			$n = 0;
+			foreach ( $m5[0] as $u ) {
+				if ( preg_match( '/encrypted-tbn|gstatic\.com\/images|googleusercontent\.com\/\d/i', $u ) ) {
+					continue; /* skip google thumbnails when possible — prefer originals from ou */
+				}
+				$add( $u, $title, 'google' );
+				if ( ++$n >= 10 ) {
+					break;
+				}
+			}
+		}
 	}
 
 	/**
@@ -8063,7 +8198,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.14' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.15' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -8277,7 +8412,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.14',
+				'version'     => '13.3.15',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -8303,7 +8438,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.14 -->
+		<!-- AMPHP Storefront v13.3.15 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -8457,7 +8592,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.14' );
+		$parts = array( '13.3.15' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -8729,6 +8864,9 @@ public static function get_embedded_storefront_assets() {
 				'ai_image_batch_size'         => max( 1, min( 30, intval( $_POST['ai_image_batch_size'] ?? 8 ) ) ),
 				'ai_image_sideload'           => ! empty( $_POST['ai_image_sideload'] ),
 				'ai_image_search_lang'        => sanitize_text_field( $_POST['ai_image_search_lang'] ?? 'fa' ),
+				'enable_google_image_search'  => ! empty( $_POST['enable_google_image_search'] ),
+				'google_cse_api_key'          => sanitize_text_field( $_POST['google_cse_api_key'] ?? '' ),
+				'google_cse_cx'               => sanitize_text_field( $_POST['google_cse_cx'] ?? '' ),
 
 				// Tab 2: Pricing & Profit
 				'price_markup_percent'        => floatval( $_POST['price_markup_percent'] ?? 0 ),
@@ -10559,7 +10697,7 @@ public static function get_embedded_storefront_assets() {
 							<h4 style="margin:0 0 8px;color:#1e3a8a;">🖼️ تکمیل خودکار تصویر محصولات (جستجوی وب + AI)</h4>
 							<p style="margin:0 0 12px;color:#1e40af;font-size:0.85rem;line-height:1.7;">
 								برای کالاهایی که <strong>عکس ندارند</strong> یا فقط <strong>placeholder / کارت پیش‌فرض اسنپ‌شاپ</strong> دارند،
-								سیستم در وب جستجو می‌کند، با AI مناسب‌ترین عکس را برمی‌گزیند و در متای ووکامرس
+								سیستم در <strong>Google Images</strong> (و Bing/Openverse) جستجو می‌کند، با AI مناسب‌ترین عکس را برمی‌گزیند و در متای ووکامرس
 								(<code>_amphp_ai_image_url</code>) ذخیره می‌کند — در صورت امکان فایل را هم sideload می‌کند.
 							</p>
 							<label style="display:flex;gap:8px;align-items:center;font-weight:800;margin-bottom:10px;">
@@ -10573,6 +10711,23 @@ public static function get_embedded_storefront_assets() {
 							<label style="font-weight:700;font-size:0.85rem;display:block;margin-bottom:8px;">تعداد در هر اجرا (کرون / دکمه)
 								<input type="number" name="ai_image_batch_size" min="1" max="30" value="<?php echo esc_attr( $opts['ai_image_batch_size'] ?? 8 ); ?>" style="width:80px;margin-right:8px;">
 							</label>
+							<label style="display:flex;gap:8px;align-items:center;font-weight:800;margin:12px 0 8px;color:#1e3a8a;">
+								<input type="checkbox" name="enable_google_image_search" value="1" <?php checked( ! isset( $opts['enable_google_image_search'] ) || ! empty( $opts['enable_google_image_search'] ) ); ?>>
+								جستجو در Google Images (اولویت اول)
+							</label>
+							<p style="margin:0 0 10px;font-size:0.8rem;color:#334155;line-height:1.6;">
+								بدون کلید هم از صفحهٔ Google Images استفاده می‌شود. برای نتیجه پایدارتر،
+								<a href="https://developers.google.com/custom-search/v1/overview" target="_blank" rel="noopener">Google Programmable Search (CSE)</a>
+								با <code>searchType=image</code> بسازید و کلید را وارد کنید.
+							</p>
+							<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+								<label style="font-weight:700;font-size:0.82rem;display:block;">Google CSE API Key
+									<input type="password" name="google_cse_api_key" dir="ltr" style="width:100%;margin-top:4px;" value="<?php echo esc_attr( $opts['google_cse_api_key'] ?? '' ); ?>" placeholder="AIza…">
+								</label>
+								<label style="font-weight:700;font-size:0.82rem;display:block;">Search Engine ID (cx)
+									<input type="text" name="google_cse_cx" dir="ltr" style="width:100%;margin-top:4px;" value="<?php echo esc_attr( $opts['google_cse_cx'] ?? '' ); ?>" placeholder="a1b2c3d4e">
+								</label>
+							</div>
 							<?php
 							$img_last = get_option( 'amphp_ai_image_last_run', array() );
 							if ( is_array( $img_last ) && ! empty( $img_last['at'] ) ) :

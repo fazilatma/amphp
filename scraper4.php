@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.102';
+const APP_VERSION = '10.103';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -15796,7 +15796,7 @@ function cronWatchdogs(array $cn): array {
          • ترتیب همان اولویتی است که کاربر در مدیر وظیفه چیده. */
     $autoCfg = !isset($cn['auto_resume']) || !empty($cn['auto_resume']);
     if ($stallWake && $autoCfg && function_exists('tasksRowsOrdered')) {
-        $arMax  = max(1, (int)($cn['auto_resume_max'] ?? 2));
+        $arMax  = max(1, min(10, (int)($cn['auto_resume_max'] ?? 3)));  /* v10.103: پیش‌فرض ۳ */
         /* این دو، نگهبانِ اختصاصیِ خودشان را دارند */
         $arSkip = ['bsl_send' => 1, 'woo_send' => 1, 'extract' => 1];
         $arNow  = time();
@@ -26659,6 +26659,16 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
+            /* ==== ۱۱۳ (v10.103) ==== */
+    $add('10.103', 'نسخهٔ ۱۰.۱۰۳',
+         version_compare(APP_VERSION, '10.103', '>=')
+      && strpos($selfSrc, "{v:'10.103',") !== false);
+    $add('10.103', 'ادامهٔ ۳‌باره + failed + idle retry',
+         strpos($selfSrc, 'function queueResumeBook') !== false
+      && strpos($selfSrc, 'function queueMarkEntryFailed') !== false
+      && strpos($selfSrc, 'function queueIdleRetryFailed') !== false
+      && strpos($selfSrc, 'QUEUE_RESUME_MAX_TRIES') !== false);
+
             /* ==== ۱۱۲ (v10.102) ==== */
     $add('10.102', 'نسخهٔ ۱۰.۱۰۲',
          version_compare(APP_VERSION, '10.102', '>=')
@@ -33623,40 +33633,224 @@ function queueStallCheck(string $which, int $staleAfter = 300): array {
  * بررسی می‌شدند و در بدترین حالت دوباره ارسال. حالا شمارهٔ محصول جاری،
  * شناسهٔ صف و پرچم from_file فرستاده می‌شوند.
  */
+/** v10.103: سقف تلاش ادامه برای هر ردیف صف (مثل «ادامه» در مدیر وظیفه) */
+const QUEUE_RESUME_MAX_TRIES = 3;
+/** فاصلهٔ حداقل بین تلاش‌های ادامهٔ یک ردیف (ثانیه) */
+const QUEUE_RESUME_COOLDOWN  = 90;
+/** فاصلهٔ بیکاری صف قبل از تلاش دوباره روی ردیف‌های failed_resume (ثانیه) */
+const QUEUE_IDLE_RETRY_AFTER = 300;
+
+/**
+ * دفترچهٔ تلاش‌های ادامهٔ هر ردیف صف — کلید: which:queue_id
+ * @return array{tries:int, at:int, from:int, status:string}
+ */
+function queueResumeBook(string $which, string $qid, ?array $patch = null): array {
+    $file = __DIR__ . '/queue_resume_book.json';
+    $d = json_decode((string)@file_get_contents($file), true);
+    $d = is_array($d) ? $d : [];
+    $key = $which . ':' . ($qid !== '' ? $qid : '_none');
+    $row = is_array($d[$key] ?? null) ? $d[$key] : ['tries' => 0, 'at' => 0, 'from' => 0, 'status' => ''];
+    if ($patch !== null) {
+        foreach ($patch as $k => $v) $row[$k] = $v;
+        $d[$key] = $row;
+        /* پاکسازی رکوردهای کهنه (>24h) */
+        $now = time();
+        foreach ($d as $kk => $vv) {
+            if (!is_array($vv)) { unset($d[$kk]); continue; }
+            if (($now - (int)($vv['at'] ?? 0)) > 86400) unset($d[$kk]);
+        }
+        @file_put_contents($file, json_encode($d, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    }
+    return $row;
+}
+
+/** علامت‌زدن ردیف صف به‌عنوان failed بعد از ۳ تلاش ناموفق */
+function queueMarkEntryFailed(string $which, string $qid, string $reason = ''): bool {
+    if ($qid === '') return false;
+    $isBsl = $which === 'bsl';
+    $q = $isBsl
+        ? (function_exists('bslReadQueue') ? bslReadQueue() : [])
+        : (function_exists('wooReadQueue') ? wooReadQueue() : []);
+    if (!is_array($q) || empty($q['entries']) || !is_array($q['entries'])) return false;
+    $found = false;
+    foreach ($q['entries'] as &$e) {
+        if (!is_array($e) || (string)($e['id'] ?? '') !== $qid) continue;
+        $e['status'] = 'failed';
+        $e['fail_reason'] = $reason !== '' ? $reason : 'پس از ۳ تلاش ادامه، متوقف شد';
+        $e['done_at'] = time();
+        $e['resume_exhausted'] = 1;
+        $found = true;
+        break;
+    }
+    unset($e);
+    if (!$found) return false;
+    if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
+    elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
+    /* پیشرفت را هم ببند تا UI گیر نکند */
+    $pFile = $isBsl ? BSL_PROGRESS_FILE : WOO_PROGRESS_FILE;
+    $pg = readProgress($pFile);
+    if (is_array($pg) && ((string)($pg['queue_id'] ?? '') === $qid || empty($pg['queue_id']))) {
+        $pg['running'] = false;
+        $pg['done'] = true;
+        $pg['failed_resume'] = true;
+        $lg = is_array($pg['recent_log'] ?? null) ? $pg['recent_log'] : [];
+        $lg[] = '❌ ' . ($reason !== '' ? $reason : 'پس از ۳ تلاش ادامه متوقف شد');
+        $pg['recent_log'] = array_slice($lg, -40);
+        $pg['last_progress_ts'] = time();
+        writeProgress($pFile, $pg);
+    }
+    return true;
+}
+
+/**
+ * v10.103: وقتی صف بیکار است، ردیف‌های failed_resume را دوباره تا ۳ بار آزمایش کن.
+ */
+function queueIdleRetryFailed(string $which): ?array {
+    $isBsl = $which === 'bsl';
+    $q = $isBsl
+        ? (function_exists('bslReadQueue') ? bslReadQueue() : [])
+        : (function_exists('wooReadQueue') ? wooReadQueue() : []);
+    $entries = is_array($q['entries'] ?? null) ? $q['entries'] : [];
+    /* اگر کاری در جریان است، دخالت نکن */
+    foreach ($entries as $e) {
+        if (!is_array($e)) continue;
+        if (in_array((string)($e['status'] ?? ''), ['running', 'waiting', 'paused'], true)) {
+            return null;
+        }
+    }
+    $now = time();
+    $picked = null;
+    foreach ($entries as $e) {
+        if (!is_array($e)) continue;
+        if ((string)($e['status'] ?? '') !== 'failed') continue;
+        if (empty($e['resume_exhausted']) && empty($e['fail_reason'])) continue;
+        /* فقط failedهایی که به‌خاطر resume_exhausted هستند */
+        $fr = (string)($e['fail_reason'] ?? '');
+        if (strpos($fr, '۳ تلاش') === false && empty($e['resume_exhausted'])) continue;
+        $qid = (string)($e['id'] ?? '');
+        if ($qid === '') continue;
+        $book = queueResumeBook($which, $qid);
+        /* بعد از failed، شمارنده را برای round جدید ریست می‌کنیم اگر فاصلهٔ بیکاری گذشته */
+        $lastAt = (int)($book['at'] ?? 0);
+        if ($lastAt > 0 && ($now - $lastAt) < QUEUE_IDLE_RETRY_AFTER) continue;
+        /* ریست تلاش‌ها برای round جدید در بیکاری */
+        if ((string)($book['status'] ?? '') === 'exhausted') {
+            queueResumeBook($which, $qid, ['tries' => 0, 'status' => 'idle_retry', 'at' => $now]);
+        }
+        $picked = $e;
+        break;
+    }
+    if ($picked === null) return null;
+    $qid = (string)($picked['id'] ?? '');
+    $start = max(0, (int)($picked['current'] ?? 0));
+    /* بازگردانی به waiting و ادامه مثل دکمهٔ «ادامه» */
+    foreach ($q['entries'] as &$e) {
+        if ((string)($e['id'] ?? '') !== $qid) continue;
+        $e['status'] = 'waiting';
+        unset($e['fail_reason'], $e['resume_exhausted'], $e['done_at']);
+        break;
+    }
+    unset($e);
+    if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
+    elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
+    @unlink(__DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock'));
+    if ($isBsl && defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
+    if (!$isBsl && defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
+    $action = $isBsl ? 'bsl_backend' : 'woo_backend';
+    $post = ['from_file' => '1', 'start_index' => (string)$start, 'queue_id' => $qid];
+    $ok = fireAndForget('action=' . $action, 2000, $post);
+    $book = queueResumeBook($which, $qid);
+    $tries = (int)($book['tries'] ?? 0) + 1;
+    queueResumeBook($which, $qid, ['tries' => $tries, 'at' => $now, 'from' => $start, 'status' => $ok ? 'idle_fired' : 'idle_fail']);
+    return ['ok' => $ok, 'which' => $which, 'queue_id' => $qid, 'try' => $tries,
+            'kind' => 'idle_retry', 'resume_from' => $start];
+}
+
 function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = false, int $waitMs = 1500): array {
     $chk = queueStallCheck($which, $staleAfter);
     $chk['which'] = $which;
-    if (empty($chk['stalled']) || $dryRun) { $chk['resumed'] = false; return $chk; }
+    if (empty($chk['stalled']) || $dryRun) {
+        $chk['resumed'] = false;
+        /* v10.103: در بیکاری صف، failedهای قبلی را دوباره تا ۳ بار آزمایش کن */
+        if (empty($chk['stalled']) && !$dryRun && function_exists('queueIdleRetryFailed')) {
+            $idle = queueIdleRetryFailed($which);
+            if (is_array($idle)) {
+                $chk['idle_retry'] = $idle;
+                $chk['resumed'] = !empty($idle['ok']);
+            }
+        }
+        return $chk;
+    }
 
     $qid   = (string)($chk['queue_id'] ?? '');
-    /* v10.56 (۷۰): resume_from = چک‌پوینتِ واقعی (از فایلِ پیشرفتِ وِرکر،
-       وقتی مالِ همین ردیف بود) — قبلاً فقط currentِ ردیف می‌آمد که در طولِ
-       اجرا صفر می‌ماند و ادامه، از اول شروع می‌شد. */
+    /* v10.56 (۷۰): resume_from = چک‌پوینتِ واقعی */
     $start = max(0, (int)($chk['resume_from'] ?? $chk['current'] ?? 0));
 
-    // قفلِ رهاشدهٔ پردازهٔ مرده را پاک کن، وگرنه تلاش بعدی «در حال اجرا» می‌بیند
+    /* v10.103: سقف ۳ تلاش ادامه — مثل دکمهٔ «ادامه» در مدیر وظیفه؛ بعد failed */
+    $book = queueResumeBook($which, $qid);
+    $tries = (int)($book['tries'] ?? 0);
+    $lastAt = (int)($book['at'] ?? 0);
+    $now = time();
+    /* اگر از آخرین تلاش واقعاً جلو رفته (چک‌پوینت بالاتر) — شمارنده از نو */
+    if ((int)($book['from'] ?? 0) > 0 && $start > (int)$book['from'] + 0) {
+        $tries = 0;
+        queueResumeBook($which, $qid, ['tries' => 0, 'from' => $start, 'status' => 'progressed', 'at' => $now]);
+        $book['tries'] = 0;
+    }
+    /* کول‌داون بین تلاش‌ها */
+    if ($lastAt > 0 && ($now - $lastAt) < QUEUE_RESUME_COOLDOWN && $tries > 0
+        && (string)($book['status'] ?? '') !== 'exhausted') {
+        $chk['resumed'] = false;
+        $chk['deferred'] = true;
+        $chk['attempt'] = $tries;
+        $chk['reason_defer'] = 'cooldown';
+        return $chk;
+    }
+    if ($tries >= QUEUE_RESUME_MAX_TRIES) {
+        $reason = 'پس از ' . QUEUE_RESUME_MAX_TRIES . ' تلاش ادامه، متوقف شد (از محصول #' . max(1, $start) . ')';
+        queueMarkEntryFailed($which, $qid, $reason);
+        queueResumeBook($which, $qid, ['tries' => $tries, 'at' => $now, 'from' => $start, 'status' => 'exhausted']);
+        $chk['resumed'] = false;
+        $chk['exhausted'] = true;
+        $chk['attempt'] = $tries;
+        $chk['fail_reason'] = $reason;
+        return $chk;
+    }
+
+    // قفلِ رهاشدهٔ پردازهٔ مرده را پاک کن
     if (empty($chk['lock_held'])) {
         @unlink(__DIR__ . ($which === 'bsl' ? '/bsl_backend.lock' : '/woo_backend.lock'));
     }
-    // سیگنال توقفِ جامانده هم باید برود، وگرنه ادامه بلافاصله متوقف می‌شود
     if ($which === 'bsl' && defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
+    if ($which !== 'bsl' && defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
 
     $action = $which === 'bsl' ? 'bsl_backend' : 'woo_backend';
     $post = ['from_file' => '1', 'start_index' => (string)$start];
     if ($qid !== '') $post['queue_id'] = $qid;
 
     $chk['resume_from'] = $start;
-    /* v10.49 (۶۳): $waitMs — «پمپِ ارسال» کران تا ۱۲۰ ثانیه منتظر می‌ماند
-       تا پردازندهٔ فرزند پیش برود؛ حالتِ کلاسیکِ نگهبان ۱٫۵ ثانیه است. */
     $chk['resumed'] = fireAndForget('action=' . $action, $waitMs, $post);
-    if ($chk['resumed']) {
-        // شمارندهٔ تلاش را نگه دار تا اگر بارها گیر کرد بتوان تشخیص داد
+    $tries++;
+    queueResumeBook($which, $qid, [
+        'tries' => $tries, 'at' => $now, 'from' => $start,
+        'status' => !empty($chk['resumed']) ? 'fired' : 'fire_fail',
+    ]);
+    $chk['attempt'] = $tries;
+    $chk['attempt_max'] = QUEUE_RESUME_MAX_TRIES;
+    /* سازگاری با شمارندهٔ قدیمی state */
+    try {
         $st = notifLoadState();
         $k  = 'stall_' . $which;
-        $st[$k] = ['at' => time(), 'n' => (int)($st[$k]['n'] ?? 0) + 1,
-                   'queue_id' => $qid, 'from' => $start];
+        $st[$k] = ['at' => $now, 'n' => $tries, 'queue_id' => $qid, 'from' => $start];
         notifSaveState($st);
-        $chk['attempt'] = $st[$k]['n'];
+    } catch (Throwable $e) {}
+    /* اگر این سومین تلاش بود و fire شکست خورد → همان‌جا failed */
+    if ($tries >= QUEUE_RESUME_MAX_TRIES && empty($chk['resumed'])) {
+        $reason = 'پس از ' . QUEUE_RESUME_MAX_TRIES . ' تلاش ادامه، متوقف شد';
+        queueMarkEntryFailed($which, $qid, $reason);
+        queueResumeBook($which, $qid, ['tries' => $tries, 'at' => $now, 'status' => 'exhausted']);
+        $chk['exhausted'] = true;
+        $chk['fail_reason'] = $reason;
     }
     return $chk;
 }
@@ -56451,6 +56645,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.103', t:'ادامهٔ ۳‌بارهٔ صف گیرکرده + ریست در بیکاری', items:[
+    '▶ صف گیرکرده مثل دکمهٔ ادامهٔ مدیر وظیفه از چک‌پوینت ادامه می‌یابد',
+    '3️⃣ بعد از سه تلاش ناموفق، وظیفه failed می‌شود (نه قطع خاموش)',
+    '💤 در بیکاری صف، failedهای resume دوباره تا ۳ بار آزمایش می‌شوند',
+  ]},
   {v:'10.102', t:'اعلان بایگانی + گزارش در صف ارسال + صف کشویی', items:[
     '📣 پس از بایگانی باسلام / حذف ووکامرس، اعلان کامل به پیام‌رسان‌ها می‌رود',
     '📋 هر محصول بازنشسته‌شده به‌صورت ردیف در صف ارسال همان مقصد ثبت می‌شود',

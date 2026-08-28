@@ -10,3 +10,4 @@ storefront-react/dist/
 .arena-preview/node_modules/
 .arena-preview/package-lock.json
 .arena-preview/package.json
+deploy/*.zip

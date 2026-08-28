@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.101';
+const APP_VERSION = '10.102';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -26659,6 +26659,16 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
+            /* ==== ۱۱۲ (v10.102) ==== */
+    $add('10.102', 'نسخهٔ ۱۰.۱۰۲',
+         version_compare(APP_VERSION, '10.102', '>=')
+      && strpos($selfSrc, "{v:'10.102',") !== false);
+    $add('10.102', 'گزارش بازنشستگی در صف + اعلان + کشویی',
+         strpos($selfSrc, 'function retireReportToSendQueues') !== false
+      && strpos($selfSrc, 'function toggleSendQueuePane') !== false
+      && strpos($selfSrc, 'wooQueueBody') !== false
+      && strpos($selfSrc, 'bslQueueBody') !== false);
+
             /* ==== ۱۱۱ (v10.101) ==== */
     $add('10.101', 'نسخهٔ ۱۰.۱۰۱',
          version_compare(APP_VERSION, '10.101', '>=')
@@ -34555,6 +34565,182 @@ function mergeRetireItems(array $removed, array $extra): array {
  *
  * @return array{items:list, result:?array, mode:string, target:string, skipped:string}
  */
+
+/**
+ * v10.102: نتیجهٔ بایگانی/حذف ناموجودها را به‌صورت ردیف‌های «تک‌محصول»
+ * در صف ارسال باسلام و ووکامرس ثبت می‌کند تا در گزارش صف دیده شود.
+ */
+function retireReportToSendQueues(array $rt, string $profileKey = '', string $profileName = '', string $target = 'both'): array {
+    $out = ['bsl' => false, 'woo' => false, 'bsl_n' => 0, 'woo_n' => 0];
+    if (empty($rt) || !is_array($rt)) return $out;
+    $items = is_array($rt['items'] ?? null) ? $rt['items'] : [];
+    $nRet = (int)($rt['retired'] ?? 0);
+    if (!$items && $nRet <= 0) return $out;
+
+    $now = time();
+    $stamp = date('Ymd_His');
+    $safe = preg_replace('~[^a-zA-Z0-9_\-]+~', '_', $profileKey !== '' ? $profileKey : 'retire') ?: 'retire';
+    $name = $profileName !== '' ? $profileName : ($profileKey !== '' ? $profileKey : 'بازنشستگی');
+
+    $bslDetails = [];
+    $wooDetails = [];
+    foreach ($items as $it) {
+        if (!is_array($it)) continue;
+        $title = trim((string)($it['title'] ?? ''));
+        if ($title === '') continue;
+        $key = (string)($it['key'] ?? '');
+        $reason = (string)($it['reason'] ?? '');
+        $b = (string)($it['bsl'] ?? '');
+        $w = (string)($it['woo'] ?? '');
+        $didB = $b !== '' && (strpos($b, 'بایگانی') !== false || strpos($b, 'انجام شد') !== false);
+        $didW = $w !== '' && strpos($w, 'انجام شد') !== false;
+        $failB = $b !== '' && strpos($b, 'خطا') !== false;
+        $failW = $w !== '' && strpos($w, 'خطا') !== false;
+        $nfB = $b !== '' && strpos($b, 'یافت') !== false;
+        $nfW = $w !== '' && strpos($w, 'یافت') !== false;
+        if ($didB || $failB || $nfB) {
+            $st = $didB ? 'retired' : ($failB ? 'failed' : 'not_found');
+            $bslDetails[] = [
+                'key' => $key, 'title' => $title,
+                'action' => $didB ? 'archive' : ($failB ? 'fail' : 'skip'),
+                'status' => $st,
+                'detail' => trim($b . ($reason !== '' ? ' · ' . $reason : '')),
+                'reason' => $reason, 'retire' => 1, 'at' => $now,
+                'result' => $st === 'retired' ? 'sent' : ($st === 'failed' ? 'failed' : 'skipped'),
+            ];
+        }
+        if ($didW || $failW || $nfW) {
+            $st = $didW ? 'retired' : ($failW ? 'failed' : 'not_found');
+            $wooDetails[] = [
+                'key' => $key, 'title' => $title,
+                'action' => $didW ? 'delete' : ($failW ? 'fail' : 'skip'),
+                'status' => $st,
+                'detail' => trim($w . ($reason !== '' ? ' · ' . $reason : '')),
+                'reason' => $reason, 'retire' => 1, 'at' => $now,
+                'result' => $st === 'retired' ? 'sent' : ($st === 'failed' ? 'failed' : 'skipped'),
+            ];
+        }
+    }
+    if (!$bslDetails && !$wooDetails && $nRet > 0) {
+        $sum = [
+            'key' => '', 'title' => 'بازنشستگی گروهی (' . $nRet . ' مورد)',
+            'action' => 'retire', 'status' => 'retired',
+            'detail' => 'retired=' . $nRet . ' failed=' . (int)($rt['failed'] ?? 0),
+            'retire' => 1, 'at' => $now, 'result' => 'sent',
+        ];
+        if ($target === 'bsl' || $target === 'both') $bslDetails[] = $sum;
+        if ($target === 'woo' || $target === 'both') $wooDetails[] = $sum;
+    }
+
+    $wantBsl = ($target === 'bsl' || $target === 'both') && $bslDetails
+            && function_exists('bslReadQueue') && function_exists('bslWriteQueue');
+    $wantWoo = ($target === 'woo' || $target === 'both') && $wooDetails
+            && function_exists('wooReadQueue') && function_exists('wooWriteQueue');
+
+    if ($wantBsl) {
+        try {
+            $q = bslReadQueue();
+            if (!isset($q['entries']) || !is_array($q['entries'])) $q['entries'] = [];
+            $qid = 'retire_bsl_' . $safe . '_' . $stamp . '_' . substr(md5((string)mt_rand()), 0, 4);
+            $qFile = __DIR__ . '/bsl_queue_products_' . $qid . '.json';
+            $plist = [];
+            foreach ($bslDetails as $d) {
+                $plist[] = ['key' => $d['key'], 'title' => $d['title'], 'retire' => 1, 'final_price' => '0'];
+            }
+            @file_put_contents($qFile, json_encode($plist, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $sentD = []; $failD = []; $skipD = [];
+            foreach ($bslDetails as $d) {
+                if (($d['status'] ?? '') === 'retired') $sentD[] = $d;
+                elseif (($d['status'] ?? '') === 'failed') $failD[] = $d;
+                else $skipD[] = $d;
+            }
+            $q['entries'][] = [
+                'id' => $qid,
+                'status' => 'done',
+                'products_file' => $qFile,
+                'total' => count($bslDetails),
+                'sent' => count($sentD), 'updated' => 0,
+                'skipped' => count($skipD), 'failed' => count($failD),
+                'current' => count($bslDetails),
+                'started_at' => $now, 'done_at' => $now,
+                'profile_key' => $profileKey,
+                'profile_name' => $name . ' · بایگانی/بازنشستگی',
+                'trigger' => 'retire',
+                'retire_report' => 1,
+                'kind' => 'retire',
+                'sent_details' => $sentD,
+                'updated_details' => [],
+                'skipped_details' => $skipD,
+                'failed_details' => $failD,
+                'recent_log' => [
+                    '🗂 گزارش بایگانی باسلام — ' . count($sentD) . ' مورد',
+                    'پروفایل: ' . $name,
+                ],
+                'config' => ['retire' => 1],
+            ];
+            if (count($q['entries']) > 80) $q['entries'] = array_slice($q['entries'], -80);
+            bslWriteQueue($q);
+            $out['bsl'] = true;
+            $out['bsl_n'] = count($sentD);
+            $out['bsl_id'] = $qid;
+        } catch (Throwable $e) {
+            $out['bsl_err'] = $e->getMessage();
+        }
+    }
+
+    if ($wantWoo) {
+        try {
+            $q = wooReadQueue();
+            if (!isset($q['entries']) || !is_array($q['entries'])) $q['entries'] = [];
+            $qid = 'retire_woo_' . $safe . '_' . $stamp . '_' . substr(md5((string)mt_rand()), 0, 4);
+            $qFile = __DIR__ . '/woo_queue_products_' . $qid . '.json';
+            $plist = [];
+            foreach ($wooDetails as $d) {
+                $plist[] = ['key' => $d['key'], 'title' => $d['title'], 'retire' => 1, 'final_price' => '0'];
+            }
+            @file_put_contents($qFile, json_encode($plist, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $sentD = []; $failD = []; $skipD = [];
+            foreach ($wooDetails as $d) {
+                if (($d['status'] ?? '') === 'retired') $sentD[] = $d;
+                elseif (($d['status'] ?? '') === 'failed') $failD[] = $d;
+                else $skipD[] = $d;
+            }
+            $q['entries'][] = [
+                'id' => $qid,
+                'status' => 'done',
+                'products_file' => $qFile,
+                'total' => count($wooDetails),
+                'sent' => count($sentD), 'updated' => 0,
+                'skipped' => count($skipD), 'failed' => count($failD),
+                'current' => count($wooDetails),
+                'started_at' => $now, 'done_at' => $now,
+                'profile_key' => $profileKey,
+                'profile_name' => $name . ' · حذف/بازنشستگی',
+                'trigger' => 'retire',
+                'retire_report' => 1,
+                'kind' => 'retire',
+                'sent_details' => $sentD,
+                'updated_details' => [],
+                'skipped_details' => $skipD,
+                'failed_details' => $failD,
+                'recent_log' => [
+                    '🗂 گزارش حذف ووکامرس — ' . count($sentD) . ' مورد',
+                    'پروفایل: ' . $name,
+                ],
+                'config' => ['retire' => 1],
+            ];
+            if (count($q['entries']) > 80) $q['entries'] = array_slice($q['entries'], -80);
+            wooWriteQueue($q);
+            $out['woo'] = true;
+            $out['woo_n'] = count($sentD);
+            $out['woo_id'] = $qid;
+        } catch (Throwable $e) {
+            $out['woo_err'] = $e->getMessage();
+        }
+    }
+    return $out;
+}
+
 function retireAfterExtract(array $cn, array $profile, array $exRes, string $target, array $syncCfg, string $profileKey = ''): array {
     $empty = ['items' => [], 'result' => null, 'mode' => 'off', 'target' => $target, 'skipped' => ''];
     if (empty($exRes['ok'])) {
@@ -34598,7 +34784,19 @@ function retireAfterExtract(array $cn, array $profile, array $exRes, string $tar
         (int)($exRes['extracted'] ?? 0), false, $name, $per, $pk
     );
     try {
-        if (function_exists('notifRetire')) notifRetire($cn, $rt, $name);
+        if (function_exists('notifRetire')) {
+            $rt['woo_action'] = $per['woo'];
+            $rt['bsl_action'] = $per['bsl'];
+            $rt['mode_woo'] = $per['woo'];
+            $rt['mode_bsl'] = $per['bsl'];
+            notifRetire($cn, $rt, $name);
+        }
+    } catch (Throwable $e) {}
+    $queueRep = ['bsl' => false, 'woo' => false];
+    try {
+        if (function_exists('retireReportToSendQueues') && (int)($rt['retired'] ?? 0) > 0) {
+            $queueRep = retireReportToSendQueues($rt, $pk, $name, $retTarget);
+        }
     } catch (Throwable $e) {}
 
     return [
@@ -34611,6 +34809,7 @@ function retireAfterExtract(array $cn, array $profile, array $exRes, string $tar
         'removed_src' => count($removed),
         'woo_action' => $per['woo'],
         'bsl_action' => $per['bsl'],
+        'queue_report' => $queueRep,
     ];
 }
 
@@ -36290,24 +36489,65 @@ function syncReportEmit(array $cn, array $rep): array {
 function notifRetire(array $cn, array $res, string $profileName = ''): array {
     /* v10.45 (۵۹): نبودِ کلید = روشن — همان چیزی که رابط نشان می‌دهد. */
     if (!notifEventOn($cn['notif_events'] ?? [], 'retire')) return ['ok' => true, 'skipped' => 'disabled'];
-    if (notifPrereq($cn) !== null) return ['ok' => false];
-    $modeLbl = retireModes()[$res['mode'] ?? 'off'] ?? '';
-    if (!empty($res['guard']['blocked'])) {
+    /* v10.102: برای بایگانی فقط پیام‌رسان لازم است (توکن باسلام اجباری نیست). */
+    $hasMsgr = (trim((string)($cn['baleh']['token'] ?? '')) !== '' && trim((string)($cn['baleh']['chat_id'] ?? '')) !== '')
+            || (trim((string)($cn['rubika']['token'] ?? '')) !== '' && trim((string)($cn['rubika']['chat_id'] ?? '')) !== '')
+            || (trim((string)($cn['telegram']['token'] ?? '')) !== '' && trim((string)($cn['telegram']['chat_id'] ?? '')) !== '');
+    if (!$hasMsgr) return ['ok' => false, 'error' => 'no_messenger'];
+
+    $modeLbl = retireModes()[$res['mode'] ?? ''] ?? (string)($res['mode'] ?? '');
+    $modeW = (string)($res['mode_woo'] ?? $res['woo_action'] ?? '');
+    $modeB = (string)($res['mode_bsl'] ?? $res['bsl_action'] ?? '');
+    $wooActs = function_exists('retireWooActions') ? retireWooActions() : [];
+    $bslActs = function_exists('retireBslActions') ? retireBslActions() : [];
+    $wooLbl = $wooActs[$modeW] ?? ($modeW !== '' ? $modeW : ($modeLbl !== '' ? $modeLbl : 'حذف/بایگانی'));
+    $bslLbl = $bslActs[$modeB] ?? ($modeB !== '' ? $modeB : ($modeLbl !== '' ? $modeLbl : 'بایگانی'));
+
+    $guardBlocked = !empty($res['guard']['blocked'])
+        || (!empty($res['guard']) && empty($res['guard']['allow']) && !empty($res['guard']['reason']));
+    if ($guardBlocked) {
         return ['ok' => true, 'delivery' => notifSend($cn,
             "🛑 بازنشستگی خودکار متوقف شد" . ($profileName !== '' ? "\nپروفایل: {$profileName}" : '')
-            . "\nعلت: " . ($res['guard']['reason'] ?? '')
+            . "\nعلت: " . ($res['guard']['reason'] ?? ($res['skipped'] ?? ''))
             . "\nهیچ محصولی تغییر نکرد — اگر درست است، دستی اجرا کنید.", 'retire')];
     }
-    if ((int)($res['retired'] ?? 0) <= 0) return ['ok' => true, 'skipped' => 'nothing'];
-    $lines = ["🗂 بازنشستگی محصولات رفته از مبدأ" . ($profileName !== '' ? " — {$profileName}" : ''),
-              'اقدام: ' . $modeLbl,
-              'انجام‌شده: ' . (int)$res['retired']
-              . ' · یافت‌نشده: ' . (int)($res['not_found'] ?? 0)
-              . ' · ناموفق: ' . (int)($res['failed'] ?? 0)];
-    foreach (array_slice($res['items'] ?? [], 0, 8) as $it) {
-        $lines[] = '• ' . ($it['title'] ?? '') . ' — ' . ($it['reason'] ?? '');
+    $nRet = (int)($res['retired'] ?? 0);
+    $nFail = (int)($res['failed'] ?? 0);
+    $nNf = (int)($res['not_found'] ?? 0);
+    $nChk = (int)($res['checked'] ?? 0);
+    if ($nRet <= 0 && $nFail <= 0) return ['ok' => true, 'skipped' => 'nothing'];
+
+    $lines = ["🗂 بایگانی / حذف محصولات ناموجود" . ($profileName !== '' ? " — {$profileName}" : '')];
+    $lines[] = "🛒 ووکامرس: {$wooLbl}";
+    $lines[] = "🟢 باسلام: {$bslLbl}";
+    $lines[] = "✅ انجام‌شده: {$nRet}"
+             . ($nChk > 0 ? " · بررسی: {$nChk}" : '')
+             . " · یافت‌نشده: {$nNf}"
+             . " · ناموفق: {$nFail}";
+    $n = 0;
+    foreach ((array)($res['items'] ?? []) as $it) {
+        if ($n >= 12) break;
+        if (!is_array($it)) continue;
+        $title = mb_substr(trim((string)($it['title'] ?? '')), 0, 50);
+        if ($title === '') continue;
+        $bits = [];
+        $reason = trim((string)($it['reason'] ?? ''));
+        if ($reason !== '') $bits[] = $reason;
+        $w = trim((string)($it['woo'] ?? ''));
+        $b = trim((string)($it['bsl'] ?? ''));
+        $didW = $w !== '' && (strpos($w, 'انجام شد') !== false || strpos($w, 'حذف') !== false);
+        $didB = $b !== '' && (strpos($b, 'بایگانی') !== false || strpos($b, 'انجام شد') !== false);
+        $failW = $w !== '' && strpos($w, 'خطا') !== false;
+        $failB = $b !== '' && strpos($b, 'خطا') !== false;
+        if (!$didW && !$didB && !$failW && !$failB) continue;
+        if ($didW || $failW) $bits[] = 'ووکامرس: ' . $w;
+        if ($didB || $failB) $bits[] = 'باسلام: ' . $b;
+        $lines[] = '• ' . $title . ' — ' . implode(' | ', $bits);
+        $n++;
     }
-    return ['ok' => true, 'delivery' => notifSend($cn, implode("\n", $lines), 'retire')];
+    if ($nRet > $n && $n > 0) $lines[] = '… و ' . max(0, $nRet - $n) . ' مورد دیگر';
+    $lines[] = '🕐 ' . date('Y/m/d H:i');
+    return ['ok' => true, 'delivery' => notifSend($cn, implode("\n", $lines), 'retire'), 'sent_lines' => count($lines)];
 }
 
 /**
@@ -40242,6 +40482,36 @@ $entry['started_at']=time();
 wooWriteQueue($queue);
 
 echo json_encode(['ok'=>true,'queue_id'=>$queueId,'msg'=>'شروع پردازش سرورساید'],JSON_UNESCAPED_UNICODE);
+exit;
+}
+
+
+if(isset($_GET['woo_queue_detail'])){
+header('Content-Type: application/json; charset=UTF-8');
+$queueId=trim($_GET['queue_id']??'');
+if($queueId===''){echo json_encode(['ok'=>false,'error'=>'queue_id خالی'],JSON_UNESCAPED_UNICODE);exit;}
+$queue=wooReadQueue();
+$entry=null;
+foreach($queue['entries'] as $e){
+if($e['id']===$queueId){$entry=$e;break;}
+}
+if(!$entry){echo json_encode(['ok'=>false,'error'=>'ورودی یافت نشد'],JSON_UNESCAPED_UNICODE);exit;}
+if(($entry['status']??'')==='running'){
+$progress=readProgress(WOO_PROGRESS_FILE);
+$entry['sent']=$progress['sent']??$entry['sent']??0;
+$entry['updated']=$progress['updated']??$entry['updated']??0;
+$entry['skipped']=$progress['skipped']??$entry['skipped']??0;
+$entry['failed']=$progress['failed']??$entry['failed']??0;
+$entry['current']=$progress['current']??$entry['current']??0;
+$entry['sent_details']=$progress['sent_details']??$entry['sent_details']??[];
+$entry['updated_details']=$progress['updated_details']??$entry['updated_details']??[];
+$entry['skipped_details']=$progress['skipped_details']??$entry['skipped_details']??[];
+$entry['failed_details']=$progress['failed_details']??$entry['failed_details']??[];
+$entry['recent_log']=$progress['recent_log']??$entry['recent_log']??[];
+}
+$products=@json_decode(@file_get_contents($entry['products_file']??'')?:'[]',true)?:[];
+$entry['products']=$products;
+echo json_encode(['ok'=>true,'entry'=>$entry],JSON_UNESCAPED_UNICODE);
 exit;
 }
 
@@ -51056,12 +51326,17 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="sres hidden" id="wR"></div>
 
 <div id="wooQueueSection" style="margin-top:10px">
-<div style="background:#1e293b;border:1px solid #475569;border-radius:10px;padding:14px">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-<span style="color:#c4b5fd;font-weight:700;font-size:14px">📋 صف ارسال ووکامرس</span>
-<button class="btn btn-gray" onclick="clearWooQueueDone()" style="font-size:10px;padding:4px 8px">🗑️ پاکسازی انجام‌شده</button>
+<div style="background:#1e293b;border:1px solid #475569;border-radius:10px;overflow:hidden">
+<div onclick="toggleSendQueuePane('woo')" style="cursor:pointer;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px;user-select:none">
+<span style="color:#c4b5fd;font-weight:700;font-size:14px">📋 صف ارسال ووکامرس <span id="wooQueueCountBadge" style="font-size:10px;color:#94a3b8;font-weight:600"></span></span>
+<span style="display:flex;align-items:center;gap:8px">
+<button type="button" class="btn btn-gray" onclick="event.stopPropagation();clearWooQueueDone()" style="font-size:10px;padding:4px 8px">🗑️ پاکسازی انجام‌شده</button>
+<span id="wooQueueArrow" style="color:#94a3b8;font-size:12px">▼</span>
+</span>
 </div>
-<div id="wooQueueList" style="font-size:11px;color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال ووکامرس» را کلیک کنید</div>
+<div id="wooQueueBody" style="display:none;padding:0 14px 14px;border-top:1px solid #334155">
+<div id="wooQueueList" style="font-size:11px;color:#64748b;padding-top:10px">صف خالی — برای افزودن، دکمه «🚀 ارسال ووکامرس» را کلیک کنید</div>
+</div>
 </div>
 </div>
 
@@ -51169,12 +51444,17 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="sres hidden" id="bR"></div>
 
 <div id="bslQueueSection" style="margin-top:10px">
-<div style="background:#1e293b;border:1px solid #475569;border-radius:10px;padding:14px">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-<span style="color:#67e8f9;font-weight:700;font-size:14px">📋 صف ارسال باسلام <span style="font-size:9px;color:#64748b;font-weight:400">— هر غرفه، یک وظیفهٔ جدا</span></span>
-<button class="btn btn-gray" onclick="clearBslQueueDone()" style="font-size:10px;padding:4px 8px">🗑️ پاکسازی انجام‌شده</button>
+<div style="background:#1e293b;border:1px solid #475569;border-radius:10px;overflow:hidden">
+<div onclick="toggleSendQueuePane('bsl')" style="cursor:pointer;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px;user-select:none">
+<span style="color:#67e8f9;font-weight:700;font-size:14px">📋 صف ارسال باسلام <span style="font-size:9px;color:#64748b;font-weight:400">— هر غرفه، یک وظیفهٔ جدا</span> <span id="bslQueueCountBadge" style="font-size:10px;color:#94a3b8;font-weight:600"></span></span>
+<span style="display:flex;align-items:center;gap:8px">
+<button type="button" class="btn btn-gray" onclick="event.stopPropagation();clearBslQueueDone()" style="font-size:10px;padding:4px 8px">🗑️ پاکسازی انجام‌شده</button>
+<span id="bslQueueArrow" style="color:#94a3b8;font-size:12px">▼</span>
+</span>
 </div>
-<div id="bslQueueList" style="font-size:11px;color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال باسلام» را کلیک کنید</div>
+<div id="bslQueueBody" style="display:none;padding:0 14px 14px;border-top:1px solid #334155">
+<div id="bslQueueList" style="font-size:11px;color:#64748b;padding-top:10px">صف خالی — برای افزودن، دکمه «🚀 ارسال باسلام» را کلیک کنید</div>
+</div>
 </div>
 </div>
 
@@ -56171,6 +56451,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.102', t:'اعلان بایگانی + گزارش در صف ارسال + صف کشویی', items:[
+    '📣 پس از بایگانی باسلام / حذف ووکامرس، اعلان کامل به پیام‌رسان‌ها می‌رود',
+    '📋 هر محصول بازنشسته‌شده به‌صورت ردیف در صف ارسال همان مقصد ثبت می‌شود',
+    '📂 صف‌های ارسال باسلام و ووکامرس پیش‌فرض بسته و کشویی‌اند',
+  ]},
   {v:'10.101', t:'همگام خودکار: بایگانی/حذف ناموجودها مثل دستی', items:[
     '🗄 کرون پس از استخراج، removed + in_stock=false را روی باسلام/ووکامرس بازنشسته می‌کند',
     '♻️ منطق مشترک retireAfterExtract برای دستی و خودکار',
@@ -68579,11 +68864,37 @@ function bslShopStatsHtml(rows,compact){
     return h+'</div>';
 }
 
+
+/* v10.102: صف‌های ارسال تکی پیش‌فرض بسته و کشویی */
+function toggleSendQueuePane(which){
+    const body=$(which==='woo'?'wooQueueBody':'bslQueueBody');
+    const arrow=$(which==='woo'?'wooQueueArrow':'bslQueueArrow');
+    if(!body)return;
+    const open=body.style.display==='none'||body.style.display==='';
+    body.style.display=open?'block':'none';
+    if(arrow)arrow.textContent=open?'▲':'▼';
+    try{localStorage.setItem('amphp_qpane_'+which, open?'1':'0');}catch(e){}
+}
+function restoreSendQueuePanes(){
+    ['woo','bsl'].forEach(function(which){
+        let pref='0';
+        try{pref=localStorage.getItem('amphp_qpane_'+which)||'0';}catch(e){}
+        const body=$(which==='woo'?'wooQueueBody':'bslQueueBody');
+        const arrow=$(which==='woo'?'wooQueueArrow':'bslQueueArrow');
+        if(!body)return;
+        if(pref==='1'){body.style.display='block';if(arrow)arrow.textContent='▲';}
+        else{body.style.display='none';if(arrow)arrow.textContent='▼';}
+    });
+}
+try{document.addEventListener('DOMContentLoaded',restoreSendQueuePanes);}catch(e){}
+try{setTimeout(restoreSendQueuePanes,0);}catch(e){}
+
 function renderBslQueue(q){
     const section=$('bslQueueSection');
     const list=$('bslQueueList');
     if(!section||!list)return;
     const entries=q.entries||[];
+    try{const bd=$('bslQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const ret=(entries||[]).filter(e=>e&&(e.retire_report||e.kind==='retire'||e.trigger==='retire')).length;bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(ret?' · 🗂 '+toFa(ret):'')):'';}}catch(_e){}
     if(entries.length===0){list.innerHTML='<span style="color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال باسلام» را کلیک کنید</span>';return;}
     section.style.display='block';
     const statusLabels={waiting:'⏳ در صف',running:'🔄 در حال ارسال',paused:'⏸ متوقف',done:'✅ انجام شد',failed:'❌ خطا'};
@@ -68625,7 +68936,7 @@ function renderBslQueue(q){
             progPercent=Math.round(e.current/e.total*100);
             progText+=' | '+toFa(e.sent)+'✅ '+toFa(e.updated)+'⚡ '+toFa(e.skipped)+'⏭ '+toFa(e.failed)+'❌';
         }else if(e.status==='done'){
-            progText='✓ '+toFa(e.sent)+' جدید | '+toFa(e.updated)+' آپدیت | '+toFa(e.skipped)+' تکراری | '+toFa(e.failed)+' خطا';
+            progText=(e.retire_report||e.kind==='retire'||e.trigger==='retire')?('🗂 '+toFa(e.sent)+' بایگانی/حذف | '+toFa(e.skipped)+' یافت‌نشده | '+toFa(e.failed)+' خطا'):('✓ '+toFa(e.sent)+' جدید | '+toFa(e.updated)+' آپدیت | '+toFa(e.skipped)+' تکراری | '+toFa(e.failed)+' خطا');
             progPercent=100;
         }else if(e.status==='waiting'){
             progText=toFa(e.total)+' محصول — منتظر شروع';
@@ -68636,6 +68947,7 @@ function renderBslQueue(q){
         html+='<div style="display:flex;justify-content:space-between;align-items:center">';
         html+='<div style="display:flex;align-items:center;gap:8px">';
         html+='<span style="color:'+statusColors[e.status]+';font-weight:700;font-size:12px">'+statusLabels[e.status]+'</span>';if(e.trigger==='manual_sync'){html+='<span style="color:#34d399;font-size:10px;background:#064e3b40;padding:1px 6px;border-radius:4px;margin-right:4px">🤝 هنگامِ همگام‌سازیِ دستی</span>';} /* v10.53 (۶۷) */
+        if(e.trigger==='retire'||e.retire_report||e.kind==='retire'){html+='<span style="color:#fbbf24;font-size:10px;background:#42200640;padding:1px 6px;border-radius:4px;margin-right:4px">🗂 بایگانی/حذف ناموجود</span>';}
         if(e.auto_sync)html+='<span style="color:#22d3ee;font-size:10px;background:#0e749020;padding:1px 6px;border-radius:4px;margin-left:4px">⏱ سینک خودکار</span>';
         if(e.profile_name)html+='<span style="color:#94a3b8;font-size:10px;margin-left:4px">'+esc(e.profile_name)+'</span>';
         /* v10.73 (87): نشانِ غرفهٔ اختصاصیِ همین وظیفه */
@@ -68811,6 +69123,7 @@ function renderWooQueue(q){
     const list=$('wooQueueList');
     if(!section||!list)return;
     const entries=q.entries||[];
+    try{const bd=$('wooQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const ret=(entries||[]).filter(e=>e&&(e.retire_report||e.kind==='retire'||e.trigger==='retire')).length;bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(ret?' · 🗂 '+toFa(ret):'')):'';}}catch(_e){}
     if(entries.length===0){list.innerHTML='<span style="color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال ووکامرس» را کلیک کنید</span>';return;}
     section.style.display='block';
     const statusLabels={waiting:'⏳ در صف',running:'🔄 در حال ارسال',paused:'⏸ متوقف',done:'✅ انجام شد',failed:'❌ خطا'};
@@ -68824,7 +69137,7 @@ function renderWooQueue(q){
             progPercent=Math.round(e.current/e.total*100);
             progText+=' | '+toFa(e.sent)+'✅ '+toFa(e.updated)+'⚡ '+toFa(e.skipped)+'⏭ '+toFa(e.failed)+'❌';
         }else if(e.status==='done'){
-            progText='✓ '+toFa(e.sent)+' جدید | '+toFa(e.updated)+' آپدیت | '+toFa(e.skipped)+' تکراری | '+toFa(e.failed)+' خطا';
+            progText=(e.retire_report||e.kind==='retire'||e.trigger==='retire')?('🗂 '+toFa(e.sent)+' بایگانی/حذف | '+toFa(e.skipped)+' یافت‌نشده | '+toFa(e.failed)+' خطا'):('✓ '+toFa(e.sent)+' جدید | '+toFa(e.updated)+' آپدیت | '+toFa(e.skipped)+' تکراری | '+toFa(e.failed)+' خطا');
             progPercent=100;
         }else if(e.status==='waiting'){
             progText=toFa(e.total)+' محصول — منتظر شروع';
@@ -68832,10 +69145,12 @@ function renderWooQueue(q){
             /* v10.51 (۶۵): اگر ردیف به‌خاطرِ تغییرِ تنظیمات جایگزین شده، علت را نشان بده */
             progText=(e.fail_reason?('⚠ '+esc(e.fail_reason)+' — '):'')+'❌ '+toFa(e.failed)+' خطا';
         }
-        html+='<div style="cursor:pointer;padding:8px 10px;border:1px solid #334155;border-radius:8px;margin:4px 0;background:'+statusBg[e.status]+';transition:background 0.2s" onmouseover="this.style.borderColor=\'#a78bfa\'" onmouseout="this.style.borderColor=\'#334155\'">';
+        html+='<div onclick="showWooQueueDetail(\''+e.id+'\')" style="cursor:pointer;padding:8px 10px;border:1px solid #334155;border-radius:8px;margin:4px 0;background:'+statusBg[e.status]+';transition:background 0.2s" onmouseover="this.style.borderColor=\'#a78bfa\'" onmouseout="this.style.borderColor=\'#334155\'">';
         html+='<div style="display:flex;justify-content:space-between;align-items:center">';
-        html+='<div style="display:flex;align-items:center;gap:8px">';
+        html+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
         html+='<span style="color:'+statusColors[e.status]+';font-weight:700;font-size:12px">'+statusLabels[e.status]+'</span>';if(e.trigger==='manual_sync'){html+='<span style="color:#34d399;font-size:10px;background:#064e3b40;padding:1px 6px;border-radius:4px;margin-right:4px">🤝 هنگامِ همگام‌سازیِ دستی</span>';} /* v10.53 (۶۷) */
+        if(e.trigger==='retire'||e.retire_report||e.kind==='retire'){html+='<span style="color:#fbbf24;font-size:10px;background:#42200640;padding:1px 6px;border-radius:4px;margin-right:4px">🗂 بایگانی/حذف ناموجود</span>';}
+        if(e.profile_name)html+='<span style="color:#94a3b8;font-size:10px">'+esc(e.profile_name)+'</span>';
         html+='<span style="color:#e2e8f0;font-weight:600;font-size:12px">'+toFa(e.total)+' محصول</span>';
         html+='</div>';
         html+='<div style="display:flex;gap:4px">';
@@ -68932,6 +69247,81 @@ function clearBslQueueDone(){
     }).catch(()=>{});
 }
 // v7.50: Show detailed report modal for a queue entry
+
+function showWooQueueDetail(qid){
+    fetch('?woo_queue_detail=1&queue_id='+encodeURIComponent(qid)).then(r=>r.json()).then(d=>{
+        if(!d.ok){showToast('خطا: '+(d.error||''),1);return;}
+        const e=d.entry;
+        const products=e.products||[];
+        const statusLabels={waiting:'⏳ در صف',running:'🔄 در حال ارسال',paused:'⏸ متوقف',done:'✅ انجام شد',failed:'❌ خطا'};
+        const statusColors={waiting:'#fbbf24',running:'#a78bfa',paused:'#fb923c',done:'#4ade80',failed:'#f87171'};
+        const sentMap={};(e.sent_details||[]).forEach(s=>{sentMap[s.key||s.title]=s;});
+        const updatedMap={};(e.updated_details||[]).forEach(u=>{updatedMap[u.key||u.title]=u;});
+        const skippedMap={};(e.skipped_details||[]).forEach(k=>{skippedMap[k.key||k.title]=k;});
+        const failedMap={};(e.failed_details||[]).forEach(f=>{failedMap[f.key||f.title]=f;});
+        let detailHtml='';
+        if(e.retire_report||e.kind==='retire'||e.trigger==='retire'){
+            detailHtml+='<div style="margin-bottom:10px;padding:10px;background:#42200640;border:1px solid #78350f;border-radius:8px;color:#fbbf24;font-size:12px;font-weight:700;line-height:1.8">🗂 گزارش حذف/بازنشستگی ووکامرس — هر ردیف یک محصول</div>';
+        }
+        detailHtml+='<div style="margin-bottom:12px;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:8px;font-size:11.5px;line-height:2">';
+        detailHtml+='<div style="color:#c4b5fd;font-weight:700;margin-bottom:4px">📋 جزئیات صف ووکامرس</div>';
+        if(e.profile_name)detailHtml+='<div style="color:#94a3b8">پروفایل: <b style="color:#e2e8f0">'+esc(e.profile_name)+'</b></div>';
+        detailHtml+='<div style="color:#94a3b8">وضعیت: <b style="color:'+(statusColors[e.status]||'#e2e8f0')+'">'+(statusLabels[e.status]||e.status)+'</b></div>';
+        detailHtml+='<div style="color:#94a3b8">✅ '+toFa(e.sent||0)+' · ⚡ '+toFa(e.updated||0)+' · ⏭ '+toFa(e.skipped||0)+' · ❌ '+toFa(e.failed||0)+' از '+toFa(e.total||0)+'</div>';
+        detailHtml+='</div>';
+        const listSrc=products.length?products:([]).concat(e.sent_details||[],e.skipped_details||[],e.failed_details||[],e.updated_details||[]);
+        if(!listSrc.length){
+            detailHtml+='<div style="color:#64748b;font-size:12px;padding:8px">جزئیاتی ثبت نشده</div>';
+        }else{
+            listSrc.forEach(function(p){
+                const pKey=p.key||'';
+                const pTitle=p.title||p.name||'';
+                const matchKey=pKey||pTitle;
+                let statusIcon='⚪',statusText='در انتظار',statusColor='#64748b',extraInfo='';
+                if(sentMap[matchKey]||(p.retire&&p.status==='retired')){
+                    const sm=sentMap[matchKey]||p;
+                    if(sm.retire||e.retire_report||e.kind==='retire'||e.trigger==='retire'){
+                        statusIcon='🗂';statusText=sm.action==='delete'?'حذف شد':'بازنشسته شد';statusColor='#fbbf24';
+                        if(sm.detail)extraInfo=' — '+sm.detail; else if(sm.reason)extraInfo=' — '+sm.reason;
+                    }else{
+                        statusIcon='✅';statusText='ارسال شد';statusColor='#4ade80';
+                        if(sm.remote_id)extraInfo=' (ID: '+sm.remote_id+')';
+                    }
+                }else if(updatedMap[matchKey]){
+                    statusIcon='⚡';statusText='آپدیت شد';statusColor='#facc15';
+                }else if(skippedMap[matchKey]||p.status==='not_found'){
+                    const sk=skippedMap[matchKey]||p;
+                    statusIcon='⏭';statusText=(sk.retire||e.retire_report)?'یافت نشد':'رد شد';statusColor='#94a3b8';
+                    if(sk.detail)extraInfo=' — '+sk.detail; else if(sk.reason)extraInfo=' — '+sk.reason;
+                }else if(failedMap[matchKey]||p.status==='failed'){
+                    const fm=failedMap[matchKey]||p;
+                    statusIcon='❌';statusText='خطا';statusColor='#f87171';
+                    if(fm.detail)extraInfo=' — '+fm.detail; else if(fm.error)extraInfo=' — '+fm.error;
+                }
+                detailHtml+='<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid #1e293b;font-size:11px">';
+                detailHtml+='<span style="color:'+statusColor+';font-size:14px;width:20px">'+statusIcon+'</span>';
+                detailHtml+='<span style="color:#e2e8f0;flex:1">'+esc(pTitle)+(extraInfo?' <span style="color:#64748b;font-size:10px">'+esc(extraInfo)+'</span>':'')+'</span>';
+                detailHtml+='<span style="color:'+statusColor+';font-size:10px">'+statusText+'</span></div>';
+            });
+        }
+        let modal=document.getElementById('wooQueueDetailModal');
+        if(!modal){
+            modal=document.createElement('div');
+            modal.id='wooQueueDetailModal';
+            modal.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;justify-content:center;align-items:center;padding:20px';
+            document.body.appendChild(modal);
+        }
+        modal.style.display='flex';
+        modal.innerHTML='<div style="background:#1e293b;border:1px solid #475569;border-radius:12px;padding:20px;max-width:700px;width:100%;max-height:90vh;overflow-y:auto;color:#e2e8f0"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h3 style="color:'+statusColors[e.status]+';font-size:14px;margin:0">'+(statusLabels[e.status]||'')+' — '+toFa(e.total||0)+' محصول'+(e.profile_name?' · '+esc(e.profile_name):'')+'</h3><button class="btn btn-gray" onclick="closeWooQueueDetail()" style="font-size:11px;padding:4px 10px">بستن</button></div>'+detailHtml+'</div>';
+        modal.onclick=function(ev){if(ev.target===modal)closeWooQueueDetail();};
+    }).catch(function(){showToast('خطا شبکه',1);});
+}
+function closeWooQueueDetail(){
+    const modal=document.getElementById('wooQueueDetailModal');
+    if(modal)modal.style.display='none';
+}
+
+
 function showBslQueueDetail(qid){
     fetch('?bsl_queue_detail=1&queue_id='+encodeURIComponent(qid)).then(r=>r.json()).then(d=>{
         if(!d.ok){showToast('خطا: '+d.error,1);return;}
@@ -68949,11 +69339,15 @@ function showBslQueueDetail(qid){
         const failedMap={};
         (e.failed_details||[]).forEach(f=>{failedMap[f.key||f.title]=f;});
         let detailHtml='';
+        /* v10.102: گزارش بایگانی/حذف ناموجود */
+        if(e.retire_report||e.kind==='retire'||e.trigger==='retire'){
+            detailHtml+='<div style="margin-bottom:10px;padding:10px;background:#42200640;border:1px solid #78350f;border-radius:8px;color:#fbbf24;font-size:12px;font-weight:700;line-height:1.8">🗂 گزارش بایگانی/حذف محصولات ناموجود یا حذف‌شده از مبدأ — هر ردیف یک محصول</div>';
+        }
         /* v8.58: بالای مودال، دسته‌بندی‌های اعمال‌شده روی همین وظیفه.
            قبلاً معلوم نبود این وظیفه با کدام دسته رفته است. */
         const ci=e.cat_info||{};
         detailHtml+='<div style="margin-bottom:12px;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:8px;font-size:11.5px;line-height:2">';
-        detailHtml+='<div style="color:#67e8f9;font-weight:700;margin-bottom:4px">📂 دسته‌بندی این وظیفه</div>';
+        detailHtml+='<div style="color:#67e8f9;font-weight:700;margin-bottom:4px">'+(e.retire_report||e.kind==='retire'||e.trigger==='retire'?'🗂 جزئیات بازنشستگی':'📂 دسته‌بندی این وظیفه')+'</div>';
         if(e.profile_name)detailHtml+='<div style="color:#94a3b8">پروفایل: <b style="color:#e2e8f0">'+esc(e.profile_name)+'</b></div>';
 if(e.shop_name)detailHtml+='<div style="color:#94a3b8">غرفهٔ هدف: <b style="color:#fbbf24">🏪 '+esc(e.shop_name)+'</b>'+(e.shop_is_default?' <span style="color:#67e8f9">(پیش‌فرض)</span>':'')+'</div>';
         if(ci.main){
@@ -68993,18 +69387,30 @@ if(e.shop_name)detailHtml+='<div style="color:#94a3b8">غرفهٔ هدف: <b sty
                 let statusColor='#64748b';
                 let extraInfo='';
                 if(sentMap[matchKey]){
-                    statusIcon='✅';statusText='ارسال شد';statusColor='#4ade80';
-                    if(sentMap[matchKey].remote_id)extraInfo=' (ID: '+sentMap[matchKey].remote_id+')';
+                    const sm=sentMap[matchKey];
+                    if(sm.retire||e.retire_report||e.kind==='retire'||e.trigger==='retire'){
+                        statusIcon='🗂';statusText=(sm.action==='archive'?'بایگانی شد':(sm.action==='delete'?'حذف شد':'بازنشسته شد'));statusColor='#fbbf24';
+                        if(sm.detail)extraInfo=' — '+sm.detail;
+                        else if(sm.reason)extraInfo=' — '+sm.reason;
+                    }else{
+                        statusIcon='✅';statusText='ارسال شد';statusColor='#4ade80';
+                        if(sm.remote_id)extraInfo=' (ID: '+sm.remote_id+')';
+                    }
                 }else if(updatedMap[matchKey]){
                     statusIcon='⚡';statusText='آپدیت شد';statusColor='#facc15';
                     if(updatedMap[matchKey].update_reason||updatedMap[matchKey].changes)extraInfo=' — '+(updatedMap[matchKey].update_reason||updatedMap[matchKey].changes);
                     if(updatedMap[matchKey].old_price&&updatedMap[matchKey].new_price)extraInfo+=' ('+updatedMap[matchKey].old_price+' → '+updatedMap[matchKey].new_price+')';
                 }else if(skippedMap[matchKey]){
-                    statusIcon='⏭';statusText='رد شد';statusColor='#94a3b8';
-                    if(skippedMap[matchKey].reason)extraInfo=' — '+skippedMap[matchKey].reason;
+                    const sk=skippedMap[matchKey];
+                    statusIcon='⏭';statusText=(sk.retire||e.retire_report)?'یافت نشد':'رد شد';statusColor='#94a3b8';
+                    if(sk.detail)extraInfo=' — '+sk.detail;
+                    else if(sk.reason)extraInfo=' — '+sk.reason;
                 }else if(failedMap[matchKey]){
+                    const fm=failedMap[matchKey];
                     statusIcon='❌';statusText='خطا';statusColor='#f87171';
-                    if(failedMap[matchKey].error)extraInfo=' — '+failedMap[matchKey].error;
+                    if(fm.detail)extraInfo=' — '+fm.detail;
+                    else if(fm.error)extraInfo=' — '+fm.error;
+                    else if(fm.reason)extraInfo=' — '+fm.reason;
                 }
                 detailHtml+='<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid #1e293b;font-size:11px">';
                 detailHtml+='<span style="color:'+statusColor+';font-size:14px;width:20px">'+statusIcon+'</span>';

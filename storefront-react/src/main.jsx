@@ -13,6 +13,123 @@ const formatMoney = (n, currency = 'تومان') => {
   const num = Number(n) || 0;
   return `${toFa(num.toLocaleString('en-US'))} ${currency}`;
 };
+
+/** Lightweight markdown → safe React nodes (bold/italic/code/links/lists/breaks). */
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+function inlineMd(raw) {
+  let s = escapeHtml(raw);
+  // code `x`
+  s = s.replace(/`([^`]+)`/g, '<code class="sf-md-code">$1</code>');
+  // bold **x** or __x__
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  // italic *x* or _x_
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+  // links [t](url)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="sf-md-link">$1</a>');
+  // bare urls
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer" class="sf-md-link">$2</a>');
+  return s;
+}
+function renderMarkdown(src) {
+  const raw = String(src ?? '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return null;
+  const lines = raw.split('\n');
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      const code = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { code.push(escapeHtml(lines[i])); i++; }
+      i++; // skip closing
+      blocks.push(`<pre class="sf-md-pre"><code>${code.join('\n')}</code></pre>`);
+      continue;
+    }
+    if (/^\s*[-*•]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
+      const items = [];
+      const ordered = /^\s*\d+[.)]\s+/.test(line);
+      while (i < lines.length && (/^\s*[-*•]\s+/.test(lines[i]) || /^\s*\d+[.)]\s+/.test(lines[i]))) {
+        items.push(`<li>${inlineMd(lines[i].replace(/^\s*([-*•]|\d+[.)])\s+/, ''))}</li>`);
+        i++;
+      }
+      blocks.push(ordered ? `<ol class="sf-md-list">${items.join('')}</ol>` : `<ul class="sf-md-list">${items.join('')}</ul>`);
+      continue;
+    }
+    if (/^#{1,3}\s+/.test(line)) {
+      const level = (line.match(/^#+/) || ['#'])[0].length;
+      const t = inlineMd(line.replace(/^#{1,3}\s+/, ''));
+      blocks.push(`<div class="sf-md-h sf-md-h${Math.min(level, 3)}">${t}</div>`);
+      i++;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const q = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        q.push(inlineMd(lines[i].replace(/^\s*>\s?/, '')));
+        i++;
+      }
+      blocks.push(`<blockquote class="sf-md-quote">${q.join('<br/>')}</blockquote>`);
+      continue;
+    }
+    if (!line.trim()) { i++; continue; }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^```/.test(lines[i]) && !/^\s*[-*•]\s+/.test(lines[i]) && !/^\s*\d+[.)]\s+/.test(lines[i]) && !/^#{1,3}\s+/.test(lines[i]) && !/^\s*>\s?/.test(lines[i])) {
+      para.push(inlineMd(lines[i]));
+      i++;
+    }
+    blocks.push(`<p class="sf-md-p">${para.join('<br/>')}</p>`);
+  }
+  return blocks.join('');
+}
+
+function MdBubble({ text, role }) {
+  if (role === 'user') {
+    return <div className="sf-bubble user">{text}</div>;
+  }
+  const html = renderMarkdown(text);
+  return (
+    <div
+      className="sf-bubble bot sf-bubble-md"
+      dangerouslySetInnerHTML={{ __html: html || escapeHtml(text) }}
+    />
+  );
+}
+
+/** Normalize Persian/Arabic digits & letters for search */
+function normalizeSearch(s) {
+  const fa = '۰۱۲۳۴۵۶۷۸۹';
+  const ar = '٠١٢٣٤٥٦٧٨٩';
+  let out = String(s ?? '').toLowerCase();
+  let buf = '';
+  for (let i = 0; i < out.length; i++) {
+    const ch = out[i];
+    const fi = fa.indexOf(ch);
+    if (fi >= 0) { buf += String(fi); continue; }
+    const ai = ar.indexOf(ch);
+    if (ai >= 0) { buf += String(ai); continue; }
+    if (ch === 'ي') { buf += 'ی'; continue; }
+    if (ch === 'ك') { buf += 'ک'; continue; }
+    if (/[a-z0-9\u0600-\u06FF\s]/i.test(ch)) buf += ch;
+    else buf += ' ';
+  }
+  return buf.replace(/\s+/g, ' ').trim();
+}
+function productMatchesQuery(p, qNorm) {
+  if (!qNorm) return true;
+  const hay = normalizeSearch(`${p.title || ''} ${p.category || ''} ${p.description || ''} ${p.price_formatted || ''}`);
+  const tokens = qNorm.split(' ').filter(Boolean);
+  return tokens.every((t) => hay.includes(t));
+}
+
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const safeJson = (raw, fb) => {
   try { return JSON.parse(raw); } catch { return fb; }
@@ -449,8 +566,9 @@ function SupportChat({ settings, ajax }) {
           </div>
           <div className="sf-chat-msgs" ref={boxRef}>
             {msgs.map((m) => (
-              <div key={m.id} className={`sf-bubble ${m.role === 'user' ? 'user' : 'bot'}`}>{m.text}</div>
+              <MdBubble key={m.id} role={m.role} text={m.text} />
             ))}
+            {busy ? <div className="sf-bubble bot sf-bubble-typing">در حال نوشتن…</div> : null}
           </div>
           <div className="sf-chat-input">
             <textarea
@@ -501,6 +619,9 @@ function StoreApp({ boot }) {
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const megaRef = useRef(null);
+  const searchRef = useRef(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocus, setSearchFocus] = useState(false);
 
   useAdminBarOffset();
   const { progress, scrolled } = useScrollProgress();
@@ -543,12 +664,11 @@ function StoreApp({ boot }) {
   }, []);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeSearch(query);
     let list = products.filter((p) => {
       if (cat !== 'all' && (p.category || 'عمومی') !== cat) return false;
       if (!q) return true;
-      const hay = `${p.title || ''} ${p.category || ''} ${p.description || ''}`.toLowerCase();
-      return hay.includes(q);
+      return productMatchesQuery(p, q);
     });
     if (sort === 'price-asc') list = [...list].sort((a, b) => (a.price || 0) - (b.price || 0));
     if (sort === 'price-desc') list = [...list].sort((a, b) => (b.price || 0) - (a.price || 0));
@@ -663,6 +783,23 @@ function StoreApp({ boot }) {
     [products],
   );
 
+  const liveSuggestions = useMemo(() => {
+    const q = normalizeSearch(query);
+    if (!q || q.length < 1) return [];
+    return products.filter((p) => productMatchesQuery(p, q)).slice(0, 8);
+  }, [products, query]);
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setSearchOpen(false);
+        setSearchFocus(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
   return (
     <div
       className="sf-app"
@@ -704,16 +841,86 @@ function StoreApp({ boot }) {
                 </div>
               </a>
 
-              <div className="sf-search">
-                <span className="ico">🔍</span>
+              <div className={`sf-search ${searchFocus || (searchOpen && query) ? 'is-open' : ''}`} ref={searchRef}>
+                <span className="ico" aria-hidden>🔍</span>
                 <input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => { setQuery(e.target.value); setSearchOpen(true); setPage(1); }}
+                  onFocus={() => { setSearchFocus(true); setSearchOpen(true); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      setSearchOpen(false);
+                      document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                    if (e.key === 'Escape') { setSearchOpen(false); setQuery(''); }
+                  }}
                   placeholder="جستجو در کالاها، برندها و دسته‌ها..."
                   aria-label="جستجوی محصولات"
+                  aria-autocomplete="list"
+                  aria-expanded={searchOpen && !!query}
+                  autoComplete="off"
                 />
                 {query ? (
-                  <button type="button" className="clear" onClick={() => setQuery('')}>✕</button>
+                  <button type="button" className="clear" onClick={() => { setQuery(''); setSearchOpen(false); }} aria-label="پاک کردن">✕</button>
+                ) : null}
+                {searchOpen && query.trim() ? (
+                  <div className="sf-search-drop" role="listbox">
+                    {liveSuggestions.length ? (
+                      <>
+                        <div className="sf-search-drop-head">
+                          <span>{toFa(liveSuggestions.length)} نتیجه</span>
+                          <button type="button" onClick={() => {
+                            setSearchOpen(false);
+                            document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' });
+                          }}>مشاهده همه</button>
+                        </div>
+                        {liveSuggestions.map((p) => (
+                          <button
+                            type="button"
+                            key={`sg-${p.id}`}
+                            className="sf-search-item"
+                            role="option"
+                            onClick={() => {
+                              setSearchOpen(false);
+                              openQuick(p);
+                            }}
+                          >
+                            <span className="sf-search-thumb">
+                              {p.image
+                                ? <img src={p.image} alt="" loading="lazy" />
+                                : <span className="ph">📦</span>}
+                            </span>
+                            <span className="sf-search-meta">
+                              <span className="t">{p.title}</span>
+                              <span className="c">{p.category || 'عمومی'}</span>
+                            </span>
+                            <span className="sf-search-price">
+                              {p.has_discount && p.discount_pct ? (
+                                <span className="disc">{toFa(p.discount_pct)}٪</span>
+                              ) : null}
+                              <span className="pr">{p.price_formatted || formatMoney(p.price, currency)}</span>
+                            </span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="sf-search-more"
+                          onClick={() => {
+                            setSearchOpen(false);
+                            document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                        >
+                          نمایش {toFa(filtered.length)} کالا در فروشگاه ←
+                        </button>
+                      </>
+                    ) : (
+                      <div className="sf-search-empty">
+                        <span>نتیجه‌ای برای «{query}» پیدا نشد</span>
+                        <button type="button" onClick={() => setQuery('')}>پاک کردن جستجو</button>
+                      </div>
+                    )}
+                  </div>
                 ) : null}
               </div>
 

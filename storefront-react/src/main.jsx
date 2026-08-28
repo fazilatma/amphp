@@ -491,20 +491,10 @@ function ToastHost({ toasts, dismiss }) {
   );
 }
 
-function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial, template, freeShip }) {
-  const templatePill = {
-    digikala: 'اکسپرس',
-    snappshop: 'فوری',
-    basalam: 'غرفه برتر',
-    torob: 'کمترین قیمت',
-    technolife: 'گارانتی',
-    digistyle: 'کالکشن',
-  }[template];
+function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial }) {
   const inStock = p.in_stock !== false;
   const meta = productVisualMeta(p);
-  const thr = Number(freeShip) || 0;
   const price = Number(p.price) || 0;
-  const freeOk = thr > 0 && price >= thr;
   const inst = installmentHint(price, currency);
   const shortHint = String(p.short_desc || p.description || '')
     .replace(/<[^>]+>/g, ' ')
@@ -526,11 +516,6 @@ function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, sh
             <span className="sf-disc">{toFa(p.discount_pct)}٪</span>
           ) : showSpecial ? (
             <span className="sf-badge-special">ویژه</span>
-          ) : null}
-          {templatePill ? <span className="sf-badge-ship">{templatePill}</span> : null}
-          {freeOk ? <span className="sf-badge-free">ارسال رایگان</span> : null}
-          {(p.source === 'woocommerce' || p.source === 'scraper') ? (
-            <span className={`sf-badge-src src-${p.source}`}>{p.source_label || (p.source === 'woocommerce' ? 'ووکامرس' : 'اسکرپر')}</span>
           ) : null}
         </div>
         <span className={`sf-stock ${inStock ? '' : 'out'}`}>{inStock ? 'موجود' : 'ناموجود'}</span>
@@ -683,11 +668,112 @@ function MenuDrawer({ open, onClose, settings, categories, onCat, cartCount, onO
   );
 }
 
+
+/** Fullscreen image zoom — click/drag pan, wheel/pinch scale */
+function ImageZoomLightbox({ src, alt, onClose, onPrev, onNext, hasNav }) {
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const drag = useRef(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    setScale(1); setTx(0); setTy(0);
+  }, [src]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose?.();
+      if (e.key === 'ArrowRight') onPrev?.();
+      if (e.key === 'ArrowLeft') onNext?.();
+      if (e.key === '+' || e.key === '=') setScale((s) => Math.min(5, s + 0.25));
+      if (e.key === '-') setScale((s) => Math.max(1, s - 0.25));
+    };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose, onPrev, onNext]);
+
+  const onWheel = (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.15 : 0.15;
+    setScale((s) => {
+      const n = Math.min(5, Math.max(1, s + delta));
+      if (n <= 1) { setTx(0); setTy(0); }
+      return n;
+    });
+  };
+
+  const onPointerDown = (e) => {
+    if (scale <= 1) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, tx, ty };
+  };
+  const onPointerMove = (e) => {
+    if (!drag.current) return;
+    setTx(drag.current.tx + (e.clientX - drag.current.x));
+    setTy(drag.current.ty + (e.clientY - drag.current.y));
+  };
+  const onPointerUp = () => { drag.current = null; };
+
+  const zoomIn = () => setScale((s) => Math.min(5, s + 0.35));
+  const zoomOut = () => setScale((s) => {
+    const n = Math.max(1, s - 0.35);
+    if (n <= 1) { setTx(0); setTy(0); }
+    return n;
+  });
+  const reset = () => { setScale(1); setTx(0); setTy(0); };
+
+  return (
+    <div className="sf-zoom-overlay" role="dialog" aria-modal="true" aria-label="بزرگ‌نمایی تصویر" onClick={onClose}>
+      <div className="sf-zoom-toolbar" onClick={(e) => e.stopPropagation()}>
+        <button type="button" onClick={zoomOut} title="کوچک‌تر">−</button>
+        <button type="button" onClick={reset} title="بازنشانی">{Math.round(scale * 100)}٪</button>
+        <button type="button" onClick={zoomIn} title="بزرگ‌تر">＋</button>
+        {hasNav ? (
+          <>
+            <button type="button" onClick={onPrev} title="قبلی">‹</button>
+            <button type="button" onClick={onNext} title="بعدی">›</button>
+          </>
+        ) : null}
+        <button type="button" className="sf-zoom-close" onClick={onClose} title="بستن">✕</button>
+      </div>
+      <div
+        className="sf-zoom-stage"
+        ref={wrapRef}
+        onClick={(e) => e.stopPropagation()}
+        onWheel={onWheel}
+        onDoubleClick={() => (scale > 1 ? reset() : setScale(2.2))}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <img
+          src={src}
+          alt={alt || ''}
+          draggable={false}
+          style={{
+            transform: `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`,
+            cursor: scale > 1 ? 'grab' : 'zoom-in',
+          }}
+        />
+      </div>
+      <div className="sf-zoom-hint">اسکرول یا ＋/− برای زوم · دابل‌کلیک · کشیدن برای جابه‌جایی · Esc بستن</div>
+    </div>
+  );
+}
+
 function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckout, related = [], freeShip, onOpenRelated }) {
   const [full, setFull] = useState(product);
   const [loading, setLoading] = useState(false);
   const [aiFilling, setAiFilling] = useState(false);
   const [imgIdx, setImgIdx] = useState(0);
+  const [zoomOpen, setZoomOpen] = useState(false);
   const [qty, setQty] = useState(1);
   const [tab, setTab] = useState('desc');
 
@@ -790,13 +876,21 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
 
         <div className="sf-pdp-grid">
           <div className="sf-pdp-gallery">
-            <div className="sf-pdp-main">
+            <div
+              className="sf-pdp-main sf-pdp-main-zoomable"
+              role={mainImg ? 'button' : undefined}
+              tabIndex={mainImg ? 0 : undefined}
+              onClick={() => { if (mainImg) setZoomOpen(true); }}
+              onKeyDown={(e) => { if (mainImg && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setZoomOpen(true); } }}
+              title={mainImg ? 'برای بزرگ‌نمایی کلیک کنید' : undefined}
+            >
               {p.has_discount && p.discount_pct ? (
                 <span className="sf-pdp-disc-float">{toFa(p.discount_pct)}٪ تخفیف</span>
               ) : null}
               {mainImg
                 ? <img src={mainImg} alt={p.title} />
                 : <div className="sf-pdp-ph">📦</div>}
+              {mainImg ? <span className="sf-pdp-zoom-hint">🔍 بزرگ‌نمایی</span> : null}
               {loading ? <span className="sf-pdp-loading">بارگذاری جزئیات…</span> : null}
             </div>
             {gallery.length > 1 ? (
@@ -809,7 +903,7 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
               </div>
             ) : null}
             <div className="sf-pdp-gallery-note">
-              <span>🔍 برای دیدن جزئیات روی تصویر بزنید</span>
+              <span>🔍 روی تصویر بزنید تا بزرگ شود · اسکرول برای زوم</span>
               <span>{toFa(gallery.length || 1)} تصویر</span>
             </div>
           </div>
@@ -818,9 +912,6 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
             <div className="sf-pdp-cat-row">
               <span className="sf-pdp-cat">{catIcon(p.category)} {p.category || 'عمومی'}</span>
               <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                {(p.source === 'woocommerce' || p.source === 'scraper') ? (
-                  <span className={`sf-badge-src src-${p.source}`}>{p.source_label || (p.source === 'woocommerce' ? 'ووکامرس' : 'اسکرپر')}</span>
-                ) : null}
                 {p.sku ? <span className="sf-pdp-sku">کد: {p.sku}</span> : null}
               </span>
             </div>
@@ -998,6 +1089,16 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
         <div className="price">{p.price_formatted || formatMoney(p.price, currency)}</div>
         <button type="button" className="sf-btn primary" disabled={!inStock} onClick={addN}>افزودن به سبد</button>
       </div>
+      {zoomOpen && mainImg ? (
+        <ImageZoomLightbox
+          src={mainImg}
+          alt={p.title}
+          onClose={() => setZoomOpen(false)}
+          hasNav={gallery.length > 1}
+          onPrev={() => setImgIdx((i) => (i - 1 + gallery.length) % gallery.length)}
+          onNext={() => setImgIdx((i) => (i + 1) % gallery.length)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1479,7 +1580,7 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   return (
     <>
-      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.11" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.12" onClick={() => setOpen((v) => !v)}>
         <span>💬</span>
         <span className="lbl">{settings.chat_window_title || 'پشتیبانی'}</span>
       </button>
@@ -1536,7 +1637,13 @@ function StoreApp({ boot }) {
   const ajax = boot.ajax || {};
   const currency = settings.currency_symbol || 'تومان';
   const palette = settings.store_palette || 'digikala-red';
-  const accent = settings.accent_color || PALETTE_ACCENTS[palette] || '#ef394e';
+  const template = settings.store_template || 'digikala';
+  /* Palette is source of truth for theme color; accent_color is optional override when non-empty and different. */
+  const paletteAccent = PALETTE_ACCENTS[palette] || PALETTE_ACCENTS[template] || '#ef394e';
+  const customAccent = String(settings.accent_color || '').trim();
+  const accent = (customAccent && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(customAccent))
+    ? customAccent
+    : paletteAccent;
   const pageSize = Math.max(8, Math.min(60, Number(settings.products_per_page) || PAGE_SIZE));
 
   const categories = useMemo(() => {
@@ -1601,7 +1708,31 @@ function StoreApp({ boot }) {
   useEffect(() => { saveLS(COLS_KEY, cols); }, [cols]);
 
   useEffect(() => {
-    document.documentElement.style.setProperty('--sf-accent', accent);
+    const root = document.documentElement;
+    const soft = (() => {
+      try {
+        const h = accent.replace('#', '');
+        const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+        const n = parseInt(full, 16);
+        const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+        return `rgba(${r},${g},${b},0.12)`;
+      } catch { return '#fff0f2'; }
+    })();
+    const darken = (() => {
+      try {
+        const h = accent.replace('#', '');
+        const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+        const n = parseInt(full, 16);
+        let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+        r = Math.max(0, Math.round(r * 0.85)); g = Math.max(0, Math.round(g * 0.85)); b = Math.max(0, Math.round(b * 0.85));
+        return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+      } catch { return accent; }
+    })();
+    root.style.setProperty('--sf-accent', accent);
+    root.style.setProperty('--sf-accent-2', darken);
+    root.style.setProperty('--sf-accent-soft', soft);
+    root.setAttribute('data-sf-palette', palette);
+    root.setAttribute('data-sf-template', template);
     /* v13.3.3: همیشه فونت سرور از boot settings — نه localStorage دستگاه */
     const serverFont = settings.shop_title_font || settings.app_font || (typeof window !== 'undefined' && window.APP_FONT_SERVER) || 'vazirmatn';
     applyStorefrontFont(serverFont);
@@ -1611,7 +1742,7 @@ function StoreApp({ boot }) {
       fd.append('event_type', 'site_visit');
       fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' }).catch(() => {});
     } catch {}
-  }, [settings.shop_title_font, settings.app_font, accent]);
+  }, [settings.shop_title_font, settings.app_font, accent, palette, template]);
 
   useEffect(() => {
     const onDoc = (e) => {
@@ -1907,7 +2038,7 @@ function StoreApp({ boot }) {
     <div
       className={`sf-app${checkoutOpen ? ' is-checkout' : ''}${scrolled ? ' is-scrolled' : ''}${productPage ? ' is-pdp' : ''}`}
       data-palette={palette}
-      data-template={settings.store_template || 'digikala'}
+      data-template={template}
       style={{ ['--sf-accent']: accent }}
     >
       <ToastHost toasts={toasts} dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
@@ -2349,8 +2480,6 @@ function StoreApp({ boot }) {
                 onAdd={addToCart}
                 onAsk={askAboutProduct}
                 showSpecial={!!settings.show_special_badge}
-                template={settings.store_template}
-                freeShip={settings.free_shipping_threshold}
               />
               {((idx + 1) % 8 === 0 && idx + 1 < pageItems.length) ? (
                 <div className="sf-grid-banner" key={`bn-${idx}`}>

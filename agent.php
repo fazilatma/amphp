@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.7.2
+ * Version: 12.8.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -4489,17 +4489,36 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $is_target ) {
 			?>
 			<style id="scraper-suppress-wp-theme-header">
-				/* حذف کامل، قطعی و همیشگی هدر و منوی قالب وردپرس */
-				body > header, body > #header, body > #masthead, body > .site-header, 
+				/* حذف هدر/منوی قالب — بدون مخفی‌کردن هدر فروشگاه */
+				body > header:not(.store-sticky-header-container):not(.store-pro-header),
+				body > #header, body > #masthead, body > .site-header,
 				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
-				header, #masthead, .site-header, #site-header, .header-wrap, .main-header, 
+				header:not(.store-sticky-header-container):not(.store-pro-header),
+				#masthead, .site-header, #site-header, .header-wrap, .main-header,
 				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
 				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
 				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
 				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
 				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
-				#wpadminbar + header, #wpadminbar + #masthead { 
-					display: none !important; 
+				#wpadminbar + header:not(.store-sticky-header-container):not(.store-pro-header),
+				#wpadminbar + #masthead {
+					display: none !important;
+				}
+				header.store-sticky-header-container,
+				header.store-pro-header,
+				#storeStickyHeader,
+				.store-sticky-header-container,
+				.store-pro-header {
+					display: block !important;
+					visibility: visible !important;
+					opacity: 1 !important;
+				}
+				#storeStickyHeader .store-main-header,
+				#storeStickyHeader .store-navbar,
+				.store-sticky-header-container .store-main-header,
+				.store-sticky-header-container .store-navbar {
+					display: flex !important;
+					visibility: visible !important;
 				}
 			</style>
 			<?php
@@ -4539,6 +4558,15 @@ class Scraper_Auto_Shop_Plugin {
 	public static function enqueue_front_assets() {
 		wp_register_style( 'vazirmatn-font', 'https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css', array(), '33.003' );
 		wp_enqueue_style( 'vazirmatn-font' );
+
+		// Optional React island for modern header widgets (CDN, no build step).
+		// Loaded only on storefront pages that use the modern shop shortcode/takeover.
+		$settings = self::get_settings();
+		$load_react = ! empty( $settings['enable_shop_takeover'] ) || ! empty( $settings['enable_scraped_products'] );
+		if ( $load_react && ! is_admin() ) {
+			wp_enqueue_script( 'scraper-react', 'https://unpkg.com/react@18.3.1/umd/react.production.min.js', array(), '18.3.1', true );
+			wp_enqueue_script( 'scraper-react-dom', 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js', array( 'scraper-react' ), '18.3.1', true );
+		}
 	}
 
 	/**
@@ -4557,28 +4585,57 @@ class Scraper_Auto_Shop_Plugin {
 			<title><?php echo esc_html( ( $settings['shop_title'] ?? 'فروشگاه آنلاین' ) . ' | ' . get_bloginfo( 'name' ) ); ?></title>
 			<?php wp_head(); ?>
 			<style id="scraper-dedicated-standalone-style">
-				/* حذف کامل، قطعی و همیشگی هدر و منوی قالب وردپرس */
-				body > header, body > #header, body > #masthead, body > .site-header, 
+				/* حذف هدر/منوی قالب — بدون مخفی‌کردن هدر فروشگاه */
+				body > header:not(.store-sticky-header-container):not(.store-pro-header),
+				body > #header, body > #masthead, body > .site-header,
 				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
-				header, #masthead, .site-header, #site-header, .header-wrap, .main-header, 
+				header:not(.store-sticky-header-container):not(.store-pro-header),
+				#masthead, .site-header, #site-header, .header-wrap, .main-header,
 				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
 				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
 				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
 				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
 				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
-				#wpadminbar + header, #wpadminbar + #masthead { 
-					display: none !important; 
+				#wpadminbar + header:not(.store-sticky-header-container):not(.store-pro-header),
+				#wpadminbar + #masthead {
+					display: none !important;
+				}
+				header.store-sticky-header-container,
+				header.store-pro-header,
+				#storeStickyHeader,
+				.store-sticky-header-container,
+				.store-pro-header {
+					display: block !important;
+					visibility: visible !important;
+					opacity: 1 !important;
+				}
+				#storeStickyHeader .store-main-header,
+				#storeStickyHeader .store-navbar,
+				.store-sticky-header-container .store-main-header,
+				.store-sticky-header-container .store-navbar {
+					display: flex !important;
+					visibility: visible !important;
 				}
 				html, body {
 					margin: 0 !important;
 					padding: 0 !important;
 					background-color: #f8fafc !important;
 					font-family: "Vazirmatn", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-					overflow-x: visible !important;
+					overflow-x: clip !important;
+					overflow-y: auto !important;
 				}
+				/* overflow/transform on ancestors breaks position:sticky */
 				.scraper-standalone-shop-takeover,
-				.scraper-shop-fullscreen-wrap {
-					overflow-x: visible !important;
+				.scraper-shop-fullscreen-wrap,
+				.modern-shop-container,
+				.modern-shop-wrap,
+				#modernShopRoot {
+					overflow: visible !important;
+					overflow-x: clip !important;
+					transform: none !important;
+					filter: none !important;
+					perspective: none !important;
+					contain: none !important;
 				}
 			</style>
 		</head>
@@ -5356,102 +5413,188 @@ class Scraper_Auto_Shop_Plugin {
 				height: 26px;
 				fill: currentColor;
 			}
-			/* Sticky Header & Navigation Bar Wrapper */
-			.store-sticky-header-container {
+			/* ===== Modern Pro Sticky Header ===== */
+			.store-sticky-header-container,
+			.store-pro-header {
 				width: 100%;
-				margin-bottom: 20px;
-				transition: top 0.2s ease, box-shadow 0.25s ease, background 0.25s ease, padding 0.25s ease;
+				margin: 0 0 18px;
+				padding: 0;
+				position: relative;
+				z-index: 10050;
+				isolation: isolate;
+				transition: box-shadow .28s cubic-bezier(.22,1,.36,1), background .28s ease, border-color .28s ease;
 			}
-			.store-sticky-header-container.is-sticky-active {
-				position: -webkit-sticky;
-				position: sticky;
-				top: 0;
-				z-index: 9999;
+			.store-sticky-header-container.is-sticky-active,
+			.store-pro-header.is-sticky-active {
+				position: -webkit-sticky !important;
+				position: sticky !important;
+				top: 0 !important;
+				z-index: 10050 !important;
 			}
-			body.admin-bar .store-sticky-header-container.is-sticky-active {
-				top: 32px;
+			body.admin-bar .store-sticky-header-container.is-sticky-active,
+			body.admin-bar .store-pro-header.is-sticky-active {
+				top: 32px !important;
 			}
 			@media screen and (max-width: 782px) {
-				body.admin-bar .store-sticky-header-container.is-sticky-active {
-					top: 46px;
+				body.admin-bar .store-sticky-header-container.is-sticky-active,
+				body.admin-bar .store-pro-header.is-sticky-active {
+					top: 46px !important;
 				}
 			}
-
-			/* Bulletproof Fixed Sticky State via JS Engine */
-			.store-sticky-header-container.is-fixed-sticky {
+			.store-sticky-header-container.is-fixed-sticky,
+			.store-pro-header.is-fixed-sticky {
 				position: fixed !important;
 				left: 0 !important;
 				right: 0 !important;
 				width: 100% !important;
 				margin: 0 !important;
-				z-index: 99999 !important;
-				background: rgba(255, 255, 255, 0.97) !important;
-				backdrop-filter: blur(16px) !important;
-				-webkit-backdrop-filter: blur(16px) !important;
-				box-shadow: 0 10px 30px -4px rgba(0, 0, 0, 0.12), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important;
-				border-bottom: 1.5px solid rgba(226, 232, 240, 0.9) !important;
-				animation: storeStickySlideDown 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+				z-index: 2147483000 !important;
+				background: rgba(255,255,255,0.82) !important;
+				backdrop-filter: saturate(180%) blur(18px) !important;
+				-webkit-backdrop-filter: saturate(180%) blur(18px) !important;
+				box-shadow: 0 12px 40px rgba(15,23,42,0.12), 0 1px 0 rgba(255,255,255,0.6) inset !important;
+				border-bottom: 1px solid rgba(148,163,184,0.28) !important;
+				border-radius: 0 !important;
+				animation: storeStickySlideDown .32s cubic-bezier(.16,1,.3,1) both;
 			}
-
 			@keyframes storeStickySlideDown {
-				from {
-					transform: translateY(-100%);
-					opacity: 0.85;
-				}
-				to {
-					transform: translateY(0);
-					opacity: 1;
-				}
+				from { transform: translateY(-110%); opacity: .6; }
+				to   { transform: translateY(0); opacity: 1; }
 			}
+			#storeStickyPlaceholder { width: 100%; pointer-events: none; }
 
+			.store-sticky-header-container.is-fixed-sticky .store-header-shell,
 			.store-sticky-header-container.is-fixed-sticky .store-main-header,
 			.store-sticky-header-container.is-fixed-sticky .store-navbar {
 				max-width: 1360px;
 				margin-left: auto;
 				margin-right: auto;
-				padding-left: 20px;
-				padding-right: 20px;
 			}
-
 			.store-sticky-header-container.is-fixed-sticky .store-main-header {
-				padding: 8px 16px;
-				margin-bottom: 0;
-				border: none;
-				box-shadow: none;
-				background: transparent;
+				padding: 8px 18px !important;
+				margin-bottom: 0 !important;
+				border: none !important;
+				box-shadow: none !important;
+				background: transparent !important;
+				border-radius: 0 !important;
 			}
-
 			.store-sticky-header-container.is-fixed-sticky .store-navbar {
-				margin-bottom: 0;
-				padding: 4px 16px 8px;
-				border: none;
-				box-shadow: none;
-				background: transparent;
+				margin-bottom: 0 !important;
+				padding: 2px 18px 10px !important;
+				border: none !important;
+				box-shadow: none !important;
+				background: transparent !important;
+				border-radius: 0 !important;
 			}
+			.store-sticky-header-container.is-fixed-sticky .store-brand-logo { width: 40px; height: 40px; border-radius: 12px; }
+			.store-sticky-header-container.is-fixed-sticky .store-brand-logo svg { width: 20px; height: 20px; }
+			.store-sticky-header-container.is-fixed-sticky .store-brand-info h2 { font-size: 1.05rem !important; }
+			.store-sticky-header-container.is-fixed-sticky .store-brand-info > span,
+			.store-sticky-header-container.is-fixed-sticky .store-header-meta { display: none !important; }
 
-			.store-sticky-header-container.is-fixed-sticky .store-brand-logo {
-				width: 38px;
-				height: 38px;
+			.store-header-shell {
+				position: relative;
+				border-radius: 22px;
+				overflow: visible;
+				background: linear-gradient(135deg, rgba(255,255,255,0.94) 0%, rgba(248,250,252,0.9) 100%);
+				border: 1px solid rgba(226,232,240,0.95);
+				box-shadow: 0 18px 50px -24px rgba(15,23,42,0.28), 0 1px 0 rgba(255,255,255,0.85) inset;
+				backdrop-filter: blur(10px);
+				-webkit-backdrop-filter: blur(10px);
 			}
-			.store-sticky-header-container.is-fixed-sticky .store-brand-logo svg {
-				width: 20px;
-				height: 20px;
+			.store-header-shell::before {
+				content: "";
+				position: absolute;
+				inset: 0 0 auto 0;
+				height: 3px;
+				border-radius: 22px 22px 0 0;
+				background: linear-gradient(90deg, var(--sp-accent,#2563eb), #7c3aed 40%, #ec4899 75%, #06b6d4);
+				pointer-events: none;
+				z-index: 2;
 			}
-			.store-sticky-header-container.is-fixed-sticky .store-brand-info h2 {
-				font-size: 1.15rem;
+			.store-sticky-header-container.is-fixed-sticky .store-header-shell {
+				border: none !important;
+				border-radius: 0 !important;
+				box-shadow: none !important;
+				background: transparent !important;
+				backdrop-filter: none !important;
 			}
-			.store-sticky-header-container.is-fixed-sticky .store-brand-info span {
-				display: none;
+			.store-sticky-header-container.is-fixed-sticky .store-header-shell::before {
+				height: 2px;
+				border-radius: 0;
 			}
-
-			.store-sticky-header-container.is-sticky-active.is-scrolled {
-				background: rgba(255, 255, 255, 0.97);
-				backdrop-filter: blur(14px);
-				-webkit-backdrop-filter: blur(14px);
-				box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.09), 0 6px 12px -4px rgba(0, 0, 0, 0.04);
-				border-radius: var(--sp-radius);
-				border: 1px solid rgba(226, 232, 240, 0.85);
-				padding: 6px 12px;
+			.store-header-inner { position: relative; z-index: 1; }
+			.store-header-meta {
+				display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;
+			}
+			.store-header-chip {
+				display: inline-flex; align-items: center; gap: 5px;
+				font-size: 0.72rem; font-weight: 800; color: #475569;
+				background: #f1f5f9; border: 1px solid #e2e8f0;
+				border-radius: 999px; padding: 3px 9px;
+			}
+			.store-header-chip.live {
+				color: #065f46; background: #ecfdf5; border-color: #a7f3d0;
+			}
+			.store-header-chip.live .dot {
+				width: 7px; height: 7px; border-radius: 50%; background: #10b981;
+				box-shadow: 0 0 0 0 rgba(16,185,129,.6);
+				animation: storeLivePulse 1.6s infinite;
+			}
+			@keyframes storeLivePulse {
+				0% { box-shadow: 0 0 0 0 rgba(16,185,129,.55); }
+				70% { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+				100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+			}
+			.store-brand-logo { position: relative; }
+			.store-brand-logo::after {
+				content: "";
+				position: absolute; inset: -3px; border-radius: inherit;
+				background: linear-gradient(135deg, var(--sp-accent,#2563eb), #a855f7, #ec4899);
+				z-index: -1; opacity: .45; filter: blur(6px);
+			}
+			.store-main-header {
+				background: transparent !important;
+				border: none !important;
+				box-shadow: none !important;
+				margin-bottom: 0 !important;
+				border-radius: 20px 20px 0 0 !important;
+			}
+			.store-navbar {
+				background: transparent !important;
+				border: none !important;
+				box-shadow: none !important;
+				margin-bottom: 0 !important;
+				border-top: 1px solid rgba(226,232,240,0.85) !important;
+				border-radius: 0 0 20px 20px !important;
+			}
+			.btn-header-cart {
+				background: linear-gradient(135deg, var(--sp-accent,#2563eb) 0%, #4f46e5 100%) !important;
+				box-shadow: 0 10px 24px rgba(37,99,235,0.32) !important;
+			}
+			.nav-mega-btn {
+				background: linear-gradient(135deg, #0f172a 0%, #1e293b 55%, #312e81 100%) !important;
+				box-shadow: 0 8px 20px rgba(15,23,42,0.25);
+			}
+			.nav-item-link { position: relative; }
+			.nav-item-link::after {
+				content: "";
+				position: absolute; right: 12px; left: 12px; bottom: 4px;
+				height: 2px; border-radius: 2px; background: var(--sp-accent,#2563eb);
+				transform: scaleX(0); transform-origin: center; transition: transform .2s ease; opacity: .85;
+			}
+			.nav-item-link:hover::after,
+			.nav-item-link.active::after { transform: scaleX(1); }
+			.store-progress-scroll {
+				position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+				background: transparent; z-index: 5; overflow: hidden; pointer-events: none;
+			}
+			.store-react-island { display: inline-flex; align-items: center; }
+			@media (max-width: 900px) { .store-react-island { display: none; } }
+			.store-progress-scroll > span {
+				display: block; height: 100%; width: 0%;
+				background: linear-gradient(90deg, var(--sp-accent,#2563eb), #a855f7, #ec4899);
+				transition: width .05s linear;
 			}
 
 			.store-brand-info h2 {
@@ -7839,7 +7982,7 @@ class Scraper_Auto_Shop_Plugin {
 				<div class="drawer-version-box">
 					<div class="version-badges-row">
 						<span class="v-pill v-core">⚡ هسته اسکرپر: v10.95</span>
-						<span class="v-pill v-shop">🏪 پوسته فروشگاه: v12.6.0</span>
+						<span class="v-pill v-shop">🏪 پوسته فروشگاه: v12.8.0</span>
 					</div>
 					<button type="button" class="btn-changelog-drawer-toggle" id="btnChangelogDrawer">
 						<span>📜 مشاهده لاگ تغییرات کامل نسخه‌ها</span>
@@ -7881,16 +8024,25 @@ class Scraper_Auto_Shop_Plugin {
 				</div>
 			</div>
 
-			<!-- Wrap Store Header and Navbar in Sticky Container -->
-			<header class="store-sticky-header-container <?php echo ! empty( $settings['sticky_header'] ) ? 'is-sticky-active' : ''; ?>" id="storeStickyHeader">
+			<!-- Modern Pro Sticky Header -->
+			<header class="store-sticky-header-container store-pro-header <?php echo ! empty( $settings['sticky_header'] ) ? 'is-sticky-active' : ''; ?>" id="storeStickyHeader" data-sticky="<?php echo ! empty( $settings['sticky_header'] ) ? '1' : '0'; ?>" role="banner">
+				<div class="store-header-shell">
+				<div class="store-header-inner">
 				<div class="store-main-header">
-					<a href="#" class="store-brand" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;">
-					<div class="store-brand-logo">
+					<a href="#" class="store-brand" onclick="window.scrollTo({top:0,behavior:'smooth'}); return false;" aria-label="<?php echo esc_attr( $settings['shop_title'] ); ?>">
+					<div class="store-brand-logo" aria-hidden="true">
 						<svg viewBox="0 0 24 24"><path d="M19 6h-2c0-2.76-2.24-5-5-5S7 3.24 7 6H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-7-3c1.66 0 3 1.34 3 3H9c0-1.66 1.34-3 3-3zm7 17H5V8h14v12zm-7-8c-1.66 0-3-1.34-3-3H7c0 2.76 2.24 5 5 5s5-2.24 5-5h-2c0 1.66-1.34 3-3 3z"/></svg>
 					</div>
 					<div class="store-brand-info">
 						<h2><?php echo esc_html( $settings['shop_title'] ); ?></h2>
 						<span><?php echo esc_html( $settings['shop_subtitle'] ); ?></span>
+						<div class="store-header-meta">
+							<span class="store-header-chip live"><span class="dot"></span>آنلاین</span>
+							<span class="store-header-chip">⚡ ارسال سریع</span>
+							<?php if ( ! empty( $settings['support_hours'] ) ) : ?>
+								<span class="store-header-chip">🕒 <?php echo esc_html( $settings['support_hours'] ); ?></span>
+							<?php endif; ?>
+						</div>
 					</div>
 				</a>
 
@@ -7908,6 +8060,7 @@ class Scraper_Auto_Shop_Plugin {
 					</button>
 
 					<div class="store-header-actions">
+					<div id="storeReactHeaderIsland" class="store-react-island" data-phone="<?php echo esc_attr( $settings['contact_phone'] ?? '' ); ?>" data-title="<?php echo esc_attr( $settings['shop_title'] ?? '' ); ?>"></div>
 					<?php if ( current_user_can( 'manage_options' ) ) : ?>
 						<a href="<?php echo esc_url( $scraper_admin_url ); ?>" class="btn-header-action" title="مدیریت فروشگاه">
 							<span>⚙️</span>
@@ -7986,7 +8139,10 @@ class Scraper_Auto_Shop_Plugin {
 						</div>
 					<?php endforeach; ?>
 				</div>
-			</div>
+				</div><!-- .store-navbar -->
+				<div class="store-progress-scroll" aria-hidden="true"><span id="storeScrollProgress"></span></div>
+				</div><!-- .store-header-inner -->
+				</div><!-- .store-header-shell -->
 			</header>
 
 			<!-- Flash Sale Promotional Bar -->
@@ -9728,70 +9884,181 @@ class Scraper_Auto_Shop_Plugin {
 			// Automatically track site visit once
 			window.trackStoreEvent('site_visit');
 
-			// Bulletproof Sticky Header Engine with Layout Spacer
+
+			// Optional React island for advanced header widgets (progressive enhancement)
+			(function(){
+				const mount = document.getElementById('storeReactHeaderIsland');
+				if (!mount || !window.React || !window.ReactDOM) return;
+				const h = React.createElement;
+				const phone = mount.getAttribute('data-phone') || '';
+				const title = mount.getAttribute('data-title') || '';
+
+				function HeaderIsland() {
+					const [scrolled, setScrolled] = React.useState(false);
+					const [clock, setClock] = React.useState('');
+					React.useEffect(function(){
+						const onScroll = function(){ setScrolled((window.pageYOffset||0) > 24); };
+						onScroll();
+						window.addEventListener('scroll', onScroll, { passive: true });
+						const t = setInterval(function(){
+							const d = new Date();
+							const hh = String(d.getHours()).padStart(2,'0');
+							const mm = String(d.getMinutes()).padStart(2,'0');
+							setClock(hh + ':' + mm);
+						}, 1000);
+						return function(){ window.removeEventListener('scroll', onScroll); clearInterval(t); };
+					}, []);
+					return h('div', {
+						style: {
+							display: 'inline-flex', alignItems: 'center', gap: '8px',
+							padding: '6px 10px', borderRadius: '999px',
+							background: scrolled ? 'rgba(37,99,235,0.10)' : 'rgba(241,245,249,0.95)',
+							border: '1px solid ' + (scrolled ? 'rgba(37,99,235,0.25)' : '#e2e8f0'),
+							fontSize: '0.75rem', fontWeight: 800, color: '#0f172a',
+							transition: 'all .2s ease', whiteSpace: 'nowrap'
+						},
+						title: title
+					},
+						h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 0 3px rgba(16,185,129,0.18)' } }),
+						h('span', null, scrolled ? 'هدر چسبان فعال' : 'آماده خرید'),
+						clock ? h('span', { style: { opacity: .55, fontVariantNumeric: 'tabular-nums', direction: 'ltr' } }, clock) : null,
+						phone ? h('a', { href: 'tel:' + phone, style: { color: 'var(--sp-accent,#2563eb)', textDecoration: 'none' } }, '📞') : null
+					);
+				}
+
+				const root = ReactDOM.createRoot ? ReactDOM.createRoot(mount) : null;
+				if (root) root.render(h(HeaderIsland));
+				else ReactDOM.render(h(HeaderIsland), mount);
+			})();
+
+
+			// Modern Sticky Header Engine (native sticky + fixed fallback + progress)
 			(function() {
 				const stickyHdr = document.getElementById('storeStickyHeader');
-				if (!stickyHdr || !stickyHdr.classList.contains('is-sticky-active')) return;
+				if (!stickyHdr) return;
+				const stickyEnabled = stickyHdr.classList.contains('is-sticky-active') || stickyHdr.getAttribute('data-sticky') === '1';
+				if (!stickyEnabled) {
+					stickyHdr.classList.remove('is-sticky-active');
+					return;
+				}
+				stickyHdr.classList.add('is-sticky-active');
+				stickyHdr.style.setProperty('display', 'block', 'important');
+				stickyHdr.style.setProperty('visibility', 'visible', 'important');
+				stickyHdr.style.setProperty('opacity', '1', 'important');
 
-				// Invisible layout placeholder to prevent content jump
-				const placeholder = document.createElement('div');
-				placeholder.id = 'storeStickyPlaceholder';
-				placeholder.style.display = 'none';
-				placeholder.style.width = '100%';
-				placeholder.style.visibility = 'hidden';
-				stickyHdr.parentNode.insertBefore(placeholder, stickyHdr);
+				const progressEl = document.getElementById('storeScrollProgress');
+				let placeholder = document.getElementById('storeStickyPlaceholder');
+				if (!placeholder) {
+					placeholder = document.createElement('div');
+					placeholder.id = 'storeStickyPlaceholder';
+					placeholder.setAttribute('aria-hidden', 'true');
+					placeholder.style.display = 'none';
+					placeholder.style.width = '100%';
+					placeholder.style.pointerEvents = 'none';
+					if (stickyHdr.parentNode) stickyHdr.parentNode.insertBefore(placeholder, stickyHdr);
+				}
 
 				function getAdminBarOffset() {
 					const bar = document.getElementById('wpadminbar');
-					if (bar && window.getComputedStyle(bar).display !== 'none' && window.getComputedStyle(bar).position === 'fixed') {
-						return bar.offsetHeight || 32;
+					if (!bar) return 0;
+					const cs = window.getComputedStyle(bar);
+					if (cs.display === 'none' || cs.visibility === 'hidden') return 0;
+					if (cs.position !== 'fixed' && cs.position !== 'sticky') return 0;
+					return bar.offsetHeight || (window.innerWidth <= 782 ? 46 : 32);
+				}
+
+				function stickyBrokenByAncestor() {
+					let el = stickyHdr.parentElement;
+					while (el && el !== document.documentElement) {
+						const cs = window.getComputedStyle(el);
+						if (cs.overflowY === 'hidden' || cs.overflow === 'hidden' || cs.overflowY === 'auto' || cs.overflowY === 'scroll') return true;
+						if (cs.transform && cs.transform !== 'none') return true;
+						if (cs.filter && cs.filter !== 'none') return true;
+						if (cs.perspective && cs.perspective !== 'none') return true;
+						el = el.parentElement;
 					}
-					return 0;
+					return false;
 				}
 
 				let isFixed = false;
-				let cachedInitialTop = 0;
+				let anchorTop = 0;
+				let ticking = false;
+				const forceFixed = stickyBrokenByAncestor();
 
-				function measureInitialTop() {
-					if (!isFixed) {
-						const rect = stickyHdr.getBoundingClientRect();
-						cachedInitialTop = rect.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
-					}
+				function measureAnchor() {
+					if (isFixed) return;
+					const rect = stickyHdr.getBoundingClientRect();
+					const y = window.pageYOffset || document.documentElement.scrollTop || 0;
+					anchorTop = rect.top + y;
 				}
 
-				measureInitialTop();
-				window.addEventListener('resize', measureInitialTop, { passive: true });
+				function updateProgress() {
+					if (!progressEl) return;
+					const doc = document.documentElement;
+					const max = Math.max(1, (doc.scrollHeight - window.innerHeight));
+					const y = window.pageYOffset || doc.scrollTop || 0;
+					progressEl.style.width = Math.min(100, Math.max(0, (y / max) * 100)).toFixed(2) + '%';
+				}
+
+				function applyFixed(on) {
+					const adminBarH = getAdminBarOffset();
+					if (on) {
+						if (!isFixed) {
+							placeholder.style.height = stickyHdr.offsetHeight + 'px';
+							placeholder.style.display = 'block';
+							stickyHdr.classList.add('is-fixed-sticky', 'is-scrolled');
+							isFixed = true;
+						}
+						stickyHdr.style.setProperty('top', adminBarH + 'px', 'important');
+						stickyHdr.style.setProperty('position', 'fixed', 'important');
+						stickyHdr.style.setProperty('left', '0', 'important');
+						stickyHdr.style.setProperty('right', '0', 'important');
+						stickyHdr.style.setProperty('width', '100%', 'important');
+						stickyHdr.style.setProperty('z-index', '2147483000', 'important');
+					} else if (isFixed) {
+						placeholder.style.display = 'none';
+						placeholder.style.height = '0px';
+						stickyHdr.classList.remove('is-fixed-sticky', 'is-scrolled');
+						['top','position','left','right','width','z-index'].forEach(function(p){ stickyHdr.style.removeProperty(p); });
+						isFixed = false;
+						measureAnchor();
+					}
+				}
 
 				function handleScroll() {
 					const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
 					const adminBarH = getAdminBarOffset();
-					const triggerPoint = (cachedInitialTop || 0) - adminBarH;
+					updateProgress();
 
-					if (scrollY > triggerPoint && scrollY > 20) {
-						if (!isFixed) {
-							const hdrHeight = stickyHdr.offsetHeight;
-							placeholder.style.height = hdrHeight + 'px';
-							placeholder.style.display = 'block';
+					if (!forceFixed) {
+						stickyHdr.style.setProperty('top', adminBarH + 'px', 'important');
+						if (scrollY > 12) stickyHdr.classList.add('is-scrolled');
+						else stickyHdr.classList.remove('is-scrolled');
 
-							stickyHdr.classList.add('is-fixed-sticky', 'is-scrolled');
-							stickyHdr.style.top = adminBarH + 'px';
-							isFixed = true;
-						} else {
-							stickyHdr.style.top = adminBarH + 'px';
-						}
-					} else {
-						if (isFixed) {
-							placeholder.style.display = 'none';
-							stickyHdr.classList.remove('is-fixed-sticky', 'is-scrolled');
-							stickyHdr.style.top = '';
-							isFixed = false;
-							measureInitialTop();
-						}
+						const rect = stickyHdr.getBoundingClientRect();
+						if (scrollY > 24 && rect.top < adminBarH - 2) applyFixed(true);
+						else if (scrollY <= Math.max(0, anchorTop - adminBarH - 2)) applyFixed(false);
+						return;
 					}
+
+					const trigger = Math.max(0, (anchorTop || 0) - adminBarH - 1);
+					if (scrollY > trigger && scrollY > 8) applyFixed(true);
+					else applyFixed(false);
 				}
 
-				window.addEventListener('scroll', handleScroll, { passive: true });
-				setTimeout(handleScroll, 100);
+				function onScroll() {
+					if (ticking) return;
+					ticking = true;
+					window.requestAnimationFrame(function(){ ticking = false; handleScroll(); });
+				}
+
+				measureAnchor();
+				handleScroll();
+				window.addEventListener('scroll', onScroll, { passive: true });
+				window.addEventListener('resize', function(){ measureAnchor(); handleScroll(); }, { passive: true });
+				window.addEventListener('load', function(){ measureAnchor(); handleScroll(); });
+				setTimeout(function(){ measureAnchor(); handleScroll(); }, 50);
+				setTimeout(function(){ measureAnchor(); handleScroll(); }, 400);
 			})();
 
 			// Animated Numbers & Trust Metrics Counter Engine for Storefront

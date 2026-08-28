@@ -1813,3 +1813,12 @@
   .sf-cat-showcase-grid { grid-template-columns: repeat(2, 1fr); }
   .sf-rail-card { flex-basis: 148px; }
 }
+
+
+.sf-badge-src {
+  font-size: .62rem; font-weight: 900; padding: 3px 7px; border-radius: 6px;
+  background: #334155; color: #fff;
+}
+.sf-badge-src.src-scraper { background: #059669; }
+.sf-badge-src.src-woocommerce { background: #2563eb; }
+.sf-pdp-cat-row .sf-badge-src { font-size: .68rem; }

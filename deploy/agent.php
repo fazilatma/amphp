@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.16
+ * Version: 13.3.17
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -37,6 +37,11 @@ class Scraper_Auto_Shop_Plugin {
 			'catalog_source'              => 'scraper', // scraper | woocommerce | merge
 			'catalog_merge_prefer'        => 'scraper', // scraper | woocommerce | keep_both
 			'takeover_front_page'         => false, // جایگزینی اختیاری صفحه نخست با ویترین
+			'enable_native_wp_template'   => true, // قالب نیتیو وردپرس (theme header/footer)
+			'native_fallback_page_id'     => 0, // برگه پشتیبان فروشگاه
+			'enable_404_shop_redirect'    => true, // ریدایرکت 404 به صفحه پشتیبان
+			'set_wc_shop_to_fallback'     => true, // تنظیم صفحه فروشگاه ووکامرس روی پشتیبان در صورت خالی بودن
+			'auto_create_fallback_page'   => true, // ساخت خودکار برگه پشتیبان
 			'replace_site_header'         => true, // حذف کامل هدر و منوی قالب وردپرس
 			'show_top_bar'                => true,
 			'top_bar_notice'              => 'تخفیف ویژه امروز: ارسال رایگان برای سفارش‌های بالای ۴۰۰ هزار تومان! 🚚',
@@ -53,7 +58,7 @@ class Scraper_Auto_Shop_Plugin {
 			'free_shipping_threshold'     => 400000,
 
 			// Storefront Template & Color Presets
-			'store_template'              => 'digikala', // digikala, snappshop, basalam, torob, digistyle, technolife, modern, midnight, minimal, bazaar, boutique
+			'store_template'              => 'digikala', // digikala, snappshop, basalam, torob, digistyle, technolife, modern, midnight, minimal, bazaar, boutique, native-wp
 			'store_palette'               => 'digikala-red', // digikala-red, snapp-green, basalam-coral, torob-red, digistyle-rose, technolife-blue, royal-blue, luxury-purple, amber-gold, persian-turquoise, midnight-ink, forest, sunset
 			'auto_convert_rial'           => true,
 
@@ -212,6 +217,9 @@ class Scraper_Auto_Shop_Plugin {
 			if ( false === $opts || ! is_array( $opts ) ) {
 				update_option( self::OPTION_NAME, self::get_default_settings() );
 			}
+			// v13.3.17: ensure native fallback shop page + optional WC shop mapping
+			self::ensure_fallback_shop_page( true );
+			flush_rewrite_rules( false );
 		} catch ( \Throwable $e ) {
 			wp_die( 'Activation Error: ' . esc_html( $e->getMessage() ) );
 		}
@@ -241,6 +249,12 @@ class Scraper_Auto_Shop_Plugin {
 
 		// WooCommerce shop page takeover
 		add_filter( 'template_include', array( __CLASS__, 'maybe_takeover_shop_template' ), 99 );
+		// Register page templates from plugin + 404 → fallback shop redirect
+		add_filter( 'theme_page_templates', array( __CLASS__, 'register_native_page_templates' ) );
+		add_filter( 'template_include', array( __CLASS__, 'maybe_load_native_page_template' ), 98 );
+		add_action( 'template_redirect', array( __CLASS__, 'maybe_redirect_404_to_fallback_shop' ), 5 );
+		add_action( 'admin_init', array( __CLASS__, 'maybe_ensure_fallback_shop_page' ), 20 );
+		add_action( 'wp_ajax_scraper_ensure_fallback_shop', array( __CLASS__, 'ajax_ensure_fallback_shop' ) );
 
 		// Serve storefront JS/CSS via PHP (works even if static files blocked or not yet synced)
 		add_action( 'init', array( __CLASS__, 'maybe_serve_storefront_asset' ), 0 );
@@ -8276,6 +8290,294 @@ class Scraper_Auto_Shop_Plugin {
 	 * @param string $template
 	 * @return string
 	 */
+
+	/**
+	 * Absolute path to plugin native WP page template.
+	 */
+	public static function get_native_shop_template_path() {
+		return plugin_dir_path( __FILE__ ) . 'templates/native-shop.php';
+	}
+
+	/**
+	 * Register "Native WP shop" in the page template dropdown.
+	 *
+	 * @param array $templates
+	 * @return array
+	 */
+	public static function register_native_page_templates( $templates ) {
+		$templates['templates/native-shop.php'] = 'فروشگاه نیتیو وردپرس (AMPHP)';
+		return $templates;
+	}
+
+	/**
+	 * Load plugin file when a page uses the native shop template.
+	 *
+	 * @param string $template
+	 * @return string
+	 */
+	public static function maybe_load_native_page_template( $template ) {
+		if ( is_admin() || ! is_singular( 'page' ) ) {
+			return $template;
+		}
+		$page_template = get_page_template_slug( get_queried_object_id() );
+		if ( $page_template !== 'templates/native-shop.php' && $page_template !== 'native-shop.php' ) {
+			// Also allow meta-selected fallback page without explicit template slug if content has shortcode only
+			return $template;
+		}
+		$path = self::get_native_shop_template_path();
+		if ( is_readable( $path ) ) {
+			return $path;
+		}
+		return $template;
+	}
+
+	/**
+	 * Create or repair the native fallback shop page (theme chrome + shortcode).
+	 *
+	 * @param bool $assign_wc_shop If true and WC shop empty/missing, set this page as WC shop.
+	 * @return array{id:int,url:string,created:bool,message:string}
+	 */
+
+	/**
+	 * Copy native-shop.php into the active theme so the page template
+	 * keeps working after the plugin is deactivated.
+	 *
+	 * @return bool
+	 */
+	public static function sync_native_template_to_theme() {
+		$src = self::get_native_shop_template_path();
+		if ( ! is_readable( $src ) ) {
+			return false;
+		}
+		$theme_dir = trailingslashit( get_stylesheet_directory() );
+		if ( ! $theme_dir || ! is_dir( $theme_dir ) ) {
+			return false;
+		}
+		$dest_dir = $theme_dir . 'templates';
+		if ( ! is_dir( $dest_dir ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
+			@mkdir( $dest_dir, 0755, true );
+		}
+		$dest = $dest_dir . '/native-shop.php';
+		// Also place at theme root for older WP template discovery
+		$dest_root = $theme_dir . 'native-shop.php';
+		$ok = false;
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy
+		if ( @copy( $src, $dest ) ) {
+			$ok = true;
+		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy
+		@copy( $src, $dest_root );
+		return $ok;
+	}
+
+	public static function ensure_fallback_shop_page( $assign_wc_shop = null ) {
+		$settings = self::get_settings();
+		if ( null === $assign_wc_shop ) {
+			$assign_wc_shop = ! empty( $settings['set_wc_shop_to_fallback'] );
+		}
+		$auto = ! isset( $settings['auto_create_fallback_page'] ) || ! empty( $settings['auto_create_fallback_page'] );
+		$page_id = intval( $settings['native_fallback_page_id'] ?? 0 );
+		if ( $page_id <= 0 ) {
+			$page_id = intval( get_option( 'scraper_native_fallback_page_id', 0 ) );
+		}
+		$created = false;
+		$title = (string) ( $settings['shop_title'] ?? 'فروشگاه' );
+		if ( $title === '' ) {
+			$title = 'فروشگاه';
+		}
+		$fallback_title = $title . ' — پشتیبان';
+
+		// Validate existing
+		if ( $page_id > 0 ) {
+			$post = get_post( $page_id );
+			if ( ! $post || $post->post_status === 'trash' || $post->post_type !== 'page' ) {
+				$page_id = 0;
+			}
+		}
+
+		// Find by meta / slug
+		if ( $page_id <= 0 ) {
+			$found = get_posts( array(
+				'post_type'      => 'page',
+				'post_status'    => array( 'publish', 'draft', 'private' ),
+				'posts_per_page' => 1,
+				'meta_key'       => '_amphp_native_fallback_shop',
+				'meta_value'     => '1',
+				'fields'         => 'ids',
+			) );
+			if ( ! empty( $found ) ) {
+				$page_id = (int) $found[0];
+			}
+		}
+		if ( $page_id <= 0 ) {
+			$by_path = get_page_by_path( 'amphp-shop-fallback' );
+			if ( $by_path && ! is_wp_error( $by_path ) ) {
+				$page_id = (int) $by_path->ID;
+			}
+		}
+
+		// Copy template into active theme so it survives plugin deactivation
+		self::sync_native_template_to_theme();
+
+		if ( $page_id <= 0 && $auto ) {
+			// WC-native shortcode so the page still lists products if plugin is off
+			$content = "<!-- wp:shortcode -->\n[products limit=\"24\" columns=\"4\" orderby=\"date\"]\n<!-- /wp:shortcode -->\n\n"
+				. "<!-- AMPHP native fallback shop. Template: فروشگاه نیتیو وردپرس. -->\n";
+			$page_id = wp_insert_post( array(
+				'post_title'   => $fallback_title,
+				'post_name'    => 'amphp-shop-fallback',
+				'post_content' => $content,
+				'post_status'  => 'publish',
+				'post_type'    => 'page',
+				'post_author'  => get_current_user_id() ?: 1,
+			), true );
+			if ( is_wp_error( $page_id ) ) {
+				return array(
+					'id'      => 0,
+					'url'     => '',
+					'created' => false,
+					'message' => $page_id->get_error_message(),
+				);
+			}
+			$page_id = (int) $page_id;
+			$created = true;
+		}
+
+		if ( $page_id > 0 ) {
+			update_post_meta( $page_id, '_amphp_native_fallback_shop', '1' );
+			update_post_meta( $page_id, '_wp_page_template', 'templates/native-shop.php' );
+			// Ensure shortcode present if content empty
+			$post = get_post( $page_id );
+			if ( $post && trim( wp_strip_all_tags( $post->post_content ) ) === '' ) {
+				wp_update_post( array(
+					'ID'           => $page_id,
+					'post_content' => '[products limit="24" columns="4"]\n',
+				) );
+			}
+			self::sync_native_template_to_theme();
+			update_option( 'scraper_native_fallback_page_id', $page_id, false );
+			update_option( 'scraper_shop_page_id', $page_id, false );
+			// Persist into plugin settings
+			$settings['native_fallback_page_id'] = $page_id;
+			$settings['shop_page_id'] = $page_id;
+			update_option( self::OPTION_NAME, $settings );
+
+			if ( $assign_wc_shop && function_exists( 'wc_get_page_id' ) ) {
+				$wc_shop = (int) wc_get_page_id( 'shop' );
+				$need_set = ( $wc_shop <= 0 || get_post_status( $wc_shop ) === false || get_post_status( $wc_shop ) === 'trash' );
+				// Also set when option explicitly wants fallback as WC shop
+				if ( $need_set || ! empty( $settings['set_wc_shop_to_fallback'] ) ) {
+					// Don't overwrite a healthy custom WC shop unless missing
+					if ( $need_set ) {
+						update_option( 'woocommerce_shop_page_id', $page_id );
+					}
+				}
+			}
+		}
+
+		$url = $page_id > 0 ? get_permalink( $page_id ) : '';
+		return array(
+			'id'      => $page_id,
+			'url'     => $url ? (string) $url : '',
+			'created' => $created,
+			'message' => $page_id > 0
+				? ( $created ? 'برگه پشتیبان ساخته شد.' : 'برگه پشتیبان آماده است.' )
+				: 'ساخت برگه پشتیبان ناموفق بود.',
+			'template'=> 'templates/native-shop.php',
+		);
+	}
+
+	/**
+	 * admin_init soft ensure (non-blocking).
+	 */
+	public static function maybe_ensure_fallback_shop_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$settings = self::get_settings();
+		if ( empty( $settings['enable_native_wp_template'] ) && empty( $settings['auto_create_fallback_page'] ) ) {
+			return;
+		}
+		$id = intval( $settings['native_fallback_page_id'] ?? 0 );
+		if ( $id > 0 && get_post_status( $id ) ) {
+			return;
+		}
+		// Throttle
+		if ( get_transient( 'amphp_fb_page_checked' ) ) {
+			return;
+		}
+		set_transient( 'amphp_fb_page_checked', 1, 10 * MINUTE_IN_SECONDS );
+		try {
+			self::ensure_fallback_shop_page( false );
+		} catch ( \Throwable $e ) {
+			// ignore
+		}
+	}
+
+	/**
+	 * AJAX: create/repair fallback page from admin button.
+	 */
+	public static function ajax_ensure_fallback_shop() {
+		check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'دسترسی غیرمجاز.' );
+		}
+		$assign = ! empty( $_POST['assign_wc'] );
+		$res = self::ensure_fallback_shop_page( $assign );
+		if ( ! empty( $res['id'] ) ) {
+			wp_send_json_success( $res );
+		}
+		wp_send_json_error( $res['message'] ?? 'خطا' );
+	}
+
+	/**
+	 * On 404 (and optionally when React takeover target is broken), send visitors to fallback shop.
+	 */
+	public static function maybe_redirect_404_to_fallback_shop() {
+		if ( is_admin() || wp_doing_ajax() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+			return;
+		}
+		$settings = self::get_settings();
+		if ( empty( $settings['enable_404_shop_redirect'] ) ) {
+			return;
+		}
+		if ( ! is_404() ) {
+			return;
+		}
+		// Don't loop
+		$fb_id = intval( $settings['native_fallback_page_id'] ?? 0 );
+		if ( $fb_id <= 0 ) {
+			$fb_id = intval( get_option( 'scraper_native_fallback_page_id', 0 ) );
+		}
+		if ( $fb_id <= 0 ) {
+			$ensured = self::ensure_fallback_shop_page( false );
+			$fb_id = intval( $ensured['id'] ?? 0 );
+		}
+		if ( $fb_id <= 0 ) {
+			// Last resort: WooCommerce shop
+			if ( function_exists( 'wc_get_page_id' ) ) {
+				$fb_id = (int) wc_get_page_id( 'shop' );
+			}
+		}
+		if ( $fb_id <= 0 ) {
+			return;
+		}
+		$url = get_permalink( $fb_id );
+		if ( ! $url ) {
+			return;
+		}
+		// Avoid redirect loop if the 404 path is already the fallback slug
+		$req = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+		$path = (string) ( wp_parse_url( $url, PHP_URL_PATH ) ?: '' );
+		if ( $path && $req && strpos( $req, trim( $path, '/' ) ) !== false ) {
+			return;
+		}
+		nocache_headers();
+		wp_safe_redirect( $url, 302 );
+		exit;
+	}
+
 	public static function maybe_takeover_shop_template( $template ) {
 		$settings = self::get_settings();
 		if ( empty( $settings['enable_shop_takeover'] ) ) {
@@ -8290,6 +8592,20 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		if ( $should_takeover ) {
+			// v13.3.17: native-wp template uses theme chrome instead of bare React shell
+			$tpl = (string) ( $settings['store_template'] ?? '' );
+			if ( $tpl === 'native-wp' || ( ! empty( $settings['enable_native_wp_template'] ) && $tpl === 'native' ) ) {
+				$path = self::get_native_shop_template_path();
+				if ( is_readable( $path ) ) {
+					return $path;
+				}
+				// Soft-fail to fallback page
+				$fb = self::ensure_fallback_shop_page( false );
+				if ( ! empty( $fb['url'] ) ) {
+					wp_safe_redirect( $fb['url'], 302 );
+					exit;
+				}
+			}
 			self::render_standalone_shop_page();
 			exit;
 		}
@@ -8357,9 +8673,16 @@ class Scraper_Auto_Shop_Plugin {
 		// Fail only if neither disk files NOR embedded payload exist (v13.1.5+ embeds JS/CSS).
 		$shop_html = self::render_shop_shortcode( true ); // skip asset tags; we print once below
 		if ( ! self::has_storefront_assets() ) {
+			/* v13.3.17: soft-fail → native fallback page if available */
+			$fb = self::ensure_fallback_shop_page( false );
+			if ( ! empty( $fb['url'] ) && empty( $GLOBALS['amphp_fallback_redirecting'] ) ) {
+				$GLOBALS['amphp_fallback_redirecting'] = true;
+				wp_safe_redirect( $fb['url'], 302 );
+				exit;
+			}
 			$shop_html = '<div style="max-width:640px;margin:48px auto;padding:24px;background:#fef2f2;border:1px solid #fecaca;border-radius:16px;font-family:Tahoma,sans-serif;direction:rtl;text-align:right;line-height:1.8">'
 				. '<div style="font-size:1.1rem;font-weight:900;color:#b91c1c;margin-bottom:8px">فایل‌های ویترین روی سرور پیدا نشد</div>'
-				. '<p style="margin:0 0 10px;color:#7f1d1d;font-weight:700">agent.php نسخه ۱۳.۱.۳+ را دوباره آپلود کنید (JS/CSS داخل خود فایل embed شده است). یا پوشه <code>includes/storefront/</code> را کنار agent.php قرار دهید.</p>'
+				. '<p style="margin:0 0 10px;color:#7f1d1d;font-weight:700">agent.php را دوباره آپلود کنید یا پوشه <code>includes/storefront/</code> را کنار agent.php قرار دهید.</p>'
 				. '<p style="margin:0;color:#64748b;font-size:.88rem">مسیر افزونه: <code style="direction:ltr;display:inline-block">' . esc_html( plugin_dir_path( __FILE__ ) ) . '</code></p>'
 				. '</div>';
 		}
@@ -8380,7 +8703,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.16' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.17' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -8584,6 +8907,8 @@ img{max-width:100%;height:auto}
 				'admin'    => esc_url_raw( $admin_url ),
 				'home'     => esc_url_raw( home_url( '/' ) ),
 				'checkout' => esc_url_raw( $checkout ),
+				'fallback_shop' => esc_url_raw( ( $settings['native_fallback_page_id'] ?? 0 ) ? get_permalink( intval( $settings['native_fallback_page_id'] ) ) : '' ),
+				'shop'     => esc_url_raw( function_exists( 'wc_get_page_permalink' ) ? wc_get_page_permalink( 'shop' ) : home_url( '/' ) ),
 			),
 			'ajax'     => array(
 				'ajaxUrl'    => esc_url_raw( admin_url( 'admin-ajax.php' ) ),
@@ -8594,7 +8919,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.16',
+				'version'     => '13.3.17',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -8620,7 +8945,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.16 -->
+		<!-- AMPHP Storefront v13.3.17 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -8774,7 +9099,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.16' );
+		$parts = array( '13.3.17' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -8974,6 +9299,11 @@ public static function get_embedded_storefront_assets() {
 				'catalog_merge_prefer'        => $__post_mp,
 				'enable_scraped_products'     => ( 'woocommerce' !== $__post_cs ),
 				'takeover_front_page'         => ! empty( $_POST['takeover_front_page'] ),
+				'enable_native_wp_template'   => ! empty( $_POST['enable_native_wp_template'] ),
+				'native_fallback_page_id'     => intval( $_POST['native_fallback_page_id'] ?? 0 ),
+				'enable_404_shop_redirect'    => ! empty( $_POST['enable_404_shop_redirect'] ),
+				'set_wc_shop_to_fallback'     => ! empty( $_POST['set_wc_shop_to_fallback'] ),
+				'auto_create_fallback_page'   => ! empty( $_POST['auto_create_fallback_page'] ),
 				'replace_site_header'         => ! empty( $_POST['replace_site_header'] ),
 				'show_top_bar'                => ! empty( $_POST['show_top_bar'] ),
 				'top_bar_notice'              => sanitize_text_field( $_POST['top_bar_notice'] ?? '' ),
@@ -9120,6 +9450,16 @@ public static function get_embedded_storefront_assets() {
 				}
 			}
 			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
+			if ( ! empty( $new_settings['enable_native_wp_template'] ) || ! empty( $new_settings['auto_create_fallback_page'] ) ) {
+				try {
+					$fb_res = self::ensure_fallback_shop_page( ! empty( $new_settings['set_wc_shop_to_fallback'] ) );
+					if ( ! empty( $fb_res['id'] ) ) {
+						$new_settings['native_fallback_page_id'] = intval( $fb_res['id'] );
+						$new_settings['shop_page_id'] = intval( $fb_res['id'] );
+						update_option( self::OPTION_NAME, $new_settings );
+					}
+				} catch ( \Throwable $e ) { /* ignore */ }
+			}
 			self::sync_wp_cron_schedule( $new_settings );
 			self::sync_ai_image_cron_schedule( $new_settings );
 			$updated = true;
@@ -9722,6 +10062,16 @@ public static function get_embedded_storefront_assets() {
 									</div>
 									<span style="font-size:0.78rem; color:#9d174d; line-height:1.5;">ظاهر فشن‌مگزین: تصاویر بزرگ، فونت ظریف، هدر باریک و شیک.</span>
 								</label>
+								<!-- Native WordPress -->
+								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'native-wp' ? '#2563eb' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#eff6ff; cursor:pointer; display:flex; flex-direction:column; gap:8px;">
+									<div style="display:flex; justify-content:space-between; align-items:center;">
+										<span style="font-weight:900; color:#1e3a8a;">🧱 نیتیو وردپرس</span>
+										<input type="radio" name="store_template" value="native-wp" <?php checked( ( $opts['store_template'] ?? '' ), 'native-wp' ); ?>>
+									</div>
+									<div style="font-size:0.8rem; color:#334155; line-height:1.55;">
+										ویترین داخل <strong>قالب فعال وردپرس</strong> (هدر/فوتر تم). مناسب صفحه پشتیبان و سازگاری با ووکامرس کلاسیک.
+									</div>
+								</label>
 							</div>
 						</div>
 
@@ -9942,7 +10292,85 @@ public static function get_embedded_storefront_assets() {
 						</table>
 					</div>
 
-						<!-- Custom Checkout Settings -->
+						
+						<!-- v13.3.17 Native WP template + fallback shop page -->
+						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f8fafc,#eff6ff); border:1px solid #93c5fd; border-radius:14px; padding:20px;">
+							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب نیتیو وردپرس + صفحه پشتیبان فروشگاه</h4>
+							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.7;">
+								یک <strong>برگه استاندارد وردپرس</strong> با قالب «فروشگاه نیتیو» (هدر/فوتر قالب فعال) ساخته می‌شود تا
+								اگر ویترین React خراب/حذف/۴۰۴ شد، یا افزونه خاموش بود، بازدیدکننده به فروشگاه پایدار هدایت شود.
+								می‌توانید همین برگه را به‌عنوان صفحه فروشگاه ووکامرس هم تنظیم کنید.
+							</p>
+							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; color:#0f172a;">
+								<input type="checkbox" name="enable_native_wp_template" value="1" <?php checked( ! isset( $opts['enable_native_wp_template'] ) || ! empty( $opts['enable_native_wp_template'] ) ); ?> style="width:18px;height:18px;accent-color:#2563eb;">
+								فعال‌سازی قالب نیتیو وردپرس (theme header/footer)
+							</label>
+							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:700; color:#334155;">
+								<input type="checkbox" name="auto_create_fallback_page" value="1" <?php checked( ! isset( $opts['auto_create_fallback_page'] ) || ! empty( $opts['auto_create_fallback_page'] ) ); ?>>
+								ساخت خودکار برگه پشتیبان فروشگاه
+							</label>
+							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:700; color:#334155;">
+								<input type="checkbox" name="enable_404_shop_redirect" value="1" <?php checked( ! isset( $opts['enable_404_shop_redirect'] ) || ! empty( $opts['enable_404_shop_redirect'] ) ); ?>>
+								ریدایرکت خطای ۴۰۴ به صفحه پشتیبان فروشگاه
+							</label>
+							<label style="display:flex; align-items:center; gap:10px; margin-bottom:12px; font-weight:700; color:#334155;">
+								<input type="checkbox" name="set_wc_shop_to_fallback" value="1" <?php checked( ! empty( $opts['set_wc_shop_to_fallback'] ) ); ?>>
+								اگر صفحه فروشگاه ووکامرس خالی/حذف شده، همین برگه را به‌عنوان Shop ووکامرس تنظیم کن
+							</label>
+							<?php
+							$fb_id  = intval( $opts['native_fallback_page_id'] ?? get_option( 'scraper_native_fallback_page_id', 0 ) );
+							$fb_url = $fb_id ? get_permalink( $fb_id ) : '';
+							$pages  = get_pages( array( 'sort_column' => 'post_title', 'post_status' => 'publish' ) );
+							?>
+							<label style="font-weight:800; font-size:0.85rem; display:block; margin-bottom:4px;">برگه پشتیبان فروشگاه</label>
+							<select name="native_fallback_page_id" style="width:100%; max-width:480px; margin-bottom:10px;">
+								<option value="0">— ساخت / انتخاب خودکار —</option>
+								<?php foreach ( (array) $pages as $pg ) : ?>
+									<option value="<?php echo esc_attr( $pg->ID ); ?>" <?php selected( $fb_id, (int) $pg->ID ); ?>>
+										<?php echo esc_html( $pg->post_title . ' (#' . $pg->ID . ')' ); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+							<?php if ( $fb_url ) : ?>
+								<p style="margin:0 0 10px; font-size:0.84rem; color:#0f172a;">
+									🔗 آدرس فعلی:
+									<a href="<?php echo esc_url( $fb_url ); ?>" target="_blank" rel="noopener" style="font-weight:800;"><?php echo esc_html( $fb_url ); ?></a>
+									· قالب: <code>فروشگاه نیتیو وردپرس (AMPHP)</code>
+								</p>
+							<?php else : ?>
+								<p style="margin:0 0 10px; font-size:0.84rem; color:#b45309; font-weight:700;">هنوز برگه پشتیبان تنظیم نشده — با دکمه زیر بسازید یا تنظیمات را ذخیره کنید.</p>
+							<?php endif; ?>
+							<button type="button" class="button button-primary" id="amphpEnsureFallbackBtn">🛠 ساخت / تعمیر برگه پشتیبان الان</button>
+							<span id="amphpEnsureFallbackStatus" style="margin-right:10px;font-weight:700;color:#1e40af;"></span>
+							<script>
+							(function(){
+							  var btn=document.getElementById('amphpEnsureFallbackBtn');
+							  var st=document.getElementById('amphpEnsureFallbackStatus');
+							  if(!btn) return;
+							  btn.addEventListener('click', function(){
+							    btn.disabled=true; st.textContent='در حال ایجاد…';
+							    var fd=new FormData();
+							    fd.append('action','scraper_ensure_fallback_shop');
+							    fd.append('nonce','<?php echo esc_js( wp_create_nonce( "scraper_shop_admin_nonce" ) ); ?>');
+							    fd.append('assign_wc', document.querySelector('[name="set_wc_shop_to_fallback"]')?.checked ? '1' : '');
+							    fetch(ajaxurl,{method:'POST',body:fd,credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+							      btn.disabled=false;
+							      if(d && d.success){
+							        st.textContent = (d.data && d.data.message ? d.data.message : 'انجام شد') + (d.data && d.data.url ? ' — ' + d.data.url : '');
+							        if(d.data && d.data.id){
+							          var sel=document.querySelector('[name="native_fallback_page_id"]');
+							          if(sel){ sel.value=String(d.data.id); }
+							        }
+							      } else {
+							        st.textContent = (d && d.data) ? d.data : 'خطا';
+							      }
+							    }).catch(function(){ btn.disabled=false; st.textContent='خطای ارتباط'; });
+							  });
+							})();
+							</script>
+						</div>
+
+<!-- Custom Checkout Settings -->
 						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f0fdf4,#ecfeff); border:1px solid #86efac; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#14532d;">🛒 صفحه تسویه حساب اختصاصی (React)</h4>
 							<p style="margin:0 0 14px; color:#166534; font-size:0.88rem; line-height:1.7;">

@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap');
-
+/* System font stack — no external font CSS on critical path */
 :root {
   --sf-accent: #2563eb;
   --sf-accent-2: #7c3aed;
@@ -20,12 +19,9 @@
 .sf-app {
   direction: rtl;
   text-align: right;
-  font-family: 'Vazirmatn', Tahoma, system-ui, sans-serif;
+  font-family: Tahoma, 'Segoe UI', system-ui, -apple-system, sans-serif;
   color: var(--sf-text);
-  background:
-    radial-gradient(1200px 500px at 100% -10%, color-mix(in srgb, var(--sf-accent) 16%, transparent), transparent 55%),
-    radial-gradient(900px 420px at 0% 0%, color-mix(in srgb, var(--sf-accent-2) 12%, transparent), transparent 50%),
-    var(--sf-bg);
+  background: var(--sf-bg);
   min-height: 100vh;
   padding-bottom: calc(88px + var(--sf-safe-bottom));
 }
@@ -62,9 +58,8 @@
   animation: sfPulse 1.6s infinite;
 }
 @keyframes sfPulse {
-  0% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
-  70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
-  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+  0%,100% { opacity: 1; }
+  50% { opacity: .55; }
 }
 .sf-topbar-links { display: flex; gap: 14px; flex-wrap: wrap; color: #cbd5e1; }
 .sf-topbar-links a:hover { color: #93c5fd; }
@@ -80,12 +75,10 @@
 .sf-header-wrap.is-compact { padding-top: 0; }
 .sf-header {
   position: relative;
-  background: rgba(255,255,255,0.82);
-  backdrop-filter: saturate(180%) blur(18px);
-  -webkit-backdrop-filter: saturate(180%) blur(18px);
-  border: 1px solid rgba(226,232,240,0.9);
-  border-radius: 22px;
-  box-shadow: var(--sf-shadow);
+  background: #ffffff;
+  border: 1px solid rgba(226,232,240,0.95);
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(15,23,42,0.08);
   overflow: visible;
 }
 .sf-header-wrap.is-compact .sf-header {
@@ -120,7 +113,7 @@
 .sf-brand-logo::after {
   content: ""; position: absolute; inset: -3px; border-radius: inherit; z-index: -1;
   background: linear-gradient(135deg, var(--sf-accent), #a855f7, #ec4899);
-  opacity: .4; filter: blur(7px);
+  opacity: .25;
 }
 .sf-header-wrap.is-compact .sf-brand-logo { width: 40px; height: 40px; border-radius: 12px; }
 .sf-brand-info h1 {
@@ -324,16 +317,12 @@
 .sf-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
 
 .sf-card {
+  content-visibility: auto; contain-intrinsic-size: 280px;
   background: var(--sf-card); border: 1px solid var(--sf-border); border-radius: 18px;
   overflow: hidden; box-shadow: 0 10px 28px rgba(15,23,42,.05);
-  display: flex; flex-direction: column; transition: transform .18s ease, box-shadow .18s ease;
-  animation: sfCardIn .35s ease both;
+  display: flex; flex-direction: column; transition: box-shadow .15s ease;
 }
-.sf-card:hover { transform: translateY(-4px); box-shadow: 0 18px 40px rgba(15,23,42,.1); }
-@keyframes sfCardIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+.sf-card:hover { box-shadow: 0 12px 28px rgba(15,23,42,.1); }
 .sf-grid.cols-1 .sf-card { flex-direction: row; }
 .sf-grid.cols-1 .sf-thumb { width: 220px; min-height: 180px; flex-shrink: 0; }
 .sf-thumb {
@@ -423,7 +412,7 @@
 .sf-mob-bar {
   display: none;
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10040;
-  background: rgba(255,255,255,.92); backdrop-filter: blur(16px);
+  background: #ffffff;
   border-top: 1px solid var(--sf-border);
   padding: 8px 10px calc(8px + var(--sf-safe-bottom));
   grid-template-columns: repeat(4, 1fr); gap: 4px;
@@ -437,8 +426,7 @@
 
 /* Drawers / Modals / Cart */
 .sf-overlay {
-  position: fixed; inset: 0; background: rgba(15,23,42,.48); z-index: 12000;
-  backdrop-filter: blur(3px); animation: sfFade .2s ease;
+  position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 12000;
 }
 @keyframes sfFade { from { opacity: 0; } to { opacity: 1; } }
 

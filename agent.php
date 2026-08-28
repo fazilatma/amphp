@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.0.0
+ * Version: 13.1.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -238,6 +238,8 @@ class Scraper_Auto_Shop_Plugin {
 
 		// Enqueue scripts & styles for storefront
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_front_assets' ) );
+		add_filter( 'body_class', array( __CLASS__, 'filter_storefront_body_class' ) );
+		add_filter( 'show_admin_bar', array( __CLASS__, 'maybe_hide_admin_bar_on_storefront' ) );
 
 		// WordPress-core hit counter (used when analytics_source is wordpress/hybrid)
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_track_wp_core_hit' ), 1 );
@@ -4466,63 +4468,119 @@ class Scraper_Auto_Shop_Plugin {
 	 * Inject custom CSS to completely remove WordPress theme header & menu on shop pages
 	 * when custom storefront takeover is enabled.
 	 */
+	/**
+	 * True when the current front request should use bare React storefront (no WP theme chrome).
+	 *
+	 * @return bool
+	 */
+	public static function is_bare_storefront_request() {
+		$settings = self::get_settings();
+		if ( empty( $settings['enable_shop_takeover'] ) ) {
+			return false;
+		}
+		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
+			return true;
+		}
+		if ( ! empty( $settings['takeover_front_page'] ) && ( is_front_page() || is_home() ) ) {
+			return true;
+		}
+		global $post;
+		if ( ! empty( $post ) && is_a( $post, 'WP_Post' ) ) {
+			if ( has_shortcode( $post->post_content, 'scraped_shop' ) || has_shortcode( $post->post_content, 'modern_shop' ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Strip every theme/plugin front asset so only the React storefront ships.
+	 */
+	public static function strip_all_theme_assets() {
+		if ( is_admin() || ! self::is_bare_storefront_request() ) {
+			return;
+		}
+		global $wp_styles, $wp_scripts;
+		$keep_style = array( 'amphp-storefront', 'admin-bar', 'dashicons' );
+		$keep_script = array( 'amphp-storefront', 'admin-bar', 'hoverintent-js', 'hoverIntent' );
+
+		if ( $wp_styles instanceof \WP_Styles ) {
+			foreach ( (array) $wp_styles->queue as $handle ) {
+				if ( ! in_array( $handle, $keep_style, true ) ) {
+					wp_dequeue_style( $handle );
+					wp_deregister_style( $handle );
+				}
+			}
+			// Also clear registered leftovers that may re-print.
+			foreach ( (array) $wp_styles->registered as $handle => $obj ) {
+				if ( ! in_array( $handle, $keep_style, true ) ) {
+					wp_deregister_style( $handle );
+				}
+			}
+		}
+		if ( $wp_scripts instanceof \WP_Scripts ) {
+			foreach ( (array) $wp_scripts->queue as $handle ) {
+				if ( ! in_array( $handle, $keep_script, true ) ) {
+					wp_dequeue_script( $handle );
+					wp_deregister_script( $handle );
+				}
+			}
+			foreach ( (array) $wp_scripts->registered as $handle => $obj ) {
+				if ( ! in_array( $handle, $keep_script, true ) ) {
+					// Keep jquery only if somehow needed — prefer none.
+					wp_deregister_script( $handle );
+				}
+			}
+		}
+	}
+
 	public static function inject_custom_header_suppression_css() {
+		// Bare takeover renders its own document — no theme CSS to suppress.
+		if ( ! empty( $GLOBALS['amphp_bare_storefront'] ) ) {
+			return;
+		}
 		$settings = self::get_settings();
 		if ( empty( $settings['enable_shop_takeover'] ) || empty( $settings['replace_site_header'] ) ) {
 			return;
 		}
-
-		$is_target = false;
-		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
-			$is_target = true;
-		} elseif ( ! empty( $settings['takeover_front_page'] ) && ( is_front_page() || is_home() ) ) {
-			$is_target = true;
-		} else {
-			global $post;
-			if ( ! empty( $post ) && is_a( $post, 'WP_Post' ) ) {
-				if ( has_shortcode( $post->post_content, 'scraped_shop' ) || has_shortcode( $post->post_content, 'modern_shop' ) ) {
-					$is_target = true;
-				}
+		if ( ! self::is_bare_storefront_request() ) {
+			return;
+		}
+		?>
+		<style id="scraper-suppress-wp-theme-header">
+			/* Kill WP theme chrome when shortcode is embedded in a theme template */
+			body.amphp-react-storefront header:not(.sf-header):not(.sf-header-wrap),
+			body.amphp-react-storefront #masthead,
+			body.amphp-react-storefront .site-header,
+			body.amphp-react-storefront #site-header,
+			body.amphp-react-storefront .elementor-location-header,
+			body.amphp-react-storefront .ast-main-header-wrap,
+			body.amphp-react-storefront footer.site-footer,
+			body.amphp-react-storefront #colophon,
+			body.amphp-react-storefront .site-footer,
+			body.amphp-react-storefront .elementor-location-footer,
+			body.amphp-react-storefront .widget-area,
+			body.amphp-react-storefront aside.widget-area,
+			body.amphp-react-storefront #secondary,
+			body.amphp-react-storefront .sidebar,
+			body.amphp-react-storefront nav.main-navigation,
+			body.amphp-react-storefront .storefront-primary-navigation,
+			body.amphp-react-storefront .woocommerce-breadcrumb,
+			body.amphp-react-storefront .entry-header,
+			body.amphp-react-storefront .page-title,
+			body.amphp-react-storefront .wp-block-template-part {
+				display: none !important;
+				height: 0 !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important;
 			}
-		}
-
-		if ( $is_target ) {
-			?>
-			<style id="scraper-suppress-wp-theme-header">
-				/* حذف هدر/منوی قالب — بدون مخفی‌کردن هدر فروشگاه */
-				body > header:not(.store-sticky-header-container):not(.store-pro-header),
-				body > #header, body > #masthead, body > .site-header,
-				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
-				header:not(.store-sticky-header-container):not(.store-pro-header),
-				#masthead, .site-header, #site-header, .header-wrap, .main-header,
-				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
-				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
-				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
-				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
-				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
-				#wpadminbar + header:not(.store-sticky-header-container):not(.store-pro-header),
-				#wpadminbar + #masthead {
-					display: none !important;
-				}
-				header.store-sticky-header-container,
-				header.store-pro-header,
-				#storeStickyHeader,
-				.store-sticky-header-container,
-				.store-pro-header {
-					display: block !important;
-					visibility: visible !important;
-					opacity: 1 !important;
-				}
-				#storeStickyHeader .store-main-header,
-				#storeStickyHeader .store-navbar,
-				.store-sticky-header-container .store-main-header,
-				.store-sticky-header-container .store-navbar {
-					display: flex !important;
-					visibility: visible !important;
-				}
-			</style>
-			<?php
-		}
+			body.amphp-react-storefront .site-content,
+			body.amphp-react-storefront #content,
+			body.amphp-react-storefront #primary,
+			body.amphp-react-storefront .content-area,
+			body.amphp-react-storefront main {
+				margin: 0 !important; padding: 0 !important; max-width: none !important; width: 100% !important;
+			}
+		</style>
+		<?php
 	}
 
 	/**
@@ -4555,19 +4613,43 @@ class Scraper_Auto_Shop_Plugin {
 	/**
 	 * Enqueue front-end assets.
 	 */
-	public static function enqueue_front_assets() {
-		wp_register_style( 'vazirmatn-font', 'https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css', array(), '33.003' );
-		wp_enqueue_style( 'vazirmatn-font' );
 
-		// Full React storefront bundle when shop takeover / scraped products are active.
+	/**
+	 * Tag body so theme-kill CSS can target.
+	 */
+	public static function filter_storefront_body_class( $classes ) {
+		if ( self::is_bare_storefront_request() ) {
+			$classes[] = 'amphp-react-storefront';
+			$classes[] = 'amphp-bare-mode';
+		}
+		return $classes;
+	}
+
+	/**
+	 * Hide WP admin bar on customer storefront for cleaner paint (admins still get mini strip on bare page).
+	 */
+	public static function maybe_hide_admin_bar_on_storefront( $show ) {
+		if ( ! empty( $GLOBALS['amphp_bare_storefront'] ) ) {
+			return false;
+		}
+		return $show;
+	}
+
+	public static function enqueue_front_assets() {
 		if ( is_admin() ) {
 			return;
 		}
+		// Bare standalone page never reaches here (exits earlier). For shortcode-in-theme:
 		$settings = self::get_settings();
 		$load = ! empty( $settings['enable_shop_takeover'] ) || ! empty( $settings['enable_scraped_products'] );
-		if ( $load ) {
-			self::enqueue_storefront_react_assets();
+		if ( ! $load ) {
+			return;
 		}
+		// Dequeue theme/plugin bulk after they register.
+		add_action( 'wp_print_styles', array( __CLASS__, 'strip_all_theme_assets' ), 100 );
+		add_action( 'wp_print_scripts', array( __CLASS__, 'strip_all_theme_assets' ), 100 );
+		add_action( 'wp_footer', array( __CLASS__, 'strip_all_theme_assets' ), 1 );
+		self::enqueue_storefront_react_assets();
 	}
 
 	/**
@@ -4576,110 +4658,101 @@ class Scraper_Auto_Shop_Plugin {
 	 * our dedicated custom header, navbar, mega categories dropdown, and hamburger drawer.
 	 */
 	public static function render_standalone_shop_page() {
+		// Bare document: NO wp_head / wp_footer → zero theme CSS/JS.
+		$GLOBALS['amphp_bare_storefront'] = true;
 		$settings = self::get_settings();
-		?>
-		<!DOCTYPE html>
-		<html <?php language_attributes(); ?> dir="rtl">
-		<head>
-			<meta charset="<?php bloginfo( 'charset' ); ?>">
-			<meta name="viewport" content="width=device-width, initial-scale=1.0">
-			<title><?php echo esc_html( ( $settings['shop_title'] ?? 'فروشگاه آنلاین' ) . ' | ' . get_bloginfo( 'name' ) ); ?></title>
-			<?php wp_head(); ?>
-			<style id="scraper-dedicated-standalone-style">
-				/* حذف هدر/منوی قالب — بدون مخفی‌کردن هدر فروشگاه */
-				body > header:not(.store-sticky-header-container):not(.store-pro-header),
-				body > #header, body > #masthead, body > .site-header,
-				body > #site-header, body > .elementor-location-header, body > .ast-main-header-wrap,
-				header:not(.store-sticky-header-container):not(.store-pro-header),
-				#masthead, .site-header, #site-header, .header-wrap, .main-header,
-				.site-top-bar, .entry-header, nav.main-navigation, .ast-main-header-wrap,
-				.elementor-location-header, #site-navigation, .nav-menu, .storefront-primary-navigation,
-				.wp-block-navigation, .site-navigation, #primary-menu, .main-navigation,
-				.theme-header, .site-branding, #site-header-inner, .navbar, .site-nav,
-				.oceanwp-mobile-menu-icon, .mobile-header, .menu-primary-container,
-				#wpadminbar + header:not(.store-sticky-header-container):not(.store-pro-header),
-				#wpadminbar + #masthead {
-					display: none !important;
-				}
-				header.store-sticky-header-container,
-				header.store-pro-header,
-				#storeStickyHeader,
-				.store-sticky-header-container,
-				.store-pro-header {
-					display: block !important;
-					visibility: visible !important;
-					opacity: 1 !important;
-				}
-				#storeStickyHeader .store-main-header,
-				#storeStickyHeader .store-navbar,
-				.store-sticky-header-container .store-main-header,
-				.store-sticky-header-container .store-navbar {
-					display: flex !important;
-					visibility: visible !important;
-				}
-				html, body {
-					margin: 0 !important;
-					padding: 0 !important;
-					background-color: #f8fafc !important;
-					font-family: "Vazirmatn", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-					overflow-x: clip !important;
-					overflow-y: auto !important;
-				}
-				/* overflow/transform on ancestors breaks position:sticky */
-				.scraper-standalone-shop-takeover amphp-react-storefront,
-				.scraper-shop-fullscreen-wrap,
-				.modern-shop-container,
-				.modern-shop-wrap,
-				#modernShopRoot {
-					overflow: visible !important;
-					overflow-x: clip !important;
-					transform: none !important;
-					filter: none !important;
-					perspective: none !important;
-					contain: none !important;
-				}
-			</style>
-		</head>
-		<body <?php body_class( 'scraper-standalone-shop-takeover amphp-react-storefront' ); ?>>
-			<div class="scraper-shop-fullscreen-wrap" style="width:100%; margin:0 auto; padding:0;">
-				<?php echo self::render_shop_shortcode(); ?>
-			</div>
-			<?php wp_footer(); ?>
-		</body>
-		</html>
-		<?php
+		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
+		$site     = get_bloginfo( 'name' );
+		$css_url  = self::storefront_asset_url( 'storefront.css' );
+		$js_url   = self::storefront_asset_url( 'storefront.js' );
+		$ver      = '13.1.0';
+		$shop_html = self::render_shop_shortcode( true ); // skip asset tags; we print once below
+		$adminbar  = '';
+		if ( is_user_logged_in() && current_user_can( 'manage_options' ) ) {
+			// Minimal admin bar only (no theme).
+			if ( function_exists( 'wp_admin_bar_render' ) ) {
+				ob_start();
+				// Lightweight top strip instead of full admin-bar scripts.
+				$admin_url = admin_url( 'admin.php?page=scraper-auto-shop' );
+				echo '<div id="amphp-mini-admin" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#1d2327;color:#f0f0f1;font:12px/32px Tahoma,sans-serif;padding:0 12px;display:flex;justify-content:space-between;direction:rtl;">';
+				echo '<a href="' . esc_url( $admin_url ) . '" style="color:#72aee6;text-decoration:none;font-weight:700;">⚙ مدیریت فروشگاه</a>';
+				echo '<a href="' . esc_url( admin_url() ) . '" style="color:#f0f0f1;text-decoration:none;">پیشخوان وردپرس</a>';
+				echo '</div>';
+				echo '<style>html{--sf-adminbar:32px}body{padding-top:32px!important}</style>';
+				$adminbar = ob_get_clean();
+			}
+		}
+		header( 'Content-Type: text/html; charset=UTF-8' );
+		header( 'X-AMPHP-Storefront: bare-v13.1' );
+		// Avoid caching heavy theme shells.
+		nocache_headers();
+		?><!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="<?php echo esc_attr( $settings['accent_color'] ?? '#2563eb' ); ?>">
+<meta name="robots" content="index,follow">
+<title><?php echo esc_html( $title . ( $site ? ' | ' . $site : '' ) ); ?></title>
+<link rel="preconnect" href="<?php echo esc_url( admin_url() ); ?>">
+<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css">
+<style id="amphp-bare-reset">
+html,body{margin:0;padding:0;background:#f4f6fb;font-family:Tahoma,'Segoe UI',system-ui,sans-serif}
+*{box-sizing:border-box}
+img{max-width:100%;height:auto}
+#wpadminbar,.wp-site-blocks,header.wp-block-template-part,footer.wp-block-template-part{display:none!important}
+</style>
+</head>
+<body class="scraper-standalone-shop-takeover amphp-react-storefront amphp-bare">
+<?php echo $adminbar; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+<div class="scraper-shop-fullscreen-wrap" id="amphp-bare-root">
+<?php echo $shop_html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+</div>
+<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js" defer></script>
+</body>
+</html><?php
+		exit;
 	}
 
 	/**
 	 * Shortcode [scraped_shop] / [modern_shop] HTML Renderer.
 	 * 100% customer-facing, ultra-modern luxury e-commerce experience.
 	 */
-	public static function render_shop_shortcode() {
+	public static function render_shop_shortcode( $bare_assets = false ) {
 		$settings = self::get_settings();
 		$products = self::get_all_scraped_products();
 
-		// Sanitize product payload for front-end React app (JSON-safe).
+		// Lean product payload — no gallery arrays / long descriptions (huge JSON was slowing TTFB).
 		$safe_products = array();
+		$max_products  = 120; // hard cap for initial boot payload
+		$i = 0;
 		foreach ( (array) $products as $p ) {
 			if ( ! is_array( $p ) ) {
 				continue;
 			}
+			if ( ++$i > $max_products ) {
+				break;
+			}
+			$desc = wp_strip_all_tags( (string) ( $p['description'] ?? '' ) );
+			if ( function_exists( 'mb_substr' ) ) {
+				$desc = mb_substr( $desc, 0, 160 );
+			} else {
+				$desc = substr( $desc, 0, 160 );
+			}
 			$safe_products[] = array(
-				'id'                  => (string) ( $p['id'] ?? '' ),
-				'title'               => (string) ( $p['title'] ?? '' ),
-				'has_price'           => ! empty( $p['has_price'] ),
-				'original_price'      => floatval( $p['original_price'] ?? 0 ),
-				'price'               => floatval( $p['price'] ?? 0 ),
-				'price_formatted'     => (string) ( $p['price_formatted'] ?? '' ),
-				'old_price'           => floatval( $p['old_price'] ?? 0 ),
+				'id'           => (string) ( $p['id'] ?? '' ),
+				'title'        => (string) ( $p['title'] ?? '' ),
+				'has_price'    => ! empty( $p['has_price'] ),
+				'price'        => floatval( $p['price'] ?? 0 ),
+				'price_formatted' => (string) ( $p['price_formatted'] ?? '' ),
+				'old_price'    => floatval( $p['old_price'] ?? 0 ),
 				'old_price_formatted' => (string) ( $p['old_price_formatted'] ?? '' ),
-				'has_discount'        => ! empty( $p['has_discount'] ),
-				'discount_pct'        => intval( $p['discount_pct'] ?? 0 ),
-				'image'               => esc_url_raw( (string) ( $p['image'] ?? '' ) ),
-				'gallery'             => array_values( array_filter( array_map( 'esc_url_raw', (array) ( $p['gallery'] ?? array() ) ) ) ),
-				'category'            => (string) ( $p['category'] ?? 'عمومی' ),
-				'description'         => wp_strip_all_tags( (string) ( $p['description'] ?? '' ) ),
-				'in_stock'            => isset( $p['in_stock'] ) ? (bool) $p['in_stock'] : true,
+				'has_discount' => ! empty( $p['has_discount'] ),
+				'discount_pct' => intval( $p['discount_pct'] ?? 0 ),
+				'image'        => esc_url_raw( (string) ( $p['image'] ?? '' ) ),
+				'category'     => (string) ( $p['category'] ?? 'عمومی' ),
+				'description'  => $desc,
+				'in_stock'     => isset( $p['in_stock'] ) ? (bool) $p['in_stock'] : true,
 			);
 		}
 
@@ -4730,8 +4803,8 @@ class Scraper_Auto_Shop_Plugin {
 				'checkoutUrl'=> esc_url_raw( $checkout ),
 			),
 			'meta'     => array(
-				'version'   => '13.0.0',
-				'engine'    => 'react',
+				'version'   => '13.1.0',
+				'engine'    => 'preact',
 				'count'     => count( $safe_products ),
 				'is_admin'  => current_user_can( 'manage_options' ),
 			),
@@ -4739,25 +4812,26 @@ class Scraper_Auto_Shop_Plugin {
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver     = '13.0.0';
+		$ver     = '13.1.0';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
 
+		$boot_json = wp_json_encode( $boot, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_UNESCAPED_SLASHES );
+
 		ob_start();
 		?>
-		<!-- AMPHP React Storefront v13 -->
+		<!-- AMPHP Storefront v13.1 lite -->
+		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
-		<div id="amphp-storefront-root" class="amphp-storefront-root" data-engine="react" dir="rtl">
-			<div style="padding:48px 20px;text-align:center;font-family:Tahoma,sans-serif;color:#64748b;">
-				<div style="font-size:2rem;margin-bottom:8px;">⏳</div>
-				<div style="font-weight:800;color:#0f172a;">در حال بارگذاری فروشگاه مدرن React…</div>
-			</div>
+		<?php endif; ?>
+		<div id="amphp-storefront-root" class="amphp-storefront-root" data-engine="preact" dir="rtl">
+			<div style="padding:32px 16px;text-align:center;font-family:Tahoma,sans-serif;color:#64748b;font-size:.95rem;font-weight:700;">در حال بارگذاری…</div>
 		</div>
-		<script>
-			window.AMPHP_STOREFRONT = <?php echo wp_json_encode( $boot, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS ); ?>;
-		</script>
+		<script>window.AMPHP_STOREFRONT=<?php echo $boot_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;</script>
+		<?php if ( empty( $bare_assets ) ) : ?>
 		<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js" defer></script>
+		<?php endif; ?>
 		<?php
 		return ob_get_clean();
 	}
@@ -4790,10 +4864,11 @@ class Scraper_Auto_Shop_Plugin {
 		}
 		$css = self::storefront_asset_url( 'storefront.css' );
 		$js  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.0.0';
-		wp_register_style( 'amphp-storefront', $css, array( 'vazirmatn-font' ), $ver );
+		$ver = '13.1.0';
+		wp_register_style( 'amphp-storefront', $css, array(), $ver );
 		wp_enqueue_style( 'amphp-storefront' );
 		wp_register_script( 'amphp-storefront', $js, array(), $ver, true );
+		wp_script_add_data( 'amphp-storefront', 'defer', true );
 		wp_enqueue_script( 'amphp-storefront' );
 	}
 

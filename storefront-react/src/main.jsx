@@ -24,6 +24,135 @@ const saveLS = (k, v) => {
   try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
 };
 
+const FONT_KEY = (typeof window !== 'undefined' && window.APP_FONT_KEY) ? window.APP_FONT_KEY : 'scraper_font';
+const FONT_FALLBACK = 'Tahoma,system-ui,-apple-system,sans-serif';
+
+/** Font registry aligned with scraper4.php app_fonts_registry() */
+const SF_FONTS = {
+  system: { stack: FONT_FALLBACK, css: '', face: '' },
+  vazirmatn: {
+    stack: 'Vazirmatn,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css',
+    face: '',
+  },
+  vazir: {
+    stack: 'Vazir,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/vazir-font@30.1.0/dist/font-face.css',
+    face: '',
+  },
+  sahel: {
+    stack: 'Sahel,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/sahel-font@3.4.0/dist/font-face.css',
+    face: '',
+  },
+  samim: {
+    stack: 'Samim,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/samim-font@4.0.5/dist/font-face.css',
+    face: '',
+  },
+  shabnam: {
+    stack: 'Shabnam,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/shabnam-font@5.0.1/dist/font-face.css',
+    face: '',
+  },
+  parastoo: {
+    stack: 'Parastoo,' + FONT_FALLBACK,
+    css: 'https://cdn.jsdelivr.net/gh/rastikerdar/parastoo-font@2.0.0/dist/font-face.css',
+    face: '',
+  },
+  estedad: {
+    stack: 'Estedad,' + FONT_FALLBACK,
+    css: '',
+    face:
+      "@font-face{font-family:'Estedad';src:url('https://cdn.jsdelivr.net/gh/aminabedi68/Estedad@8.5/fonts/Statics/webfonts/Estedad-Regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}" +
+      "@font-face{font-family:'Estedad';src:url('https://cdn.jsdelivr.net/gh/aminabedi68/Estedad@8.5/fonts/Statics/webfonts/Estedad-Medium.woff2') format('woff2');font-weight:500;font-style:normal;font-display:swap}" +
+      "@font-face{font-family:'Estedad';src:url('https://cdn.jsdelivr.net/gh/aminabedi68/Estedad@8.5/fonts/Statics/webfonts/Estedad-SemiBold.woff2') format('woff2');font-weight:600;font-style:normal;font-display:swap}" +
+      "@font-face{font-family:'Estedad';src:url('https://cdn.jsdelivr.net/gh/aminabedi68/Estedad@8.5/fonts/Statics/webfonts/Estedad-Bold.woff2') format('woff2');font-weight:700;font-style:normal;font-display:swap}",
+  },
+  iranyekan: {
+    stack: 'IRANYekan,' + FONT_FALLBACK,
+    css: '',
+    face:
+      "@font-face{font-family:'IRANYekan';src:url('https://cdn.jsdelivr.net/gh/morajabi/balast-website@master/static/fonts/iranyekan/woff2/iranyekanweblight.woff2') format('woff2');font-weight:300;font-style:normal;font-display:swap}" +
+      "@font-face{font-family:'IRANYekan';src:url('https://cdn.jsdelivr.net/gh/morajabi/balast-website@master/static/fonts/iranyekan/woff2/iranyekanwebregular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}" +
+      "@font-face{font-family:'IRANYekan';src:url('https://cdn.jsdelivr.net/gh/morajabi/balast-website@master/static/fonts/iranyekan/woff2/iranyekanwebbold.woff2') format('woff2');font-weight:700;font-style:normal;font-display:swap}",
+  },
+  yekan: {
+    stack: 'Yekan,' + FONT_FALLBACK,
+    css: '',
+    face: "@font-face{font-family:'Yekan';src:url('https://cdn.jsdelivr.net/gh/hemedani/yekan@3.0.0/Yekan.woff') format('woff');font-weight:normal;font-style:normal;font-display:swap}",
+  },
+};
+// agent.php admin aliases → scraper4 keys
+SF_FONTS.dana = SF_FONTS.vazirmatn;
+SF_FONTS.yekanbakh = SF_FONTS.yekan;
+SF_FONTS.iransans = SF_FONTS.iranyekan;
+SF_FONTS.morabba = SF_FONTS.sahel;
+SF_FONTS.custom = SF_FONTS.vazirmatn;
+
+function resolveFontKey(preferred) {
+  try {
+    if (typeof window !== 'undefined') {
+      if (typeof window.appFontCurrent === 'function') {
+        const k = window.appFontCurrent();
+        if (k && (window.APP_FONTS?.[k] || SF_FONTS[k])) return k;
+      }
+      const ls = localStorage.getItem(FONT_KEY);
+      if (ls && (window.APP_FONTS?.[ls] || SF_FONTS[ls])) return ls;
+    }
+  } catch (_) {}
+  const pref = String(preferred || '').trim();
+  if (pref && SF_FONTS[pref]) return pref;
+  return 'vazirmatn';
+}
+
+function applyStorefrontFont(key) {
+  const k = resolveFontKey(key);
+  if (typeof window !== 'undefined' && typeof window.appFontApply === 'function' && window.APP_FONTS) {
+    try { window.appFontApply(k, false); return k; } catch (_) {}
+  }
+  const pack = (typeof window !== 'undefined' && window.APP_FONTS && window.APP_FONTS[k])
+    ? window.APP_FONTS[k]
+    : (SF_FONTS[k] || SF_FONTS.system);
+  const stack = pack.stack || FONT_FALLBACK;
+  try {
+    document.documentElement.style.setProperty('--app-font', stack);
+    if (document.body) document.body.style.fontFamily = stack;
+  } catch (_) {}
+  if (pack.css) {
+    const lid = 'sfFontLink_' + k;
+    if (!document.getElementById(lid)) {
+      const l = document.createElement('link');
+      l.id = lid; l.rel = 'stylesheet'; l.href = pack.css;
+      (document.head || document.documentElement).appendChild(l);
+    }
+  }
+  if (pack.face) {
+    const sid = 'sfFontFace_' + k;
+    if (!document.getElementById(sid)) {
+      const s = document.createElement('style');
+      s.id = sid; s.appendChild(document.createTextNode(pack.face));
+      (document.head || document.documentElement).appendChild(s);
+    }
+  }
+  return k;
+}
+
+const PALETTE_ACCENTS = {
+  'digikala-red': '#ef394e',
+  'snapp-green': '#00d170',
+  'basalam-coral': '#ff6b35',
+  'torob-red': '#d32f2f',
+  'digistyle-rose': '#e91e63',
+  'technolife-blue': '#1a73e8',
+  'royal-blue': '#2563eb',
+  'luxury-purple': '#7c3aed',
+  'amber-gold': '#d97706',
+  'persian-turquoise': '#0d9488',
+  modern: '#2563eb',
+};
+
+
 function useAdminBarOffset() {
   const [top, setTop] = useState(0);
   useEffect(() => {
@@ -346,7 +475,8 @@ function StoreApp({ boot }) {
   const products = Array.isArray(boot.products) ? boot.products : [];
   const ajax = boot.ajax || {};
   const currency = settings.currency_symbol || 'تومان';
-  const accent = settings.accent_color || '#2563eb';
+  const palette = settings.store_palette || 'digikala-red';
+  const accent = settings.accent_color || PALETTE_ACCENTS[palette] || '#ef394e';
 
   const categories = useMemo(() => {
     const map = {};
@@ -361,7 +491,7 @@ function StoreApp({ boot }) {
   const [cat, setCat] = useState('all');
   const [sort, setSort] = useState('default');
   const [page, setPage] = useState(1);
-  const [cols, setCols] = useState(() => loadLS(COLS_KEY, settings.default_column_layout || '1') || '1');
+  const [cols, setCols] = useState(() => loadLS(COLS_KEY, settings.default_column_layout || '4') || '4');
   const [cart, setCart] = useState(() => loadLS(CART_KEY, []));
   const [wish, setWish] = useState(() => loadLS(WISH_KEY, {}));
   const [cartOpen, setCartOpen] = useState(false);
@@ -382,7 +512,14 @@ function StoreApp({ boot }) {
 
   useEffect(() => {
     document.documentElement.style.setProperty('--sf-accent', accent);
-    // track visit once
+    applyStorefrontFont(settings.shop_title_font || settings.app_font || 'vazirmatn');
+    try {
+      const onStorage = (e) => {
+        if (e && e.key === FONT_KEY) applyStorefrontFont(settings.shop_title_font);
+      };
+      window.addEventListener('storage', onStorage);
+      return () => window.removeEventListener('storage', onStorage);
+    } catch {}
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_track_event');
@@ -521,15 +658,25 @@ function StoreApp({ boot }) {
 
   const stickyOn = settings.sticky_header !== false && settings.sticky_header !== 0 && settings.sticky_header !== '0';
 
+  const amazing = useMemo(
+    () => products.filter((x) => x.has_discount).slice(0, 12),
+    [products],
+  );
+
   return (
-    <div className="sf-app" style={{ ['--sf-accent']: accent }}>
+    <div
+      className="sf-app"
+      data-palette={palette}
+      data-template={settings.store_template || 'digikala'}
+      style={{ ['--sf-accent']: accent }}
+    >
       <ToastHost toasts={toasts} dismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
 
       {settings.show_top_bar !== false ? (
         <div className="sf-topbar">
           <div className="sf-container sf-topbar-inner">
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span className="sf-topbar-live"><span className="dot" />فروشگاه آنلاین</span>
+              <span className="sf-topbar-live"><span className="dot" />ارسال سریع</span>
               <span>{settings.top_bar_notice || 'ارسال سریع و تضمین اصالت کالا'}</span>
             </div>
             <div className="sf-topbar-links">
@@ -545,7 +692,7 @@ function StoreApp({ boot }) {
           <header className="sf-header" ref={megaRef}>
             <div className="sf-header-main">
               <a className="sf-brand" href="#" onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                <div className="sf-brand-logo" aria-hidden>🛍️</div>
+                <div className="sf-brand-logo" aria-hidden>د</div>
                 <div className="sf-brand-info">
                   <h1>{settings.shop_title || 'فروشگاه آنلاین'}</h1>
                   <p>{settings.shop_subtitle || ''}</p>
@@ -562,7 +709,7 @@ function StoreApp({ boot }) {
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="جستجو در بین هزاران کالای متنوع و باکیفیت..."
+                  placeholder="جستجو در کالاها، برندها و دسته‌ها..."
                   aria-label="جستجوی محصولات"
                 />
                 {query ? (
@@ -576,8 +723,8 @@ function StoreApp({ boot }) {
                   <a className="sf-action-btn" href={boot.urls.admin}><span>⚙️</span><span className="lbl">مدیریت</span></a>
                 ) : null}
                 <a className="sf-action-btn" href={boot.urls?.account || '#'}><span>👤</span><span className="lbl">حساب</span></a>
-                <button type="button" className="sf-action-btn cart" onClick={() => setCartOpen(true)}>
-                  <span>🛒</span><span className="lbl">سبد</span>
+                <button type="button" className="sf-action-btn cart" onClick={() => setCartOpen(true)} aria-label="سبد خرید">
+                  <span>🛒</span><span className="lbl">سبد خرید</span>
                   {cartCount > 0 ? <span className="sf-badge">{toFa(cartCount)}</span> : null}
                 </button>
               </div>
@@ -627,33 +774,90 @@ function StoreApp({ boot }) {
       </div>
 
       <main className="sf-container">
-        <div className="sf-flash">
-          <div>⚡ پیشنهادات شگفت‌انگیز امروز <span style={{ opacity: .9, fontWeight: 700, fontSize: '.85rem' }}>(فرصت ویژه)</span></div>
-          <div className="sf-timer">
-            <span>{toFa(timer.h)}</span>:
-            <span>{toFa(timer.m)}</span>:
-            <span>{toFa(timer.s)}</span>
+        <section className="sf-hero" aria-label="بنر فروشگاه">
+          <div className="sf-hero-content">
+            <h2>{settings.shop_title || 'فروشگاه آنلاین'}</h2>
+            <p>{settings.shop_subtitle || 'خرید مطمئن با ارسال سریع، ضمانت اصالت و بهترین قیمت'}</p>
+            {settings.show_features_banner !== false ? (
+              <div className="sf-hero-features">
+                <div className="sf-hero-feature">🚚 ارسال سریع</div>
+                <div className="sf-hero-feature">✅ ضمانت اصالت</div>
+                <div className="sf-hero-feature">↩️ ۷ روز بازگشت</div>
+                <div className="sf-hero-feature">💬 پشتیبانی</div>
+              </div>
+            ) : null}
           </div>
-        </div>
-
-        <section className="sf-hero">
-          <h2>{settings.shop_title || 'فروشگاه آنلاین'}</h2>
-          <p>{settings.shop_subtitle || 'تنوع بی‌نظیر کالاها با تضمین اصالت و ارسال سریع'}</p>
-          {settings.show_features_banner !== false ? (
-            <div className="sf-hero-features">
-              <div className="sf-hero-feature">🚀 ارسال سریع سراسر کشور</div>
-              <div className="sf-hero-feature">💎 تضمین ۱۰۰٪ اصالت کالا</div>
-              <div className="sf-hero-feature">🔄 ضمانت ۷ روزه بازگشت</div>
-              <div className="sf-hero-feature">🛡️ پشتیبانی تخصصی</div>
+          <div className="sf-hero-side" aria-hidden>
+            <div className="sf-hero-badge">
+              <div className="big">{toFa(products.length || 0)}+</div>
+              <div className="sub">کالای آماده ارسال</div>
             </div>
-          ) : null}
+          </div>
         </section>
+
+        {amazing.length ? (
+          <section className="sf-amazing" aria-label="پیشنهاد شگفت‌انگیز">
+            <div className="sf-amazing-head">
+              <div className="title">
+                <span>🔥</span>
+                <span>پیشنهاد شگفت‌انگیز</span>
+              </div>
+              <div className="sf-timer" style={{ background: 'transparent' }}>
+                <span>{toFa(timer.h)}</span>
+                <span style={{ color: '#fff', background: 'transparent', minWidth: 0, padding: 0 }}>:</span>
+                <span>{toFa(timer.m)}</span>
+                <span style={{ color: '#fff', background: 'transparent', minWidth: 0, padding: 0 }}>:</span>
+                <span>{toFa(timer.s)}</span>
+              </div>
+            </div>
+            <div className="sf-amazing-scroller">
+              {amazing.map((p) => (
+                <button
+                  type="button"
+                  key={`amz-${p.id}`}
+                  className="sf-amazing-card"
+                  onClick={() => openQuick(p)}
+                >
+                  {p.image ? <img src={p.image} alt="" loading="lazy" /> : <div style={{ height: 118, display: 'grid', placeItems: 'center', fontSize: '2rem', background: '#fafafa' }}>📦</div>}
+                  <div className="body">
+                    <div className="t">{p.title}</div>
+                    {p.has_discount && p.discount_pct ? (
+                      <div style={{ color: '#ef394e', fontWeight: 900, fontSize: '.72rem', marginTop: 4 }}>{toFa(p.discount_pct)}٪</div>
+                    ) : null}
+                    {p.old_price || p.old_price_formatted ? (
+                      <div className="old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
+                    ) : null}
+                    <div className="pr">{p.price_formatted || formatMoney(p.price, currency)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <div className="sf-flash">
+            <div>⚡ پیشنهادهای ویژه امروز</div>
+            <div className="sf-timer">
+              <span>{toFa(timer.h)}</span>:
+              <span>{toFa(timer.m)}</span>:
+              <span>{toFa(timer.s)}</span>
+            </div>
+          </div>
+        )}
+
+        {settings.show_features_banner !== false ? (
+          <div className="sf-trust">
+            <div className="sf-trust-item"><span className="ic">🚚</span><span>ارسال سریع سراسر کشور</span></div>
+            <div className="sf-trust-item"><span className="ic">🛡️</span><span>ضمانت اصالت کالا</span></div>
+            <div className="sf-trust-item"><span className="ic">↩️</span><span>۷ روز ضمانت بازگشت</span></div>
+            <div className="sf-trust-item"><span className="ic">💳</span><span>پرداخت امن آنلاین</span></div>
+          </div>
+        ) : null}
 
         {settings.show_animated_stats !== false ? (
           <div className="sf-kpis">
-            <div className="sf-kpi"><div className="n">{toFa(products.length || 0)}+</div><div className="l">کالای متنوع</div></div>
+            <div className="sf-kpi"><div className="n">{toFa(products.length || 0)}</div><div className="l">کالای متنوع</div></div>
             <div className="sf-kpi"><div className="n">{toFa(Object.keys(categories).length || 0)}</div><div className="l">دسته‌بندی</div></div>
-            <div className="sf-kpi"><div className="n">{toFa(98)}٪</div><div className="l">رضایت مشتریان</div></div>
+            <div className="sf-kpi"><div className="n">{toFa(amazing.length || 0)}</div><div className="l">پیشنهاد ویژه</div></div>
             <div className="sf-kpi"><div className="n">۲۴/۷</div><div className="l">پشتیبانی</div></div>
           </div>
         ) : null}
@@ -735,7 +939,7 @@ function StoreApp({ boot }) {
         <div className="sf-container sf-footer-grid">
           <div>
             <h4>{settings.shop_title || 'فروشگاه'}</h4>
-            <p>{settings.shop_subtitle || 'تجربه خرید مدرن با React'}</p>
+            <p>{settings.shop_subtitle || 'خرید آنلاین مطمئن با ارسال سریع'}</p>
           </div>
           <div>
             <h4>دسترسی سریع</h4>
@@ -754,7 +958,7 @@ function StoreApp({ boot }) {
             </ul>
           </div>
         </div>
-        <div className="sf-copy">© {toFa(new Date().getFullYear())} {settings.shop_title || 'فروشگاه'} · طراحی‌شده با React</div>
+        <div className="sf-copy">© {toFa(new Date().getFullYear())} {settings.shop_title || 'فروشگاه'} · تمامی حقوق محفوظ است</div>
       </footer>
 
       <nav className="sf-mob-bar" aria-label="منوی موبایل">

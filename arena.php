@@ -44727,6 +44727,7 @@ function arenaSettings(): array {
         'contact'         => ['phone' => '', 'telegram' => '', 'whatsapp' => ''],
         'welcome_coupon'  => 'WELCOME10',
         'ai_auto'         => true,
+        'ai_offline_fallback' => true,   /* v1.9: پاسخ آمادهٔ آفلاین وقتی هیچ مدل زنده‌ای جواب نداد (در پنل قابل خاموش‌کردن است) */
         'ai_system'       => 'تو دستیارِ هوشمندِ یک فروشگاه ایرانی هستی. کوتاه، دوستانه و فارسی پاسخ بده. دربارهٔ قیمت، موجودی، کالاهای موجود، هزینهٔ ارسال، کدهای تخفیف، پیگیری سفارش و خدمات پشتیبانی کمک می‌کنی. اگر سوال بیرون از کار فروشگاه بود، مؤدبانه راهنمایی کن.',
         'checkout_note'        => '',
         'support_hours'        => 'هر روز ۹ تا ۲۱',
@@ -45412,12 +45413,15 @@ function arenaChatCustomer(string $name): array {
     return ['ok' => true, 'cid' => $cid];
 }
 
-function arenaChatAddMessage(string $cid, string $from, string $text): array {
+function arenaChatAddMessage(string $cid, string $from, string $text, array $meta = []): array {
     $text = mb_substr(trim($text), 0, 2000);
     if ($text === '') return ['ok' => false, 'error' => 'خالی'];
     $ch = arenaChat();
     if (!isset($ch['customers'][$cid])) $ch['customers'][$cid] = ['id' => $cid, 'name' => 'مشتری', 'created' => time(), 'unread' => 0, 'messages' => []];
     $msg = ['id' => (time() * 1000) + random_int(0, 999), 'from' => $from, 'text' => $text, 'at' => time()];
+    /* v1.9: موتور/مدلِ پاسخ هوش مصنوعی همراهِ پیام ذخیره می‌شود تا ادمین ببیند
+       پاسخ از مدلِ زنده آمده یا از موتور آمادهٔ آفلاین. */
+    if ($from === 'ai' && $meta) $msg['meta'] = ['engine' => (string)($meta['engine'] ?? ''), 'model' => (string)($meta['model'] ?? '')];
     $ch['customers'][$cid]['messages'][] = $msg;
     $ch['customers'][$cid]['messages'] = array_slice($ch['customers'][$cid]['messages'], -300);
     if ($from === 'customer') $ch['customers'][$cid]['unread'] = (int)($ch['customers'][$cid]['unread'] ?? 0) + 1;
@@ -45770,48 +45774,10 @@ function arenaAiAnswer(string $text, array $history = []): array {
     $storeContext = "نام فروشگاه: " . $s['name'] . "\nارسال رایگان از: " . arenaPrice((int)$s['free_shipping_over'])
                   . "\nبرخی کالاهای موجود در کاتالوگ:\n" . implode("\n", $top);
 
-    // ۱. بررسی مسیر فراخوانی زنده از اسکریپر (Live Scraper Bridge Endpoint)
-    if (!empty($_SERVER['HTTP_HOST']) && function_exists('curl_init')) {
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
-        $host = $_SERVER['HTTP_HOST'];
-        $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
-        $scraperEndpoint = $scheme . $host . ($scriptDir !== '' ? $scriptDir : '') . '/scraper4.php?arena_ai_chat=1';
-        try {
-            $ch = curl_init($scraperEndpoint);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 6);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
-                'action' => 'arena_ai_chat',
-                'text' => $text,
-                'history' => json_encode($history, JSON_UNESCAPED_UNICODE),
-                'store_info' => $storeContext
-            ]));
-            $raw = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            if ($code === 200 && $raw) {
-                $j = json_decode($raw, true);
-                if (is_array($j) && !empty($j['ok']) && (!empty($j['reply']) || !empty($j['text']))) {
-                    $ans = (string)(!empty($j['reply']) ? $j['reply'] : $j['text']);
-                    return [
-                        'ok'       => true,
-                        'text'     => $ans,
-                        'reply'    => $ans,
-                        'engine'   => (string)($j['engine'] ?? 'scraper_live_bridge'),
-                        'model'    => (string)($j['model'] ?? 'master'),
-                        'provider' => (string)($j['provider'] ?? 'scraper')
-                    ];
-                }
-            }
-        } catch (\Throwable $e) {}
-    }
+    /* v1.9: اولویتِ پاسخ زنده — مدل‌های واقعی (مستر/کاندید) با فراخوانی ابزار،
+       سپس مسیرهای جایگزین؛ پاسخ آمادهٔ آفلاین فقط آخرین پشتیبان است. */
 
-    // ۲. اجرای مستقیم مدل مستر و کاندیدهای اسکریپر۴ در همان محیط
+    // ۱. اجرای مستقیم مدل مستر و کاندیدهای اسکریپر۴ در همان محیط (همان ai_providers.json مشترک)
     $providers = function_exists('aiProvidersLoad') ? aiProvidersLoad() : [];
     $cands     = function_exists('aiCandidates') ? aiCandidates() : [];
     $masterKey = function_exists('aiMasterKey') ? aiMasterKey() : '';
@@ -45864,19 +45830,13 @@ function arenaAiAnswer(string $text, array $history = []): array {
         ];
     }
 
-    $msgs = [['role' => 'system', 'content' => $system . "\n\n" . $storeContext]];
+    $msgs = [['role' => 'system', 'content' => $system . "\n\n" . $storeContext . "\n\nبرای اطلاعات به‌روز (قیمت، موجودی، رهگیری سفارش، کد تخفیف) حتماً از ابزارهای (tools) ارائه‌شده استفاده کن و پاسخ را بر اساس خروجی واقعی آن‌ها بده؛ حدس نزن."]];
     foreach (array_slice($history, -8) as $h) {
         if (is_array($h) && !empty($h['role']) && !empty($h['text'])) {
             $msgs[] = ['role' => ($h['role'] === 'user' || $h['role'] === 'customer' ? 'user' : 'assistant'), 'content' => (string)$h['text']];
         }
     }
     $msgs[] = ['role' => 'user', 'content' => $text];
-
-    $payload = [
-        'messages'    => $msgs,
-        'max_tokens'  => 750,
-        'temperature' => 0.5
-    ];
 
     if (!empty($chain) && function_exists('aiProviderCall')) {
         foreach ($chain as $cand) {
@@ -45888,37 +45848,84 @@ function arenaAiAnswer(string $text, array $history = []): array {
             if (!$mp || ($mp['enabled'] ?? true) === false) continue;
             if (empty($mp['id']) && !empty($cand['provider'])) $mp['id'] = $cand['provider'];
 
-            try {
-                $r = aiProviderCall($mp, $cand['model'], $payload, $net);
-                if (!empty($r['ok']) && !empty($r['body'])) {
-                    $ans = '';
-                    if (function_exists('aiExtractText') && function_exists('aiStripReasoning')) {
-                        $ans = aiStripReasoning(aiExtractText($r['body']));
-                    }
-                    if ($ans === '' && function_exists('aiExtractAnswer')) {
-                        $ans = aiExtractAnswer($r['body']);
-                    }
-                    if ($ans === '') {
-                        $b = is_array($r['body']) ? $r['body'] : [];
-                        $ans = trim((string)($b['choices'][0]['message']['content'] ?? ''));
-                    }
-                    if ($ans !== '') {
-                        $isMaster = ($master && ($cand['key'] ?? '') === ($master['key'] ?? ''));
-                        return [
-                            'ok'       => true,
-                            'text'     => $ans,
-                            'reply'    => $ans,
-                            'engine'   => $isMaster ? 'scraper_master' : 'scraper_candidate',
-                            'model'    => $cand['model'],
-                            'provider' => $cand['providerName'] ?? ($mp['name'] ?? ($mp['id'] ?? ''))
-                        ];
-                    }
+            /* v1.9: حلقهٔ Tool Calling واقعی — مدل می‌تواند ابزار بخواهد؛ نتیجه را
+               اجرا می‌کنیم و برمی‌گردانیم تا پاسخ نهایی با دادهٔ زنده ساخته شود. */
+            $toolMsgs = $msgs;
+            $usedTools = [];
+            $live = null;
+            for ($round = 0; $round < 3; $round++) {
+                $payload = [
+                    'messages'    => $toolMsgs,
+                    'max_tokens'  => 900,
+                    'temperature' => 0.5,
+                    'tools'       => arenaAiTools(),
+                ];
+                try {
+                    $r = aiProviderCall($mp, $cand['model'], $payload, $net);
+                } catch (\Throwable $e) { $r = []; }
+                if (empty($r['ok']) || empty($r['body']) || !is_array($r['body'])) break;
+                $choice = $r['body']['choices'][0] ?? null;
+                $message = is_array($choice['message'] ?? null) ? $choice['message'] : [];
+                $toolCalls = $message['tool_calls'] ?? ($r['body']['tool_calls'] ?? []);
+                $ans = '';
+                if (function_exists('aiExtractText') && function_exists('aiStripReasoning')) {
+                    $ans = aiStripReasoning(aiExtractText($r['body']));
                 }
-            } catch (\Throwable $e) {}
+                if ($ans === '' && is_string($message['content'] ?? null)) {
+                    $ans = trim((string)$message['content']);
+                }
+                if (!is_array($toolCalls) || !count($toolCalls)) {
+                    if ($ans !== '') $live = $ans;
+                    break;
+                }
+                // درخواست ابزار: اجرا و افزودن نتایج به گفت‌وگو
+                $toolMsgs[] = [
+                    'role'        => 'assistant',
+                    'content'     => $ans !== '' ? $ans : null,
+                    'tool_calls'  => array_values(array_map(function ($tc) use (&$usedTools) {
+                        $fn = is_array($tc['function'] ?? null) ? $tc['function'] : [];
+                        $usedTools[] = (string)($fn['name'] ?? '');
+                        return [
+                            'id'       => (string)($tc['id'] ?? ('call_' . count($usedTools))),
+                            'type'     => 'function',
+                            'function' => ['name' => (string)($fn['name'] ?? ''), 'arguments' => (string)($fn['arguments'] ?? '{}')],
+                        ];
+                    }, $toolCalls)),
+                ];
+                foreach ($toolCalls as $tc) {
+                    $fn = is_array($tc['function'] ?? null) ? $tc['function'] : [];
+                    $args = json_decode((string)($fn['arguments'] ?? '{}'), true);
+                    if (!is_array($args)) $args = [];
+                    $exec = arenaAiExecuteTool((string)($fn['name'] ?? ''), $args);
+                    $toolMsgs[] = [
+                        'role'         => 'tool',
+                        'tool_call_id' => (string)($tc['id'] ?? ''),
+                        'content'      => json_encode($exec, JSON_UNESCAPED_UNICODE),
+                    ];
+                }
+                if ($round === 2 && $ans === '') $live = null;
+            }
+            if ($live !== null && $live !== '') {
+                $isMaster = ($master && ($cand['key'] ?? '') === ($master['key'] ?? ''));
+                return [
+                    'ok'       => true,
+                    'text'     => $live,
+                    'reply'    => $live,
+                    'engine'   => $isMaster ? 'scraper_master' : 'scraper_candidate',
+                    'model'    => $cand['model'],
+                    'provider' => $cand['providerName'] ?? ($mp['name'] ?? ($mp['id'] ?? '')),
+                    'tools'    => array_values(array_unique($usedTools)),
+                ];
+            }
         }
     }
 
-    // ۳. تلاش با ارائه‌دهندهٔ فعال (aiActiveChat)
+    // ۲. تلاش با ارائه‌دهندهٔ فعال (aiActiveChat) — بدون ابزار
+    $payload = [
+        'messages'    => $msgs,
+        'max_tokens'  => 750,
+        'temperature' => 0.5
+    ];
     if (function_exists('aiActiveChat')) {
         try {
             $r = aiActiveChat($payload, $net);
@@ -45940,7 +45947,7 @@ function arenaAiAnswer(string $text, array $history = []): array {
         } catch (\Throwable $e) {}
     }
 
-    // ۴. تلاش با arAiReplyText (پاسخ خودکار بومی اسکریپر)
+    // ۳. تلاش با arAiReplyText (پاسخ خودکار بومی اسکریپر)
     if (function_exists('arAiReplyText')) {
         try {
             $r = arAiReplyText($text, 15);
@@ -45956,9 +45963,58 @@ function arenaAiAnswer(string $text, array $history = []): array {
         } catch (\Throwable $e) {}
     }
 
-    // ۵. موتور تحلیل معنایی و کاتالوگ‌محور صبا شاپ
-    $dynamicReply = arenaAiOffline($text);
-    return ['ok' => true, 'text' => $dynamicReply, 'reply' => $dynamicReply, 'engine' => 'catalog_semantic'];
+    /* ۴. مسیر فراخوانی زنده از اسکریپر (Live Scraper Bridge) — فقط وقتی
+       فایلِ scraper4.php واقعاً کنارِ همین فایل هست و مدل‌های بالا پاسخ ندادند؛
+       تایم‌اوت کوتاه تا مشتری معطل نماند. */
+    if (!empty($_SERVER['HTTP_HOST']) && function_exists('curl_init') && is_file(__DIR__ . '/scraper4.php')) {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+        $host = $_SERVER['HTTP_HOST'];
+        $scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
+        $scraperEndpoint = $scheme . $host . ($scriptDir !== '' ? $scriptDir : '') . '/scraper4.php?arena_ai_chat=1';
+        try {
+            $ch = curl_init($scraperEndpoint);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 4);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+                'action' => 'arena_ai_chat',
+                'text' => $text,
+                'history' => json_encode($history, JSON_UNESCAPED_UNICODE),
+                'store_info' => $storeContext
+            ]));
+            $raw = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($code === 200 && $raw) {
+                $j = json_decode($raw, true);
+                if (is_array($j) && !empty($j['ok']) && (!empty($j['reply']) || !empty($j['text']))) {
+                    $ans = (string)(!empty($j['reply']) ? $j['reply'] : $j['text']);
+                    return [
+                        'ok'       => true,
+                        'text'     => $ans,
+                        'reply'    => $ans,
+                        'engine'   => (string)($j['engine'] ?? 'scraper_live_bridge'),
+                        'model'    => (string)($j['model'] ?? 'master'),
+                        'provider' => (string)($j['provider'] ?? 'scraper')
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {}
+    }
+
+    // ۵. موتور تحلیل معنایی و کاتالوگ‌محور (پاسخ آماده) — فقط اگر ادمین اجازه داده باشد
+    if (!isset($s['ai_offline_fallback']) || !empty($s['ai_offline_fallback'])) {
+        $dynamicReply = arenaAiOffline($text);
+        return ['ok' => true, 'text' => $dynamicReply, 'reply' => $dynamicReply, 'engine' => 'catalog_semantic', 'model' => 'offline_rules', 'offline' => true];
+    }
+
+    // هیچ مدل زنده‌ای در دسترس نبود و پاسخ آماده هم خاموش است → پیام صادقانه + اعلام به پشتیبان
+    $hold = 'هم‌اکنون دستیار هوشمند در دسترس نیست؛ پیام شما ثبت شد و همکارانِ پشتیبانی ' . ($s['support_hours'] ?: 'در اولین فرصت') . ' پاسخ می‌دهند. 🙏';
+    return ['ok' => true, 'text' => $hold, 'reply' => $hold, 'engine' => 'none_live', 'offline' => true];
 }
 
 function arenaAiOffline(string $t): string {
@@ -46943,8 +46999,8 @@ function arenaApiJson(): string {
                     }
                     $ai = arenaAiAnswer($txt, $hist);
                     if (!empty($ai['ok']) && !empty($ai['text'])) {
-                        $mRes = arenaChatAddMessage($cid, 'ai', $ai['text']);
-                        $r['ai'] = ['text' => $ai['text'], 'engine' => $ai['engine'] ?? '', 'model' => $ai['model'] ?? ''];
+                        $mRes = arenaChatAddMessage($cid, 'ai', $ai['text'], ['engine' => (string)($ai['engine'] ?? ''), 'model' => (string)($ai['model'] ?? '')]);
+                        $r['ai'] = ['text' => $ai['text'], 'engine' => $ai['engine'] ?? '', 'model' => $ai['model'] ?? '', 'offline' => !empty($ai['offline'])];
                         $r['reply'] = $ai['text'];
                         $r['text'] = $ai['text'];
                         $r['mid'] = $mRes['id'] ?? ((time() * 1000) + mt_rand(1, 999));
@@ -47828,6 +47884,8 @@ body.s-tmpl-digikala .s-hero-badge{background:rgba(239,64,86,.2);border-color:rg
 .s-msg.ai{align-self:flex-end;background:#f5f3ff;border:1.5px solid #ddd6fe;color:#3b0764;border-bottom-left-radius:4px}
 .s-msg.s-typing{background:#f8fafc;border:1px dashed #cbd5e1;color:#64748b;font-style:italic}
 .s-msg .who{display:block;font-size:10px;font-weight:800;color:var(--acc);margin-bottom:3px}
+.s-msg-engine{display:inline-block;margin-top:6px;font-size:9.5px;font-weight:700;color:#7c2d12;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:1px 8px}
+.s-msg-engine.live{color:#065f46;background:#ecfdf5;border-color:#a7f3d0}
 .s-wp-input{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line);background:#fff}
 .s-wp-input input{flex:1;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:13px;outline:none}
 .s-wp-input input:focus{border-color:var(--acc)}
@@ -48766,66 +48824,29 @@ async function chatSendMsg(){
     hist.push({ role: isCust ? 'user' : 'assistant', text: n.textContent.trim() });
   });
 
-  let liveReply = '';
-  let liveEngine = '';
-  let liveModel = '';
+  /* v1.9: فراخوانی مستقیمِ مرورگر به scraper4.php حذف شد — این فایل چنین
+     اندپوینتی ندارد و فقط باعث تأخیر می‌شد. همهٔ مسیرها (مدل مستر/کاندید،
+     پلِ زندهٔ اسکریپر و در آخر موتور آماده) سمتِ سرور در chat_send اجرا می‌شوند. */
 
-  // ۳. تبادل زنده و مستقیم با فایل اسکریپر (scraper4.php) از طریق مرورگر
+  // ارسال به بک‌اند فروشگاه و موتور آبشاری (اولویت با مدل زنده + ابزارها)
   try {
-    const fd = new FormData();
-    fd.append('action', 'arena_ai_chat');
-    fd.append('text', txt);
-    fd.append('history', JSON.stringify(hist.slice(-8)));
-
-    const rScraper = await fetch('scraper4.php?arena_ai_chat=1', {
-      method: 'POST',
-      body: fd
-    });
-    if (rScraper.ok) {
-      const dScraper = await rScraper.json();
-      if (dScraper && dScraper.ok && (dScraper.reply || dScraper.text)) {
-        liveReply = dScraper.reply || dScraper.text;
-        liveEngine = dScraper.engine || 'scraper_master';
-        liveModel = dScraper.model || '';
-      }
-    }
-  } catch(eScraper) {
-    console.warn('Direct scraper bridge check:', eScraper);
-  }
-
-  // ۴. اگر پاسخ زنده از مدل هوش مصنوعی اسکریپر دریافت شد:
-  if (liveReply) {
+    const res = await api('chat_send', { cid: chatCid, text: txt }, 'POST');
     typing.remove();
-    pushMsg(box, 'ai', liveReply);
-    // ذخیره پیام کاربر و هوش مصنوعی در سرور فروشگاه
-    api('chat_send', { cid: chatCid, text: txt, skip_ai: 1 }, 'POST').then(function(res){
-      if (res && res.cid) {
-        chatCid = res.cid;
-        try{document.cookie = 'arena_cid=' + encodeURIComponent(res.cid) + '; path=/; max-age=2592000';}catch(e){}
-      }
-      api('chat_add_ai', { cid: chatCid, text: liveReply, engine: liveEngine, model: liveModel }, 'POST');
-    });
-  } else {
-    // ۵. مسیر جایگزین: ارسال به بک‌اند فروشگاه و موتور آبشاری
-    try {
-      const res = await api('chat_send', { cid: chatCid, text: txt }, 'POST');
-      typing.remove();
-      if(res.cid) {
-        chatCid = res.cid;
-        try{document.cookie = 'arena_cid=' + encodeURIComponent(res.cid) + '; path=/; max-age=2592000';}catch(e){}
-      }
-      if(res.mid && +res.mid > chatLast) chatLast = +res.mid;
-      
-      const aiText = res.reply || res.text || (res.ai && res.ai.text) || '';
-      if(aiText) {
-        pushMsg(box, 'ai', aiText);
-      } else {
-        pushMsg(box, 'ai', 'پیام شما با موفقیت ثبت شد و پشتیبان فروشگاه به‌زودی پاسخ خواهد داد.');
-      }
-    } catch(e) {
-      typing.remove();
-      pushMsg(box, 'ai', 'پیام شما دریافت شد. پشتیبان فروشگاه به‌زودی پاسخ خواهد داد.');
+    if(res.cid) {
+      chatCid = res.cid;
+      try{document.cookie = 'arena_cid=' + encodeURIComponent(res.cid) + '; path=/; max-age=2592000';}catch(e){}
     }
+    if(res.mid && +res.mid > chatLast) chatLast = +res.mid;
+
+    const aiText = res.reply || res.text || (res.ai && res.ai.text) || '';
+    if(aiText) {
+      pushMsg(box, 'ai', aiText, { engine: (res.ai && res.ai.engine) || '', model: (res.ai && res.ai.model) || '', offline: !!(res.ai && res.ai.offline) });
+    } else {
+      pushMsg(box, 'ai', 'پیام شما با موفقیت ثبت شد و پشتیبان فروشگاه به‌زودی پاسخ خواهد داد.');
+    }
+  } catch(e) {
+    typing.remove();
+    pushMsg(box, 'ai', 'پیام شما دریافت شد. پشتیبان فروشگاه به‌زودی پاسخ خواهد داد.');
   }
 }
 
@@ -48840,12 +48861,21 @@ $('chatIn')?.addEventListener('keydown', function(e){
   if(e.key === 'Enter'){ e.preventDefault(); chatSendMsg(); }
 });
 
-function pushMsg(box, who, text){
+function pushMsg(box, who, text, meta){
   if(!box || !text) return;
   const d = document.createElement('div');
   d.className = 's-msg ' + who;
   const labels = { cust: 'شما', admin: '🎧 پشتیبان فروشگاه', ai: '🤖 دستیار هوشمند' };
-  d.innerHTML = '<span class="who">' + (labels[who] || '') + '</span>' + esc(text).replace(/\n/g, '<br>');
+  let badge = '';
+  if (who === 'ai' && meta && meta.engine) {
+    const liveEngines = ['scraper_master', 'scraper_candidate', 'scraper_active', 'scraper_ar', 'scraper_live_bridge'];
+    const isLive = liveEngines.indexOf(meta.engine) > -1;
+    const engName = isLive
+      ? '⚡ پاسخ زندهٔ هوش مصنوعی' + (meta.model ? ' · ' + meta.model : '')
+      : '⚙️ پاسخ آمادهٔ آفلاین (مدل زنده در دسترس نیست)';
+    badge = '<span class="s-msg-engine' + (isLive ? ' live' : '') + '">' + esc(engName) + '</span>';
+  }
+  d.innerHTML = '<span class="who">' + (labels[who] || '') + '</span>' + esc(text).replace(/\n/g, '<br>') + badge;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
 }
@@ -50687,6 +50717,8 @@ html[data-skin="gloss"] .progress-bar{
 .shop-msg.admin{align-self:flex-end;background:linear-gradient(135deg,#1d4ed8,#2563eb)}
 .shop-msg.ai{align-self:flex-end;background:linear-gradient(135deg,#7c3aed,#db2777)}
 .shop-msg .mwho{display:block;font-size:9px;opacity:.7;margin-bottom:2px}
+.shop-eng{display:inline-block;margin-top:5px;font-size:8.5px;font-weight:800;color:#fca5a5;background:#7f1d1d;border:1px solid #b91c1c;border-radius:7px;padding:1px 7px}
+.shop-eng.live{color:#86efac;background:#14532d;border-color:#16a34a}
 .shop-convo-in{display:flex;gap:8px;padding:10px;border-top:1px solid #1e293b}
 .shop-convo-in input{flex:1;background:#020617;border:1px solid #334155;color:#e2e8f0;border-radius:10px;padding:9px 12px;font-size:12px;font-family:inherit}
 .shop-convo-in input:focus{outline:none;border-color:#3b82f6}
@@ -53772,17 +53804,26 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
     <!-- ─────────── هوش مصنوعی ─────────── -->
     <div class="shop-st" id="shopPane_ai">
         <div class="shop-ai-box">
-        <div style="background:#1e1b4b;border:1px solid #4338ca;border-radius:10px;padding:12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div id="shopAiStatusCard" style="background:#1e1b4b;border:1px solid #4338ca;border-radius:10px;padding:12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
             <div>
-                <div style="font-size:12px;font-weight:700;color:#c7d2fe">🔗 مسیر اتصال هوش مصنوعی زنده به اسکریپر (scraper4.php)</div>
-                <div style="font-size:11px;color:#94a3b8;margin-top:3px">مدل مستر انتخابی و کاندیدهای اسکریپر۴ به صورت خودکار به این فروشگاه متصل هستند.</div>
+                <div style="font-size:12px;font-weight:700;color:#c7d2fe">🔌 وضعیت پاسخ‌دهی هوش مصنوعی ویترین</div>
+                <div style="font-size:11px;color:#94a3b8;margin-top:3px">مدل‌های مستر/کاندید اسکریپر۴ (همان ai_providers.json مشترک) با فراخوانی ابزار زنده پاسخ می‌دهند.</div>
             </div>
             <a href="scraper4.php" target="_blank" class="btn btn-purple" style="font-size:11px;padding:6px 12px;text-decoration:none;background:#6366f1;color:#fff">
                 ⚙️ تنظیمات مدل‌ها و کلیدها در اسکریپر۴ ↗
             </a>
         </div>
+        <div id="shopAiWarn" style="display:none;background:#451a03;border:1px solid #b45309;border-radius:10px;padding:12px;margin-bottom:14px;font-size:11.5px;color:#fde68a;line-height:2">
+            ⚠️ <b>هیچ ارائه‌دهندهٔ هوش مصنوعی فعالی تنظیم نشده است.</b> در نتیجه چت ویترین به مشتری «پاسخ آمادهٔ آفلاین» می‌دهد (نه پاسخ زندهٔ مدل).
+            برای فعال‌سازی پاسخ‌های واقعی: در پنل اسکریپر۴ (دکمهٔ بالا) یک ارائه‌دهنده (مثل OpenRouter/Groq/DeepSeek) با کلید API اضافه و تست کنید — کلیدها به‌صورت خودکار در همین فروشگاه هم استفاده می‌شوند.
+        </div>
             <b style="font-size:13px">🤖 دستیار هوشمند فروشگاه</b>
-            <p style="font-size:11px;color:#94a3b8;margin:8px 0 14px">از همان «ارائه‌دهنده‌های AI» که اسکرپر استفاده می‌کند (بخشِ تنظیمات اصلی) بهره می‌گیرد — نیازی به کلیدِ جدا نیست. اگر ارائه‌دهنده‌ای فعال نباشد، یک پاسخ‌دهندهٔ آفلاینِ قاعده‌محور (قیمت، موجودی، ارسال، کد تخفیف، پیگیری سفارش) فعال می‌شود.</p>
+            <p style="font-size:11px;color:#94a3b8;margin:8px 0 14px">اولویت پاسخ: ۱) مدل مستر و کاندیدها با فراخوانی ابزار (قیمت/موجودی/رهگیری/کوپن زنده) ۲) ارائه‌دهندهٔ فعال اسکریپر ۳) پل زندهٔ scraper4.php ۴) پاسخ آمادهٔ آفلاین. موتورِ هر پاسخ زیر همان پیام در چت نمایش داده می‌شود.</p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+              <span class="shop-toggle on" id="set_ai_offline_fallback" onclick="this.classList.toggle('on')" title="اگر خاموش باشد و هیچ مدل زنده‌ای در دسترس نباشد، به‌جای پاسخ آماده، پیامِ «پشتیبان پاسخ می‌دهد» ارسال می‌شود"></span>
+              <span style="font-size:11.5px;font-weight:700">⚙️ پاسخ آمادهٔ آفلاین (پشتیبانِ آخر)</span>
+              <span style="font-size:10px;color:#64748b">— برای تجربهٔ «فقط هوش مصنوعی واقعی» خاموشش کنید</span>
+            </div>
             <div style="font-size:11.5px;margin-bottom:12px">ارائه‌دهندهٔ فعال: <b id="shopAiModel" style="color:#a5b4fc">—</b></div>
             <label style="display:block;font-size:10.5px;color:#94a3b8;font-weight:700;margin-bottom:5px">پیامِ سیستم (شخصیتِ دستیار)</label>
             <textarea id="shopAiSystem" style="width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:10px;padding:10px;font-size:12px;min-height:90px;font-family:inherit" dir="rtl"></textarea>
@@ -74811,7 +74852,9 @@ async function shopLoadStats(){
     el = $s('stChat'); if (el) el.innerHTML = d.chat.unread ? '🔴 ' + shopFm(d.chat.unread) : '✅ ۰';
     ['all','own','woo','bsl','prof'].forEach(function(k){ var n = $s('srcN_' + k); if (n) n.textContent = k === 'all' ? '(' + shopFm(d.products.total) + ')' : '(' + shopFm(d.products[k]) + ')'; });
     el = $s('shopAiChip'); if (el){ el.style.display = d.ai ? 'inline-block' : 'none'; el.textContent = '🤖 ' + d.ai; }
-    el = $s('shopAiModel'); if (el) el.textContent = d.ai || '— (حالت آفلاینِ قاعده‌محور فعال است)';
+    el = $s('shopAiModel'); if (el) el.textContent = d.ai || '— (پاسخ آمادهٔ آفلاین فعال است؛ کلید AI تنظیم نشده)';
+    el = $s('shopAiWarn'); if (el) el.style.display = d.ai ? 'none' : 'block';
+    el = $s('shopAiStatusCard'); if (el) el.style.borderColor = d.ai ? '#4338ca' : '#b45309';
     var badge = $s('shopBadge');
     if (badge) { badge.textContent = shopFm(d.chat.unread); badge.classList.toggle('hidden', d.chat.unread === 0); }
     if ($s('shopPane_settings').classList.contains('active') && $s('set_name') && $s('set_name').value === '') shopSettingsLoad();
@@ -75039,7 +75082,13 @@ async function shopLoadMessages(full){
     var label = m.from === 'customer' ? 'مشتری' : (m.from === 'ai' ? 'دستیار هوشمند 🤖' : 'شما');
     var div = document.createElement('div');
     div.className = 'shop-msg ' + who;
-    div.innerHTML = '<span class="mwho">' + label + ' · ' + shopTime(m.at) + '</span>' + shopEsc(m.text);
+    /* v1.9: نشان موتور پاسخ (مدل زنده یا آمادهٔ آفلاین) زیر پیام‌های هوش مصنوعی */
+    var badge = '';
+    if (m.from === 'ai' && m.meta && m.meta.engine) {
+      var liveEng = ['scraper_master','scraper_candidate','scraper_active','scraper_ar','scraper_live_bridge'].indexOf(m.meta.engine) > -1;
+      badge = '<span class="shop-eng' + (liveEng ? ' live' : '') + '">' + (liveEng ? '⚡ زنده · ' + shopEsc(m.meta.model || m.meta.engine) : '⚙️ آمادهٔ آفلاین') + '</span>';
+    }
+    div.innerHTML = '<span class="mwho">' + label + ' · ' + shopTime(m.at) + '</span>' + shopEsc(m.text) + badge;
     box.appendChild(div);
   });
   box.scrollTop = box.scrollHeight;
@@ -75085,9 +75134,11 @@ window.shopAiSaveSystem = async function(){
 window.shopAiTest = async function(){
   var out = $s('shopAiTestOut');
   out.style.display = 'block';
-  out.textContent = 'در حال پرسش…';
+  out.textContent = 'در حال پرسش از دستیار…';
   var r = await shopApi('ai_test', { text: 'سلام، هزینهٔ ارسال چقدر است؟' }, 'POST');
-  out.textContent = (r.ok ? r.text : ('خطا: ' + (r.error || ''))) + '\n\n[موتور: ' + (r.engine || '—') + (r.model ? ' / ' + r.model : '') + ']';
+  var liveEng = ['scraper_master','scraper_candidate','scraper_active','scraper_ar','scraper_live_bridge'].indexOf(r.engine) > -1;
+  var engLabel = r.engine ? (liveEng ? '⚡ پاسخ زندهٔ مدل واقعی' : (r.engine === 'none_live' ? '⛔ مدلی در دسترس نبود (پاسخ آماده خاموش است)' : '⚙️ پاسخ آمادهٔ آفلاین — کلید AI تنظیم نشده')) : '—';
+  out.textContent = (r.ok ? r.text : ('خطا: ' + (r.error || ''))) + '\n\n[موتور پاسخ: ' + engLabel + (r.model ? ' / ' + r.model : '') + ']';
 };
 
 /* ---------------- plugins ---------------- */
@@ -75304,6 +75355,7 @@ window.shopSettingsLoad = function(){
   }
   shopState.aiOn = !!s.ai_auto;
   $s('shopAiToggle').classList.toggle('on', !!s.ai_auto);
+  { var ofl = $s('set_ai_offline_fallback'); if (ofl) ofl.classList.toggle('on', s.ai_offline_fallback === undefined ? true : !!s.ai_offline_fallback); }
   if ($s('shopAiSystem').value === '') $s('shopAiSystem').value = s.ai_system || '';
   shopLoadCoupons();
 };
@@ -75321,6 +75373,7 @@ window.shopSettingsSave = async function(){
     payment: { on_delivery: $s('set_pay_delivery').classList.contains('on'), card_number: g('set_card_number'), card_name: g('set_card_name'), payment_link: g('set_payment_link'), note: g('set_pay_note') },
     contact: { phone: g('set_phone'), telegram: g('set_telegram'), whatsapp: g('set_whatsapp') },
     welcome_coupon: g('set_welcome_coupon'), ai_auto: $s('set_ai_auto').classList.contains('on'),
+    ai_offline_fallback: $s('set_ai_offline_fallback') ? $s('set_ai_offline_fallback').classList.contains('on') : true,
     checkout_note: g('set_checkout_note'), support_hours: g('set_support_hours'),
     vitrine_price_dest: g('set_vitrine_price_dest'),
     default_product_src: g('set_default_product_src') || 'prof',

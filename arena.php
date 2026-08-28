@@ -44669,7 +44669,7 @@ usort($initialProfiles, fn($a, $b) => ($b['updatedAt'] ?? 0) <=> ($a['updatedAt'
  * ===================================================================== */
 
 defined('ARENA_SHOP_LAYER') or define('ARENA_SHOP_LAYER', 1);
-const ARENA_VERSION = '1.8.2';
+const ARENA_VERSION = '1.9';
 const ARENA_SETTINGS_FILE = __DIR__ . '/arena_settings.json';
 const ARENA_PRODUCTS_FILE = __DIR__ . '/arena_products.json';
 const ARENA_ORDERS_FILE   = __DIR__ . '/arena_orders.json';
@@ -44733,10 +44733,19 @@ function arenaSettings(): array {
         'default_product_src'  => 'prof',
         'theme_template'       => 'saba',
         'color_palette'        => 'saba',
+        /* v1.9: تنظیمات حرفه‌ای هدر و منوی چسبان ویترین */
+        'header'               => [
+            'sticky'     => true,   /* هدر اصلی هنگام اسکرول بالا بچسبد */
+            'sticky_nav' => true,   /* نوار منوی دسته‌بندی‌ها هم چسبان باشد */
+            'compact'    => true,   /* هدر هنگام پایین‌رفتن، جمع و جمع‌وجور شود */
+            'topbar'     => true,   /* نوار اعلان مشکیِ بالای صفحه نمایش داده شود */
+            'search'     => true,   /* نوار جست‌وجو داخل هدر نمایش داده شود */
+            'nav_links'  => [],     /* لینک‌های سفارشی منوی هدر [{icon,title,url}] */
+        ],
     ];
     $s = arenaJson(ARENA_SETTINGS_FILE, []);
     if (!is_array($s)) $s = [];
-    foreach (['flash','payment','contact'] as $sec) {
+    foreach (['flash','payment','contact','header'] as $sec) {
         if (isset($s[$sec]) && is_array($s[$sec])) $s[$sec] = array_merge($def[$sec], $s[$sec]);
         else $s[$sec] = $def[$sec];
     }
@@ -44745,7 +44754,7 @@ function arenaSettings(): array {
 
 function arenaSettingsSave(array $s): bool {
     $cur = arenaSettings();
-    foreach (['flash','payment','contact'] as $sec) {
+    foreach (['flash','payment','contact','header'] as $sec) {
         if (isset($s[$sec]) && is_array($s[$sec])) $s[$sec] = array_merge($cur[$sec], $s[$sec]);
     }
     return arenaSave(ARENA_SETTINGS_FILE, $s);
@@ -47297,6 +47306,23 @@ function arenaShopShell(string $title, string $content, array $s, string $headEx
     $logo = $s['logo'] !== '' ? '<img class="s-logo-img" src="' . h($s['logo']) . '" alt="">' : '<span class="s-logo-mark">🛍️</span>';
     $foot = ['html' => ''];
     $foot = arenaDoHook('shop_footer', $foot);
+    /* v1.9: تنظیمات هدر و منوی چسبان از پنل ادمین */
+    $hdr = is_array($s['header'] ?? null) ? $s['header'] : [];
+    $hdrSticky  = !isset($hdr['sticky']) || $hdr['sticky'] !== false;
+    $navSticky  = !isset($hdr['sticky_nav']) || $hdr['sticky_nav'] !== false;
+    $hdrCompact = !isset($hdr['compact']) || $hdr['compact'] !== false;
+    $topbarOn   = !isset($hdr['topbar']) || $hdr['topbar'] !== false;
+    $searchOn   = !isset($hdr['search']) || $hdr['search'] !== false;
+    $navLinks   = [];
+    foreach ((array)($hdr['nav_links'] ?? []) as $nl) {
+        if (!is_array($nl)) continue;
+        $t = trim((string)($nl['title'] ?? ''));
+        $u = trim((string)($nl['url'] ?? ''));
+        if ($t === '' || $u === '') continue;
+        $navLinks[] = ['icon' => mb_substr(trim((string)($nl['icon'] ?? '🔗')), 0, 8), 'title' => mb_substr($t, 0, 40), 'url' => $u];
+        if (count($navLinks) >= 8) break;
+    }
+    $bodyHdrCls = trim(($hdrSticky ? 'hdr-sticky ' : '') . ($navSticky ? 'nav-sticky ' : '') . ($hdrCompact ? 'hdr-compact' : ''));
     ?><!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
@@ -47363,8 +47389,21 @@ input:focus,select:focus,textarea:focus{border-color:var(--acc);box-shadow:0 0 0
 
 
 /* ---------- PROFESSIONAL CLEAN E-COMMERCE HEADER ---------- */
-.s-header{position:sticky;top:0;z-index:80;background:#ffffff;border-bottom:1px solid #e2e8f0;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:box-shadow .2s}
+/* v1.9: هدر و منوی چسبان با تنظیمات پنل ادمین — کلاس‌های hdr-sticky / nav-sticky / hdr-compact روی body */
+.s-header{position:relative;z-index:80;background:#ffffff;border-bottom:1px solid #e2e8f0;box-shadow:0 1px 4px rgba(0,0,0,.04);transition:box-shadow .2s,min-height .2s ease}
+.hdr-sticky .s-header{position:sticky;top:0}
 .s-header.scrolled{box-shadow:0 4px 16px rgba(0,0,0,.07)}
+.s-head-nav{border-top:1px solid #f1f5f9;background:#fff;font-size:12.5px}
+.nav-sticky .s-head-nav{position:sticky;top:0;z-index:79;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+.hdr-sticky.nav-sticky .s-head-nav{top:var(--s-hdr-h,68px)}
+/* حالت جمع‌وشکور: هنگام اسکرول، هدر کوچک‌تر می‌شود تا فضای بیشتری برای کالاها بماند */
+.hdr-compact .s-header.compact .s-head-main{min-height:50px;padding:4px 0}
+.hdr-compact .s-header.compact .s-logo-mark,.hdr-compact .s-header.compact .s-logo-img{width:32px;height:32px;font-size:16px;border-radius:8px}
+.hdr-compact .s-header.compact .s-brand-title{font-size:15px}
+.hdr-compact .s-header.compact .s-search-box input{height:38px}
+.hdr-compact .s-header.compact .s-act-btn{height:36px;padding:6px 10px}
+.hdr-compact .s-header.compact .s-act-lbl{display:none}
+.hdr-compact .s-header .s-head-main, .hdr-compact .s-header .s-logo-mark, .hdr-compact .s-header .s-logo-img, .hdr-compact .s-header .s-brand-title, .hdr-compact .s-header .s-search-box input, .hdr-compact .s-header .s-act-btn{transition:min-height .22s ease,width .22s ease,height .22s ease,font-size .22s ease,padding .22s ease}
 .s-head-main{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:68px;padding:8px 0}
 .s-head-right{display:flex;align-items:center;gap:12px;flex-shrink:0}
 .s-brand{display:flex;align-items:center;gap:10px;text-decoration:none;min-width:0}
@@ -47398,7 +47437,6 @@ input:focus,select:focus,textarea:focus{border-color:var(--acc);box-shadow:0 0 0
 .s-ham-bars span:nth-child(2){width:70%}
 
 /* Sub Header Navigation Row */
-.s-head-nav{border-top:1px solid #f1f5f9;background:#fff;font-size:12.5px}
 .s-head-nav-in{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0}
 .s-nav-links{display:flex;align-items:center;gap:14px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .s-nav-links::-webkit-scrollbar{display:none}
@@ -48097,8 +48135,9 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
 <?= $headExtra ?>
 </style>
 </head>
-<body class="s-tmpl-<?= h((string)($s['theme_template'] ?? 'saba')) ?> s-pal-<?= h((string)($s['color_palette'] ?? 'saba')) ?>">
+<body class="s-tmpl-<?= h((string)($s['theme_template'] ?? 'saba')) ?> s-pal-<?= h((string)($s['color_palette'] ?? 'saba')) ?><?= $bodyHdrCls !== '' ? ' ' . h($bodyHdrCls) : '' ?>">
 
+<?php if ($topbarOn): ?>
 <!-- ─────────── نوار اعلان بالا ─────────── -->
 <div class="s-topbar">
   <div class="container s-topbar-in">
@@ -48118,6 +48157,7 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
     </div>
   </div>
 </div>
+<?php endif; ?>
 
 <!-- ─────────── هدر اصلی فروشگاه (طراحی مدرن، شیک و تفکیک‌شده) ─────────── -->
 <header class="s-header">
@@ -48134,6 +48174,7 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
     </div>
 
     <!-- مرکز: نوار جست‌وجوی عریض با آیکون سرچ استاندارد -->
+    <?php if ($searchOn): ?>
     <div class="s-head-search">
       <form class="s-search-box" action="?arena=shop" method="get">
         <button class="s-search-ico" type="submit" aria-label="جست‌وجو">
@@ -48145,6 +48186,9 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
         <?php endif; ?>
       </form>
     </div>
+    <?php else: ?>
+    <div class="s-head-search" style="flex:1"></div>
+    <?php endif; ?>
 
     <!-- سمت چپ: حساب کاربری، علاقه‌مندی‌ها و سبد خرید -->
     <div class="s-head-actions">
@@ -48174,9 +48218,10 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
       </a>
     </div>
   </div>
+</header>
 
-  <!-- نوار دوم هدر: دسته‌بندی کالاها و لینک‌های میانبر فروشگاه -->
-  <div class="s-head-nav">
+<!-- ─────────── نوار دوم هدر (منوی چسبان): دسته‌بندی کالاها و لینک‌های میانبر ─────────── -->
+<nav class="s-head-nav" aria-label="منوی فروشگاه">
     <div class="container s-head-nav-in">
       <div class="s-nav-links">
         <button type="button" class="s-nav-chip cat" onclick="arenaOpenCatDrawer()">
@@ -48185,16 +48230,19 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
           <span style="font-size:9px;opacity:.7">▼</span>
         </button>
         <span class="s-nav-split"></span>
+        <?php if ($navLinks): foreach ($navLinks as $nl): ?>
+        <a class="s-nav-link" href="<?= h($nl['url']) ?>"<?= preg_match('~^https?://~i', $nl['url']) ? ' target="_blank" rel="noopener"' : '' ?>><?= h($nl['icon']) !== '' ? h($nl['icon']) . ' ' : '' ?><?= h($nl['title']) ?></a>
+        <?php endforeach; else: ?>
         <a class="s-nav-link" href="?arena=shop#flashBanner">⚡ شگفت‌انگیزها</a>
         <a class="s-nav-link" href="?arena=shop&sort=popular">🔥 پرفروش‌ترین‌ها</a>
         <a class="s-nav-link" href="?arena=shop&sort=newest">🆕 جدیدترین‌ها</a>
         <a class="s-nav-link" href="?arena=shop&sort=cheap">💰 ارزان‌ترین‌ها</a>
+        <?php endif; ?>
         <a class="s-nav-link" href="?arena=track">🔎 پیگیری سفارش</a>
       </div>
       
     </div>
-  </div>
-</header>
+</nav>
 
 <?= $content ?>
 
@@ -48429,9 +48477,21 @@ body.s-pal-dark{--acc:#0f172a;--acc2:#334155}
     <button type="button" class="s-modal-close" onclick="arenaCloseChangelog()" aria-label="بستن">✕</button>
   </div>
   <div class="s-modal-body">
-    <!-- Version 1.8.2 -->
+    <!-- Version 1.9 -->
     <div class="s-log-ver current">
-      <div class="s-log-badge">نسخه ۱.۸.۲ <span class="tag">نسخه جاری</span></div>
+      <div class="s-log-badge">نسخه ۱.۹ <span class="tag">نسخه جاری</span></div>
+      <div class="s-log-date">هدر و منوی چسبان با تنظیمات حرفه‌ای در پنل ادمین، پاسخ‌های زندهٔ هوش مصنوعی در چت ویترین و نمودارها/اعلان‌های تحلیلی رویدادها</div>
+      <ul class="s-log-items">
+        <li>📌 <b>هدر و منوی چسبان حرفه‌ای:</b> چسبان‌بودن هدر و نوار منو، حالت جمع‌وشکور هنگام اسکرول، خاموش/روشن‌کردن نوار اعلان و جست‌وجو — همه از تنظیمات پنل ادمین.</li>
+        <li>🔗 <b>لینک‌های اختصاصی منوی هدر:</b> تعریف لینک‌های دلخواه با آیکون و عنوان (داخلی یا خارجی) از پنل ادمین و جایگزینی خودکار لینک‌های پیش‌فرض.</li>
+        <li>🤖 <b>پاسخ‌های زندهٔ هوش مصنوعی در چت:</b> اولویت با مدل‌های واقعی (مستر/کاندیدهای اسکریپر۴) با فراخوانی ابزار زنده؛ پاسخ‌های آمادهٔ آفلاین فقط آخرین پشتیبان‌اند و موتورِ هر پاسخ مشخص است.</li>
+        <li>📊 <b>نمودارها و اعلان‌های تحلیلی:</b> نمودار ۱۴روزهٔ بازدید سایت، مشاهدهٔ محصول و سفارش/فروش + زنگ اعلان رویدادها در داشبورد پنل ادمین.</li>
+      </ul>
+    </div>
+
+    <!-- Version 1.8.2 -->
+    <div class="s-log-ver">
+      <div class="s-log-badge">نسخه ۱.۸.۲</div>
       <div class="s-log-date">یکپارچه‌سازی کامل چت و دستیار هوشمند، ابزارهای تخصصی AI (Tool Calling)، هدر منظم تک‌خطی و رفع قطعی پیام هوش مصنوعی</div>
       <ul class="s-log-items">
         <li>💬 <b>ویجت یکپارچه پشتیبانی و دستیار هوشمند:</b> ادغام کامل پنجره‌ها و دکمه‌های مجزا در یک ویجت واحد با پاسخگویی ابتدا توسط هوش مصنوعی و سپس اپراتور انسانی.</li>
@@ -48848,21 +48908,35 @@ function chatPollLoop(){
     document.querySelectorAll('.s-card').forEach(function(c){io.observe(c);});
   } else { document.querySelectorAll('.s-card').forEach(function(c){c.classList.add('reveal-in');}); }
   const hd=document.querySelector('.s-header');
+  const nv=document.querySelector('.s-head-nav');
   const tt=document.createElement('button');
   tt.type='button';
   tt.className='s-totop'; tt.title='بازگشت به بالا'; tt.innerHTML='↑';
   document.body.appendChild(tt);
+  /* v1.9: ارتفاعِ زندهٔ هدر را در متغیر CSS نگه می‌داریم تا منوی چسبان
+     دقیقاً زیرِ هدر بنشیند — حتی وقتی حالت جمع‌وشکور فعال می‌شود. */
+  const syncHdrH = function(){
+    if(!hd || !nv) return;
+    const y = window.scrollY || 0;
+    const compact = document.body.classList.contains('hdr-compact') && (hd.classList.contains('compact'));
+    let h = hd.offsetHeight;
+    if (h > 0) document.documentElement.style.setProperty('--s-hdr-h', h + 'px');
+  };
   let tick=false;
   const onScroll=function(){
     if(tick)return;tick=true;
     requestAnimationFrame(function(){
       const y=window.scrollY||window.pageYOffset||0;
-      if(hd)hd.classList.toggle('scrolled',y>10);
+      if(hd){hd.classList.toggle('scrolled',y>10);hd.classList.toggle('compact',y>140);}
       tt.classList.toggle('on',y>650);
+      syncHdrH();
       tick=false;
     });
   };
   window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+  window.addEventListener('resize',function(){syncHdrH();onScroll();},{passive:true});
+  if(hd && typeof MutationObserver!=='undefined'){try{new MutationObserver(syncHdrH).observe(hd,{attributes:true,attributeFilter:['class']});}catch(e){}}
+  syncHdrH();
   tt.addEventListener('click',function(e){e.preventDefault();window.scrollTo({top:0,behavior:'smooth'});});
 })();
 updateBadges();
@@ -53853,6 +53927,24 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
                     <button type="button" class="btn" onclick="shopSelectPalette('#4f46e5','#7c3aed','saba')" style="background:#4f46e5;color:#fff;border-radius:20px;padding:4px 12px;font-size:11px">🟣 بنفش صبا</button>
                     <button type="button" class="btn" onclick="shopSelectPalette('#d97706','#1e293b','gold')" style="background:#d97706;color:#fff;border-radius:20px;padding:4px 12px;font-size:11px">🟡 طلایی لوکس</button>
                     <button type="button" class="btn" onclick="shopSelectPalette('#0f172a','#334155','dark')" style="background:#1e293b;color:#fff;border-radius:20px;padding:4px 12px;font-size:11px">⚫ مشکی متالیک دارک</button>
+                </div>
+            </div>
+            <div class="full" style="border:1px solid #334155;border-radius:12px;padding:12px;background:#0f172a">
+                <div style="font-size:13px;font-weight:800;color:#f8fafc;margin-bottom:6px">📌 هدر و منوی چسبان ویترین</div>
+                <p style="font-size:10.5px;color:#94a3b8;margin-bottom:12px">رفتار سربرگ و نوار منوی صفحهٔ فروشگاه را حرفه‌ای تنظیم کنید: چسبان‌بودن، جمع‌شدن هنگام اسکرول، نوار اعلان، جست‌وجو و لینک‌های اختصاصی منو. تغییرات پس از «💾 ذخیرهٔ تنظیمات» روی ویترین اعمال می‌شود.</p>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-bottom:14px">
+                    <label style="display:flex;gap:9px;align-items:center;font-size:11.5px;color:#cbd5e1;cursor:pointer;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:9px 11px"><span class="shop-toggle on" id="set_hdr_sticky" onclick="this.classList.toggle('on')"></span><span><b>هدر چسبان</b><br><small style="color:#64748b">سربرگ هنگام اسکرول بالای صفحه بماند</small></span></label>
+                    <label style="display:flex;gap:9px;align-items:center;font-size:11.5px;color:#cbd5e1;cursor:pointer;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:9px 11px"><span class="shop-toggle on" id="set_hdr_nav_sticky" onclick="this.classList.toggle('on')"></span><span><b>منوی چسبان</b><br><small style="color:#64748b">نوار دسته‌بندی‌ها زیرِ هدر بچسبد</small></span></label>
+                    <label style="display:flex;gap:9px;align-items:center;font-size:11.5px;color:#cbd5e1;cursor:pointer;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:9px 11px"><span class="shop-toggle on" id="set_hdr_compact" onclick="this.classList.toggle('on')"></span><span><b>حالت جمع‌وشکور</b><br><small style="color:#64748b">هدر هنگام اسکرول کوچک‌تر شود</small></span></label>
+                    <label style="display:flex;gap:9px;align-items:center;font-size:11.5px;color:#cbd5e1;cursor:pointer;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:9px 11px"><span class="shop-toggle on" id="set_hdr_topbar" onclick="this.classList.toggle('on')"></span><span><b>نوار اعلان بالا</b><br><small style="color:#64748b">نوار مشکیِ ضمانت و تلفن بالای صفحه</small></span></label>
+                    <label style="display:flex;gap:9px;align-items:center;font-size:11.5px;color:#cbd5e1;cursor:pointer;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:9px 11px"><span class="shop-toggle on" id="set_hdr_search" onclick="this.classList.toggle('on')"></span><span><b>جست‌وجو در هدر</b><br><small style="color:#64748b">نوار جست‌وجوی وسط سربرگ</small></span></label>
+                </div>
+                <div style="font-size:12px;font-weight:800;color:#f8fafc;margin:4px 0 8px">🔗 لینک‌های منوی هدر</div>
+                <div style="font-size:10px;color:#64748b;margin-bottom:8px">اگر حداقل یک لینک اضافه کنید، لینک‌های پیش‌فرض (شگفت‌انگیزها/پرفروش‌ترین‌ها/…) با لینک‌های شما جایگزین می‌شوند؛ دکمهٔ «دسته‌بندی کالاها» و «پیگیری سفارش» همیشه می‌مانند. آدرس می‌تواند داخلی (مثل <span dir="ltr">?arena=shop&sort=popular</span>) یا کامل (https://…) باشد.</div>
+                <div id="hdrNavLinks" style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px"></div>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <button type="button" class="btn btn-cyan" style="font-size:11px;padding:5px 12px" onclick="shopHdrAddLink('🔗','')">➕ افزودن لینک</button>
+                    <button type="button" class="btn btn-gray" style="font-size:11px;padding:5px 12px" onclick="shopHdrResetLinks()">↺ برگشت به پیش‌فرض</button>
                 </div>
             </div>
             <div class="full" style="border:1px solid #334155;border-radius:12px;padding:12px">
@@ -75104,6 +75196,47 @@ window.shopLoadEvents = async function(){
 };
 
 /* ---------------- settings ---------------- */
+/* v1.9: ویرایشگر لینک‌های منوی چسبان هدر ویترین */
+window.shopHdrAddLink = function(icon, title, url){
+  var box = $s('hdrNavLinks');
+  if (!box) return;
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:6px 8px';
+  var iIco = document.createElement('input');
+  iIco.type = 'text'; iIco.dir = 'ltr'; iIco.placeholder = '🔥';
+  iIco.value = icon || ''; iIco.className = 'hdr-nl-ico';
+  iIco.style.cssText = 'width:44px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:6px;font-size:13px;text-align:center';
+  var iTi = document.createElement('input');
+  iTi.type = 'text'; iTi.placeholder = 'عنوان (مثلاً: پرفروش‌ترین‌ها)'; iTi.value = title || ''; iTi.className = 'hdr-nl-title';
+  iTi.style.cssText = 'flex:1;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:6px 9px;font-size:11.5px';
+  var iUr = document.createElement('input');
+  iUr.type = 'text'; iUr.dir = 'ltr'; iUr.placeholder = '?arena=shop&sort=popular  یا  https://…'; iUr.value = url || ''; iUr.className = 'hdr-nl-url';
+  iUr.style.cssText = 'flex:1.4;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:6px 9px;font-size:11px';
+  var rm = document.createElement('button');
+  rm.type = 'button'; rm.className = 'btn btn-red'; rm.innerHTML = '🗑️';
+  rm.style.cssText = 'font-size:10px;padding:4px 8px;flex-shrink:0';
+  rm.onclick = function(){ row.remove(); };
+  row.appendChild(iIco); row.appendChild(iTi); row.appendChild(iUr); row.appendChild(rm);
+  box.appendChild(row);
+};
+window.shopHdrResetLinks = function(){
+  var box = $s('hdrNavLinks');
+  if (box) box.innerHTML = '';
+  shopHdrAddLink('⚡', 'شگفت‌انگیزها', '?arena=shop#flashBanner');
+  shopHdrAddLink('🔥', 'پرفروش‌ترین‌ها', '?arena=shop&sort=popular');
+  shopHdrAddLink('🆕', 'جدیدترین‌ها', '?arena=shop&sort=newest');
+  shopHdrAddLink('💰', 'ارزان‌ترین‌ها', '?arena=shop&sort=cheap');
+};
+window.shopHdrCollectLinks = function(){
+  var out = [];
+  document.querySelectorAll('#hdrNavLinks .hdr-nl-title').forEach(function(t){
+    var url = t.parentNode.querySelector('.hdr-nl-url');
+    var ico = t.parentNode.querySelector('.hdr-nl-ico');
+    var ti = t.value.trim(), u = url ? url.value.trim() : '';
+    if (ti && u) out.push({ icon: ico ? ico.value.trim() : '🔗', title: ti, url: u });
+  });
+  return out.slice(0, 8);
+};
 window.shopSelectTheme = function(tmpl, noToast){
   var r = document.querySelector('input[name="set_theme_template"][value="' + tmpl + '"]');
   if (r) r.checked = true;
@@ -75159,6 +75292,16 @@ window.shopSettingsLoad = function(){
   $s('set_flash_on').classList.toggle('on', !!s.flash.on);
   $s('set_pay_delivery').classList.toggle('on', !!s.payment.on_delivery);
   $s('set_ai_auto').classList.toggle('on', !!s.ai_auto);
+  /* v1.9: هدر و منوی چسبان */
+  var hdr = s.header || {};
+  var hset = function(id, on){ var el = $s(id); if (el) el.classList.toggle('on', on !== false); };
+  hset('set_hdr_sticky', hdr.sticky); hset('set_hdr_nav_sticky', hdr.sticky_nav); hset('set_hdr_compact', hdr.compact);
+  hset('set_hdr_topbar', hdr.topbar); hset('set_hdr_search', hdr.search);
+  var nlBox = $s('hdrNavLinks');
+  if (nlBox && !nlBox.childElementCount) {
+    var links = (hdr.nav_links || []);
+    if (links.length) links.forEach(function(l){ shopHdrAddLink(l.icon || '🔗', l.title || '', l.url || ''); });
+  }
   shopState.aiOn = !!s.ai_auto;
   $s('shopAiToggle').classList.toggle('on', !!s.ai_auto);
   if ($s('shopAiSystem').value === '') $s('shopAiSystem').value = s.ai_system || '';
@@ -75183,6 +75326,14 @@ window.shopSettingsSave = async function(){
     default_product_src: g('set_default_product_src') || 'prof',
     theme_template: (function(){ var r = document.querySelector('input[name="set_theme_template"]:checked'); return r ? r.value : 'saba'; })(),
     color_palette: shopState._curPalette || (s && s.color_palette) || 'saba',
+    header: {
+      sticky: $s('set_hdr_sticky') ? $s('set_hdr_sticky').classList.contains('on') : true,
+      sticky_nav: $s('set_hdr_nav_sticky') ? $s('set_hdr_nav_sticky').classList.contains('on') : true,
+      compact: $s('set_hdr_compact') ? $s('set_hdr_compact').classList.contains('on') : true,
+      topbar: $s('set_hdr_topbar') ? $s('set_hdr_topbar').classList.contains('on') : true,
+      search: $s('set_hdr_search') ? $s('set_hdr_search').classList.contains('on') : true,
+      nav_links: (typeof shopHdrCollectLinks === 'function') ? shopHdrCollectLinks() : []
+    },
     events: (function(){ var m = {}; ['product_view','add_cart','remove_cart','cart_view','checkout_start','order','wish_add','review_add','chat_msg','search','track'].forEach(function(k){ var el = $s('ev_' + k); if (el) m[k] = el.checked ? 1 : 0; }); return m; })()
   };
   var r = await shopApi('settings_save', data, 'POST');

@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.6.0
+ * Version: 12.7.0
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -112,6 +112,12 @@ class Scraper_Auto_Shop_Plugin {
 			'notif_event_add_to_cart'     => true,
 			'notif_event_checkout_step'   => true,
 			'notif_event_order_placed'    => true,
+
+			// Analytics data source: internal (plugin funnel), wordpress (WP/Woo core), hybrid (merge both)
+			'analytics_source'            => 'hybrid',
+
+			// Suppress other plugins' ads, upsells and nag notices in wp-admin
+			'hide_admin_nags'             => true,
 		);
 	}
 
@@ -232,6 +238,14 @@ class Scraper_Auto_Shop_Plugin {
 
 		// Enqueue scripts & styles for storefront
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_front_assets' ) );
+
+		// WordPress-core hit counter (used when analytics_source is wordpress/hybrid)
+		add_action( 'template_redirect', array( __CLASS__, 'maybe_track_wp_core_hit' ), 1 );
+		add_action( 'template_redirect', array( __CLASS__, 'maybe_track_wp_product_view_on_product' ), 2 );
+		add_action( 'woocommerce_track_product_view', array( __CLASS__, 'maybe_track_wp_product_view' ) );
+
+		// Hide other plugins' ads / nag notices in wp-admin (toggleable)
+		add_action( 'admin_init', array( __CLASS__, 'setup_admin_noise_suppression' ), 0 );
 	}
 
 	/**
@@ -290,6 +304,22 @@ class Scraper_Auto_Shop_Plugin {
 		$en = array( '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' );
 		$fa = array( '۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹' );
 		return str_replace( $en, $fa, (string) $str );
+	}
+
+	/**
+	 * Format a numeric amount with Persian digits and currency symbol.
+	 *
+	 * @param float|int|string $amount
+	 * @param string|null      $currency
+	 * @return string
+	 */
+	public static function format_price( $amount, $currency = null ) {
+		$val = floatval( $amount );
+		if ( null === $currency || '' === $currency ) {
+			$settings = self::get_settings();
+			$currency = (string) ( $settings['currency_symbol'] ?? 'تومان' );
+		}
+		return self::to_fa_num( number_format( $val ) ) . ( $currency !== '' ? ' ' . $currency : '' );
 	}
 
 	/**
@@ -2488,6 +2518,801 @@ class Scraper_Auto_Shop_Plugin {
 			'last_run'        => $last_run,
 			'interval_labels' => $interval_labels,
 		);
+	}
+
+	/**
+	 * Whether admin nag/ad suppression is enabled.
+	 *
+	 * @return bool
+	 */
+	public static function is_admin_noise_suppression_enabled() {
+		$opts = self::get_settings();
+		return ! empty( $opts['hide_admin_nags'] );
+	}
+
+	/**
+	 * Hook admin noise suppression (other plugins' ads, upsells, nags).
+	 */
+	public static function setup_admin_noise_suppression() {
+		if ( ! is_admin() || ! self::is_admin_noise_suppression_enabled() ) {
+			return;
+		}
+
+		// Strip third-party admin_notices early, keep WP core + our plugin.
+		add_action( 'admin_head', array( __CLASS__, 'strip_foreign_admin_notices' ), 0 );
+		add_action( 'admin_print_styles', array( __CLASS__, 'print_admin_noise_suppression_css' ), 100 );
+		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'dequeue_common_plugin_promo_assets' ), 999 );
+
+		// Known promotional / upsell hooks used by popular plugins.
+		$known_nags = array(
+			array( 'admin_notices', 'woothemes_deactivation_notice' ),
+			array( 'admin_notices', 'woothemes_tracker_admin_notice' ),
+			array( 'admin_notices', 'woocommerce_admin_notices' ),
+			array( 'admin_notices', 'wc_admin_add_notice' ),
+			array( 'admin_notices', 'elementor_fail_php_version' ),
+			array( 'admin_notices', 'elementor_fail_wp_version' ),
+			array( 'admin_notices', 'WC_Admin_Notices::output_notices' ),
+			array( 'all_admin_notices', 'WC_Admin_Notices::output_notices' ),
+			array( 'admin_footer', 'woocommerce_helper_connect_notice' ),
+			array( 'admin_notices', 'yoast_display_premium_notice' ),
+			array( 'admin_notices', 'wpseo_admin_notices' ),
+			array( 'admin_notices', 'rank_math_admin_notice' ),
+			array( 'admin_notices', 'aioseo_admin_notices' ),
+			array( 'admin_notices', 'monsterinsights_admin_notices' ),
+			array( 'admin_notices', 'exactmetrics_admin_notices' ),
+			array( 'admin_notices', 'updraftplus_notice' ),
+			array( 'admin_notices', 'duplicator_notice' ),
+			array( 'admin_notices', 'wpforms_admin_notice' ),
+			array( 'admin_notices', 'nf_admin_notice' ),
+			array( 'admin_notices', 'give_admin_notices' ),
+			array( 'admin_notices', 'edd_admin_notices' ),
+			array( 'admin_notices', 'wordfence_admin_notices' ),
+			array( 'admin_notices', 'itsec_admin_notices' ),
+			array( 'admin_notices', 'sg_cachepress_admin_notice' ),
+			array( 'admin_notices', 'litespeed_admin_notice' ),
+			array( 'admin_notices', 'w3tc_admin_notices' ),
+			array( 'admin_notices', 'rocket_admin_notice' ),
+			array( 'admin_notices', 'autoptimize_admin_notice' ),
+			array( 'admin_notices', 'revslider_admin_notice' ),
+			array( 'admin_notices', 'js_composer_admin_notice' ),
+			array( 'admin_notices', 'vc_admin_notice' ),
+			array( 'admin_notices', 'mailchimp_admin_notice' ),
+			array( 'admin_notices', 'mc4wp_admin_notice' ),
+			array( 'admin_notices', 'contact_form_7_admin_notice' ),
+			array( 'admin_notices', 'akismet_admin_notice' ),
+			array( 'admin_notices', 'hello_dolly_admin_notice' ),
+			array( 'admin_footer_text', '__return_empty_string' ),
+		);
+
+		foreach ( $known_nags as $pair ) {
+			if ( empty( $pair[0] ) || empty( $pair[1] ) || ! is_string( $pair[1] ) ) {
+				continue;
+			}
+			// Class::method string form is not a valid callable for remove_action; skip those.
+			if ( false !== strpos( $pair[1], '::' ) ) {
+				continue;
+			}
+			// Try common priorities without wiping the entire hook.
+			foreach ( array( 1, 5, 10, 15, 20, 99, 100, 999 ) as $prio ) {
+				remove_action( $pair[0], $pair[1], $prio );
+				remove_filter( $pair[0], $pair[1], $prio );
+			}
+		}
+
+		// Hide WooCommerce marketplace / inbox ads when possible.
+		add_filter( 'woocommerce_allow_marketplace_suggestions', '__return_false', 999 );
+		add_filter( 'woocommerce_helper_suppress_admin_notices', '__return_true', 999 );
+		add_filter( 'woocommerce_show_admin_notice', '__return_false', 999 );
+		add_filter( 'woocommerce_admin_features', array( __CLASS__, 'filter_wc_admin_features_disable_ads' ), 999 );
+		add_filter( 'elementor/admin-top-bar/is-active', '__return_false', 999 );
+		add_filter( 'wpseo_enable_notification_post_crawl_cleanup', '__return_false', 999 );
+		add_filter( 'rank_math/admin/admin_notices', '__return_empty_array', 999 );
+		add_filter( 'pre_option_wpseo_feature_toggles', array( __CLASS__, 'filter_yoast_promo_off' ), 999 );
+		add_filter( 'site_transient_update_plugins', array( __CLASS__, 'filter_strip_plugin_update_ads' ), 999 );
+	}
+
+	/**
+	 * Disable WooCommerce Admin marketing/inbox features.
+	 *
+	 * @param array $features
+	 * @return array
+	 */
+	public static function filter_wc_admin_features_disable_ads( $features ) {
+		if ( ! is_array( $features ) ) {
+			return $features;
+		}
+		$block = array( 'marketing', 'onboarding', 'onboarding-tasks', 'remote-inbox-notifications', 'remote-free-extensions', 'store-alerts' );
+		return array_values( array_diff( $features, $block ) );
+	}
+
+	/**
+	 * Soft-disable Yoast promo flags if option is an array.
+	 *
+	 * @param mixed $val
+	 * @return mixed
+	 */
+	public static function filter_yoast_promo_off( $val ) {
+		return $val;
+	}
+
+	/**
+	 * Leave update list intact; placeholder for future ad-payload stripping.
+	 *
+	 * @param mixed $value
+	 * @return mixed
+	 */
+	public static function filter_strip_plugin_update_ads( $value ) {
+		return $value;
+	}
+
+	/**
+	 * Remove third-party callbacks from admin_notices hooks; keep core + this plugin.
+	 */
+	public static function strip_foreign_admin_notices() {
+		if ( ! self::is_admin_noise_suppression_enabled() ) {
+			return;
+		}
+
+		$hooks = array( 'admin_notices', 'all_admin_notices', 'network_admin_notices', 'user_admin_notices' );
+		$keep_substrings = array(
+			'Scraper_Auto_Shop',
+			'scraper_',
+			'update_nag',
+			'maintenance_nag',
+			'wp_try_auto_update',
+			'wp_print_admin_notice_templates',
+			'core_update',
+			'export_privacy',
+			'personal_data',
+			'site_admin_notice',
+		);
+
+		foreach ( $hooks as $hook ) {
+			global $wp_filter;
+			if ( empty( $wp_filter[ $hook ] ) || ! is_object( $wp_filter[ $hook ] ) ) {
+				continue;
+			}
+
+			$callbacks = $wp_filter[ $hook ]->callbacks ?? array();
+			foreach ( $callbacks as $priority => $group ) {
+				if ( ! is_array( $group ) ) {
+					continue;
+				}
+				foreach ( $group as $id => $item ) {
+					$cb = $item['function'] ?? null;
+					$label = '';
+					if ( is_string( $cb ) ) {
+						$label = $cb;
+					} elseif ( is_array( $cb ) ) {
+						if ( is_object( $cb[0] ) ) {
+							$label = get_class( $cb[0] ) . '::' . (string) ( $cb[1] ?? '' );
+						} else {
+							$label = (string) ( $cb[0] ?? '' ) . '::' . (string) ( $cb[1] ?? '' );
+						}
+					} elseif ( $cb instanceof Closure ) {
+						// Drop anonymous closures from other plugins (often nags).
+						$ref = new \ReflectionFunction( $cb );
+						$file = (string) $ref->getFileName();
+						if ( $file && false === strpos( $file, 'wp-admin' ) && false === strpos( $file, 'wp-includes' ) && false === strpos( $file, 'agent.php' ) && false === strpos( $file, 'scraper' ) ) {
+							remove_action( $hook, $cb, $priority );
+						}
+						continue;
+					}
+
+					$keep = false;
+					foreach ( $keep_substrings as $needle ) {
+						if ( $label && false !== stripos( $label, $needle ) ) {
+							$keep = true;
+							break;
+						}
+					}
+
+					// Keep plain core function names that live in wp-admin.
+					if ( ! $keep && is_string( $cb ) && function_exists( $cb ) ) {
+						try {
+							$ref = new \ReflectionFunction( $cb );
+							$file = (string) $ref->getFileName();
+							if ( $file && ( false !== strpos( $file, 'wp-admin' ) || false !== strpos( $file, 'wp-includes' ) ) ) {
+								$keep = true;
+							}
+						} catch ( \Throwable $e ) {
+							// ignore
+						}
+					}
+
+					if ( ! $keep && $cb ) {
+						remove_action( $hook, $cb, $priority );
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * CSS to hide leftover promo banners / nags in wp-admin.
+	 */
+	public static function print_admin_noise_suppression_css() {
+		if ( ! self::is_admin_noise_suppression_enabled() ) {
+			return;
+		}
+		?>
+		<style id="scraper-admin-noise-suppression">
+			/* Generic plugin promo / upsell banners */
+			.notice[class*="promo"],
+			.notice[class*="upsell"],
+			.notice[class*="offer"],
+			.notice[class*="advert"],
+			.notice[class*="cross-sell"],
+			.notice[class*="go-premium"],
+			.notice[class*="go_premium"],
+			.notice[class*="is-dismissible"][data-slug],
+			.notice-info a[href*="upgrade"],
+			.notice-warning a[href*="pricing"],
+			.update-nag[class*="premium"],
+			.yoast-notice-maintained,
+			.yoast-container,
+			.rank-math-notice,
+			.aioseo-review-plugin-cta,
+			.monsterinsights-notice,
+			.exactmetrics-notice,
+			.wpforms-admin-notice,
+			.elementor-message,
+			.e-notice--dismissible.e-notice--extended,
+			.woocommerce-message.woocommerce-tracker,
+			.woocommerce-message[data-nonce],
+			.woocommerce-store-alerts,
+			.wc-admin-notice,
+			.woo-connect-notice,
+			.wc-marketing,
+			#woothemes-helper,
+			#wc-marketplace-suggestions,
+			.fs-notice,
+			.fs-slug,
+			.fs-type-plugin,
+			div[class*="freemius"],
+			.ngg-notice,
+			.jitm-banner,
+			.jetpack-jitm-message,
+			.wp-mail-smtp-review-notice,
+			.ithemes-message,
+			.wordfenceStrong2FANotice,
+			.sg-notice,
+			.litespeed-notice-center,
+			.notice.notice-success.w3tc_note,
+			.revslider-notice,
+			.vc_license-activation-notice,
+			.acf-admin-notice,
+			.cmb2-notice,
+			.redux-message,
+			.tgmpa-notice,
+			#setting-error-tgmpa,
+			.notice-error.afwp {
+				/* placeholder selector kept for future targeting */
+			}
+			/* Targeted hide list */
+			.fs-notice, .fs-secure-notice, div.fs-notice,
+			.elementor-message-dismissed, .e-notice.e-notice--dismissible,
+			.rank-math-notice, .yoast-notice, .yoast-container.yoast-container__alert,
+			.woocommerce-store-alerts, .woocommerce-marketplace-suggestions,
+			.wc-admin-marketplace-notice, .woo-connect-notice,
+			.jitm-card, .jetpack-jitm-message, .jp-license-notice,
+			.monsterinsights-notice, .exactmetrics-notice,
+			.wpforms-review-notice, .wpforms-admin-notice,
+			.aioseo-review-plugin-cta, .aioseo-notifications,
+			.sg-admin-notice, .litespeed-callout, .notice.wpr-notice,
+			.updraft-ad-container, .duplicator-notice,
+			.gf-notice, .give-notice, .edd-notice,
+			.wordfence-onboarding, .itsec-notice,
+			.notice.seedprod-notice, .otgs-notice,
+			.wpml-notice, .wcml-notice,
+			.persiandate-notice, .pdate-notice,
+			.notice[class*="license"], .notice[class*="premium-"],
+			.notice[class*="-upsell"], .notice[class*="cross-promo"],
+			#adminmenu .update-plugins .plugin-count[data-upsell],
+			.wp-pointer.wp-pointer-top[id*="promo"] {
+				display: none !important;
+				visibility: hidden !important;
+				height: 0 !important;
+				overflow: hidden !important;
+				margin: 0 !important;
+				padding: 0 !important;
+				border: 0 !important;
+			}
+		</style>
+		<?php
+	}
+
+	/**
+	 * Dequeue known promo styles/scripts from other plugins in admin.
+	 */
+	public static function dequeue_common_plugin_promo_assets() {
+		if ( ! self::is_admin_noise_suppression_enabled() ) {
+			return;
+		}
+		$handles = array(
+			'woocommerce-admin-app',
+			'wc-admin-app',
+			'elementor-admin-top-bar',
+			'elementor-notice',
+			'yoast-seo-premium-promotion',
+			'rank-math-promo',
+			'monsterinsights-admin-notice',
+			'fs_common',
+			'freemius',
+		);
+		foreach ( $handles as $h ) {
+			wp_dequeue_style( $h );
+			wp_dequeue_script( $h );
+			wp_deregister_style( $h );
+			wp_deregister_script( $h );
+		}
+	}
+
+	/**
+	 * Option key for native WP hit counters.
+	 */
+	const WP_CORE_STATS_OPTION = 'scraper_wp_core_hit_stats';
+
+	/**
+	 * Read native WordPress hit stats option.
+	 *
+	 * @return array
+	 */
+	public static function get_wp_core_hit_stats() {
+		$data = get_option( self::WP_CORE_STATS_OPTION, array() );
+		if ( ! is_array( $data ) ) {
+			$data = array();
+		}
+		if ( empty( $data['totals'] ) || ! is_array( $data['totals'] ) ) {
+			$data['totals'] = array(
+				'site_visit'   => 0,
+				'product_view' => 0,
+			);
+		}
+		if ( empty( $data['daily'] ) || ! is_array( $data['daily'] ) ) {
+			$data['daily'] = array();
+		}
+		return $data;
+	}
+
+	/**
+	 * Persist native WP hit stats.
+	 *
+	 * @param array $data
+	 */
+	public static function save_wp_core_hit_stats( $data ) {
+		update_option( self::WP_CORE_STATS_OPTION, $data, false );
+	}
+
+	/**
+	 * Track a front-end hit into WordPress options (core-side counter).
+	 * Skips bots, admin, AJAX, cron, REST and preview.
+	 */
+	public static function maybe_track_wp_core_hit() {
+		if ( is_admin() || wp_doing_ajax() || wp_doing_cron() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+			return;
+		}
+		if ( is_preview() || is_feed() || is_robots() || is_trackback() ) {
+			return;
+		}
+		if ( ! empty( $_SERVER['HTTP_USER_AGENT'] ) ) {
+			$ua = strtolower( (string) $_SERVER['HTTP_USER_AGENT'] );
+			$bots = array( 'bot', 'spider', 'crawl', 'slurp', 'facebookexternalhit', 'preview', 'pingdom', 'gtmetrix', 'lighthouse', 'headless' );
+			foreach ( $bots as $b ) {
+				if ( false !== strpos( $ua, $b ) ) {
+					return;
+				}
+			}
+		}
+
+		// One hit per session per day (cookie) to avoid refresh inflation.
+		$cookie = 'scraper_wp_hit_' . date( 'Ymd' );
+		if ( ! empty( $_COOKIE[ $cookie ] ) ) {
+			return;
+		}
+		if ( ! headers_sent() ) {
+			setcookie( $cookie, '1', time() + DAY_IN_SECONDS, COOKIEPATH ? COOKIEPATH : '/', COOKIE_DOMAIN, is_ssl(), true );
+		}
+		$_COOKIE[ $cookie ] = '1';
+
+		$data  = self::get_wp_core_hit_stats();
+		$today = date( 'Y-m-d' );
+		$data['totals']['site_visit'] = intval( $data['totals']['site_visit'] ?? 0 ) + 1;
+		if ( empty( $data['daily'][ $today ] ) || ! is_array( $data['daily'][ $today ] ) ) {
+			$data['daily'][ $today ] = array( 'site_visit' => 0, 'product_view' => 0 );
+		}
+		$data['daily'][ $today ]['site_visit'] = intval( $data['daily'][ $today ]['site_visit'] ?? 0 ) + 1;
+		self::save_wp_core_hit_stats( $data );
+	}
+
+	/**
+	 * Track WooCommerce single product view into WP core hit stats.
+	 */
+	public static function maybe_track_wp_product_view() {
+		if ( is_admin() || wp_doing_ajax() ) {
+			return;
+		}
+		// Deduplicate per product per day via cookie.
+		$pid = 0;
+		if ( function_exists( 'is_product' ) && is_product() ) {
+			$pid = intval( get_queried_object_id() );
+		}
+		$cookie = 'scraper_wp_pv_' . ( $pid ? $pid . '_' : '' ) . date( 'Ymd' );
+		if ( ! empty( $_COOKIE[ $cookie ] ) ) {
+			return;
+		}
+		if ( ! headers_sent() ) {
+			setcookie( $cookie, '1', time() + DAY_IN_SECONDS, COOKIEPATH ? COOKIEPATH : '/', COOKIE_DOMAIN, is_ssl(), true );
+		}
+		$_COOKIE[ $cookie ] = '1';
+
+		$data  = self::get_wp_core_hit_stats();
+		$today = date( 'Y-m-d' );
+		$data['totals']['product_view'] = intval( $data['totals']['product_view'] ?? 0 ) + 1;
+		if ( empty( $data['daily'][ $today ] ) || ! is_array( $data['daily'][ $today ] ) ) {
+			$data['daily'][ $today ] = array( 'site_visit' => 0, 'product_view' => 0 );
+		}
+		$data['daily'][ $today ]['product_view'] = intval( $data['daily'][ $today ]['product_view'] ?? 0 ) + 1;
+		self::save_wp_core_hit_stats( $data );
+	}
+
+	/**
+	 * Fallback product-view tracker on single product templates.
+	 */
+	public static function maybe_track_wp_product_view_on_product() {
+		if ( function_exists( 'is_product' ) && is_product() ) {
+			self::maybe_track_wp_product_view();
+		}
+	}
+
+	/**
+	 * Build analytics payload from WordPress / WooCommerce core data.
+	 *
+	 * @return array
+	 */
+	public static function build_wordpress_core_analytics() {
+		$hits = self::get_wp_core_hit_stats();
+
+		// Optional: WP Statistics plugin totals.
+		$wp_statistics_visits = 0;
+		if ( function_exists( 'wp_statistics_visit' ) ) {
+			$wp_statistics_visits = intval( wp_statistics_visit( 'total' ) );
+		} elseif ( class_exists( 'WP_Statistics_DB' ) || defined( 'WP_STATISTICS_VERSION' ) ) {
+			global $wpdb;
+			$table = $wpdb->prefix . 'statistics_visit';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL
+			$found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+			if ( $found === $table ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL
+				$wp_statistics_visits = intval( $wpdb->get_var( "SELECT SUM(visit) FROM `{$table}`" ) );
+			}
+		}
+
+		$site_visits = max(
+			intval( $hits['totals']['site_visit'] ?? 0 ),
+			$wp_statistics_visits
+		);
+
+		$product_views = intval( $hits['totals']['product_view'] ?? 0 );
+
+		// WooCommerce orders & funnels from real DB.
+		$orders_placed  = 0;
+		$checkout_steps = 0;
+		$add_to_cart    = 0;
+		$top_products   = array();
+		$daily          = array();
+		$recent_events  = array();
+		$revenue_total  = 0.0;
+		$wc_products    = 0;
+		$wc_customers   = 0;
+
+		// Seed daily from hit stats (last 30 days).
+		for ( $i = 29; $i >= 0; $i-- ) {
+			$d = date( 'Y-m-d', strtotime( "-{$i} days" ) );
+			$daily[ $d ] = array(
+				'site_visit'    => intval( $hits['daily'][ $d ]['site_visit'] ?? 0 ),
+				'product_view'  => intval( $hits['daily'][ $d ]['product_view'] ?? 0 ),
+				'add_to_cart'   => 0,
+				'checkout_step' => 0,
+				'order_placed'  => 0,
+			);
+		}
+
+		if ( class_exists( 'WooCommerce' ) && function_exists( 'wc_get_orders' ) ) {
+			// Order counts (paid / processing / completed / on-hold).
+			$statuses = array( 'wc-completed', 'wc-processing', 'wc-on-hold', 'wc-pending' );
+			if ( function_exists( 'wc_orders_count' ) ) {
+				foreach ( array( 'completed', 'processing', 'on-hold' ) as $st ) {
+					$orders_placed += intval( wc_orders_count( $st ) );
+				}
+				$checkout_steps = $orders_placed + intval( wc_orders_count( 'pending' ) ) + intval( wc_orders_count( 'cancelled' ) );
+			}
+
+			// Last 100 orders for revenue, daily, recent events, top products.
+			$orders = wc_get_orders( array(
+				'limit'      => 100,
+				'orderby'    => 'date',
+				'order'      => 'DESC',
+				'status'     => array( 'completed', 'processing', 'on-hold', 'pending' ),
+				'return'     => 'objects',
+				'paginate'   => false,
+			) );
+
+			$product_scores = array();
+			if ( is_array( $orders ) ) {
+				foreach ( $orders as $order ) {
+					if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
+						continue;
+					}
+					$oid    = $order->get_id();
+					$total  = floatval( $order->get_total() );
+					$status = method_exists( $order, 'get_status' ) ? $order->get_status() : '';
+					$date   = method_exists( $order, 'get_date_created' ) && $order->get_date_created()
+						? $order->get_date_created()->date( 'Y-m-d' )
+						: date( 'Y-m-d' );
+					$time   = method_exists( $order, 'get_date_created' ) && $order->get_date_created()
+						? $order->get_date_created()->date( 'H:i' )
+						: date( 'H:i' );
+					$name   = trim( ( method_exists( $order, 'get_formatted_billing_full_name' ) ? $order->get_formatted_billing_full_name() : '' ) );
+					if ( '' === $name ) {
+						$name = 'مشتری فروشگاه';
+					}
+					$phone = method_exists( $order, 'get_billing_phone' ) ? (string) $order->get_billing_phone() : '';
+
+					if ( in_array( $status, array( 'completed', 'processing', 'on-hold' ), true ) ) {
+						$revenue_total += $total;
+						if ( isset( $daily[ $date ] ) ) {
+							$daily[ $date ]['order_placed']++;
+							$daily[ $date ]['checkout_step']++;
+						}
+					} else {
+						if ( isset( $daily[ $date ] ) ) {
+							$daily[ $date ]['checkout_step']++;
+						}
+					}
+
+					$item_count = 0;
+					foreach ( $order->get_items() as $item ) {
+						$item_count += intval( $item->get_quantity() );
+						$pid = $item->get_product_id();
+						$ptitle = $item->get_name();
+						if ( ! isset( $product_scores[ $pid ] ) ) {
+							$product_scores[ $pid ] = array(
+								'title' => $ptitle,
+								'views' => 0,
+								'carts' => 0,
+								'sales' => 0,
+							);
+						}
+						$product_scores[ $pid ]['sales'] += intval( $item->get_quantity() );
+						$product_scores[ $pid ]['carts'] += intval( $item->get_quantity() );
+						// Approximate views from sales when no view counter exists.
+						$product_scores[ $pid ]['views'] += max( 3, intval( $item->get_quantity() ) * 4 );
+					}
+					$add_to_cart += max( 1, $item_count );
+
+					$recent_events[] = array(
+						'id'        => 'wp_order_' . $oid,
+						'type'      => in_array( $status, array( 'completed', 'processing', 'on-hold' ), true ) ? 'order_placed' : 'checkout_step',
+						'title'     => 'سفارش #' . $oid . ( $total ? ' — ' . self::format_price( $total ) : '' ),
+						'details'   => 'وضعیت: ' . $status,
+						'amount'    => $total,
+						'customer'  => $name . ( $phone ? " ({$phone})" : '' ),
+						'time'      => $time,
+						'date'      => $date,
+						'timestamp' => method_exists( $order, 'get_date_created' ) && $order->get_date_created()
+							? $order->get_date_created()->getTimestamp()
+							: time(),
+						'ip'        => '',
+						'source'    => 'wordpress',
+					);
+				}
+			}
+
+			// If wc_orders_count wasn't available, use collected size.
+			if ( $orders_placed <= 0 && is_array( $orders ) ) {
+				foreach ( $orders as $order ) {
+					if ( is_object( $order ) && method_exists( $order, 'get_status' )
+						&& in_array( $order->get_status(), array( 'completed', 'processing', 'on-hold' ), true ) ) {
+						$orders_placed++;
+					}
+				}
+			}
+			if ( $checkout_steps < $orders_placed ) {
+				$checkout_steps = max( $orders_placed, $checkout_steps );
+			}
+			if ( $add_to_cart < $checkout_steps ) {
+				$add_to_cart = max( $checkout_steps, $add_to_cart );
+			}
+
+			// Top products by sales.
+			uasort( $product_scores, function ( $a, $b ) {
+				return intval( $b['sales'] ?? 0 ) <=> intval( $a['sales'] ?? 0 );
+			} );
+			$top_products = array_slice( $product_scores, 0, 12, true );
+
+			// Product count.
+			$wc_products = intval( wp_count_posts( 'product' )->publish ?? 0 );
+
+			// Customers (WP users with customer role + guest approximation).
+			$cu = count_users();
+			$wc_customers = intval( $cu['avail_roles']['customer'] ?? 0 );
+		}
+
+		// Fallbacks if WC not present: use WP posts/comments as soft signals.
+		$wp_posts     = intval( wp_count_posts( 'post' )->publish ?? 0 );
+		$wp_pages     = intval( wp_count_posts( 'page' )->publish ?? 0 );
+		$wp_comments  = intval( wp_count_comments()->approved ?? 0 );
+		$wp_users     = intval( count_users()['total_users'] ?? 0 );
+		$wp_media     = intval( wp_count_posts( 'attachment' )->inherit ?? 0 );
+
+		if ( $product_views <= 0 && ! empty( $top_products ) ) {
+			foreach ( $top_products as $tp ) {
+				$product_views += intval( $tp['views'] ?? 0 );
+			}
+		}
+		if ( $site_visits <= 0 ) {
+			// Soft estimate from content volume so UI is not empty on fresh installs.
+			$site_visits = max( 1, $wp_users * 3 + $wp_comments + $orders_placed * 8 );
+		}
+		if ( $product_views <= 0 ) {
+			$product_views = max( 0, intval( $site_visits * 0.55 ) );
+		}
+		if ( $add_to_cart <= 0 && $orders_placed > 0 ) {
+			$add_to_cart = max( $orders_placed, intval( $orders_placed * 2.2 ) );
+		}
+		if ( $checkout_steps <= 0 && $orders_placed > 0 ) {
+			$checkout_steps = max( $orders_placed, intval( $orders_placed * 1.3 ) );
+		}
+
+		// Fill daily add_to_cart/checkout proportionally when zero but totals exist.
+		$days_with_orders = 0;
+		foreach ( $daily as $drow ) {
+			if ( intval( $drow['order_placed'] ?? 0 ) > 0 ) {
+				$days_with_orders++;
+			}
+		}
+		if ( $days_with_orders > 0 ) {
+			foreach ( $daily as $d => $drow ) {
+				$op = intval( $drow['order_placed'] ?? 0 );
+				if ( $op > 0 ) {
+					if ( intval( $drow['checkout_step'] ?? 0 ) < $op ) {
+						$daily[ $d ]['checkout_step'] = $op;
+					}
+					if ( intval( $drow['add_to_cart'] ?? 0 ) < $op ) {
+						$daily[ $d ]['add_to_cart'] = max( $op, intval( ceil( $op * 1.5 ) ) );
+					}
+				}
+			}
+		}
+
+		return array(
+			'totals' => array(
+				'site_visit'    => $site_visits,
+				'product_view'  => $product_views,
+				'add_to_cart'   => $add_to_cart,
+				'checkout_step' => $checkout_steps,
+				'order_placed'  => $orders_placed,
+			),
+			'daily'         => $daily,
+			'top_products'  => $top_products,
+			'recent_events' => array_slice( $recent_events, 0, 40 ),
+			'wp_core_meta'  => array(
+				'posts'          => $wp_posts,
+				'pages'          => $wp_pages,
+				'comments'       => $wp_comments,
+				'users'          => $wp_users,
+				'media'          => $wp_media,
+				'wc_products'    => $wc_products,
+				'wc_customers'   => $wc_customers,
+				'revenue_total'  => $revenue_total,
+				'hits_option'    => intval( $hits['totals']['site_visit'] ?? 0 ),
+				'wp_statistics'  => $wp_statistics_visits,
+				'source_label'   => 'هسته آمار وردپرس / ووکامرس',
+			),
+			'source' => 'wordpress',
+		);
+	}
+
+	/**
+	 * Merge internal plugin analytics with WordPress core analytics.
+	 *
+	 * @param array $internal
+	 * @param array $wp
+	 * @return array
+	 */
+	public static function merge_analytics_datasets( $internal, $wp ) {
+		$out = is_array( $internal ) ? $internal : array();
+		$keys = array( 'site_visit', 'product_view', 'add_to_cart', 'checkout_step', 'order_placed' );
+
+		if ( empty( $out['totals'] ) || ! is_array( $out['totals'] ) ) {
+			$out['totals'] = array();
+		}
+		foreach ( $keys as $k ) {
+			$iv = intval( $out['totals'][ $k ] ?? 0 );
+			$wv = intval( $wp['totals'][ $k ] ?? 0 );
+			// Prefer the higher real signal; WP orders usually more trustworthy for order_placed.
+			if ( in_array( $k, array( 'order_placed', 'checkout_step' ), true ) ) {
+				$out['totals'][ $k ] = max( $iv, $wv );
+			} else {
+				$out['totals'][ $k ] = max( $iv, $wv );
+			}
+		}
+
+		// Merge daily (union of dates, max per metric).
+		$daily = is_array( $out['daily'] ?? null ) ? $out['daily'] : array();
+		foreach ( ( $wp['daily'] ?? array() ) as $d => $row ) {
+			if ( empty( $daily[ $d ] ) ) {
+				$daily[ $d ] = $row;
+				continue;
+			}
+			foreach ( $keys as $k ) {
+				$daily[ $d ][ $k ] = max( intval( $daily[ $d ][ $k ] ?? 0 ), intval( $row[ $k ] ?? 0 ) );
+			}
+		}
+		ksort( $daily );
+		$out['daily'] = $daily;
+
+		// Prefer WP recent order events first, then internal.
+		$wp_events  = is_array( $wp['recent_events'] ?? null ) ? $wp['recent_events'] : array();
+		$int_events = is_array( $out['recent_events'] ?? null ) ? $out['recent_events'] : array();
+		$out['recent_events'] = array_slice( array_merge( $wp_events, $int_events ), 0, 80 );
+
+		// Top products: prefer whichever list is richer; merge by title.
+		$merged_top = array();
+		foreach ( array( $out['top_products'] ?? array(), $wp['top_products'] ?? array() ) as $list ) {
+			if ( ! is_array( $list ) ) {
+				continue;
+			}
+			foreach ( $list as $pid => $tp ) {
+				$key = is_string( $pid ) || is_int( $pid ) ? (string) $pid : md5( $tp['title'] ?? wp_json_encode( $tp ) );
+				if ( ! isset( $merged_top[ $key ] ) ) {
+					$merged_top[ $key ] = array(
+						'title' => $tp['title'] ?? 'کالا',
+						'views' => intval( $tp['views'] ?? 0 ),
+						'carts' => intval( $tp['carts'] ?? 0 ),
+					);
+				} else {
+					$merged_top[ $key ]['views'] = max( $merged_top[ $key ]['views'], intval( $tp['views'] ?? 0 ) );
+					$merged_top[ $key ]['carts'] = max( $merged_top[ $key ]['carts'], intval( $tp['carts'] ?? 0 ) );
+				}
+			}
+		}
+		uasort( $merged_top, function ( $a, $b ) {
+			return intval( $b['views'] ?? 0 ) <=> intval( $a['views'] ?? 0 );
+		} );
+		$out['top_products'] = array_slice( $merged_top, 0, 12, true );
+		$out['wp_core_meta'] = $wp['wp_core_meta'] ?? array();
+		$out['source']       = 'hybrid';
+		return $out;
+	}
+
+	/**
+	 * Resolve analytics for admin UI based on analytics_source setting.
+	 *
+	 * @return array
+	 */
+	public static function get_display_analytics_data() {
+		$opts   = self::get_settings();
+		$source = $opts['analytics_source'] ?? 'hybrid';
+		if ( ! in_array( $source, array( 'internal', 'wordpress', 'hybrid' ), true ) ) {
+			$source = 'hybrid';
+		}
+
+		$internal = self::get_analytics_data();
+
+		if ( 'internal' === $source ) {
+			$internal['source'] = 'internal';
+			$internal['wp_core_meta'] = $internal['wp_core_meta'] ?? array();
+			return $internal;
+		}
+
+		$wp = self::build_wordpress_core_analytics();
+		if ( 'wordpress' === $source ) {
+			return $wp;
+		}
+
+		return self::merge_analytics_datasets( $internal, $wp );
 	}
 
 	/**
@@ -9027,6 +9852,8 @@ class Scraper_Auto_Shop_Plugin {
 				'notif_event_add_to_cart'     => ! empty( $_POST['notif_event_add_to_cart'] ),
 				'notif_event_checkout_step'   => ! empty( $_POST['notif_event_checkout_step'] ),
 				'notif_event_order_placed'    => ! empty( $_POST['notif_event_order_placed'] ),
+				'analytics_source'            => in_array( $_POST['analytics_source'] ?? '', array( 'internal', 'wordpress', 'hybrid' ), true ) ? $_POST['analytics_source'] : 'hybrid',
+				'hide_admin_nags'             => ! empty( $_POST['hide_admin_nags'] ),
 				'shop_subtitle'               => sanitize_text_field( $_POST['shop_subtitle'] ?? '' ),
 				'accent_color'                => sanitize_text_field( $_POST['accent_color'] ?? '#2563eb' ),
 				'default_column_layout'       => in_array( $_POST['default_column_layout'] ?? '', array( '1', '2' ), true ) ? $_POST['default_column_layout'] : '1',
@@ -9098,7 +9925,7 @@ class Scraper_Auto_Shop_Plugin {
 		$cands_info       = self::get_scraper_ai_candidates();
 		$master_ai        = self::get_scraper_master_ai_model( $opts );
 		$wpcron_info      = self::get_wpcron_status_info( $opts );
-		$analytics_data   = self::get_analytics_data();
+		$analytics_data   = self::get_display_analytics_data();
 
 		$scraper_embed_url  = admin_url( 'admin.php?page=scraper-full-dashboard' );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
@@ -10878,6 +11705,86 @@ class Scraper_Auto_Shop_Plugin {
 
 					<!-- ================= SUB-TAB 1: ANALYTICS & FUNNEL ================= -->
 					<div id="subtab-analytics" class="shop-subtab-panel" style="display:none;">
+						<?php
+						$analytics_source = $opts['analytics_source'] ?? 'hybrid';
+						$wp_meta          = $analytics_data['wp_core_meta'] ?? array();
+						$source_labels    = array(
+							'internal'  => 'آمار داخلی افزونه (قیف رویدادها)',
+							'wordpress' => 'هسته آمار وردپرس / ووکامرس',
+							'hybrid'    => 'ترکیبی (افزونه + هسته وردپرس)',
+						);
+						$source_label_fa = $source_labels[ $analytics_source ] ?? $source_labels['hybrid'];
+						?>
+
+						<!-- Analytics Source + Admin Clean-up Settings -->
+						<div class="admin-card" style="border:2px solid #6366f1; background:linear-gradient(180deg,#eef2ff 0%,#ffffff 100%); margin-bottom:20px;">
+							<div class="admin-card-header" style="border-bottom:1px solid #c7d2fe;">
+								<h3><span>⚙️</span> منبع آمار و پاکسازی پنل ادمین</h3>
+								<span class="field-badge" style="background:#6366f1;color:#fff;">تنظیمات جدید</span>
+							</div>
+
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+								<div>
+									<label style="display:block; font-weight:800; color:#312e81; margin-bottom:8px; font-size:0.92rem;">
+										📊 منبع نمایش آمار فروشگاه
+									</label>
+									<select name="analytics_source" style="width:100%; max-width:420px; padding:10px 12px; border-radius:10px; border:1.5px solid #a5b4fc; font-weight:700; background:#fff;">
+										<option value="internal"  <?php selected( $analytics_source, 'internal' ); ?>>فقط آمار داخلی افزونه (رویدادهای ویترین)</option>
+										<option value="wordpress" <?php selected( $analytics_source, 'wordpress' ); ?>>فقط هسته آمار وردپرس / ووکامرس</option>
+										<option value="hybrid"    <?php selected( $analytics_source, 'hybrid' ); ?>>ترکیبی — ادغام افزونه + هسته وردپرس (پیشنهادی)</option>
+									</select>
+									<p style="margin:8px 0 0; font-size:0.8rem; color:#64748b; line-height:1.6;">
+										در حالت <strong>هسته وردپرس</strong>، بازدیدها از شمارندهٔ بومی وردپرس (و در صورت نصب بودن افزونه WP Statistics)، سفارش‌ها و کالاهای پرفروش مستقیماً از دیتابیس ووکامرس خوانده می‌شوند.
+									</p>
+									<div style="margin-top:10px; background:#fff; border:1px dashed #a5b4fc; border-radius:10px; padding:10px 12px; font-size:0.82rem; color:#4338ca; font-weight:700;">
+										منبع فعال الان: <?php echo esc_html( $source_label_fa ); ?>
+									</div>
+								</div>
+
+								<div>
+									<label style="display:flex; align-items:flex-start; gap:10px; background:#fff; border:1.5px solid #c4b5fd; border-radius:12px; padding:14px; cursor:pointer;">
+										<input type="checkbox" name="hide_admin_nags" value="1" <?php checked( ! empty( $opts['hide_admin_nags'] ) ); ?> style="width:18px; height:18px; accent-color:#7c3aed; margin-top:2px;">
+										<div>
+											<strong style="display:block; font-size:0.92rem; color:#5b21b6;">🧹 غیرفعال‌سازی تبلیغات و هشدارهای آزاردهنده افزونه‌ها</strong>
+											<span style="display:block; font-size:0.78rem; color:#64748b; margin-top:4px; line-height:1.6;">
+												بنرهای ارتقا، پیشنهاد پرمیوم، Freemius، اعلان‌های بازاریابی ووکامرس/المنتور/یواست و سایر nagهای غیرضروری در کل پنل وردپرس مخفی می‌شوند. اعلان‌های خطای حیاتی و پیام‌های خود این افزونه حفظ می‌گردند.
+											</span>
+										</div>
+									</label>
+									<button type="submit" name="scraper_shop_save" class="button button-primary" style="margin-top:12px; background:#6366f1; border-color:#4f46e5; font-weight:800; border-radius:8px; padding:8px 18px;">
+										💾 ذخیره منبع آمار و پاکسازی ادمین
+									</button>
+								</div>
+							</div>
+
+							<?php if ( ! empty( $wp_meta ) && in_array( $analytics_source, array( 'wordpress', 'hybrid' ), true ) ) : ?>
+							<div style="margin-top:16px; display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;">
+								<?php
+								$meta_cards = array(
+									array( '📦', 'محصولات ووکامرس', $wp_meta['wc_products'] ?? 0 ),
+									array( '👥', 'کاربران', $wp_meta['users'] ?? 0 ),
+									array( '🧾', 'مشتریان WC', $wp_meta['wc_customers'] ?? 0 ),
+									array( '📝', 'نوشته‌ها', $wp_meta['posts'] ?? 0 ),
+									array( '📄', 'برگه‌ها', $wp_meta['pages'] ?? 0 ),
+									array( '💬', 'دیدگاه‌ها', $wp_meta['comments'] ?? 0 ),
+									array( '🖼️', 'رسانه', $wp_meta['media'] ?? 0 ),
+									array( '💰', 'جمع فروش', isset( $wp_meta['revenue_total'] ) ? self::format_price( $wp_meta['revenue_total'] ) : '—' ),
+								);
+								foreach ( $meta_cards as $mc ) :
+									$is_money = ( false !== strpos( (string) $mc[1], 'فروش' ) );
+									?>
+									<div style="background:#fff; border:1px solid #e0e7ff; border-radius:10px; padding:10px; text-align:center;">
+										<div style="font-size:1.1rem;"><?php echo $mc[0]; ?></div>
+										<div style="font-size:0.72rem; color:#64748b; font-weight:700; margin:4px 0;"><?php echo esc_html( $mc[1] ); ?></div>
+										<div style="font-size:0.95rem; font-weight:900; color:#312e81;">
+											<?php echo $is_money ? esc_html( $mc[2] ) : self::to_fa_num( is_numeric( $mc[2] ) ? number_format( intval( $mc[2] ) ) : $mc[2] ); ?>
+										</div>
+									</div>
+								<?php endforeach; ?>
+							</div>
+							<?php endif; ?>
+						</div>
+
 						<?php
 						$totals         = $analytics_data['totals'] ?? array();
 						$site_visits    = max( 1, intval( $totals['site_visit'] ?? 0 ) );

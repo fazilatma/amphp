@@ -708,6 +708,12 @@
 .sf-footer ul { list-style: none; margin: 0; padding: 0; }
 .sf-footer a:hover { color: var(--sf-accent); }
 .sf-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+
   margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--sf-border);
   text-align: center; color: #a1a3a8; font-size: .76rem; font-weight: 700;
 }
@@ -1822,3 +1828,16 @@
 .sf-badge-src.src-scraper { background: #059669; }
 .sf-badge-src.src-woocommerce { background: #2563eb; }
 .sf-pdp-cat-row .sf-badge-src { font-size: .68rem; }
+
+
+.sf-ver {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.95;
+}
+.sf-ver:hover { color: #64748b; }

@@ -1479,7 +1479,7 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   return (
     <>
-      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.9" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.11" onClick={() => setOpen((v) => !v)}>
         <span>💬</span>
         <span className="lbl">{settings.chat_window_title || 'پشتیبانی'}</span>
       </button>
@@ -2416,7 +2416,13 @@ function StoreApp({ boot }) {
             </ul>
           </div>
         </div>
-        <div className="sf-copy">© {toFa(new Date().getFullYear())} {settings.shop_title || 'فروشگاه'} · تمامی حقوق محفوظ است</div>
+        <div className="sf-copy">
+          <span>© {toFa(new Date().getFullYear())} {settings.shop_title || 'فروشگاه'} · تمامی حقوق محفوظ است</span>
+          <span className="sf-ver" title="نسخه افزونه و فایل‌های ویترین">
+            v{meta.version || '—'}
+            {meta.asset_ver ? ` · فایل ${meta.asset_ver}` : ''}
+          </span>
+        </div>
       </footer>
 
       <nav className="sf-mob-bar" aria-label="منوی موبایل">

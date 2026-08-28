@@ -70,27 +70,44 @@ const fields = root.querySelectorAll('.sf-co-field');
 // Static feature checks (must pass even if interaction flaky)
 const paybar = root.querySelector('.sf-co-paybar');
 const paybarBtn = root.querySelector('.sf-co-paybar-btn');
+const citiesJson = fs.existsSync(path.join(__dirname, '../includes/geo/iran-cities.json'))
+  ? fs.readFileSync(path.join(__dirname, '../includes/geo/iran-cities.json'), 'utf8')
+  : '';
 const staticOk = (
   !!burger &&
   css.includes('sf-burger-btn') &&
   css.includes('sf-checkout') &&
   css.includes('sf-co-paybar') &&
+  css.includes('sf-co-map') &&
+  css.includes('sf-ship-cost') &&
   (css.includes('midnight') && css.includes('bazaar') && css.includes('boutique') && css.includes('minimal')) &&
   js.includes('scraper_custom_checkout_place_order') &&
+  js.includes('scraper_calc_shipping') &&
+  js.includes('scraper_get_iran_cities') &&
+  js.includes('scraper_neshan_geocode') &&
   js.includes('sf-gateways') &&
+  js.includes('sf-ship-methods') &&
   js.includes('sf-co-paybar') &&
+  js.includes('اسلامشهر') &&
   agent.includes('ajax_custom_checkout_place_order') &&
+  agent.includes('ajax_get_shipping_methods') &&
+  agent.includes('ajax_neshan_geocode') &&
   agent.includes('get_active_payment_gateways_list') &&
   agent.includes('enable_custom_checkout') &&
+  agent.includes('WC_Order_Item_Shipping') &&
+  agent.includes('neshan_api_key') &&
   agent.includes('function send_messenger_notification') &&
   agent.includes('send_message_to_messengers') &&
   boot.includes('enable_custom_checkout') &&
+  boot.includes('checkout_show_shipping') &&
   boot.includes('gateways') &&
   js.includes('amphp_sf_pending_order') &&
   js.includes('redirecting') &&
   agent.includes('needs_payment') &&
   agent.includes('amphp_paid') &&
-  agent.includes('paid_order')
+  agent.includes('paid_order') &&
+  citiesJson.includes('تهران') &&
+  agent.includes('13.3.13')
 );
 
 const result = {
@@ -110,6 +127,8 @@ const result = {
   paybarBtn: !!(paybarBtn && /پرداخت|ثبت/.test(paybarBtn.textContent||'')),
   messengerAlias: agent.includes('function send_messenger_notification'),
   paymentDeferSuccess: js.includes('amphp_sf_pending_order') && js.includes('redirecting') && agent.includes('needs_payment'),
+  shippingV1313: js.includes('scraper_calc_shipping') && agent.includes('ajax_neshan_geocode') && css.includes('sf-co-map'),
+  citiesDataset: citiesJson.includes('مشهد'),
 };
 console.log(JSON.stringify(result, null, 2));
 process.exit(staticOk ? 0 : 2);

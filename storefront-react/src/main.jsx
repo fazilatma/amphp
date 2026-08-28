@@ -420,6 +420,40 @@ const IRAN_PROVINCES = [
 ];
 
 
+const IRAN_CITIES = {
+  "تهران": ["تهران","شهریار","اسلامشهر","ری","قدس","ملارد","پاکدشت","ورامین","پردیس","دماوند","فیروزکوه","رباط‌کریم","بهارستان","قرچک","پیشوا","بومهن","اندیشه","نسیم‌شهر","گلستان","صالح‌آباد"],
+  "البرز": ["کرج","فردیس","نظرآباد","هشتگرد","ساوجبلاغ","طالقان","اشتهارد","ماهدشت","مشکین‌دشت","گوهردشت","مهرشهر"],
+  "اصفهان": ["اصفهان","کاشان","خمینی‌شهر","نجف‌آباد","شاهین‌شهر","فلاورجان","زرین‌شهر","مبارکه","نطنز","اردستان","گلپایگان","خوانسار","نایین","فریدن","فریدون‌شهر","سمیرم","شهرضا","دهاقان","تیران","چادگان","برخوار","دولت‌آباد"],
+  "فارس": ["شیراز","مرودشت","جهرم","فسا","کازرون","لار","لامرد","داراب","آباده","اقلید","نی‌ریز","استهبان","فیروزآباد","ممسنی","سپیدان","گراش","قیر","زرین‌دشت","خنج","بوانات"],
+  "خراسان رضوی": ["مشهد","نیشابور","سبزوار","تربت حیدریه","کاشمر","قوچان","تربت جام","چناران","گناباد","تایباد","خواف","درگز","سرخس","فریمان","بردسکن","کلات","رشتخوار","خلیل‌آباد","باخرز","مه ولات"],
+  "آذربایجان شرقی": ["تبریز","مراغه","مرند","میانه","اهر","بناب","سراب","آذرشهر","ملکان","شبستر","هشترود","جلفا","بستان‌آباد","عجب‌شیر","کلیبر","هریس","اسکو","ایلخچی","صوفیان"],
+  "آذربایجان غربی": ["ارومیه","خوی","مهاباد","بوکان","میاندوآب","سلماس","پیرانشهر","نقده","ماکو","سردشت","شاهین‌دژ","تکاب","اشنویه","چالدران","پلدشت","شوط"],
+  "خوزستان": ["اهواز","آبادان","خرمشهر","دزفول","اندیمشک","ماهشهر","بهبهان","شوشتر","ایذه","شوش","رامهرمز","مسجدسلیمان","بندر امام","شادگان","هندیجان","امیدیه","گتوند","لالی","باغ‌ملک","هفتکل"],
+  "مازندران": ["ساری","بابل","آمل","قائم‌شهر","بهشهر","چالوس","تنکابن","بابلسر","نوشهر","رامسر","نکا","جویبار","محمودآباد","فریدونکنار","گلوگاه","سوادکوه","نور","عباس‌آباد","کلاردشت","میاندورود"],
+  "گیلان": ["رشت","بندرانزلی","لاهیجان","لنگرود","تالش","رودسر","فومن","صومعه‌سرا","آستارا","آستانه اشرفیه","رودبار","ماسال","سیاهکل","شفت","رضوانشهر","املش","خمام","کیاشهر"],
+  "کرمان": ["کرمان","رفسنجان","سیرجان","جیرفت","بم","زرند","کهنوج","شهربابک","بافت","بردسیر","راور","عنبرآباد","منوجان","قلعه‌گنج","فهرج","رابر","انار","کوهبنان"],
+  "قم": ["قم","جعفریه","کهک","سلفچگان","قنوات"],
+  "قزوین": ["قزوین","تاکستان","آبیک","بوئین‌زهرا","الوند","محمدیه","محمودآباد نمونه","اقبالیه","آوج","ضیاآباد"],
+  "همدان": ["همدان","ملایر","نهاوند","تویسرکان","اسدآباد","کبودرآهنگ","بهار","رزن","فامنین","قروه درجزین"],
+  "کرمانشاه": ["کرمانشاه","اسلام‌آباد غرب","جوانرود","کنگاور","سرپل ذهاب","سنقر","هرسین","صحنه","پاوه","گیلانغرب","قصرشیرین","ثلاث باباجانی","روانسر","دالاهو"],
+  "یزد": ["یزد","میبد","اردکان","بافق","مهریز","ابرکوه","تفت","اشکذر","خاتم","بهاباد","هرات"],
+  "سیستان و بلوچستان": ["زاهدان","چابهار","ایرانشهر","زابل","سراوان","خاش","نیک‌شهر","کنارک","سرباز","میرجاوه","زهک","دلگان","قصرقند","فنوج","راسک","سیب و سوران"],
+  "گلستان": ["گرگان","گنبد کاووس","بندر ترکمن","علی‌آباد کتول","آق‌قلا","کردکوی","مینودشت","آزادشهر","کلاله","رامیان","گمیشان","گالیکش","مراوه‌تپه","بندر گز"],
+  "لرستان": ["خرم‌آباد","بروجرد","دورود","الیگودرز","کوهدشت","ازنا","نورآباد","الشتر","پلدختر","رومشکان","چگنی"],
+  "مرکزی": ["اراک","ساوه","خمین","محلات","دلیجان","شازند","تفرش","آشتیان","کمیجان","فراهان","زرندیه"],
+  "هرمزگان": ["بندرعباس","میناب","قشم","کیش","بندر لنگه","حاجی‌آباد","رودان","جاسک","پارسیان","بستک","سیریک","ابوموسی","خمیر"],
+  "بوشهر": ["بوشهر","برازجان","گناوه","کنگان","عسلویه","خورموج","دیر","دیلم","جم","تنگستان","دشتی"],
+  "زنجان": ["زنجان","ابهر","خرمدره","قیدار","آب‌بر","سلطانیه","ماهنشان","ایجرود"],
+  "اردبیل": ["اردبیل","پارس‌آباد","مشگین‌شهر","خلخال","گرمی","نمین","نیر","بیله‌سوار","کوثر","سرعین","اصلاندوز"],
+  "کردستان": ["سنندج","سقز","بانه","مریوان","قروه","بیجار","کامیاران","دیواندره","دهگلان","سروآباد"],
+  "سمنان": ["سمنان","شاهرود","دامغان","گرمسار","مهدی‌شهر","آرادان","میامی","سرخه","ایوانکی"],
+  "چهارمحال و بختیاری": ["شهرکرد","بروجن","فارسان","لردگان","سامان","کیان","گندمان","اردل","کوهرنگ","بن","ناغان"],
+  "کهگیلویه و بویراحمد": ["یاسوج","دوگنبدان","دهدشت","لیکک","سی‌سخت","چرام","باشت","لنده","مارگون"],
+  "ایلام": ["ایلام","ایوان","دهلران","آبدانان","مهران","دره‌شهر","سرابله","بدره","چرداول","ملکشاهی"],
+  "خراسان شمالی": ["بجنورد","اسفراین","شیروان","جاجرم","فاروج","گرمه","راز و جرگلان","مانه و سملقان"],
+  "خراسان جنوبی": ["بیرجند","قائن","فردوس","طبس","نهبندان","سربیشه","بشرویه","درمیان","سرایان","خوسف","زیرکوه"],
+};
+
 function useAdminBarOffset() {
   const [top, setTop] = useState(0);
   useEffect(() => {
@@ -1140,7 +1174,51 @@ function CheckoutPage({
   const [err, setErr] = useState('');
   const [form, setForm] = useState({
     name: '', phone: '', email: '', province: '', city: '', address: '', postal: '', notes: '',
+    lat: '', lng: '',
   });
+  const [cityOptions, setCityOptions] = useState([]);
+  const [cityManual, setCityManual] = useState(false);
+  const [shipMethods, setShipMethods] = useState([]);
+  const [shippingId, setShippingId] = useState('');
+  const [shipLoading, setShipLoading] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [mapQuery, setMapQuery] = useState('');
+  const [mapResults, setMapResults] = useState([]);
+  const [mapBusy, setMapBusy] = useState(false);
+  const mapRef = useRef(null);
+  const mapInst = useRef(null);
+  const markerRef = useRef(null);
+
+  const showShip = fieldOn(settings, 'checkout_show_shipping', true);
+  const showMap = fieldOn(settings, 'checkout_show_map', true) && !!settings.neshan_api_key_set;
+  const originLat = parseFloat(settings.shipping_origin_lat || '35.6892') || 35.6892;
+  const originLng = parseFloat(settings.shipping_origin_lng || '51.3890') || 51.3890;
+
+  const subtotal = items.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0);
+  const selectedShip = shipMethods.find((m) => m.id === shippingId) || null;
+  const shippingCost = selectedShip ? (Number(selectedShip.cost) || 0) : 0;
+  const total = subtotal + shippingCost;
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  useEffect(() => {
+    if (!form.province) { setCityOptions([]); return; }
+    const local = IRAN_CITIES[form.province] || [];
+    if (local.length) { setCityOptions(local); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const fd = new FormData();
+        fd.append('action', 'scraper_get_iran_cities');
+        fd.append('province', form.province);
+        const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const cities = data?.data?.cities || [];
+        if (!cancelled && Array.isArray(cities)) setCityOptions(cities);
+      } catch { if (!cancelled) setCityOptions([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [form.province]);
 
   useEffect(() => {
     if (!open) return;
@@ -1180,10 +1258,144 @@ function CheckoutPage({
     if (gateways.length && !payment) setPayment(gateways[0].id);
   }, [gateways, payment]);
 
-  if (!open) return null;
+  const fetchShipping = async () => {
+    if (!showShip) return;
+    if (!form.province && !form.city) return;
+    setShipLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('action', 'scraper_calc_shipping');
+      fd.append('nonce', ajax.cartNonce || '');
+      fd.append('province', form.province || '');
+      fd.append('city', form.city || '');
+      fd.append('postal', form.postal || '');
+      fd.append('address', form.address || '');
+      fd.append('subtotal', String(subtotal));
+      fd.append('weight_kg', String(Math.max(0.5, items.reduce((s, it) => s + (it.qty || 1) * 0.5, 0))));
+      if (form.lat) fd.append('lat', form.lat);
+      if (form.lng) fd.append('lng', form.lng);
+      const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      const list = data?.data?.methods || [];
+      if (Array.isArray(list) && list.length) {
+        setShipMethods(list);
+        setShippingId((cur) => (cur && list.some((m) => m.id === cur) ? cur : list[0].id));
+      }
+    } catch { /* keep */ }
+    finally { setShipLoading(false); }
+  };
 
-  const total = items.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0);
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  useEffect(() => {
+    if (!open || !showShip) return;
+    const t = setTimeout(() => { fetchShipping(); }, 350);
+    return () => clearTimeout(t);
+  }, [open, showShip, form.province, form.city, form.postal, form.lat, form.lng, subtotal, items.length]);
+
+  const ensureLeaflet = () => new Promise((resolve, reject) => {
+    if (window.L) { resolve(window.L); return; }
+    const cssId = 'sf-leaflet-css';
+    if (!document.getElementById(cssId)) {
+      const link = document.createElement('link');
+      link.id = cssId; link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+    }
+    const jsId = 'sf-leaflet-js';
+    const existing = document.getElementById(jsId);
+    if (existing) {
+      existing.addEventListener('load', () => resolve(window.L));
+      if (window.L) resolve(window.L);
+      return;
+    }
+    const s = document.createElement('script');
+    s.id = jsId; s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.onload = () => resolve(window.L);
+    s.onerror = () => reject(new Error('leaflet'));
+    document.head.appendChild(s);
+  });
+
+  const reverseGeocode = async (lat, lng) => {
+    const fd = new FormData();
+    fd.append('action', 'scraper_neshan_geocode');
+    fd.append('mode', 'reverse');
+    fd.append('lat', String(lat));
+    fd.append('lng', String(lng));
+    const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (!data?.success) throw new Error(data?.data || 'geocode failed');
+    return data.data || {};
+  };
+
+  const applyMapPoint = async (lat, lng) => {
+    setForm((f) => ({ ...f, lat: String(lat), lng: String(lng) }));
+    try {
+      setMapBusy(true);
+      const geo = await reverseGeocode(lat, lng);
+      setForm((f) => ({
+        ...f,
+        lat: String(lat), lng: String(lng),
+        address: geo.formatted || f.address || '',
+        province: geo.province || f.province,
+        city: geo.city || f.city,
+      }));
+      if (geo.province) setCityOptions(IRAN_CITIES[geo.province] || []);
+      toast?.('موقعیت روی نقشه ثبت شد', 'ok');
+    } catch {
+      toast?.('موقعیت ذخیره شد', 'ok');
+    } finally { setMapBusy(false); }
+  };
+
+  useEffect(() => {
+    if (!mapOpen || !showMap) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const L = await ensureLeaflet();
+        if (cancelled || !mapRef.current) return;
+        const lat0 = form.lat ? parseFloat(form.lat) : originLat;
+        const lng0 = form.lng ? parseFloat(form.lng) : originLng;
+        if (mapInst.current) { try { mapInst.current.remove(); } catch {} mapInst.current = null; }
+        const map = L.map(mapRef.current, { center: [lat0, lng0], zoom: 12, scrollWheelZoom: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '&copy; OpenStreetMap · Neshan',
+        }).addTo(map);
+        const marker = L.marker([lat0, lng0], { draggable: true }).addTo(map);
+        marker.on('dragend', () => { const ll = marker.getLatLng(); applyMapPoint(ll.lat, ll.lng); });
+        map.on('click', (e) => { marker.setLatLng(e.latlng); applyMapPoint(e.latlng.lat, e.latlng.lng); });
+        mapInst.current = map; markerRef.current = marker;
+        setTimeout(() => map.invalidateSize(), 120);
+      } catch { toast?.('بارگذاری نقشه ناموفق بود', 'err'); }
+    })();
+    return () => {
+      cancelled = true;
+      if (mapInst.current) { try { mapInst.current.remove(); } catch {} mapInst.current = null; }
+    };
+  }, [mapOpen, showMap]);
+
+  const searchMap = async () => {
+    if (!mapQuery.trim()) return;
+    setMapBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('action', 'scraper_neshan_geocode');
+      fd.append('mode', 'search');
+      fd.append('term', mapQuery.trim());
+      fd.append('lat', form.lat || String(originLat));
+      fd.append('lng', form.lng || String(originLng));
+      const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!data?.success) { toast?.(data?.data || 'جستجو ناموفق', 'err'); return; }
+      const items = data?.data?.items || [];
+      setMapResults(items);
+      if (items[0] && mapInst.current && markerRef.current) {
+        markerRef.current.setLatLng([items[0].lat, items[0].lng]);
+        mapInst.current.setView([items[0].lat, items[0].lng], 14);
+      }
+    } catch { toast?.('خطا در جستجوی نشان', 'err'); }
+    finally { setMapBusy(false); }
+  };
+
+  if (!open) return null;
 
   const validate = () => {
     const checks = [
@@ -1201,9 +1413,8 @@ function CheckoutPage({
         return `لطفاً فیلد «${label}» را تکمیل کنید.`;
       }
     }
-    if (fieldOn(settings, 'checkout_show_gateways', true) && gateways.length && !payment) {
-      return 'روش پرداخت را انتخاب کنید.';
-    }
+    if (showShip && shipMethods.length && !shippingId) return 'روش ارسال را انتخاب کنید.';
+    if (fieldOn(settings, 'checkout_show_gateways', true) && gateways.length && !payment) return 'روش پرداخت را انتخاب کنید.';
     if (!items.length) return 'سبد خرید خالی است.';
     return '';
   };
@@ -1221,39 +1432,31 @@ function CheckoutPage({
       }))));
       Object.entries(form).forEach(([k, val]) => fd.append(k, val));
       fd.append('payment_method', payment);
+      if (shippingId) {
+        fd.append('shipping_method', shippingId);
+        fd.append('shipping_title', selectedShip?.title || '');
+        fd.append('shipping_cost', String(shippingCost));
+      }
       const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
-      if (!data?.success) {
-        setErr(data?.data || data?.message || 'ثبت سفارش ناموفق بود.');
-        return;
-      }
+      if (!data?.success) { setErr(data?.data || data?.message || 'ثبت سفارش ناموفق بود.'); return; }
       const payload = data.data || {};
       const needsPay = !!(payload.needs_payment || payload.pay_url)
-        && payload.payment_method
-        && payload.payment_method !== 'cod'
-        && !payload.is_cod;
+        && payload.payment_method && payload.payment_method !== 'cod' && !payload.is_cod;
       if (needsPay && payload.pay_url) {
-        /* هنوز به درگاه نرفته — پیام «سفارش کامل شد» نگو؛ مستقیم بفرست */
         try {
           saveLS(PENDING_ORDER_KEY, {
-            order_id: payload.order_id,
-            order_key: payload.order_key,
-            total: payload.total,
-            total_formatted: payload.total_formatted,
-            payment_method: payload.payment_method,
-            payment_title: payload.payment_title,
-            thankyou_url: payload.thankyou_url || '',
-            message: payload.message || settings.checkout_success_msg || '',
-            at: Date.now(),
+            order_id: payload.order_id, order_key: payload.order_key, total: payload.total,
+            total_formatted: payload.total_formatted, payment_method: payload.payment_method,
+            payment_title: payload.payment_title, thankyou_url: payload.thankyou_url || '',
+            message: payload.message || settings.checkout_success_msg || '', at: Date.now(),
           });
         } catch {}
         onClearCart?.();
         toast?.('در حال انتقال به درگاه پرداخت…', 'ok');
         setDone({ ...payload, phase: 'redirecting' });
         setTimeout(() => {
-          try { window.location.href = payload.pay_url; } catch {
-            setDone({ ...payload, phase: 'awaiting_payment' });
-          }
+          try { window.location.href = payload.pay_url; } catch { setDone({ ...payload, phase: 'awaiting_payment' }); }
         }, 450);
         return;
       }
@@ -1261,14 +1464,15 @@ function CheckoutPage({
       setDone({ ...payload, phase: 'complete', paid: true });
       onClearCart?.();
       toast?.(payload.message || settings.checkout_success_msg || 'سفارش شما ثبت شد', 'ok');
-    } catch {
-      setErr('خطا در ارتباط با سرور. دوباره تلاش کنید.');
-    } finally {
-      setBusy(false);
-    }
+    } catch { setErr('خطا در ارتباط با سرور. دوباره تلاش کنید.'); }
+    finally { setBusy(false); }
   };
 
   const showGw = fieldOn(settings, 'checkout_show_gateways', true);
+  const onProvinceChange = (val) => {
+    setForm((f) => ({ ...f, province: val, city: '' }));
+    setCityManual(false);
+  };
 
   return (
     <div className="sf-checkout" role="dialog" aria-modal="true" aria-label="تسویه حساب">
@@ -1294,9 +1498,7 @@ function CheckoutPage({
               <p>سفارش ثبت شد؛ لطفاً پرداخت را در درگاه تکمیل کنید.</p>
               <p>شماره سفارش: <strong>{toFa(done.order_id)}</strong></p>
               <p>مبلغ: <strong>{done.total_formatted || formatMoney(done.total, currency)}</strong></p>
-              {done.pay_url ? (
-                <a className="sf-btn primary lg" href={done.pay_url}>ورود به درگاه پرداخت ↗</a>
-              ) : null}
+              {done.pay_url ? <a className="sf-btn primary lg" href={done.pay_url}>ورود به درگاه پرداخت ↗</a> : null}
               <p className="sf-co-hint">پیام تکمیل سفارش فقط پس از بازگشت موفق از درگاه نمایش داده می‌شود.</p>
             </>
           ) : (
@@ -1325,28 +1527,42 @@ function CheckoutPage({
                 {fieldOn(settings, 'checkout_field_phone', true) ? (
                   <label className="sf-co-field">
                     <span>موبایل{fieldOn(settings, 'checkout_field_phone_req', true) ? ' *' : ''}</span>
-                    <input value={form.phone} onChange={(e) => set('phone', e.target.value)} inputMode="tel" dir="ltr" autoComplete="tel" placeholder="09xxxxxxxxx" />
+                    <input value={form.phone} onChange={(e) => set('phone', e.target.value)} autoComplete="tel" dir="ltr" inputMode="tel" />
                   </label>
                 ) : null}
                 {fieldOn(settings, 'checkout_field_email', false) ? (
                   <label className="sf-co-field">
                     <span>ایمیل{fieldOn(settings, 'checkout_field_email_req', false) ? ' *' : ''}</span>
-                    <input value={form.email} onChange={(e) => set('email', e.target.value)} type="email" dir="ltr" autoComplete="email" />
+                    <input value={form.email} onChange={(e) => set('email', e.target.value)} autoComplete="email" dir="ltr" />
                   </label>
                 ) : null}
                 {fieldOn(settings, 'checkout_field_province', true) ? (
                   <label className="sf-co-field">
                     <span>استان{fieldOn(settings, 'checkout_field_province_req', true) ? ' *' : ''}</span>
-                    <select value={form.province} onChange={(e) => set('province', e.target.value)}>
+                    <select value={form.province} onChange={(e) => onProvinceChange(e.target.value)}>
                       <option value="">انتخاب استان</option>
-                      {IRAN_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                      {IRAN_PROVINCES.map((pv) => <option key={pv} value={pv}>{pv}</option>)}
                     </select>
                   </label>
                 ) : null}
                 {fieldOn(settings, 'checkout_field_city', true) ? (
                   <label className="sf-co-field">
                     <span>شهر{fieldOn(settings, 'checkout_field_city_req', true) ? ' *' : ''}</span>
-                    <input value={form.city} onChange={(e) => set('city', e.target.value)} autoComplete="address-level2" />
+                    {!cityManual && cityOptions.length ? (
+                      <select value={form.city} onChange={(e) => {
+                        if (e.target.value === '__other__') { setCityManual(true); set('city', ''); return; }
+                        set('city', e.target.value);
+                      }}>
+                        <option value="">انتخاب شهر</option>
+                        {cityOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                        <option value="__other__">سایر (ورود دستی)…</option>
+                      </select>
+                    ) : (
+                      <input value={form.city} onChange={(e) => set('city', e.target.value)} autoComplete="address-level2" placeholder={form.province ? 'نام شهر' : 'ابتدا استان را انتخاب کنید'} />
+                    )}
+                    {cityManual && cityOptions.length ? (
+                      <button type="button" className="sf-co-linkbtn" onClick={() => setCityManual(false)}>بازگشت به لیست شهرها</button>
+                    ) : null}
                   </label>
                 ) : null}
                 {fieldOn(settings, 'checkout_field_address', true) ? (
@@ -1368,7 +1584,85 @@ function CheckoutPage({
                   </label>
                 ) : null}
               </div>
+
+              {showMap ? (
+                <div className="sf-co-map-wrap">
+                  <div className="sf-co-map-head">
+                    <strong>📍 انتخاب مقصد روی نقشه</strong>
+                    <button type="button" className="sf-btn ghost sm" onClick={() => setMapOpen((v) => !v)}>
+                      {mapOpen ? 'بستن نقشه' : 'باز کردن نقشه'}
+                    </button>
+                  </div>
+                  {form.lat && form.lng ? (
+                    <p className="sf-co-hint">مختصات: {form.lat}, {form.lng}</p>
+                  ) : (
+                    <p className="sf-co-hint">با کلیک یا کشیدن نشانگر، آدرس دقیق‌تر و هزینه ارسال به‌روز می‌شود.</p>
+                  )}
+                  {mapOpen ? (
+                    <div className="sf-co-map-panel">
+                      <div className="sf-co-map-search">
+                        <input value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} placeholder="جستجوی آدرس با نشان…" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchMap(); } }} />
+                        <button type="button" className="sf-btn primary sm" disabled={mapBusy} onClick={searchMap}>{mapBusy ? '…' : 'جستجو'}</button>
+                      </div>
+                      {mapResults.length ? (
+                        <ul className="sf-co-map-results">
+                          {mapResults.slice(0, 6).map((it, idx) => (
+                            <li key={idx}>
+                              <button type="button" onClick={() => {
+                                if (markerRef.current && mapInst.current) {
+                                  markerRef.current.setLatLng([it.lat, it.lng]);
+                                  mapInst.current.setView([it.lat, it.lng], 15);
+                                }
+                                applyMapPoint(it.lat, it.lng);
+                                if (it.address) set('address', it.address);
+                                if (it.province) onProvinceChange(it.province);
+                                if (it.city) set('city', it.city);
+                              }}>
+                                <strong>{it.title || it.address}</strong>
+                                {it.address && it.title !== it.address ? <small>{it.address}</small> : null}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <div className="sf-co-map" ref={mapRef} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </section>
+
+            {showShip ? (
+              <section className="sf-co-card">
+                <h3>روش ارسال</h3>
+                <p className="sf-co-hint">
+                  {shipLoading ? 'در حال محاسبه هزینه ارسال…' : 'روش‌های فعال ووکامرس و پست / چاپار / تیپاکس'}
+                  {settings.free_shipping_threshold ? ` · ارسال رایگان بالای ${formatMoney(settings.free_shipping_threshold, currency)}` : ''}
+                </p>
+                {!form.province && !form.city ? (
+                  <p className="sf-co-hint">برای مشاهده هزینه، استان و شهر را انتخاب کنید.</p>
+                ) : null}
+                <div className="sf-gateways sf-ship-methods">
+                  {shipMethods.map((m) => (
+                    <label key={m.id} className={`sf-gw ${shippingId === m.id ? 'on' : ''}`}>
+                      <input type="radio" name="sf_ship" value={m.id} checked={shippingId === m.id} onChange={() => setShippingId(m.id)} />
+                      <span className="sf-gw-body">
+                        <span className="sf-gw-ph">{m.carrier === 'post' ? '📮' : m.carrier === 'chapar' ? '🚚' : m.carrier === 'tipax' ? '📦' : '🚛'}</span>
+                        <span>
+                          <strong>{m.title}</strong>
+                          {m.description ? <small>{m.description}</small> : null}
+                          <small className="sf-ship-src">{m.source === 'woocommerce' ? 'ووکامرس' : 'برآورد سامانه'}</small>
+                        </span>
+                        <em className="sf-ship-cost">{(Number(m.cost) || 0) <= 0 ? 'رایگان' : (m.cost_formatted || formatMoney(m.cost, currency))}</em>
+                      </span>
+                    </label>
+                  ))}
+                  {!shipMethods.length && !shipLoading && (form.province || form.city) ? (
+                    <p className="sf-co-hint">روش ارسالی یافت نشد — پس از ثبت سفارش هماهنگ می‌شود.</p>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
 
             {showGw ? (
               <section className="sf-co-card">
@@ -1412,8 +1706,17 @@ function CheckoutPage({
                   </div>
                 ))}
               </div>
+              <div className="sf-co-sum-lines">
+                <div className="sf-co-sum-row"><span>جمع کالا</span><span>{formatMoney(subtotal, currency)}</span></div>
+                {showShip ? (
+                  <div className="sf-co-sum-row">
+                    <span>ارسال{selectedShip ? ` (${selectedShip.title})` : ''}</span>
+                    <span>{shippingCost <= 0 && selectedShip ? 'رایگان' : formatMoney(shippingCost, currency)}</span>
+                  </div>
+                ) : null}
+              </div>
               <div className="sf-co-sum">
-                <span>جمع کل</span>
+                <span>مبلغ قابل پرداخت</span>
                 <strong>{formatMoney(total, currency)}</strong>
               </div>
               <button type="button" className="sf-btn primary block lg sf-co-pay-desk" disabled={busy || !items.length} onClick={placeOrder}>
@@ -1431,7 +1734,7 @@ function CheckoutPage({
             <div className="sf-co-paybar-meta">
               <span className="lbl">مبلغ قابل پرداخت</span>
               <strong>{formatMoney(total, currency)}</strong>
-              <small>{toFa(items.reduce((s, it) => s + (it.qty || 1), 0))} کالا</small>
+              <small>{toFa(items.reduce((s, it) => s + (it.qty || 1), 0))} کالا{showShip && selectedShip ? ` · ${selectedShip.title}` : ''}</small>
             </div>
             <button type="button" className="sf-btn primary lg sf-co-paybar-btn" disabled={busy || !items.length} onClick={placeOrder}>
               {busy ? 'در حال ثبت…' : 'ثبت سفارش و پرداخت'}

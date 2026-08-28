@@ -1967,3 +1967,56 @@
   .sf-zoom-toolbar button { min-width: 38px; height: 38px; }
   .sf-zoom-stage img { max-height: calc(100vh - 140px); }
 }
+
+
+/* v13.3.13 — checkout shipping + map */
+.sf-co-linkbtn {
+  background: none; border: 0; color: var(--sf-accent, #ef394e);
+  font-weight: 800; font-size: .78rem; cursor: pointer; padding: 4px 0; text-align: right;
+}
+.sf-co-sum-lines { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 4px; }
+.sf-co-sum-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: .84rem; font-weight: 700; color: #62666d;
+}
+.sf-ship-methods .sf-gw-body { align-items: flex-start; }
+.sf-ship-cost {
+  margin-right: auto; font-style: normal; font-weight: 900;
+  color: var(--sf-accent, #ef394e); font-size: .9rem; white-space: nowrap;
+}
+.sf-ship-src { display: block; color: #a1a3a8 !important; font-size: .72rem !important; margin-top: 2px; }
+.sf-co-map-wrap {
+  margin-top: 14px; padding-top: 14px; border-top: 1px dashed #e5e7eb;
+}
+.sf-co-map-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px;
+}
+.sf-co-map-head strong { font-size: .92rem; font-weight: 900; }
+.sf-co-map-panel { display: flex; flex-direction: column; gap: 8px; }
+.sf-co-map-search { display: flex; gap: 8px; }
+.sf-co-map-search input {
+  flex: 1; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px;
+  font-weight: 700; font-size: .88rem;
+}
+.sf-co-map {
+  height: 260px; border-radius: 14px; overflow: hidden;
+  border: 1px solid #e5e7eb; background: #f1f5f9; z-index: 1;
+}
+.sf-co-map-results {
+  list-style: none; margin: 0; padding: 0; max-height: 160px; overflow: auto;
+  border: 1px solid #e5e7eb; border-radius: 12px; background: #fff;
+}
+.sf-co-map-results li button {
+  width: 100%; text-align: right; background: none; border: 0; border-bottom: 1px solid #f1f5f9;
+  padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+}
+.sf-co-map-results li button:hover { background: var(--sf-accent-soft, #fff1f2); }
+.sf-co-map-results strong { font-size: .86rem; font-weight: 800; color: #0f172a; }
+.sf-co-map-results small { font-size: .75rem; color: #64748b; font-weight: 600; }
+.sf-btn.ghost.sm, .sf-btn.primary.sm {
+  padding: 6px 12px; font-size: .78rem; border-radius: 10px; font-weight: 800;
+}
+.sf-btn.ghost {
+  background: #f8fafc; border: 1px solid #e2e8f0; color: #334155;
+}
+.sf-btn.ghost:hover { background: #f1f5f9; }

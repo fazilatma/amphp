@@ -44,6 +44,15 @@ window.AMPHP_STOREFRONT = {
     checkout_field_notes: true,
     checkout_field_notes_req: false,
     checkout_show_gateways: true,
+    checkout_show_shipping: true,
+    checkout_show_map: true,
+    neshan_api_key_set: false,
+    shipping_origin_city: 'تهران',
+    shipping_origin_lat: '35.6892',
+    shipping_origin_lng: '51.3890',
+    post_shipping_enabled: true,
+    chapar_shipping_enabled: true,
+    tipax_shipping_enabled: true,
     checkout_cod_label: 'پرداخت در محل (COD)',
     checkout_success_msg: 'سفارش شما با موفقیت ثبت شد!',
     shop_title_font: 'sahel',
@@ -66,5 +75,5 @@ window.AMPHP_STOREFRONT = {
     { id: 'bacs', title: 'کارت به کارت / واریز', description: 'شماره کارت پس از ثبت سفارش ارسال می‌شود', icon: '', method_title: 'BACS' },
     { id: 'zarinpal', title: 'زرین‌پال', description: 'پرداخت آنلاین امن', icon: '', method_title: 'Zarinpal' }
   ],
-  meta: { version: '13.3.4', engine: 'react', count: 6, is_admin: false }
+  meta: { version: '13.3.13', engine: 'react', count: 6, is_admin: false }
 };

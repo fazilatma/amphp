@@ -292,7 +292,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.97';
+const APP_VERSION = '10.98';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -4262,6 +4262,20 @@ function aiSearchProductWeb(string $title): array {
                 if (!empty($name)) $specs[] = "نام کالا: " . $name;
                 if (!empty($cat)) $specs[] = "دسته‌بندی در وب: " . $cat;
                 if (!empty($price)) $specs[] = "قیمت تقریبی بازار: " . $price;
+                $varHint = '';
+                foreach (['shop_text', 'random_key', 'name2'] as $vk) {
+                    if (!empty($first[$vk]) && is_string($first[$vk])) $specs[] = (string)$first[$vk];
+                }
+                /* بعضی نتایج ترب فیلدهای رنگ/ویژگی دارند */
+                if (!empty($first['color']) && is_string($first['color'])) $varHint = 'رنگ: ' . $first['color'];
+                if (!empty($first['attributes']) && is_array($first['attributes'])) {
+                    $bits = [];
+                    foreach ($first['attributes'] as $ak => $av) {
+                        if (is_array($av)) $av = implode('، ', array_map('strval', $av));
+                        $bits[] = trim((string)$ak) . ': ' . trim((string)$av);
+                    }
+                    if ($bits) { $varHint = implode(' | ', $bits); $specs[] = 'ویژگی‌ها: ' . $varHint; }
+                }
                 if (!empty($specs)) {
                     return [
                         'found' => true,
@@ -4269,6 +4283,7 @@ function aiSearchProductWeb(string $title): array {
                         'snippets' => implode("\n", $specs),
                         'category' => $cat,
                         'title' => $name,
+                        'variations_hint' => $varHint,
                     ];
                 }
             }
@@ -4286,6 +4301,29 @@ function aiSearchProductWeb(string $title): array {
                 $specs = [];
                 if (!empty($titleFa)) $specs[] = "نام محصول در وب: " . $titleFa;
                 if (!empty($catTitle)) $specs[] = "دسته‌بندی وب: " . $catTitle;
+                $varHint = '';
+                $colors = $p['colors'] ?? [];
+                if (is_array($colors) && $colors) {
+                    $cnames = [];
+                    foreach ($colors as $c) {
+                        if (is_array($c)) $cnames[] = (string)($c['title'] ?? $c['name'] ?? '');
+                        elseif (is_string($c)) $cnames[] = $c;
+                    }
+                    $cnames = array_values(array_filter(array_map('trim', $cnames)));
+                    if ($cnames) {
+                        $varHint = 'رنگ: ' . implode('، ', $cnames);
+                        $specs[] = 'تنوع رنگ: ' . implode('، ', $cnames);
+                    }
+                }
+                $dv = $p['default_variant'] ?? null;
+                if (is_array($dv)) {
+                    foreach (['color', 'size', 'warranty'] as $fk) {
+                        if (!empty($dv[$fk]['title'])) {
+                            $specs[] = $fk . ': ' . $dv[$fk]['title'];
+                            $varHint = trim($varHint . ' | ' . $dv[$fk]['title'], ' |');
+                        }
+                    }
+                }
                 if (!empty($specs)) {
                     return [
                         'found' => true,
@@ -4293,6 +4331,7 @@ function aiSearchProductWeb(string $title): array {
                         'snippets' => implode("\n", $specs),
                         'category' => $catTitle,
                         'title' => $titleFa,
+                        'variations_hint' => $varHint,
                     ];
                 }
             }
@@ -4325,6 +4364,137 @@ function aiContentAutoCfg(?array $cn = null): array {
 }
 
 /** محصول نیاز به تولید AI دارد؟ (توضیح/دسته خالی) */
+function aiProductHasVariations(array $p): bool {
+    if (!empty($p['variations']) && is_array($p['variations']) && count(array_filter($p['variations'])) > 0) return true;
+    if (!empty($p['variation_groups']) && is_array($p['variation_groups'])) {
+        foreach ($p['variation_groups'] as $g) {
+            if (!is_array($g)) continue;
+            $vals = $g['values'] ?? $g['options'] ?? [];
+            if (is_array($vals) && count(array_filter(array_map('strval', $vals))) > 0) return true;
+        }
+    }
+    if (trim((string)($p['variations_text'] ?? '')) !== '') return true;
+    return false;
+}
+
+/** نرمال‌سازی خروجی AI/وب به ساختار استاندارد تنوع‌های اسکریپر */
+function aiNormalizeVariations($raw): array {
+    $out = ['groups' => [], 'values' => [], 'text' => '', 'prices' => []];
+    if ($raw === null || $raw === '' || $raw === []) return $out;
+    $groups = [];
+    $flat = [];
+    $seen = [];
+
+    $pushVals = function (string $name, $vals) use (&$groups, &$flat, &$seen) {
+        if (!is_array($vals)) {
+            if (is_string($vals)) {
+                $vals = preg_split('/\s*[,،|\/]\s*/u', $vals) ?: [];
+            } else return;
+        }
+        $clean = [];
+        foreach ($vals as $v) {
+            if (is_array($v)) $v = (string)($v['name'] ?? $v['title'] ?? $v['value'] ?? $v['label'] ?? '');
+            $v = trim((string)$v);
+            if ($v === '' || mb_strlen($v) > 80) continue;
+            $k = mb_strtolower($v, 'UTF-8');
+            if (isset($seen[$k])) continue;
+            $seen[$k] = true;
+            $clean[] = $v;
+            $flat[] = $v;
+        }
+        if (!$clean) return;
+        $groups[] = ['name' => ($name !== '' ? mb_substr($name, 0, 60) : 'ویژگی'), 'values' => array_slice($clean, 0, 40)];
+    };
+
+    if (is_string($raw)) {
+        $raw = trim($raw);
+        if ($raw !== '' && ($raw[0] === '{' || $raw[0] === '[')) {
+            $j = @json_decode($raw, true);
+            if (is_array($j)) $raw = $j;
+            else { $pushVals('گزینه', $raw); }
+        } else {
+            $pushVals('گزینه', $raw);
+        }
+    }
+
+    if (is_array($raw)) {
+        $isList = array_keys($raw) === range(0, count($raw) - 1);
+        if ($isList) {
+            /* ["قرمز","آبی"] یا [{name,values}] */
+            $allStr = true;
+            foreach ($raw as $x) { if (!is_string($x) && !is_numeric($x)) { $allStr = false; break; } }
+            if ($allStr) {
+                $pushVals('گزینه', $raw);
+            } else {
+                foreach ($raw as $g) {
+                    if (!is_array($g)) continue;
+                    $name = trim((string)($g['name'] ?? $g['title'] ?? $g['label'] ?? $g['key'] ?? ''));
+                    $vals = $g['values'] ?? $g['options'] ?? $g['items'] ?? $g['variants'] ?? null;
+                    if ($vals === null && isset($g['value'])) $vals = [$g['value']];
+                    $pushVals($name, $vals);
+                }
+            }
+        } else {
+            /* { "رنگ": ["قرمز"], "سایز": "S,M" } */
+            foreach ($raw as $k => $v) {
+                if (in_array((string)$k, ['groups','values','text','prices'], true) && is_array($v) && isset($raw['groups'])) {
+                    continue;
+                }
+                if ((string)$k === 'groups' && is_array($v)) {
+                    foreach ($v as $g) {
+                        if (!is_array($g)) continue;
+                        $pushVals((string)($g['name'] ?? ''), $g['values'] ?? $g['options'] ?? []);
+                    }
+                    continue;
+                }
+                if ((string)$k === 'values' && is_array($v)) { $pushVals('گزینه', $v); continue; }
+                if ((string)$k === 'text' || (string)$k === 'prices') continue;
+                $pushVals((string)$k, $v);
+            }
+            if (!$groups && !empty($raw['groups']) && is_array($raw['groups'])) {
+                foreach ($raw['groups'] as $g) {
+                    if (!is_array($g)) continue;
+                    $pushVals((string)($g['name'] ?? ''), $g['values'] ?? []);
+                }
+            }
+        }
+    }
+
+    $out['groups'] = $groups;
+    $out['values'] = array_slice($flat, 0, 80);
+    /* متن خوانا: رنگ: قرمز، آبی | سایز: S، M */
+    $parts = [];
+    foreach ($groups as $g) {
+        $nm = trim((string)($g['name'] ?? ''));
+        $vs = implode('، ', (array)($g['values'] ?? []));
+        if ($vs === '') continue;
+        $parts[] = ($nm !== '' && $nm !== 'گزینه' && $nm !== 'ویژگی') ? ($nm . ': ' . $vs) : $vs;
+    }
+    $out['text'] = implode(' | ', $parts);
+    return $out;
+}
+
+function aiApplyVariationsToProduct(array $p, $rawVars): array {
+    $nv = aiNormalizeVariations($rawVars);
+    if (!$nv['values'] && !$nv['groups']) return $p;
+    /* اگر از قبل تنوع استخراج‌شده از مبدأ هست، AI را روی خالی‌ها ننویس مگر متن خالی */
+    $had = aiProductHasVariations($p);
+    if (!$had) {
+        if ($nv['groups']) $p['variation_groups'] = $nv['groups'];
+        if ($nv['values']) $p['variations'] = $nv['values'];
+        if ($nv['text'] !== '') $p['variations_text'] = $nv['text'];
+    } else {
+        /* فقط variations_text را غنی کن اگر خالی است */
+        if (trim((string)($p['variations_text'] ?? '')) === '' && $nv['text'] !== '') {
+            $p['variations_text'] = $nv['text'];
+        }
+        if (empty($p['variation_groups']) && $nv['groups']) $p['variation_groups'] = $nv['groups'];
+        if (empty($p['variations']) && $nv['values']) $p['variations'] = $nv['values'];
+    }
+    $p['ai_variations_at'] = time();
+    return $p;
+}
+
 function aiProductNeedsContent(array $p): bool {
     $short = trim((string)($p['shortDesc'] ?? $p['short_desc'] ?? $p['brief'] ?? ''));
     $long  = trim((string)($p['longDesc'] ?? $p['long_desc'] ?? $p['description'] ?? ''));
@@ -4339,7 +4509,13 @@ function aiProductNeedsContent(array $p): bool {
             $needCat = false; /* یک‌بار در ۲۴س شکست خورده — فردا دوباره */
         }
     }
-    return $needDesc || $needCat;
+    /* v10.98: تنوع خالی → توضیح‌ساز تلاش می‌کند از وب/AI پیدا کند */
+    $needVar = !aiProductHasVariations($p);
+    if ($needVar) {
+        $vf = (int)($p['ai_var_fail_at'] ?? 0);
+        if ($vf > 0 && (time() - $vf) < 86400) $needVar = false;
+    }
+    return $needDesc || $needCat || $needVar;
 }
 
 /**
@@ -4451,15 +4627,16 @@ function aiFillProductContent(array $p, bool $webSearch = true, bool $mapBsl = t
         || mb_strlen(strip_tags($long0 !== '' ? $long0 : $short0)) < 40;
     $catId0 = (int)($p['bsl_category_id'] ?? $p['category_id'] ?? 0);
     $needCat = ($catId0 <= 0);
+    $needVar = !aiProductHasVariations($p);
     $changed = false;
     $catHint = trim((string)($p['category'] ?? $p['bsl_category_name'] ?? ''));
     $model = '';
 
-    if ($needDesc) {
-        $gen = aiGenerateProductDescriptionAndCategory($title, $webSearch);
+    if ($needDesc || $needVar) {
+        $gen = aiGenerateProductDescriptionAndCategory($title, $webSearch, $p);
         if (empty($gen['ok'])) {
-            /* اگر فقط دسته کم بود، ادامه بده؛ وگرنه fail */
-            if (!$needCat) {
+            /* اگر فقط دسته/تنوع کم بود، ادامه بده؛ وگرنه fail */
+            if (!$needCat && !$needVar) {
                 return ['product' => $p, 'filled' => false, 'error' => (string)($gen['error'] ?? 'gen fail')];
             }
         } else {
@@ -4467,21 +4644,38 @@ function aiFillProductContent(array $p, bool $webSearch = true, bool $mapBsl = t
             $html  = trim((string)($gen['description_html'] ?? ''));
             if ($catHint === '') $catHint = trim((string)($gen['category'] ?? ''));
             $model = (string)($gen['model_used'] ?? '');
-            if ($short !== '') {
-                $p['shortDesc'] = $short;
-                $p['short_desc'] = $short;
-                $p['brief'] = mb_substr(strip_tags($short), 0, 250);
-                $changed = true;
-            }
-            if ($html !== '') {
-                $p['longDesc'] = $html;
-                $p['long_desc'] = $html;
-                $p['description'] = $html;
-                $changed = true;
+            /* فقط وقتی توضیح کم بود، متن را جایگزین کن — وگرنه توضیح مبدأ پاک می‌شود */
+            if ($needDesc) {
+                if ($short !== '') {
+                    $p['shortDesc'] = $short;
+                    $p['short_desc'] = $short;
+                    $p['brief'] = mb_substr(strip_tags($short), 0, 250);
+                    $changed = true;
+                }
+                if ($html !== '') {
+                    $p['longDesc'] = $html;
+                    $p['long_desc'] = $html;
+                    $p['description'] = $html;
+                    $changed = true;
+                }
             }
             if ($catHint !== '' && trim((string)($p['category'] ?? '')) === '') {
                 $p['category'] = $catHint;
                 $changed = true;
+            }
+            /* v10.98: تنوع‌های یافت‌شده از AI/وب */
+            if (!empty($gen['variations']) || !empty($gen['variation_groups']) || !empty($gen['variations_text'])) {
+                $before = aiProductHasVariations($p);
+                $p = aiApplyVariationsToProduct($p, $gen['variation_groups'] ?? ($gen['variations'] ?? ($gen['variations_text'] ?? [])));
+                if (!$before && aiProductHasVariations($p)) {
+                    $changed = true;
+                    $needVar = false;
+                    unset($p['ai_var_fail_at']);
+                } elseif ($before && trim((string)($p['variations_text'] ?? '')) !== '') {
+                    $changed = true;
+                }
+            } elseif ($needVar) {
+                $p['ai_var_fail_at'] = time();
             }
             /* gen خودش bsl_category_id برمی‌گرداند */
             if ($mapBsl && (int)($gen['bsl_category_id'] ?? 0) > 0 && $needCat) {
@@ -4588,7 +4782,7 @@ function aiAutoFillMissingAcrossProfiles(?array $cn = null, int $limit = 0): arr
                     $stats['filled']++;
                     $ttl = mb_substr((string)($p2['title'] ?? ''), 0, 40);
                     $cid = (int)($p2['bsl_category_id'] ?? 0);
-                    $stats['log'][] = '✓ ' . $ttl . ($cid ? (" → bsl#{$cid}") : '');
+                    $stats['log'][] = '✓ ' . $ttl . ($cid ? (' → bsl#' . $cid) : '');
                 } else {
                     $stats['failed']++;
                     if (!empty($r['error'])) $stats['log'][] = '✗ ' . mb_substr((string)$r['error'], 0, 80);
@@ -4769,12 +4963,16 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
                 $item['category'] = (string)($p2['category'] ?? '');
                 $item['bsl_category_id'] = (int)($p2['bsl_category_id'] ?? 0);
                 $item['bsl_category_name'] = (string)($p2['bsl_category_name'] ?? '');
+                $item['variations_text'] = (string)($p2['variations_text'] ?? '');
+                $item['variation_groups'] = is_array($p2['variation_groups'] ?? null) ? $p2['variation_groups'] : [];
+                $item['variations'] = is_array($p2['variations'] ?? null) ? $p2['variations'] : [];
                 $item['model'] = (string)($r['model'] ?? $p2['ai_content_model'] ?? '');
                 $cid = $item['bsl_category_id'];
-                $item['summary'] = 'پر شد' . ($cid ? (" · باسلام #{$cid}") : '');
+                $vt = $item['variations_text'];
+                $item['summary'] = 'پر شد' . ($cid ? (' · باسلام #' . $cid) : '') . ($vt !== '' ? (' · تنوع: ' . mb_substr($vt, 0, 40)) : '');
                 aicontentProgress([
                     'filled' => $stats['filled'], 'current' => $curN,
-                    'log_add' => [['m' => '✓ ' . mb_substr($title, 0, 40) . ($cid ? " → #{$cid}" : ''), 'item_id' => $itemId, 'status' => 'ok']],
+                    'log_add' => [['m' => '✓ ' . mb_substr($title, 0, 40) . ($cid ? (' → #' . $cid) : ''), 'item_id' => $itemId, 'status' => 'ok']],
                 ]);
             } else {
                 $stats['failed']++;
@@ -4824,7 +5022,7 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
     return $stats;
 }
 
-function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch = true): array {
+function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch = true, ?array $productCtx = null): array {
     $title = trim($title);
     if (empty($title)) {
         return ['ok' => false, 'error' => 'عنوان محصول خالی است.'];
@@ -4835,25 +5033,47 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
         $webInfo = aiSearchProductWeb($title);
     }
 
-    // Build Prompt
+    // Build Prompt — v10.98: تنوع‌ها (رنگ/سایز/…) هم خواسته می‌شود
+    $ctxBits = '';
+    if (is_array($productCtx)) {
+        $exVar = trim((string)($productCtx['variations_text'] ?? ''));
+        if ($exVar === '' && !empty($productCtx['variations']) && is_array($productCtx['variations'])) {
+            $exVar = implode('، ', array_map('strval', $productCtx['variations']));
+        }
+        if ($exVar !== '') $ctxBits .= "تنوع‌های از قبل استخراج‌شده از مبدأ: {$exVar}\n";
+        $brand = trim((string)($productCtx['brand'] ?? ''));
+        if ($brand !== '') $ctxBits .= "برند: {$brand}\n";
+    }
+    if (!empty($webInfo['variations_hint'])) {
+        $ctxBits .= "تنوع‌های یافت‌شده در وب: " . (string)$webInfo['variations_hint'] . "\n";
+    }
+    $jsonShape = '{"category":"...", "short_description":"...", "description_html":"...", "variations":[{"name":"رنگ","values":["..."]},{"name":"سایز","values":["..."]}]}';
+    $varRule = "۴. تنوع‌های واقعی محصول را (رنگ، سایز، ظرفیت، مدل، بسته و …) به‌صورت آرایهٔ groups پیدا کنید. "
+        . "اگر در وب/عنوان چیزی نیست، آرایه خالی بگذارید — تنوع ساختگی نفرستید. "
+        . "در description_html اگر تنوع معتبری هست یک بخش «گزینه‌های موجود» با ul اضافه کنید.\\n";
+
     if (!empty($webInfo['found']) && !empty($webInfo['snippets'])) {
-        $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\n"
-            . "با توجه به نتایج جستجوی اینترنتی زیر درباره محصول «{$title}»، لطفاً:\n"
-            . "۱. دسته‌بندی مناسب فروشگاهی را با نام دقیق برگِ درختِ دسته‌بندی (ترجیحاً سازگار با باسلام) تعیین کنید.\n"
-            . "۲. یک متن معرفی کوتاه (۱ الی ۲ جمله جذاب) بنویسید.\n"
-            . "۳. توضیحات کامل، جذاب و سئو شده به زبان فارسی در قالب تگ‌های استاندارد HTML (شامل تگ‌های p، ul، li، strong، h3 و h4 برای معرفی، ویژگی‌های کلیدی، مشخصات فنی و جمع‌بندی خرید) تولید فرمایید.\n\n"
-            . "مشخصات و اطلاعات یافت‌شده در وب:\n"
-            . $webInfo['snippets'] . "\n\n"
-            . "پاسخ را حتماً و فقط در قالب فرمت استاندارد JSON زیر برگردانید:\n"
-            . '{"category": "...", "short_description": "...", "description_html": "..."}';
+        $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\\n"
+            . "با توجه به نتایج جستجوی اینترنتی زیر درباره محصول «{$title}»، لطفاً:\\n"
+            . "۱. دسته‌بندی مناسب فروشگاهی را با نام دقیق برگِ درختِ دسته‌بندی (ترجیحاً سازگار با باسلام) تعیین کنید.\\n"
+            . "۲. یک متن معرفی کوتاه (۱ الی ۲ جمله جذاب) بنویسید.\\n"
+            . "۳. توضیحات کامل، جذاب و سئو شده به زبان فارسی در قالب تگ‌های استاندارد HTML (شامل تگ‌های p، ul، li، strong، h3 و h4 برای معرفی، ویژگی‌های کلیدی، مشخصات فنی و جمع‌بندی خرید) تولید فرمایید.\\n"
+            . $varRule
+            . "\\nمشخصات و اطلاعات یافت‌شده در وب:\\n"
+            . $webInfo['snippets'] . "\\n"
+            . ($ctxBits !== '' ? ("\\nاطلاعات تکمیلی:\\n" . $ctxBits) : '')
+            . "\\nپاسخ را حتماً و فقط در قالب فرمت استاندارد JSON زیر برگردانید:\\n"
+            . $jsonShape;
     } else {
-        $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\n"
-            . "با توجه به عدم مشاهده مشخصات در وب، لطفاً بر اساس عنوان «{$title}» و دانش تخصصی خود:\n"
-            . "۱. دسته‌بندی دقیق برگ‌مانند (نام دستهٔ نهایی فروشگاهی، سازگار با باسلام) را مشخص کنید.\n"
-            . "۲. یک معرفی کوتاه (۱ الی ۲ جمله) بنویسید.\n"
-            . "۳. توضیحات جامع و ساختاریافته به زبان فارسی با تگ‌های تمیز HTML (شامل معرفی، کاربردها، ویژگی‌های برجسته و راهنمای خرید) تولید کنید.\n\n"
-            . "پاسخ را حتماً و فقط در قالب فرمت استاندارد JSON زیر برگردانید:\n"
-            . '{"category": "...", "short_description": "...", "description_html": "..."}';
+        $prompt = "شما یک کارشناس ارشد سئو و تولید محتوای تخصصی فروشگاه اینترنتی هستید.\\n"
+            . "با توجه به عدم مشاهده مشخصات در وب، لطفاً بر اساس عنوان «{$title}» و دانش تخصصی خود:\\n"
+            . "۱. دسته‌بندی دقیق برگ‌مانند (نام دستهٔ نهایی فروشگاهی، سازگار با باسلام) را مشخص کنید.\\n"
+            . "۲. یک معرفی کوتاه (۱ الی ۲ جمله) بنویسید.\\n"
+            . "۳. توضیحات جامع و ساختاریافته به زبان فارسی با تگ‌های تمیز HTML (شامل معرفی، کاربردها، ویژگی‌های برجسته و راهنمای خرید) تولید کنید.\\n"
+            . $varRule
+            . ($ctxBits !== '' ? ("\\nاطلاعات تکمیلی:\\n" . $ctxBits) : '')
+            . "\\nپاسخ را حتماً و فقط در قالب فرمت استاندارد JSON زیر برگردانید:\\n"
+            . $jsonShape;
     }
 
     $payload = [
@@ -4928,6 +5148,9 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
             'category' => $fb['category'],
             'short_description' => $fb['short_description'],
             'description_html' => $fb['description_html'],
+            'variations' => $fb['variations'] ?? [],
+            'variation_groups' => $fb['variation_groups'] ?? [],
+            'variations_text' => $fb['variations_text'] ?? '',
             'bsl_category_id' => (int)($bslMap['category_id'] ?? 0),
             'bsl_category_name' => (string)($bslMap['category_name'] ?? ''),
             'bsl_category_via' => (string)($bslMap['via'] ?? ''),
@@ -4949,6 +5172,9 @@ function aiGenerateProductDescriptionAndCategory(string $title, bool $webSearch 
         'short_description' => $parsed['short_description'],
         'description_html' => $parsed['description_html'],
         'raw_text' => $rawAnswer,
+        'variations' => $parsed['variations'] ?? [],
+        'variation_groups' => $parsed['variation_groups'] ?? [],
+        'variations_text' => $parsed['variations_text'] ?? '',
         /* v10.83: دسته به فرمت باسلام (شناسه برگ) برای ارسال سریع‌تر */
         'bsl_category_id' => (int)($bslMap['category_id'] ?? 0),
         'bsl_category_name' => (string)($bslMap['category_name'] ?? ''),
@@ -4970,19 +5196,34 @@ function aiParseContentJson(string $raw, string $title, array $webInfo): array {
         $short = trim((string)($json['short_description'] ?? ''));
         $desc = trim((string)($json['description_html'] ?? ($json['description'] ?? '')));
         if (!empty($cat) && !empty($desc)) {
+            $varsRaw = $json['variations'] ?? $json['variation_groups'] ?? $json['variants'] ?? $json['options'] ?? [];
+            $nv = function_exists('aiNormalizeVariations') ? aiNormalizeVariations($varsRaw) : ['groups'=>[],'values'=>[],'text'=>''];
+            /* اگر در HTML بخش گزینه‌ها هست و JSON خالی بود، از webInfo استفاده کن */
+            if (!$nv['values'] && !empty($webInfo['variations_hint'])) {
+                $nv = aiNormalizeVariations((string)$webInfo['variations_hint']);
+            }
             return [
                 'category' => $cat,
                 'short_description' => $short ?: mb_substr(strip_tags($desc), 0, 150) . '...',
                 'description_html' => $desc,
+                'variations' => $nv['values'],
+                'variation_groups' => $nv['groups'],
+                'variations_text' => $nv['text'],
             ];
         }
     }
 
     $category = !empty($webInfo['category']) ? $webInfo['category'] : 'کالای عمومی و کاربردی';
+    $nv = function_exists('aiNormalizeVariations')
+        ? aiNormalizeVariations($webInfo['variations_hint'] ?? [])
+        : ['groups'=>[],'values'=>[],'text'=>''];
     return [
         'category' => $category,
         'short_description' => mb_substr(strip_tags($raw), 0, 150) . '...',
         'description_html' => '<div class="product-description-wrap">' . nl2br(htmlspecialchars($raw, ENT_QUOTES, 'UTF-8')) . '</div>',
+        'variations' => $nv['values'],
+        'variation_groups' => $nv['groups'],
+        'variations_text' => $nv['text'],
     ];
 }
 
@@ -5016,10 +5257,35 @@ function aiGenerateFallbackContent(string $title, array $webInfo): array {
         . "  <p>چنانچه در جستجوی کالایی بادوام، قابل‌اعتماد و با ارزش خرید بالا در برابر قیمت هستید، {$title} تمامی نیازهای روزمره و حرفه‌ای شما را به شکلی مطلوب پاسخگو خواهد بود.</p>\n"
         . "</div>";
 
+    $nv = function_exists('aiNormalizeVariations')
+        ? aiNormalizeVariations($webInfo['variations_hint'] ?? [])
+        : ['groups'=>[],'values'=>[],'text'=>''];
+    /* اگر از عنوان رنگ/ظرفیت معلوم است */
+    if (!$nv['values']) {
+        $guess = [];
+        if (preg_match('/\b(64|128|256|512)\s*GB\b/i', $title, $m)) {
+            $guess[] = ['name' => 'حافظه', 'values' => [strtoupper($m[1]) . 'GB']];
+        }
+        if (preg_match('/(مشکی|سفید|آبی|قرمز|طلایی|نقره‌ای|سبز|صورتی|خاکستری|black|white|blue|red|gold)/ui', $title, $m)) {
+            $guess[] = ['name' => 'رنگ', 'values' => [trim($m[1])]];
+        }
+        if ($guess) $nv = aiNormalizeVariations($guess);
+    }
+    if ($nv['text'] !== '' && mb_strpos($descHtml, 'گزینه‌های موجود') === false) {
+        $lis = '';
+        foreach ($nv['groups'] as $g) {
+            $lis .= '<li><strong>' . htmlspecialchars((string)($g['name'] ?? 'گزینه'), ENT_QUOTES, 'UTF-8') . ':</strong> '
+                . htmlspecialchars(implode('، ', (array)($g['values'] ?? [])), ENT_QUOTES, 'UTF-8') . '</li>';
+        }
+        $descHtml = preg_replace('~</div>\s*$~', "  <h4>گزینه‌های موجود</h4>\n  <ul>{$lis}</ul>\n</div>", $descHtml, 1) ?: $descHtml;
+    }
     return [
         'category' => $category,
         'short_description' => $shortDesc,
         'description_html' => $descHtml,
+        'variations' => $nv['values'],
+        'variation_groups' => $nv['groups'],
+        'variations_text' => $nv['text'],
     ];
 }
 
@@ -6670,15 +6936,25 @@ function wooCategoryIds(array $w, $raw, bool $create = true): array {
  * توضیحات موجود مقصد را با رشتهٔ خالی پاک نکند.
  */
 function bslApplyContent(array &$bu, array $p): void {
-    $brief = trim(strip_tags((string)($p['short_desc'] ?? '')));
-    $desc  = trim((string)($p['long_desc'] ?? ''));
+    $brief = trim(strip_tags((string)($p['short_desc'] ?? $p['shortDesc'] ?? $p['brief'] ?? '')));
+    $desc  = trim((string)($p['long_desc'] ?? $p['longDesc'] ?? $p['description'] ?? ''));
     // تنوع‌ها اگر باشند به انتهای توضیح اضافه می‌شوند؛ باسلام برای
     // محصول ساده جای جداگانه‌ای برای گزینه‌ها ندارد.
     $varTxt = trim((string)($p['variations_text'] ?? ''));
+    if ($varTxt === '' && !empty($p['variations']) && is_array($p['variations'])) {
+        $varTxt = implode('، ', array_map('strval', $p['variations']));
+    }
+    if ($varTxt === '' && !empty($p['variation_groups']) && is_array($p['variation_groups'])) {
+        $nv = function_exists('aiNormalizeVariations') ? aiNormalizeVariations($p['variation_groups']) : ['text'=>''];
+        $varTxt = (string)($nv['text'] ?? '');
+    }
     if ($varTxt !== '') {
         $line = 'گزینه‌های موجود: ' . $varTxt;
-        if ($desc !== '' && mb_strpos($desc, $varTxt) === false) $desc .= "\n" . $line;
-        elseif ($desc === '') $desc = $line;
+        if ($desc !== '' && mb_strpos($desc, $varTxt) === false && mb_strpos($desc, 'گزینه‌های موجود') === false) {
+            $desc .= (str_contains($desc, '<') ? '<p><strong>گزینه‌های موجود:</strong> ' . htmlspecialchars($varTxt, ENT_QUOTES, 'UTF-8') . '</p>' : "\n" . $line);
+        } elseif ($desc === '') {
+            $desc = $line;
+        }
     }
     if ($brief !== '') $bu['brief'] = mb_substr($brief, 0, 250);
     if ($desc !== '')  $bu['description'] = $desc;
@@ -14694,6 +14970,7 @@ function bslUpsertManyShops(array $p, array $shops, array $opts, int $conc = 4):
             $bu = ['primary_price' => $prices[$vid], 'stock' => $stock, 'status' => 2976,
                    'preparation_days' => $prepD, 'weight' => $weight, 'package_weight' => $pkgW];
             if ($catId > 0) $bu['category_id'] = $catId;
+            bslApplyContent($bu, $p); /* v10.98: توضیح + تنوع */
             $jobs[$vid] = ['tk' => (string)$live[$vid]['token'], 'm' => 'PATCH',
                            'ep' => 'products/' . $exId, 'd' => $bu];
         }
@@ -14733,6 +15010,11 @@ function bslUpsertManyShops(array $p, array $shops, array $opts, int $conc = 4):
         $desc  = trim((string)($p['long_desc'] ?? $p['longDesc'] ?? $p['description'] ?? ''));
         if ($brief === '') $brief = trim(strip_tags($title));
         if ($desc === '')  $desc  = $brief;
+        /* v10.98: تنوع‌ها در توضیح ساخت */
+        $_buTmp = [];
+        bslApplyContent($_buTmp, array_merge($p, ['short_desc' => $brief, 'long_desc' => $desc]));
+        if (!empty($_buTmp['brief'])) $brief = (string)$_buTmp['brief'];
+        if (!empty($_buTmp['description'])) $desc = (string)$_buTmp['description'];
         $jobs = [];
         foreach ($toCreate as $vid => $sh) {
             $bp = ['name' => mb_substr($title, 0, 120), 'brief' => mb_substr($brief, 0, 250),
@@ -14832,6 +15114,7 @@ function bslUpsertToShop(array $p, array $shop, array $opts): array {
         $bu = ['primary_price' => $priceRial, 'stock' => $stock, 'status' => 2976,
                'preparation_days' => $prepD, 'weight' => $weight, 'package_weight' => $pkgW];
         if ($catId > 0) $bu['category_id'] = $catId;
+        bslApplyContent($bu, $p); /* v10.98: توضیح + تنوع */
         $r = bslReq($tk, 'PATCH', 'products/' . $exId, $bu);
         if ($r['code'] === 404) $r = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $exId, $bu);
         if (!empty($r['ok']) && !empty($r['body']['id'])) {
@@ -14855,6 +15138,10 @@ function bslUpsertToShop(array $p, array $shop, array $opts): array {
     $desc  = trim((string)($p['long_desc'] ?? $p['longDesc'] ?? $p['description'] ?? ''));
     if ($brief === '') $brief = trim(strip_tags($title));
     if ($desc === '')  $desc  = $brief;
+    $_buTmp = [];
+    bslApplyContent($_buTmp, array_merge($p, ['short_desc' => $brief, 'long_desc' => $desc]));
+    if (!empty($_buTmp['brief'])) $brief = (string)$_buTmp['brief'];
+    if (!empty($_buTmp['description'])) $desc = (string)$_buTmp['description'];
     $bp = ['name' => mb_substr($title, 0, 120), 'brief' => mb_substr($brief, 0, 250),
            'description' => $desc, 'primary_price' => $priceRial, 'stock' => $stock,
            'preparation_days' => $prepD, 'weight' => $weight, 'package_weight' => $pkgW,
@@ -26076,7 +26363,17 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
-            /* ==== ۱۰۷ (v10.97) ==== */
+            /* ==== ۱۰۸ (v10.98) ==== */
+    $add('10.98', 'نسخهٔ ۱۰.۹۸',
+         version_compare(APP_VERSION, '10.98', '>=')
+      && strpos($selfSrc, "{v:'10.98',") !== false);
+    $add('10.98', 'توضیح‌ساز تنوع‌ها را نرمال و ذخیره می‌کند',
+         strpos($selfSrc, 'function aiNormalizeVariations') !== false
+      && strpos($selfSrc, 'function aiApplyVariationsToProduct') !== false
+      && strpos($selfSrc, 'function aiProductHasVariations') !== false
+      && strpos($selfSrc, 'variations_hint') !== false);
+
+    /* ==== ۱۰۷ (v10.97) ==== */
     $add('10.97', 'نسخهٔ ۱۰.۹۷',
          version_compare(APP_VERSION, '10.97', '>=')
       && strpos($selfSrc, "{v:'10.97',") !== false);
@@ -55395,6 +55692,11 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.98', t:'توضیح‌ساز: کشف و ذخیرهٔ تنوع‌ها (رنگ/سایز/…)', items:[
+    '🎛 تولید محتوا حالا تنوع‌های واقعی را از وب/AI پیدا می‌کند و روی محصول می‌نشاند (variation_groups / variations_text)',
+    '📤 ارسال باسلام و ووکامرس از همان تنوع‌ها استفاده می‌کند (توضیح + attributes)',
+    '🃏 کارت و مودال توضیح‌ساز، تنوع هر محصول را نشان می‌دهد',
+  ]},
   {v:'10.97', t:'توضیح‌ساز سرورساید + جستجوی ذره‌بین ویترین', items:[
     '📝 توضیح‌ساز هوشمند به‌صورت کار پس‌زمینهٔ سرور (مدیر وظیفه) با صف و گزارش کارتی',
     '🃏 هر محصول یک کارت — کلیک برای مودال جزئیات (توضیح، دسته، شناسه باسلام)',
@@ -65038,7 +65340,9 @@ function aicontentRefreshLog(){
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:4px">'
         +'<span style="font-size:9px;background:'+col+';color:#fff;padding:1px 6px;border-radius:6px">'+esc(st||'—')+'</span>'
         +'<span style="font-size:9.5px;color:#a7f3d0">'+esc(cid|| (it.category||'').slice(0,18))+'</span>'
-        +'</div></button>';
+        +'</div>'
+        +(it.variations_text?('<div style="font-size:9px;color:#fbbf24;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🎛 '+esc(String(it.variations_text).slice(0,48))+'</div>'):'')
+        +'</button>';
     }).join('');
   }).catch(()=>{});
 }
@@ -65059,6 +65363,15 @@ function aicontentShowItem(id){
         +'<div style="margin-bottom:8px"><b style="color:#67e8f9">دسته:</b> '+esc(it.category||'—')
         +(it.bsl_category_id?(' <span style="color:#a7f3d0">· باسلام #'+it.bsl_category_id+(it.bsl_category_name?(' — '+esc(it.bsl_category_name)):'' )+'</span>'):'')
         +'</div>'
+        +'<div style="margin-bottom:8px"><b style="color:#fbbf24">تنوع‌ها</b><div style="background:#111c31;border-radius:8px;padding:8px;margin-top:4px;white-space:pre-wrap;color:#e2e8f0">'
+        +(function(){
+          if(it.variations_text) return esc(it.variations_text);
+          const gs=it.variation_groups||[];
+          if(gs.length) return gs.map(g=>esc((g.name||'گزینه')+': '+((g.values||[]).join('، ')))).join('\n');
+          if((it.variations||[]).length) return esc((it.variations||[]).join('، '));
+          return '—';
+        })()
+        +'</div></div>'
         +'<div style="margin-bottom:8px"><b style="color:#94a3b8">معرفی کوتاه</b><div style="background:#111c31;border-radius:8px;padding:8px;margin-top:4px;white-space:pre-wrap">'+esc(it.short_description||'—')+'</div></div>'
         +'<div><b style="color:#94a3b8">توضیحات HTML</b>'
         +'<div style="background:#fff;color:#0f172a;border-radius:8px;padding:12px;margin-top:4px;max-height:280px;overflow:auto;font-size:12px;line-height:1.8">'+(it.description_html||'<span style="color:#94a3b8">—</span>')+'</div></div>';
@@ -65146,6 +65459,21 @@ function aiRunContentGen(){
 
       const shortBox = $('aiGenResShort');
       if(shortBox) shortBox.value = d.short_description || '';
+      let varEl = $('aiGenResVars');
+      if(!varEl){
+        const catWrap = $('aiGenResCat') && $('aiGenResCat').parentElement;
+        if(catWrap){
+          varEl = document.createElement('div');
+          varEl.id = 'aiGenResVars';
+          varEl.style.cssText = 'margin-top:8px;font-size:11px;color:#fbbf24;display:none';
+          catWrap.appendChild(varEl);
+        }
+      }
+      if(varEl){
+        const vt = d.variations_text || (Array.isArray(d.variation_groups)?d.variation_groups.map(g=>(g.name||'')+': '+((g.values||[]).join('، '))).join(' | '):'') || (Array.isArray(d.variations)?d.variations.join('، '):'');
+        if(vt){ varEl.style.display='block'; varEl.textContent='🎛 تنوع‌ها: '+vt; }
+        else { varEl.style.display='none'; varEl.textContent=''; }
+      }
 
       const pBox = $('aiGenPreviewBox');
       if(pBox) pBox.innerHTML = d.description_html || '';

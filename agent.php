@@ -46,6 +46,7 @@ class Scraper_Auto_Shop_Plugin {
 			'default_column_layout'       => '1', // '1' column default
 			'products_per_page'           => 20, // 20 items per page
 			'show_features_banner'        => true,
+			'show_animated_stats'         => true, // نمایش شماره‌های جذاب انیمیشن‌دار در صفحه فروشگاه
 			'show_special_badge'          => true,
 			'free_shipping_threshold'     => 400000,
 
@@ -3631,6 +3632,11 @@ class Scraper_Auto_Shop_Plugin {
 					padding: 0 !important;
 					background-color: #f8fafc !important;
 					font-family: "Vazirmatn", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+					overflow-x: visible !important;
+				}
+				.scraper-standalone-shop-takeover,
+				.scraper-shop-fullscreen-wrap {
+					overflow-x: visible !important;
 				}
 			</style>
 		</head>
@@ -4412,13 +4418,13 @@ class Scraper_Auto_Shop_Plugin {
 			.store-sticky-header-container {
 				width: 100%;
 				margin-bottom: 20px;
+				transition: top 0.2s ease, box-shadow 0.25s ease, background 0.25s ease, padding 0.25s ease;
 			}
 			.store-sticky-header-container.is-sticky-active {
 				position: -webkit-sticky;
 				position: sticky;
 				top: 0;
-				z-index: 990;
-				transition: top 0.2s ease, box-shadow 0.25s ease, background 0.25s ease, padding 0.25s ease;
+				z-index: 9999;
 			}
 			body.admin-bar .store-sticky-header-container.is-sticky-active {
 				top: 32px;
@@ -4429,36 +4435,81 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			}
 
+			/* Bulletproof Fixed Sticky State via JS Engine */
+			.store-sticky-header-container.is-fixed-sticky {
+				position: fixed !important;
+				left: 0 !important;
+				right: 0 !important;
+				width: 100% !important;
+				margin: 0 !important;
+				z-index: 99999 !important;
+				background: rgba(255, 255, 255, 0.97) !important;
+				backdrop-filter: blur(16px) !important;
+				-webkit-backdrop-filter: blur(16px) !important;
+				box-shadow: 0 10px 30px -4px rgba(0, 0, 0, 0.12), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important;
+				border-bottom: 1.5px solid rgba(226, 232, 240, 0.9) !important;
+				animation: storeStickySlideDown 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+			}
+
+			@keyframes storeStickySlideDown {
+				from {
+					transform: translateY(-100%);
+					opacity: 0.85;
+				}
+				to {
+					transform: translateY(0);
+					opacity: 1;
+				}
+			}
+
+			.store-sticky-header-container.is-fixed-sticky .store-main-header,
+			.store-sticky-header-container.is-fixed-sticky .store-navbar {
+				max-width: 1360px;
+				margin-left: auto;
+				margin-right: auto;
+				padding-left: 20px;
+				padding-right: 20px;
+			}
+
+			.store-sticky-header-container.is-fixed-sticky .store-main-header {
+				padding: 8px 16px;
+				margin-bottom: 0;
+				border: none;
+				box-shadow: none;
+				background: transparent;
+			}
+
+			.store-sticky-header-container.is-fixed-sticky .store-navbar {
+				margin-bottom: 0;
+				padding: 4px 16px 8px;
+				border: none;
+				box-shadow: none;
+				background: transparent;
+			}
+
+			.store-sticky-header-container.is-fixed-sticky .store-brand-logo {
+				width: 38px;
+				height: 38px;
+			}
+			.store-sticky-header-container.is-fixed-sticky .store-brand-logo svg {
+				width: 20px;
+				height: 20px;
+			}
+			.store-sticky-header-container.is-fixed-sticky .store-brand-info h2 {
+				font-size: 1.15rem;
+			}
+			.store-sticky-header-container.is-fixed-sticky .store-brand-info span {
+				display: none;
+			}
+
 			.store-sticky-header-container.is-sticky-active.is-scrolled {
-				background: rgba(255, 255, 255, 0.96);
+				background: rgba(255, 255, 255, 0.97);
 				backdrop-filter: blur(14px);
 				-webkit-backdrop-filter: blur(14px);
 				box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.09), 0 6px 12px -4px rgba(0, 0, 0, 0.04);
 				border-radius: var(--sp-radius);
 				border: 1px solid rgba(226, 232, 240, 0.85);
 				padding: 6px 12px;
-			}
-			.store-sticky-header-container.is-sticky-active.is-scrolled .store-main-header {
-				padding: 10px 16px;
-				margin-bottom: 6px;
-				border: none;
-				box-shadow: none;
-				background: transparent;
-			}
-			.store-sticky-header-container.is-sticky-active.is-scrolled .store-navbar {
-				margin-bottom: 2px;
-				padding: 6px 12px;
-				border: 1px solid rgba(226, 232, 240, 0.7);
-				background: rgba(248, 250, 252, 0.85);
-				box-shadow: none;
-			}
-			.store-sticky-header-container.is-sticky-active.is-scrolled .store-brand-logo {
-				width: 40px;
-				height: 40px;
-			}
-			.store-sticky-header-container.is-sticky-active.is-scrolled .store-brand-logo svg {
-				width: 22px;
-				height: 22px;
 			}
 
 			.store-brand-info h2 {
@@ -4780,6 +4831,124 @@ class Scraper_Auto_Shop_Plugin {
 				display: flex;
 				align-items: center;
 				gap: 8px;
+			}
+
+			/* Storefront Animated Counters & Trust Showcase */
+			.store-kpi-showcase {
+				margin: 18px 0 26px 0;
+				width: 100%;
+			}
+			.store-kpi-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+				gap: 12px;
+			}
+			.store-kpi-card {
+				background: #ffffff;
+				border: 1.5px solid #e2e8f0;
+				border-radius: var(--sp-radius, 14px);
+				padding: 16px 18px;
+				display: flex;
+				align-items: center;
+				gap: 14px;
+				box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03);
+				transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+				position: relative;
+				overflow: hidden;
+			}
+			.store-kpi-card::before {
+				content: "";
+				position: absolute;
+				top: 0;
+				left: 0;
+				width: 4px;
+				height: 100%;
+				background: var(--sp-accent, #2563eb);
+				opacity: 0;
+				transition: opacity 0.25s ease;
+			}
+			.store-kpi-card:hover {
+				transform: translateY(-3px);
+				border-color: #cbd5e1;
+				box-shadow: 0 10px 24px var(--accent-glow, rgba(37, 99, 235, 0.12));
+			}
+			.store-kpi-card:hover::before {
+				opacity: 1;
+			}
+			.kpi-icon-bubble {
+				width: 48px;
+				height: 48px;
+				border-radius: 14px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 1.45rem;
+				flex-shrink: 0;
+				box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+			}
+			.kpi-content {
+				flex: 1;
+				min-width: 0;
+			}
+			.kpi-number-wrap {
+				font-size: 1.55rem;
+				font-weight: 900;
+				color: #0f172a;
+				line-height: 1.2;
+				display: flex;
+				align-items: baseline;
+				gap: 2px;
+			}
+			.counter-num {
+				font-feature-settings: "tnum";
+				font-variant-numeric: tabular-nums;
+				color: var(--sp-text, #0f172a);
+			}
+			.kpi-title {
+				font-size: 0.88rem;
+				font-weight: 800;
+				color: #1e293b;
+				margin-top: 2px;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.kpi-desc {
+				font-size: 0.74rem;
+				color: #64748b;
+				margin-top: 2px;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			@media (max-width: 640px) {
+				.store-kpi-grid {
+					grid-template-columns: repeat(2, 1fr);
+					gap: 10px;
+				}
+				.store-kpi-card {
+					padding: 12px 14px;
+					flex-direction: column;
+					align-items: flex-start;
+					gap: 8px;
+				}
+				.kpi-icon-bubble {
+					width: 38px;
+					height: 38px;
+					font-size: 1.2rem;
+				}
+				.kpi-number-wrap {
+					font-size: 1.3rem;
+				}
+			}
+			@media (max-width: 420px) {
+				.store-kpi-grid {
+					grid-template-columns: 1fr;
+				}
+				.store-kpi-card {
+					flex-direction: row;
+					align-items: center;
+				}
 			}
 
 			/* Toolbar & Category Chips */
@@ -6907,6 +7076,86 @@ class Scraper_Auto_Shop_Plugin {
 				<?php endif; ?>
 			</div>
 
+			<!-- Animated Store Metrics & Customer Trust Counters Showcase -->
+			<?php if ( ! empty( $settings['show_animated_stats'] ) ) : ?>
+				<div class="store-kpi-showcase" id="storeKpiShowcase">
+					<div class="store-kpi-grid">
+						<!-- 1. Customer Satisfaction -->
+						<div class="store-kpi-card" style="--accent-glow: rgba(245, 158, 11, 0.15);">
+							<div class="kpi-icon-bubble" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); color: #b45309;">
+								⭐
+							</div>
+							<div class="kpi-content">
+								<div class="kpi-number-wrap">
+									<span class="counter-num" data-target="98.8" data-decimals="1" data-prefix="" data-suffix="٪">۰</span>
+								</div>
+								<div class="kpi-title">رضایت خریداران و همراهان</div>
+								<div class="kpi-desc">ثبت بیش از ۲,۸۰۰ نظر مثبت و بازخورد عالی</div>
+							</div>
+						</div>
+
+						<!-- 2. Products Variety -->
+						<div class="store-kpi-card" style="--accent-glow: rgba(37, 99, 235, 0.15);">
+							<div class="kpi-icon-bubble" style="background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); color: #1d4ed8;">
+								🛍️
+							</div>
+							<div class="kpi-content">
+								<div class="kpi-number-wrap">
+									<?php 
+									$active_prod_count = max( count( $products ), 3500 );
+									?>
+									<span class="counter-num" data-target="<?php echo esc_attr( $active_prod_count ); ?>" data-prefix="+" data-suffix="">۰</span>
+								</div>
+								<div class="kpi-title">تنوع کالاهای اورجینال</div>
+								<div class="kpi-desc">تضمین ۱۰۰٪ اصالت و سلامت فیزیکی</div>
+							</div>
+						</div>
+
+						<!-- 3. Successful Deliveries -->
+						<div class="store-kpi-card" style="--accent-glow: rgba(16, 185, 129, 0.15);">
+							<div class="kpi-icon-bubble" style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); color: #047857;">
+								🚀
+							</div>
+							<div class="kpi-content">
+								<div class="kpi-number-wrap">
+									<span class="counter-num" data-target="1450" data-prefix="+" data-suffix="">۰</span>
+								</div>
+								<div class="kpi-title">ارسال موفق به سراسر ایران</div>
+								<div class="kpi-desc">تحویل سریع در ۳۱ استان با بسته‌بندی ایمن</div>
+							</div>
+						</div>
+
+						<!-- 4. Express Dispatch -->
+						<div class="store-kpi-card" style="--accent-glow: rgba(139, 92, 246, 0.15);">
+							<div class="kpi-icon-bubble" style="background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); color: #6d28d9;">
+								⚡
+							</div>
+							<div class="kpi-content">
+								<div class="kpi-number-wrap">
+									<span class="counter-num" data-target="2" data-prefix="کمتر از " data-suffix=" ساعت">۰</span>
+								</div>
+								<div class="kpi-title">سرعت آماده‌سازی و ارسال</div>
+								<div class="kpi-desc">پردازش فوری سفارشات و ارسال اکسپرس</div>
+							</div>
+						</div>
+
+						<!-- 5. Money-back Guarantee -->
+						<div class="store-kpi-card" style="--accent-glow: rgba(236, 72, 153, 0.15);">
+							<div class="kpi-icon-bubble" style="background: linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%); color: #be185d;">
+								💎
+							</div>
+							<div class="kpi-content">
+								<div class="kpi-number-wrap">
+									<span class="counter-num" data-target="7" data-prefix="" data-suffix=" روز">۰</span>
+								</div>
+								<div class="kpi-title">ضمانت طلایی بازگشت کالا</div>
+								<div class="kpi-desc">امکان مرجوعی بدون قید و شرط وجه</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			<?php endif; ?>
+
 			<div id="productsAnchor"></div>
 
 			<?php if ( empty( $products ) ) : ?>
@@ -8537,17 +8786,139 @@ class Scraper_Auto_Shop_Plugin {
 			// Automatically track site visit once
 			window.trackStoreEvent('site_visit');
 
-			// Sticky Header Scroll Elevation & Shadow
-			const stickyHdr = document.getElementById('storeStickyHeader');
-			if (stickyHdr && stickyHdr.classList.contains('is-sticky-active')) {
-				window.addEventListener('scroll', () => {
-					if (window.scrollY > 35) {
-						stickyHdr.classList.add('is-scrolled');
-					} else {
-						stickyHdr.classList.remove('is-scrolled');
+			// Bulletproof Sticky Header Engine with Layout Spacer
+			(function() {
+				const stickyHdr = document.getElementById('storeStickyHeader');
+				if (!stickyHdr || !stickyHdr.classList.contains('is-sticky-active')) return;
+
+				// Invisible layout placeholder to prevent content jump
+				const placeholder = document.createElement('div');
+				placeholder.id = 'storeStickyPlaceholder';
+				placeholder.style.display = 'none';
+				placeholder.style.width = '100%';
+				placeholder.style.visibility = 'hidden';
+				stickyHdr.parentNode.insertBefore(placeholder, stickyHdr);
+
+				function getAdminBarOffset() {
+					const bar = document.getElementById('wpadminbar');
+					if (bar && window.getComputedStyle(bar).display !== 'none' && window.getComputedStyle(bar).position === 'fixed') {
+						return bar.offsetHeight || 32;
 					}
-				}, { passive: true });
-			}
+					return 0;
+				}
+
+				let isFixed = false;
+				let cachedInitialTop = 0;
+
+				function measureInitialTop() {
+					if (!isFixed) {
+						const rect = stickyHdr.getBoundingClientRect();
+						cachedInitialTop = rect.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
+					}
+				}
+
+				measureInitialTop();
+				window.addEventListener('resize', measureInitialTop, { passive: true });
+
+				function handleScroll() {
+					const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+					const adminBarH = getAdminBarOffset();
+					const triggerPoint = (cachedInitialTop || 0) - adminBarH;
+
+					if (scrollY > triggerPoint && scrollY > 20) {
+						if (!isFixed) {
+							const hdrHeight = stickyHdr.offsetHeight;
+							placeholder.style.height = hdrHeight + 'px';
+							placeholder.style.display = 'block';
+
+							stickyHdr.classList.add('is-fixed-sticky', 'is-scrolled');
+							stickyHdr.style.top = adminBarH + 'px';
+							isFixed = true;
+						} else {
+							stickyHdr.style.top = adminBarH + 'px';
+						}
+					} else {
+						if (isFixed) {
+							placeholder.style.display = 'none';
+							stickyHdr.classList.remove('is-fixed-sticky', 'is-scrolled');
+							stickyHdr.style.top = '';
+							isFixed = false;
+							measureInitialTop();
+						}
+					}
+				}
+
+				window.addEventListener('scroll', handleScroll, { passive: true });
+				setTimeout(handleScroll, 100);
+			})();
+
+			// Animated Numbers & Trust Metrics Counter Engine for Storefront
+			(function() {
+				const kpiSection = document.getElementById('storeKpiShowcase');
+				if (!kpiSection) return;
+
+				function toFa(numStr) {
+					const faDigits = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
+					return String(numStr).replace(/\d/g, function(d) { return faDigits[d]; });
+				}
+
+				function formatNumber(num, decimals) {
+					if (decimals > 0) {
+						return num.toFixed(decimals);
+					}
+					return Math.round(num).toLocaleString('en-US');
+				}
+
+				let animated = false;
+				function runCounters() {
+					if (animated) return;
+					animated = true;
+
+					const counters = kpiSection.querySelectorAll('.counter-num');
+					counters.forEach(function(counter) {
+						const target = parseFloat(counter.getAttribute('data-target')) || 0;
+						const decimals = parseInt(counter.getAttribute('data-decimals')) || 0;
+						const prefix = counter.getAttribute('data-prefix') || '';
+						const suffix = counter.getAttribute('data-suffix') || '';
+						const duration = 1800;
+						const startTime = performance.now();
+
+						function update(currentTime) {
+							const elapsed = currentTime - startTime;
+							const progress = Math.min(elapsed / duration, 1);
+							// Ease out cubic
+							const ease = 1 - Math.pow(1 - progress, 3);
+							const currentVal = target * ease;
+
+							const formatted = formatNumber(currentVal, decimals);
+							counter.textContent = prefix + toFa(formatted) + suffix;
+
+							if (progress < 1) {
+								requestAnimationFrame(update);
+							} else {
+								const finalFormatted = formatNumber(target, decimals);
+								counter.textContent = prefix + toFa(finalFormatted) + suffix;
+							}
+						}
+
+						requestAnimationFrame(update);
+					});
+				}
+
+				if ('IntersectionObserver' in window) {
+					const observer = new IntersectionObserver(function(entries) {
+						entries.forEach(function(entry) {
+							if (entry.isIntersecting) {
+								runCounters();
+								observer.disconnect();
+							}
+						});
+					}, { threshold: 0.15 });
+					observer.observe(kpiSection);
+				} else {
+					runCounters();
+				}
+			})();
 		})();
 		</script>
 		<?php
@@ -8590,6 +8961,7 @@ class Scraper_Auto_Shop_Plugin {
 				'default_column_layout'       => in_array( $_POST['default_column_layout'] ?? '', array( '1', '2' ), true ) ? $_POST['default_column_layout'] : '1',
 				'products_per_page'           => intval( $_POST['products_per_page'] ?? 20 ),
 				'show_features_banner'        => ! empty( $_POST['show_features_banner'] ),
+				'show_animated_stats'         => ! empty( $_POST['show_animated_stats'] ),
 				'show_special_badge'          => ! empty( $_POST['show_special_badge'] ),
 				'free_shipping_threshold'     => floatval( $_POST['free_shipping_threshold'] ?? 400000 ),
 				'store_template'              => sanitize_text_field( $_POST['store_template'] ?? 'digikala' ),
@@ -9373,9 +9745,13 @@ class Scraper_Auto_Shop_Plugin {
 										<input type="checkbox" name="show_special_badge" value="1" <?php checked( ! empty( $opts['show_special_badge'] ) ); ?>>
 										نمایش نشان «پیشنهاد ویژه» روی کارت کالا
 									</label>
-									<label style="display:block;">
+									<label style="display:block; margin-bottom:8px;">
 										<input type="checkbox" name="show_features_banner" value="1" <?php checked( $opts['show_features_banner'] ); ?>>
 										نمایش بنر ویژگی‌های فروشگاه (ارسال سریع، تضمین اصالت و ضمانت بازگشت)
+									</label>
+									<label style="display:block; margin-top:8px;">
+										<input type="checkbox" name="show_animated_stats" value="1" <?php checked( ! empty( $opts['show_animated_stats'] ) ); ?> style="accent-color:#2563eb;">
+										<strong style="color:#0f172a;">✨ نمایش شماره‌های جذاب انیمیشن‌دار در صفحه فروشگاه (اعتماد خریداران و رضایت مشتریان)</strong>
 									</label>
 								</td>
 							</tr>
@@ -10298,21 +10674,125 @@ class Scraper_Auto_Shop_Plugin {
 				<!-- ================= TAB 6: STORE, ANALYTICS & WOOCOMMERCE ================= -->
 				<div id="tab-woocommerce" class="scraper-tab-panel">
 
+					<!-- Permanent WP-Cron Quick Action & Status Banner -->
+					<div class="admin-cron-highlight-box" style="background:linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border:2px solid #3b82f6; border-radius:14px; padding:16px 20px; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; box-shadow:0 4px 14px rgba(37,99,235,0.08);">
+						<div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+							<span style="font-size:2rem; background:#fff; width:48px; height:48px; border-radius:12px; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,0.06);">⏰</span>
+							<div>
+								<div style="font-size:1.02rem; font-weight:900; color:#1e3a8a; display:flex; align-items:center; gap:8px;">
+									سیستم اجرای خودکار و کران‌جاب وردپرس (WP-Cron):
+									<span class="field-badge" style="background:<?php echo $wpcron_info['is_active'] ? '#10b981' : '#ef4444'; ?>; color:#fff; font-size:0.82rem; padding:3px 12px; border-radius:20px;">
+										<?php echo $wpcron_info['is_active'] ? '🟢 فعال و زمان‌بندی‌شده' : '🔴 غیرفعال'; ?>
+									</span>
+								</div>
+								<div style="font-size:0.86rem; color:#334155; margin-top:4px;">
+									⏱️ زمان اجرای بعدی: <strong style="color:#2563eb;" id="wpCronQuickNextRun"><?php echo esc_html( $wpcron_info['next_human'] ); ?></strong> &nbsp;|&nbsp; 
+									بازه تکرار: <strong><?php echo esc_html( $wpcron_info['interval_label'] ); ?></strong> &nbsp;|&nbsp; 
+									آخرین اجرا: <strong id="wpCronQuickLastRun"><?php echo ! empty( $wpcron_info['last_run']['date_fa'] ) ? esc_html( $wpcron_info['last_run']['date_fa'] ) : 'هنوز اجرا نشده'; ?></strong>
+								</div>
+							</div>
+						</div>
+						<div style="display:flex; align-items:center; gap:10px;">
+							<button type="button" class="btnRunWpCronNow button button-primary" style="background:#2563eb; border-color:#1d4ed8; font-weight:800; padding:8px 20px; border-radius:8px; font-size:0.9rem; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(37,99,235,0.25);">
+								<span>⚡</span> اجرای دستی کران‌جاب همین حالا (Run Now)
+							</button>
+						</div>
+					</div>
+
 					<!-- Sub-Tabs Navigation for Tab 6 -->
 					<div class="shop-subtabs-nav" style="display:flex; gap:8px; margin-bottom:22px; border-bottom:2px solid #e2e8f0; padding-bottom:12px; flex-wrap:wrap;">
-						<button type="button" class="shop-subtab-btn active" data-subtab="subtab-analytics" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #2563eb; background:#2563eb; color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(37,99,235,0.2);">
-							<span>📊</span> ۱. آمار و تحلیل جامع فروشگاه
+						<button type="button" class="shop-subtab-btn active" data-subtab="subtab-cron" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #2563eb; background:#2563eb; color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(37,99,235,0.2);">
+							<span>⏰</span> ۱. زمان‌بندی و کرون‌جاب خودکار (WP-Cron)
+						</button>
+						<button type="button" class="shop-subtab-btn" data-subtab="subtab-analytics" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+							<span>📊</span> ۲. آمار و تحلیل جامع فروشگاه
 						</button>
 						<button type="button" class="shop-subtab-btn" data-subtab="subtab-products" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
-							<span>🔄</span> ۲. ووکامرس و محصولات اسکرپر
-						</button>
-						<button type="button" class="shop-subtab-btn" data-subtab="subtab-cron" style="padding:10px 20px; font-weight:800; font-size:0.92rem; border-radius:10px; border:1.5px solid #cbd5e1; background:#f8fafc; color:#475569; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
-							<span>⏰</span> ۳. زمان‌بندی و کرون‌جاب خودکار
+							<span>🔄</span> ۳. ووکامرس و محصولات اسکرپر
 						</button>
 					</div>
 
+					<input type="hidden" name="active_shop_subtab" id="activeShopSubtabInput" value="<?php echo esc_attr( sanitize_key( $_POST['active_shop_subtab'] ?? 'subtab-cron' ) ); ?>">
+
+					<!-- ================= SUB-TAB 3: WP-CRON AUTOMATIC SYNC ================= -->
+					<div id="subtab-cron" class="shop-subtab-panel active">
+						<div class="admin-card" style="border:2px solid #3b82f6; background:linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); margin:0; border-radius:12px;">
+							<div class="admin-card-header" style="border-bottom:1px solid #bfdbfe;">
+								<h3><span>⏰</span> اجرای خودکار استخراج و همگام‌سازی با کران‌جاب داخلی وردپرس (WP-Cron)</h3>
+								<span class="field-badge" style="background:<?php echo $wpcron_info['is_active'] ? '#10b981' : '#64748b'; ?>; color:#fff;">
+									<?php echo $wpcron_info['is_active'] ? '🟢 کران‌جاب وردپرس فعال و زمان‌بندی‌شده' : '⚪ کران‌جاب وردپرس غیرفعال'; ?>
+								</span>
+							</div>
+
+							<p style="color:#475569; font-size:0.9rem; line-height:1.7; margin-top:0;">
+								<strong>بدون نیاز به تنظیمات پیچیده cPanel یا هاست!</strong> سیستم کران‌جاب داخلی وردپرس (WP-Cron) به صورت کاملاً خودکار و در بازه‌های مشخص، فرآیند اجرای کران‌جاب این صفحه (<code>scraper4.php?cron_run=1</code>)، استخراج محصولات جدید، بررسی تغییر قیمت‌ها و همگام‌سازی را در پس‌زمینه انجام می‌دهد.
+							</p>
+
+							<!-- وضعیت زنده کران‌جاب -->
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
+								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
+									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">⏱️ زمان اجرای بعدی:</div>
+									<div style="font-size:1.05rem; font-weight:900; color:#2563eb;" id="wpCronNextRunText">
+										<?php echo esc_html( $wpcron_info['next_human'] ); ?>
+									</div>
+									<div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
+										(بازه: <?php echo esc_html( $wpcron_info['interval_label'] ); ?>)
+									</div>
+								</div>
+
+								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
+									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">📋 آخرین اجرای خودکار:</div>
+									<div style="font-size:0.95rem; font-weight:800; color:#1e293b;" id="wpCronLastRunText">
+										<?php echo ! empty( $wpcron_info['last_run']['date_fa'] ) ? esc_html( $wpcron_info['last_run']['date_fa'] ) : 'هنوز اجرا نشده'; ?>
+									</div>
+									<div style="font-size:0.75rem; color:<?php echo ( ( $wpcron_info['last_run']['status'] ?? '' ) === 'success' ) ? '#059669' : '#64748b'; ?>; margin-top:2px;">
+										<?php echo ! empty( $wpcron_info['last_run']['took_sec'] ) ? ( 'مدت زمان: ' . esc_html( $wpcron_info['last_run']['took_sec'] ) . ' ثانیه' ) : '—'; ?>
+									</div>
+								</div>
+							</div>
+
+							<!-- فرم تنظیمات زمان‌بندی WP-Cron -->
+							<table class="form-table" style="margin-bottom:16px;">
+								<tr>
+									<th scope="row" style="width:230px;">فعال‌سازی کران‌جاب وردپرس:</th>
+									<td>
+										<label style="display:flex; align-items:center; gap:8px; font-weight:700; cursor:pointer;">
+											<input type="checkbox" name="enable_wp_cron_sync" value="1" <?php checked( ! empty( $opts['enable_wp_cron_sync'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb;">
+											اجرای دوره‌ای و پس‌زمینه اسکرپر توسط سیستم زمان‌بندی وردپرس (WP-Cron)
+										</label>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row">دوره تکرار اجرا (Interval):</th>
+									<td>
+										<select name="wp_cron_interval" class="regular-text" style="font-weight:700;">
+											<?php foreach ( $wpcron_info['interval_labels'] as $int_key => $int_label ) : ?>
+												<option value="<?php echo esc_attr( $int_key ); ?>" <?php selected( $wpcron_info['interval'], $int_key ); ?>>
+													<?php echo esc_html( $int_label ); ?>
+												</option>
+											<?php endforeach; ?>
+										</select>
+										<p class="description">تعیین بازه تکرار اجرای خودکار کران اسکرپر در سیستم وردپرس.</p>
+									</td>
+								</tr>
+							</table>
+
+							<!-- دکمه اجرای دستی همین حالا -->
+							<div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:10px; padding:14px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+								<div>
+									<strong style="color:#1e293b; font-size:0.92rem; display:block;">آزمایش و اجرای فوری کران‌جاب:</strong>
+									<span style="color:#64748b; font-size:0.82rem;">می‌توانید بدون معطلی برای رسیدن زمان‌بندی، کران‌جاب اسکرپر را همین الان اجرا و نتیجه را بررسی نمایید.</span>
+								</div>
+								<button type="button" id="btnRunWpCronNow" class="button button-primary" style="background:#2563eb; border-color:#1d4ed8; font-weight:800; padding:6px 20px; border-radius:8px;">
+									⚡ اجرای دستی کران‌جاب همین حالا (Run Now)
+								</button>
+							</div>
+							<div id="wpCronRunNowStatus" style="display:none; margin-top:10px; padding:10px 14px; border-radius:8px; font-size:0.88rem;"></div>
+						</div>
+					</div>
+
 					<!-- ================= SUB-TAB 1: ANALYTICS & FUNNEL ================= -->
-					<div id="subtab-analytics" class="shop-subtab-panel active">
+					<div id="subtab-analytics" class="shop-subtab-panel" style="display:none;">
 						<?php
 						$totals         = $analytics_data['totals'] ?? array();
 						$site_visits    = max( 1, intval( $totals['site_visit'] ?? 0 ) );
@@ -10746,83 +11226,6 @@ class Scraper_Auto_Shop_Plugin {
 							</div>
 						</div>
 					</div>
-
-					<!-- ================= SUB-TAB 3: WP-CRON AUTOMATIC SYNC ================= -->
-					<div id="subtab-cron" class="shop-subtab-panel" style="display:none;">
-						<div class="admin-card" style="border:2px solid #3b82f6; background:linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); margin:0; border-radius:12px;">
-							<div class="admin-card-header" style="border-bottom:1px solid #bfdbfe;">
-								<h3><span>⏰</span> اجرای خودکار استخراج و همگام‌سازی با کران‌جاب داخلی وردپرس (WP-Cron)</h3>
-								<span class="field-badge" style="background:<?php echo $wpcron_info['is_active'] ? '#10b981' : '#64748b'; ?>; color:#fff;">
-									<?php echo $wpcron_info['is_active'] ? '🟢 کران‌جاب وردپرس فعال و زمان‌بندی‌شده' : '⚪ کران‌جاب وردپرس غیرفعال'; ?>
-								</span>
-							</div>
-
-							<p style="color:#475569; font-size:0.9rem; line-height:1.7; margin-top:0;">
-								<strong>بدون نیاز به تنظیمات پیچیده cPanel یا هاست!</strong> سیستم کران‌جاب داخلی وردپرس (WP-Cron) به صورت کاملاً خودکار و در بازه‌های مشخص، فرآیند اجرای کران‌جاب این صفحه (<code>scraper4.php?cron_run=1</code>)، استخراج محصولات جدید، بررسی تغییر قیمت‌ها و همگام‌سازی را در پس‌زمینه انجام می‌دهد.
-							</p>
-
-							<!-- وضعیت زنده کران‌جاب -->
-							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
-								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
-									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">⏱️ زمان اجرای بعدی:</div>
-									<div style="font-size:1.05rem; font-weight:900; color:#2563eb;" id="wpCronNextRunText">
-										<?php echo esc_html( $wpcron_info['next_human'] ); ?>
-									</div>
-									<div style="font-size:0.75rem; color:#94a3b8; margin-top:2px;">
-										(بازه: <?php echo esc_html( $wpcron_info['interval_label'] ); ?>)
-									</div>
-								</div>
-
-								<div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; padding:14px;">
-									<div style="color:#64748b; font-size:0.8rem; font-weight:700; margin-bottom:4px;">📋 آخرین اجرای خودکار:</div>
-									<div style="font-size:0.95rem; font-weight:800; color:#1e293b;" id="wpCronLastRunText">
-										<?php echo ! empty( $wpcron_info['last_run']['date_fa'] ) ? esc_html( $wpcron_info['last_run']['date_fa'] ) : 'هنوز اجرا نشده'; ?>
-									</div>
-									<div style="font-size:0.75rem; color:<?php echo ( ( $wpcron_info['last_run']['status'] ?? '' ) === 'success' ) ? '#059669' : '#64748b'; ?>; margin-top:2px;">
-										<?php echo ! empty( $wpcron_info['last_run']['took_sec'] ) ? ( 'مدت زمان: ' . esc_html( $wpcron_info['last_run']['took_sec'] ) . ' ثانیه' ) : '—'; ?>
-									</div>
-								</div>
-							</div>
-
-							<!-- فرم تنظیمات زمان‌بندی WP-Cron -->
-							<table class="form-table" style="margin-bottom:16px;">
-								<tr>
-									<th scope="row" style="width:230px;">فعال‌سازی کران‌جاب وردپرس:</th>
-									<td>
-										<label style="display:flex; align-items:center; gap:8px; font-weight:700; cursor:pointer;">
-											<input type="checkbox" name="enable_wp_cron_sync" value="1" <?php checked( ! empty( $opts['enable_wp_cron_sync'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb;">
-											اجرای دوره‌ای و پس‌زمینه اسکرپر توسط سیستم زمان‌بندی وردپرس (WP-Cron)
-										</label>
-									</td>
-								</tr>
-								<tr>
-									<th scope="row">دوره تکرار اجرا (Interval):</th>
-									<td>
-										<select name="wp_cron_interval" class="regular-text" style="font-weight:700;">
-											<?php foreach ( $wpcron_info['interval_labels'] as $int_key => $int_label ) : ?>
-												<option value="<?php echo esc_attr( $int_key ); ?>" <?php selected( $wpcron_info['interval'], $int_key ); ?>>
-													<?php echo esc_html( $int_label ); ?>
-												</option>
-											<?php endforeach; ?>
-										</select>
-										<p class="description">تعیین بازه تکرار اجرای خودکار کران اسکرپر در سیستم وردپرس.</p>
-									</td>
-								</tr>
-							</table>
-
-							<!-- دکمه اجرای دستی همین حالا -->
-							<div style="background:#ffffff; border:1px solid #bfdbfe; border-radius:10px; padding:14px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-								<div>
-									<strong style="color:#1e293b; font-size:0.92rem; display:block;">آزمایش و اجرای فوری کران‌جاب:</strong>
-									<span style="color:#64748b; font-size:0.82rem;">می‌توانید بدون معطلی برای رسیدن زمان‌بندی، کران‌جاب اسکرپر را همین الان اجرا و نتیجه را بررسی نمایید.</span>
-								</div>
-								<button type="button" id="btnRunWpCronNow" class="button button-primary" style="background:#2563eb; border-color:#1d4ed8; font-weight:800; padding:6px 20px; border-radius:8px;">
-									⚡ اجرای دستی کران‌جاب همین حالا (Run Now)
-								</button>
-							</div>
-							<div id="wpCronRunNowStatus" style="display:none; margin-top:10px; padding:10px 14px; border-radius:8px; font-size:0.88rem;"></div>
-						</div>
-					</div>
 				</div>
 
 				<!-- ================= TAB 7: CHAT LOGS & HISTORY ================= -->
@@ -10915,7 +11318,17 @@ class Scraper_Auto_Shop_Plugin {
 				$(this).css({'background':'#2563eb','color':'#fff','border-color':'#2563eb','box-shadow':'0 4px 12px rgba(37,99,235,0.2)'});
 				$('.shop-subtab-panel').hide();
 				$('#' + target).fadeIn(200);
+				$('#activeShopSubtabInput').val(target);
+				try { sessionStorage.setItem('scraper_active_shop_subtab', target); } catch(e){}
 			});
+
+			// Restore active subtab on load
+			try {
+				var storedShopSubtab = sessionStorage.getItem('scraper_active_shop_subtab') || $('#activeShopSubtabInput').val();
+				if (storedShopSubtab && $('.shop-subtab-btn[data-subtab="' + storedShopSubtab + '"]').length) {
+					$('.shop-subtab-btn[data-subtab="' + storedShopSubtab + '"]').trigger('click');
+				}
+			} catch(e){}
 
 			// Live Font Preview Updater in Tab 1
 			function updateTitleFontPreview() {
@@ -11872,13 +12285,13 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				location.reload();
 			});
 
-			// Run WP-Cron Immediately Button
-			$('#btnRunWpCronNow').on('click', function(e){
+			// Run WP-Cron Immediately Button (Both Quick Banner and Card Buttons)
+			$(document).on('click', '#btnRunWpCronNow, .btnRunWpCronNow', function(e){
 				e.preventDefault();
-				var $btn = $(this);
+				var $allBtns = $('#btnRunWpCronNow, .btnRunWpCronNow');
 				var $status = $('#wpCronRunNowStatus');
 
-				$btn.prop('disabled', true).text('در حال اجرای کران‌جاب اسکرپر... ⏳');
+				$allBtns.prop('disabled', true).text('در حال اجرای کران‌جاب اسکرپر... ⏳');
 				$status.show().css({'background': '#eff6ff', 'color': '#1d4ed8', 'border': '1px solid #bfdbfe'}).html('در حال فراخوانی کران‌جاب وردپرس و اجرای عملیات استخراج اسکرپر۴... ⏳');
 
 				$.ajax({
@@ -11889,17 +12302,17 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 						nonce: adminNonce
 					},
 					success: function(res){
-						$btn.prop('disabled', false).text('⚡ اجرای دستی کران‌جاب همین حالا (Run Now)');
+						$allBtns.prop('disabled', false).html('<span>⚡</span> اجرای دستی کران‌جاب همین حالا (Run Now)');
 						if (res.success && res.data) {
 							$status.css({'background': '#f0fdf4', 'color': '#15803d', 'border': '1px solid #bbf7d0'}).html('✅ ' + (res.data.message || 'کران‌جاب با موفقیت اجرا گردید.') + ' (زمان: ' + res.data.took_sec + ' ثانیه)');
-							$('#wpCronLastRunText').text(res.data.last_run);
-							$('#wpCronNextRunText').text('در ' + res.data.next_human + ' دیگر');
+							$('#wpCronLastRunText, #wpCronQuickLastRun').text(res.data.last_run);
+							$('#wpCronNextRunText, #wpCronQuickNextRun').text('در ' + res.data.next_human + ' دیگر');
 						} else {
 							$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطا در اجرا: ' + (res.data || 'عملیات با خطا مواجه شد.'));
 						}
 					},
 					error: function(){
-						$btn.prop('disabled', false).text('⚡ اجرای دستی کران‌جاب همین حالا (Run Now)');
+						$allBtns.prop('disabled', false).html('<span>⚡</span> اجرای دستی کران‌جاب همین حالا (Run Now)');
 						$status.css({'background': '#fef2f2', 'color': '#b91c1c', 'border': '1px solid #fecaca'}).html('❌ خطای ارتباط با سرور هنگام اجرای کران‌جاب.');
 					}
 				});

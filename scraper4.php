@@ -285,7 +285,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.95';
+const APP_VERSION = '10.96';
 const APP_VERSION_DATE = '1405/06/07';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -25841,7 +25841,32 @@ if (isset($_GET['selftest'])) {
     $add('10.78', 'تمامِ چک‌هایِ «پیام‌رسان تنظیم شده» تلگرام را هم می‌شناسند',
          substr_count($selfSrc, "telegram']['token']") >= 8);
 
-            /* ==== ۱۰۵ (v10.91) ==== */
+            /* ==== ۱۰۶ (v10.96) ==== */
+    $add('10.96', 'نسخهٔ ۱۰.۹۶ در APP_VERSION و CHANGELOG',
+         version_compare(APP_VERSION, '10.96', '>=')
+      && strpos($selfSrc, "{v:'10.96',") !== false
+      && strpos($selfSrc, "const APP_VERSION = '10.96';") !== false);
+    $add('10.96', 'تولید خودکار محتوا: cfg + fill + batch',
+         strpos($selfSrc, 'function aiContentAutoCfg') !== false
+      && strpos($selfSrc, 'function aiFillProductContent') !== false
+      && strpos($selfSrc, 'function aiAutoFillMissingAcrossProfiles') !== false
+      && strpos($selfSrc, 'function aiMapToBslCategory') !== false);
+    $add('10.96', 'تیک همیشه-فعال + endpoint اجرا',
+         strpos($selfSrc, 'id="aiContentAutoEnabled"') !== false
+      && strpos($selfSrc, 'ai_content_auto_run') !== false
+      && strpos($selfSrc, 'ai_content_auto_status') !== false
+      && strpos($selfSrc, "isset(\$_POST['ai_content_auto'])") !== false);
+    $add('10.96', 'دستهٔ باسلام روی محصول و مسیر ارسال',
+         strpos($selfSrc, 'bsl_category_id') !== false
+      && strpos($selfSrc, "\$p['bsl_category_id']") !== false);
+    $add('10.96', 'ووکامرس: حالت API/مستقیم + پشتیبان',
+         strpos($selfSrc, 'function wooSyncMode') !== false
+      && strpos($selfSrc, 'function wooUpsertWithMode') !== false
+      && strpos($selfSrc, 'id="wcModeApi"') !== false
+      && strpos($selfSrc, 'id="wcModeDirect"') !== false
+      && strpos($selfSrc, 'id="wcSyncFallback"') !== false);
+
+    /* ==== ۱۰۵ (v10.91) ==== */
     $add('10.91', 'نسخهٔ ۱۰.۹۱',
          str_contains($selfSrc, "const APP_VERSION = '10.91';"));
     $add('10.91', 'رفع متن دوبارا رمزگذاریشده در دراپِداون',
@@ -54977,6 +55002,13 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.96', t:'تولید خودکار محتوا (همیشه-فعال) + دستهٔ برگ باسلام + حالت همگام‌سازی ووکامرس', items:[
+    '✅ تیک «همیشه فعال» در تب تولید محتوا: برای همهٔ پروفایل‌ها، محصولاتِ بدون توضیح/دسته با AI پر می‌شوند (پیش‌فرض روشن)',
+    '🟢 نگاشت دسته به فرمت باسلام (شناسهٔ برگ / bsl_category_id) — ارسال سریع‌تر بدون auto-match دوباره',
+    '⏱ اجرا بعد از استخراج، در هر کران، و با دکمهٔ «الان برای محصولاتِ ناقص»',
+    '🛒 همگام‌سازی ووکامرس: حالت API یا مستقیم (کلاس‌های WC) + زنجیرهٔ پشتیبان قابل تنظیم',
+    '🛡 گارد WP_Query/WooCommerce و meta _amphp_product_key برای ردیابی محصول',
+  ]},
   {v:'10.95', t:'هوش مصنوعی تولید محتوا + اتصال چت به مستر + پیام‌رسان‌ها', items:[
     '📝 ساخت هوشمند توضیحات و دسته‌بندی با مدل مستر هوش مصنوعی همراه با جستجوی وب (fallback به تولید مستقیم)',
     '🤖 انتخاب مدل مستر هوش مصنوعی اسکریپر (Master AI) به عنوان مغز متفکر چت آنلاین',

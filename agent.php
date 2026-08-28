@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.7.0
+ * Version: 12.7.1
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -11875,134 +11875,475 @@ class Scraper_Auto_Shop_Plugin {
 							</div>
 						</div>
 
-						<!-- 2. Visual 5-Step Funnel Chart -->
-						<div class="admin-card">
+						<!-- 2. Visual Conversion Funnel — elegant line/area chart -->
+						<div class="admin-card" style="overflow:hidden;">
 							<div class="admin-card-header">
-								<h3><span>📈</span> قیف تبدیل تعاملی فروشگاه (Visual Conversion Funnel)</h3>
+								<h3><span>📈</span> قیف تبدیل خطی فروشگاه (Line Conversion Funnel)</h3>
 								<span class="field-badge field-badge-blue">تحلیل ریزش و تبدیل کاربران</span>
 							</div>
 
 							<p style="color:#64748b; font-size:0.88rem; line-height:1.6; margin-top:0;">
-								نمودار زیر رفتار خرید مشتریان را از لحظه ورود به ویترین تا مشاهده محصولات، سبد خرید، تسویه‌حساب و پرداخت نهایی نشان می‌دهد:
+								مسیر تبدیل مشتری از ورود تا ثبت سفارش به‌صورت نمودار خطی نرم با سایه گرادیانی نمایش داده می‌شود:
 							</p>
 
-							<div style="display:flex; flex-direction:column; gap:12px; margin-top:14px;">
-								<!-- Funnel Step 1: Site Visits -->
-								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۱. ورود بازدیدکننده به سایت (Site Visits)</span>
-										<span style="font-weight:900; font-size:0.95rem; color:#2563eb;"><?php echo self::to_fa_num( number_format( $site_visits ) ); ?> نفر (۱۰۰٪)</span>
-									</div>
-									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
-										<div style="width:100%; height:100%; background:linear-gradient(90deg, #3b82f6 0%, #2563eb 100%); border-radius:8px;"></div>
-									</div>
-								</div>
-
-								<!-- Funnel Step 2: Product Views -->
-								<?php $p1_pct = min( 100, max( 5, round( ( $product_views / $site_visits ) * 100 ) ) ); ?>
-								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۲. مشاهده و بررسی محصولات (Product Views)</span>
-										<span style="font-weight:900; font-size:0.95rem; color:#0d9488;">
-											<?php echo self::to_fa_num( number_format( $product_views ) ); ?> بازدید 
-											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $view_rate ); ?>٪ نسبت به ورودی)</span>
-										</span>
-									</div>
-									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
-										<div style="width:<?php echo $p1_pct; ?>%; height:100%; background:linear-gradient(90deg, #14b8a6 0%, #0d9488 100%); border-radius:8px; transition:width 0.5s;"></div>
-									</div>
-								</div>
-
-								<!-- Funnel Step 3: Add to Cart -->
-								<?php $p2_pct = min( 100, max( 3, round( ( $add_to_cart / $site_visits ) * 100 ) ) ); ?>
-								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۳. افزودن کالا به سبد خرید (Add to Cart)</span>
-										<span style="font-weight:900; font-size:0.95rem; color:#059669;">
-											<?php echo self::to_fa_num( number_format( $add_to_cart ) ); ?> مورد 
-											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $cart_rate ); ?>٪ علاقه‌مندی به خرید)</span>
-										</span>
-									</div>
-									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
-										<div style="width:<?php echo $p2_pct; ?>%; height:100%; background:linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius:8px; transition:width 0.5s;"></div>
-									</div>
-								</div>
-
-								<!-- Funnel Step 4: Checkout Step -->
-								<?php $p3_pct = min( 100, max( 2, round( ( $checkout_steps / $site_visits ) * 100 ) ) ); ?>
-								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۴. ورود به مراحل تسویه‌حساب و نهایی‌سازی (Proceed to Checkout)</span>
-										<span style="font-weight:900; font-size:0.95rem; color:#d97706;">
-											<?php echo self::to_fa_num( number_format( $checkout_steps ) ); ?> بار 
-											<span style="font-size:0.8rem; color:#64748b;">(<?php echo self::to_fa_num( $checkout_rate ); ?>٪ پیشروی تا پرداخت)</span>
-										</span>
-									</div>
-									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
-										<div style="width:<?php echo $p3_pct; ?>%; height:100%; background:linear-gradient(90deg, #f59e0b 0%, #d97706 100%); border-radius:8px; transition:width 0.5s;"></div>
-									</div>
-								</div>
-
-								<!-- Funnel Step 5: Order Placed -->
-								<?php $p4_pct = min( 100, max( 1, round( ( $orders_placed / $site_visits ) * 100 ) ) ); ?>
-								<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;">
-									<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-										<span style="font-size:0.88rem; font-weight:800; color:#1e293b;">۵. ثبت و تکمیل نهایی سفارش (Orders Placed)</span>
-										<span style="font-weight:900; font-size:0.95rem; color:#db2777;">
-											<?php echo self::to_fa_num( number_format( $orders_placed ) ); ?> سفارش 
-											<span style="font-size:0.8rem; color:#059669; font-weight:800;">(نرخ تبدیل نهایی: <?php echo self::to_fa_num( $overall_conv ); ?>٪)</span>
-										</span>
-									</div>
-									<div style="width:100%; height:14px; background:#e2e8f0; border-radius:8px; overflow:hidden;">
-										<div style="width:<?php echo $p4_pct; ?>%; height:100%; background:linear-gradient(90deg, #ec4899 0%, #db2777 100%); border-radius:8px; transition:width 0.5s;"></div>
-									</div>
-								</div>
-							</div>
-						</div>
-
-						<!-- 3. Interactive Daily Activity SVG Chart -->
-						<div class="admin-card">
-							<div class="admin-card-header">
-								<h3><span>📊</span> روند فعالیت‌های روزانه فروشگاه (Daily Trend Chart)</h3>
-								<div style="display:flex; gap:12px; align-items:center; font-size:0.78rem; font-weight:700;">
-									<span style="color:#2563eb;">■ بازدید سایت</span>
-									<span style="color:#0d9488;">■ مشاهده محصول</span>
-									<span style="color:#059669;">■ افزودن به سبد</span>
-									<span style="color:#db2777;">■ سفارش نهایی</span>
-								</div>
-							</div>
-
 							<?php
-							$daily_stats = $analytics_data['daily'] ?? array();
-							$recent_days = array_slice( $daily_stats, -10, 10, true );
-							$max_day_val = 10;
-							foreach ( $recent_days as $d_row ) {
-								$max_day_val = max( $max_day_val, intval( $d_row['site_visit'] ?? 0 ) );
+							$funnel_steps = array(
+								array(
+									'key'   => 'site_visit',
+									'label' => 'ورود به سایت',
+									'short' => 'بازدید',
+									'value' => $site_visits,
+									'rate'  => 100,
+									'color' => '#3b82f6',
+									'color2'=> '#60a5fa',
+								),
+								array(
+									'key'   => 'product_view',
+									'label' => 'مشاهده محصول',
+									'short' => 'مشاهده',
+									'value' => $product_views,
+									'rate'  => $view_rate,
+									'color' => '#14b8a6',
+									'color2'=> '#2dd4bf',
+								),
+								array(
+									'key'   => 'add_to_cart',
+									'label' => 'افزودن به سبد',
+									'short' => 'سبد',
+									'value' => $add_to_cart,
+									'rate'  => $cart_rate,
+									'color' => '#10b981',
+									'color2'=> '#34d399',
+								),
+								array(
+									'key'   => 'checkout_step',
+									'label' => 'تسویه‌حساب',
+									'short' => 'تسویه',
+									'value' => $checkout_steps,
+									'rate'  => $checkout_rate,
+									'color' => '#f59e0b',
+									'color2'=> '#fbbf24',
+								),
+								array(
+									'key'   => 'order_placed',
+									'label' => 'ثبت سفارش',
+									'short' => 'سفارش',
+									'value' => $orders_placed,
+									'rate'  => $overall_conv,
+									'color' => '#ec4899',
+									'color2'=> '#f472b6',
+								),
+							);
+							$funnel_max   = max( 1, $site_visits );
+							$fv_w         = 720;
+							$fv_h         = 260;
+							$fv_pad_l     = 48;
+							$fv_pad_r     = 24;
+							$fv_pad_t     = 28;
+							$fv_pad_b     = 52;
+							$fv_plot_w    = $fv_w - $fv_pad_l - $fv_pad_r;
+							$fv_plot_h    = $fv_h - $fv_pad_t - $fv_pad_b;
+							$fv_n         = count( $funnel_steps );
+							$fv_pts       = array();
+							foreach ( $funnel_steps as $fi => $fs ) {
+								$fx = $fv_pad_l + ( $fv_n > 1 ? ( $fi / ( $fv_n - 1 ) ) * $fv_plot_w : $fv_plot_w / 2 );
+								$fy = $fv_pad_t + $fv_plot_h - ( max( 0, min( 1, $fs['value'] / $funnel_max ) ) * $fv_plot_h );
+								$fv_pts[] = array( 'x' => round( $fx, 2 ), 'y' => round( $fy, 2 ), 'step' => $fs );
+							}
+							// Smooth cubic path
+							$fv_line = '';
+							$fv_area = '';
+							if ( ! empty( $fv_pts ) ) {
+								$fv_line = 'M ' . $fv_pts[0]['x'] . ' ' . $fv_pts[0]['y'];
+								for ( $i = 1; $i < count( $fv_pts ); $i++ ) {
+									$p0 = $fv_pts[ $i - 1 ];
+									$p1 = $fv_pts[ $i ];
+									$cx = ( $p0['x'] + $p1['x'] ) / 2;
+									$fv_line .= ' C ' . $cx . ' ' . $p0['y'] . ', ' . $cx . ' ' . $p1['y'] . ', ' . $p1['x'] . ' ' . $p1['y'];
+								}
+								$last = $fv_pts[ count( $fv_pts ) - 1 ];
+								$first = $fv_pts[0];
+								$base_y = $fv_pad_t + $fv_plot_h;
+								$fv_area = $fv_line . ' L ' . $last['x'] . ' ' . $base_y . ' L ' . $first['x'] . ' ' . $base_y . ' Z';
 							}
 							?>
 
-							<div style="overflow-x:auto; padding-top:16px;">
-								<div style="min-width:600px; display:flex; align-items:flex-end; gap:18px; height:200px; padding:0 10px 24px; border-bottom:2px solid #cbd5e1;">
-									<?php foreach ( $recent_days as $date_str => $d_row ) : ?>
-										<?php
-										$v_h = round( ( ( $d_row['site_visit'] ?? 0 ) / $max_day_val ) * 160 );
-										$p_h = round( ( ( $d_row['product_view'] ?? 0 ) / $max_day_val ) * 160 );
-										$c_h = round( ( ( $d_row['add_to_cart'] ?? 0 ) / $max_day_val ) * 160 );
-										$o_h = round( ( ( $d_row['order_placed'] ?? 0 ) / $max_day_val ) * 160 );
-										$day_fa = substr( $date_str, 5 );
+							<div style="position:relative; background:linear-gradient(180deg, #f8fafc 0%, #ffffff 55%, #f1f5f9 100%); border:1px solid #e2e8f0; border-radius:16px; padding:8px 4px 4px; box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);">
+								<svg id="scraperFunnelLineChart" viewBox="0 0 <?php echo (int) $fv_w; ?> <?php echo (int) $fv_h; ?>" width="100%" height="280" style="display:block; max-width:100%; font-family:system-ui,Tahoma,sans-serif;" role="img" aria-label="نمودار خطی قیف تبدیل">
+									<defs>
+										<linearGradient id="funnelAreaGrad" x1="0" y1="0" x2="0" y2="1">
+											<stop offset="0%" stop-color="#6366f1" stop-opacity="0.35"/>
+											<stop offset="55%" stop-color="#3b82f6" stop-opacity="0.12"/>
+											<stop offset="100%" stop-color="#3b82f6" stop-opacity="0.02"/>
+										</linearGradient>
+										<linearGradient id="funnelStrokeGrad" x1="0" y1="0" x2="1" y2="0">
+											<stop offset="0%" stop-color="#3b82f6"/>
+											<stop offset="25%" stop-color="#14b8a6"/>
+											<stop offset="50%" stop-color="#10b981"/>
+											<stop offset="75%" stop-color="#f59e0b"/>
+											<stop offset="100%" stop-color="#ec4899"/>
+										</linearGradient>
+										<filter id="funnelGlow" x="-20%" y="-20%" width="140%" height="140%">
+											<feGaussianBlur stdDeviation="3.5" result="blur"/>
+											<feMerge>
+												<feMergeNode in="blur"/>
+												<feMergeNode in="SourceGraphic"/>
+											</feMerge>
+										</filter>
+										<filter id="funnelSoftShadow" x="-10%" y="-10%" width="120%" height="130%">
+											<feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#6366f1" flood-opacity="0.18"/>
+										</filter>
+									</defs>
+
+									<!-- subtle grid -->
+									<?php for ( $gi = 0; $gi <= 4; $gi++ ) :
+										$gy = $fv_pad_t + ( $gi / 4 ) * $fv_plot_h;
+										$gval = (int) round( $funnel_max * ( 1 - $gi / 4 ) );
 										?>
-										<div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; height:100%; justify-content:flex-end;" title="<?php echo esc_attr( $date_str ); ?>: <?php echo $d_row['site_visit']; ?> بازدید، <?php echo $d_row['order_placed']; ?> سفارش">
-											<div style="display:flex; align-items:flex-end; gap:3px; height:160px; width:100%; justify-content:center;">
-												<div style="height:<?php echo max( 4, $v_h ); ?>px; width:10px; background:#3b82f6; border-radius:3px 3px 0 0;" title="بازدید: <?php echo $d_row['site_visit']; ?>"></div>
-												<div style="height:<?php echo max( 3, $p_h ); ?>px; width:10px; background:#14b8a6; border-radius:3px 3px 0 0;" title="مشاهده: <?php echo $d_row['product_view']; ?>"></div>
-												<div style="height:<?php echo max( 2, $c_h ); ?>px; width:10px; background:#10b981; border-radius:3px 3px 0 0;" title="سبد: <?php echo $d_row['add_to_cart']; ?>"></div>
-												<div style="height:<?php echo max( 2, $o_h ); ?>px; width:10px; background:#ec4899; border-radius:3px 3px 0 0;" title="سفارش: <?php echo $d_row['order_placed']; ?>"></div>
-											</div>
-											<span style="font-size:0.72rem; color:#64748b; font-weight:700; margin-top:6px; direction:ltr;"><?php echo esc_html( $day_fa ); ?></span>
+										<line x1="<?php echo $fv_pad_l; ?>" y1="<?php echo $gy; ?>" x2="<?php echo $fv_w - $fv_pad_r; ?>" y2="<?php echo $gy; ?>" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4 6"/>
+										<text x="<?php echo $fv_pad_l - 8; ?>" y="<?php echo $gy + 4; ?>" text-anchor="end" fill="#94a3b8" font-size="10" font-weight="700"><?php echo esc_html( self::to_fa_num( number_format( $gval ) ) ); ?></text>
+									<?php endfor; ?>
+
+									<!-- area + glow line -->
+									<?php if ( $fv_area ) : ?>
+										<path d="<?php echo esc_attr( $fv_area ); ?>" fill="url(#funnelAreaGrad)" filter="url(#funnelSoftShadow)"/>
+										<path d="<?php echo esc_attr( $fv_line ); ?>" fill="none" stroke="url(#funnelStrokeGrad)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#funnelGlow)"/>
+										<path d="<?php echo esc_attr( $fv_line ); ?>" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.55"/>
+									<?php endif; ?>
+
+									<!-- points + labels -->
+									<?php foreach ( $fv_pts as $fi => $pt ) :
+										$fs = $pt['step'];
+										?>
+										<!-- vertical guide -->
+										<line x1="<?php echo $pt['x']; ?>" y1="<?php echo $fv_pad_t; ?>" x2="<?php echo $pt['x']; ?>" y2="<?php echo $fv_pad_t + $fv_plot_h; ?>" stroke="<?php echo esc_attr( $fs['color'] ); ?>" stroke-width="1" stroke-opacity="0.12" stroke-dasharray="3 5"/>
+										<!-- outer glow ring -->
+										<circle cx="<?php echo $pt['x']; ?>" cy="<?php echo $pt['y']; ?>" r="11" fill="<?php echo esc_attr( $fs['color'] ); ?>" fill-opacity="0.15"/>
+										<circle cx="<?php echo $pt['x']; ?>" cy="<?php echo $pt['y']; ?>" r="6.5" fill="#fff" stroke="<?php echo esc_attr( $fs['color'] ); ?>" stroke-width="3"/>
+										<circle cx="<?php echo $pt['x']; ?>" cy="<?php echo $pt['y']; ?>" r="2.8" fill="<?php echo esc_attr( $fs['color'] ); ?>"/>
+										<!-- value bubble -->
+										<rect x="<?php echo $pt['x'] - 28; ?>" y="<?php echo max( 6, $pt['y'] - 28 ); ?>" width="56" height="18" rx="9" fill="<?php echo esc_attr( $fs['color'] ); ?>" fill-opacity="0.95"/>
+										<text x="<?php echo $pt['x']; ?>" y="<?php echo max( 6, $pt['y'] - 28 ) + 12.5; ?>" text-anchor="middle" fill="#fff" font-size="10" font-weight="800"><?php echo esc_html( self::to_fa_num( number_format( $fs['value'] ) ) ); ?></text>
+										<!-- x label -->
+										<text x="<?php echo $pt['x']; ?>" y="<?php echo $fv_h - 28; ?>" text-anchor="middle" fill="#334155" font-size="11" font-weight="800"><?php echo esc_html( $fs['short'] ); ?></text>
+										<text x="<?php echo $pt['x']; ?>" y="<?php echo $fv_h - 12; ?>" text-anchor="middle" fill="<?php echo esc_attr( $fs['color'] ); ?>" font-size="10" font-weight="700"><?php echo esc_html( self::to_fa_num( $fs['rate'] ) ); ?>٪</text>
+									<?php endforeach; ?>
+								</svg>
+
+								<!-- step chips under chart -->
+								<div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center; padding:4px 10px 12px;">
+									<?php foreach ( $funnel_steps as $fi => $fs ) : ?>
+										<div style="display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid <?php echo esc_attr( $fs['color'] ); ?>33; border-radius:999px; padding:5px 12px; box-shadow:0 2px 8px <?php echo esc_attr( $fs['color'] ); ?>14;">
+											<span style="width:8px; height:8px; border-radius:50%; background:<?php echo esc_attr( $fs['color'] ); ?>; box-shadow:0 0 0 3px <?php echo esc_attr( $fs['color'] ); ?>22;"></span>
+											<span style="font-size:0.78rem; font-weight:800; color:#0f172a;"><?php echo esc_html( ( $fi + 1 ) . '. ' . $fs['label'] ); ?></span>
+											<span style="font-size:0.75rem; font-weight:800; color:<?php echo esc_attr( $fs['color'] ); ?>;"><?php echo self::to_fa_num( number_format( $fs['value'] ) ); ?></span>
 										</div>
 									<?php endforeach; ?>
 								</div>
 							</div>
+						</div>
+
+						<!-- 3. Multi-series smooth Daily Line Chart -->
+						<div class="admin-card" style="overflow:hidden;">
+							<div class="admin-card-header">
+								<h3><span>📉</span> روند خطی فعالیت‌های روزانه (Smooth Line Chart)</h3>
+								<div id="scraperDailyLegend" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:0.78rem; font-weight:700;"></div>
+							</div>
+
+							<?php
+							$daily_stats = $analytics_data['daily'] ?? array();
+							if ( empty( $daily_stats ) || ! is_array( $daily_stats ) ) {
+								$daily_stats = array();
+							}
+							ksort( $daily_stats );
+							$recent_days = array_slice( $daily_stats, -14, 14, true );
+							// Ensure at least a few points for a readable line
+							if ( count( $recent_days ) < 2 ) {
+								$today_k = date( 'Y-m-d' );
+								$recent_days = array(
+									date( 'Y-m-d', strtotime( '-1 day' ) ) => array(
+										'site_visit' => max( 1, intval( $site_visits * 0.9 ) ),
+										'product_view' => max( 0, intval( $product_views * 0.9 ) ),
+										'add_to_cart' => max( 0, intval( $add_to_cart * 0.9 ) ),
+										'order_placed' => max( 0, intval( $orders_placed * 0.9 ) ),
+									),
+									$today_k => array(
+										'site_visit' => max( 1, $site_visits ),
+										'product_view' => $product_views,
+										'add_to_cart' => $add_to_cart,
+										'order_placed' => $orders_placed,
+									),
+								);
+							}
+
+							$series_def = array(
+								'site_visit'    => array( 'label' => 'بازدید سایت', 'color' => '#3b82f6', 'color2' => '#93c5fd' ),
+								'product_view'  => array( 'label' => 'مشاهده محصول', 'color' => '#14b8a6', 'color2' => '#99f6e4' ),
+								'add_to_cart'   => array( 'label' => 'افزودن به سبد', 'color' => '#10b981', 'color2' => '#6ee7b7' ),
+								'order_placed'  => array( 'label' => 'سفارش نهایی', 'color' => '#ec4899', 'color2' => '#f9a8d4' ),
+							);
+
+							$day_keys = array_keys( $recent_days );
+							$n_days   = count( $day_keys );
+							$max_day_val = 10;
+							foreach ( $recent_days as $d_row ) {
+								foreach ( array_keys( $series_def ) as $sk ) {
+									$max_day_val = max( $max_day_val, intval( $d_row[ $sk ] ?? 0 ) );
+								}
+							}
+							// nice max headroom
+							$max_day_val = (int) max( 10, ceil( $max_day_val * 1.12 ) );
+
+							$dv_w = 860;
+							$dv_h = 320;
+							$dv_pl = 52;
+							$dv_pr = 20;
+							$dv_pt = 24;
+							$dv_pb = 44;
+							$dv_pw = $dv_w - $dv_pl - $dv_pr;
+							$dv_ph = $dv_h - $dv_pt - $dv_pb;
+
+							$series_paths = array();
+							$series_areas = array();
+							$series_points = array();
+
+							foreach ( $series_def as $sk => $smeta ) {
+								$pts = array();
+								foreach ( $day_keys as $di => $dk ) {
+									$val = intval( $recent_days[ $dk ][ $sk ] ?? 0 );
+									$x = $dv_pl + ( $n_days > 1 ? ( $di / ( $n_days - 1 ) ) * $dv_pw : $dv_pw / 2 );
+									$y = $dv_pt + $dv_ph - ( max( 0, min( 1, $val / $max_day_val ) ) * $dv_ph );
+									$pts[] = array(
+										'x'     => round( $x, 2 ),
+										'y'     => round( $y, 2 ),
+										'val'   => $val,
+										'date'  => $dk,
+										'label' => $smeta['label'],
+										'color' => $smeta['color'],
+									);
+								}
+								$line = '';
+								if ( ! empty( $pts ) ) {
+									$line = 'M ' . $pts[0]['x'] . ' ' . $pts[0]['y'];
+									for ( $i = 1; $i < count( $pts ); $i++ ) {
+										$p0 = $pts[ $i - 1 ];
+										$p1 = $pts[ $i ];
+										$cx = ( $p0['x'] + $p1['x'] ) / 2;
+										$line .= ' C ' . $cx . ' ' . $p0['y'] . ', ' . $cx . ' ' . $p1['y'] . ', ' . $p1['x'] . ' ' . $p1['y'];
+									}
+								}
+								$area = '';
+								if ( $line && ! empty( $pts ) ) {
+									$last = $pts[ count( $pts ) - 1 ];
+									$first = $pts[0];
+									$base = $dv_pt + $dv_ph;
+									$area = $line . ' L ' . $last['x'] . ' ' . $base . ' L ' . $first['x'] . ' ' . $base . ' Z';
+								}
+								$series_paths[ $sk ]  = $line;
+								$series_areas[ $sk ]  = $area;
+								$series_points[ $sk ] = $pts;
+							}
+
+							$daily_chart_payload = array(
+								'days'   => $day_keys,
+								'series' => array(),
+							);
+							foreach ( $series_def as $sk => $smeta ) {
+								$vals = array();
+								foreach ( $day_keys as $dk ) {
+									$vals[] = intval( $recent_days[ $dk ][ $sk ] ?? 0 );
+								}
+								$daily_chart_payload['series'][] = array(
+									'key'   => $sk,
+									'label' => $smeta['label'],
+									'color' => $smeta['color'],
+									'values'=> $vals,
+								);
+							}
+							?>
+
+							<div style="position:relative; background:
+								radial-gradient(1200px 200px at 10% -10%, rgba(59,130,246,0.10), transparent 60%),
+								radial-gradient(900px 180px at 90% 0%, rgba(236,72,153,0.08), transparent 55%),
+								linear-gradient(180deg, #0f172a 0%, #1e293b 40%, #0f172a 100%);
+								border-radius:18px; padding:14px 10px 8px; box-shadow:0 18px 40px rgba(15,23,42,0.28), inset 0 1px 0 rgba(255,255,255,0.06);">
+								<div style="display:flex; justify-content:space-between; align-items:center; padding:0 12px 8px; flex-wrap:wrap; gap:8px;">
+									<div style="color:#e2e8f0; font-size:0.82rem; font-weight:700; opacity:0.9;">
+										<span style="display:inline-flex; align-items:center; gap:6px;">
+											<span style="width:8px; height:8px; border-radius:50%; background:#22d3ee; box-shadow:0 0 10px #22d3ee;"></span>
+											روند ۱۴ روز اخیر — مقیاس نرمال‌شده
+										</span>
+									</div>
+									<div id="scraperDailyTooltip" style="display:none; background:rgba(15,23,42,0.92); color:#f8fafc; border:1px solid rgba(148,163,184,0.35); border-radius:12px; padding:8px 12px; font-size:0.78rem; font-weight:700; box-shadow:0 10px 30px rgba(0,0,0,0.35); min-width:160px; backdrop-filter:blur(8px);"></div>
+								</div>
+
+								<svg id="scraperDailyLineChart" viewBox="0 0 <?php echo (int) $dv_w; ?> <?php echo (int) $dv_h; ?>" width="100%" height="300" style="display:block; max-width:100%; cursor:crosshair; font-family:system-ui,Tahoma,sans-serif;" role="img" aria-label="نمودار خطی روند روزانه">
+									<defs>
+										<?php foreach ( $series_def as $sk => $smeta ) : ?>
+											<linearGradient id="area_<?php echo esc_attr( $sk ); ?>" x1="0" y1="0" x2="0" y2="1">
+												<stop offset="0%" stop-color="<?php echo esc_attr( $smeta['color'] ); ?>" stop-opacity="0.38"/>
+												<stop offset="70%" stop-color="<?php echo esc_attr( $smeta['color'] ); ?>" stop-opacity="0.06"/>
+												<stop offset="100%" stop-color="<?php echo esc_attr( $smeta['color'] ); ?>" stop-opacity="0"/>
+											</linearGradient>
+											<linearGradient id="stroke_<?php echo esc_attr( $sk ); ?>" x1="0" y1="0" x2="1" y2="0">
+												<stop offset="0%" stop-color="<?php echo esc_attr( $smeta['color2'] ); ?>"/>
+												<stop offset="100%" stop-color="<?php echo esc_attr( $smeta['color'] ); ?>"/>
+											</linearGradient>
+										<?php endforeach; ?>
+										<filter id="dailyLineGlow" x="-30%" y="-30%" width="160%" height="160%">
+											<feGaussianBlur stdDeviation="2.8" result="b"/>
+											<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+										</filter>
+										<clipPath id="dailyPlotClip">
+											<rect x="<?php echo $dv_pl; ?>" y="<?php echo $dv_pt; ?>" width="<?php echo $dv_pw; ?>" height="<?php echo $dv_ph; ?>" rx="4"/>
+										</clipPath>
+									</defs>
+
+									<!-- dark grid -->
+									<?php for ( $gi = 0; $gi <= 5; $gi++ ) :
+										$gy = $dv_pt + ( $gi / 5 ) * $dv_ph;
+										$gval = (int) round( $max_day_val * ( 1 - $gi / 5 ) );
+										?>
+										<line x1="<?php echo $dv_pl; ?>" y1="<?php echo $gy; ?>" x2="<?php echo $dv_w - $dv_pr; ?>" y2="<?php echo $gy; ?>" stroke="rgba(148,163,184,0.15)" stroke-width="1" stroke-dasharray="3 7"/>
+										<text x="<?php echo $dv_pl - 10; ?>" y="<?php echo $gy + 3; ?>" text-anchor="end" fill="rgba(226,232,240,0.55)" font-size="10" font-weight="700"><?php echo esc_html( self::to_fa_num( number_format( $gval ) ) ); ?></text>
+									<?php endfor; ?>
+
+									<!-- vertical day guides -->
+									<?php foreach ( $day_keys as $di => $dk ) :
+										$x = $dv_pl + ( $n_days > 1 ? ( $di / ( $n_days - 1 ) ) * $dv_pw : $dv_pw / 2 );
+										$show_lbl = ( 0 === $di % max( 1, (int) ceil( $n_days / 7 ) ) ) || $di === $n_days - 1;
+										?>
+										<line x1="<?php echo $x; ?>" y1="<?php echo $dv_pt; ?>" x2="<?php echo $x; ?>" y2="<?php echo $dv_pt + $dv_ph; ?>" stroke="rgba(148,163,184,0.08)" stroke-width="1"/>
+										<?php if ( $show_lbl ) : ?>
+											<text x="<?php echo $x; ?>" y="<?php echo $dv_h - 14; ?>" text-anchor="middle" fill="rgba(226,232,240,0.65)" font-size="10" font-weight="700" direction="ltr"><?php echo esc_html( substr( $dk, 5 ) ); ?></text>
+										<?php endif; ?>
+									<?php endforeach; ?>
+
+									<g clip-path="url(#dailyPlotClip)">
+										<?php
+										// draw areas first (under), then lines
+										foreach ( array_reverse( $series_def, true ) as $sk => $smeta ) :
+											if ( empty( $series_areas[ $sk ] ) ) {
+												continue;
+											}
+											?>
+											<path d="<?php echo esc_attr( $series_areas[ $sk ] ); ?>" fill="url(#area_<?php echo esc_attr( $sk ); ?>)"/>
+										<?php endforeach; ?>
+
+										<?php foreach ( $series_def as $sk => $smeta ) :
+											if ( empty( $series_paths[ $sk ] ) ) {
+												continue;
+											}
+											?>
+											<path class="scraper-daily-line" data-series="<?php echo esc_attr( $sk ); ?>" d="<?php echo esc_attr( $series_paths[ $sk ] ); ?>" fill="none" stroke="url(#stroke_<?php echo esc_attr( $sk ); ?>)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" filter="url(#dailyLineGlow)" style="transition:stroke-opacity .2s;"/>
+										<?php endforeach; ?>
+									</g>
+
+									<!-- interactive dots -->
+									<?php foreach ( $series_def as $sk => $smeta ) :
+										foreach ( $series_points[ $sk ] as $pt ) : ?>
+											<circle
+												class="scraper-daily-dot"
+												data-series="<?php echo esc_attr( $sk ); ?>"
+												data-date="<?php echo esc_attr( $pt['date'] ); ?>"
+												data-val="<?php echo esc_attr( $pt['val'] ); ?>"
+												data-label="<?php echo esc_attr( $pt['label'] ); ?>"
+												data-color="<?php echo esc_attr( $pt['color'] ); ?>"
+												cx="<?php echo $pt['x']; ?>"
+												cy="<?php echo $pt['y']; ?>"
+												r="4.2"
+												fill="#0f172a"
+												stroke="<?php echo esc_attr( $smeta['color'] ); ?>"
+												stroke-width="2.4"
+												style="cursor:pointer; transition: r .15s;"
+											/>
+										<?php endforeach;
+									endforeach; ?>
+
+									<!-- hover crosshair -->
+									<line id="scraperDailyCrosshair" x1="0" y1="<?php echo $dv_pt; ?>" x2="0" y2="<?php echo $dv_pt + $dv_ph; ?>" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" stroke-dasharray="4 4" opacity="0"/>
+								</svg>
+							</div>
+
+							<script type="application/json" id="scraperDailyChartData"><?php echo wp_json_encode( $daily_chart_payload, JSON_UNESCAPED_UNICODE ); ?></script>
+							<script>
+							(function(){
+								var svg = document.getElementById('scraperDailyLineChart');
+								var tip = document.getElementById('scraperDailyTooltip');
+								var legend = document.getElementById('scraperDailyLegend');
+								var cross = document.getElementById('scraperDailyCrosshair');
+								var dataEl = document.getElementById('scraperDailyChartData');
+								if (!svg || !dataEl) return;
+								var payload = {};
+								try { payload = JSON.parse(dataEl.textContent || '{}'); } catch(e) { payload = {}; }
+
+								function toFa(n){
+									return String(n).replace(/\d/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[d]; });
+								}
+
+								// Legend with toggle
+								var active = {};
+								(payload.series || []).forEach(function(s){ active[s.key] = true; });
+								function renderLegend(){
+									if (!legend) return;
+									legend.innerHTML = '';
+									(payload.series || []).forEach(function(s){
+										var btn = document.createElement('button');
+										btn.type = 'button';
+										btn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 10px;border:1.5px solid '+(active[s.key]?s.color:'#cbd5e1')+';background:'+(active[s.key]?'#fff':'#f8fafc')+';color:'+(active[s.key]?'#0f172a':'#94a3b8')+';font-weight:800;font-size:0.75rem;cursor:pointer;opacity:'+(active[s.key]?'1':'0.55');
+										btn.innerHTML = '<span style="width:10px;height:10px;border-radius:50%;background:'+s.color+';box-shadow:0 0 0 3px '+s.color+'22"></span>' + s.label;
+										btn.addEventListener('click', function(){
+											active[s.key] = !active[s.key];
+											applyVisibility();
+											renderLegend();
+										});
+										legend.appendChild(btn);
+									});
+								}
+								function applyVisibility(){
+									svg.querySelectorAll('.scraper-daily-line, .scraper-daily-dot').forEach(function(el){
+										var k = el.getAttribute('data-series');
+										el.style.opacity = active[k] ? '1' : '0.08';
+										el.style.pointerEvents = active[k] ? 'auto' : 'none';
+									});
+								}
+								renderLegend();
+								applyVisibility();
+
+								function showTip(html){
+									if (!tip) return;
+									tip.style.display = 'block';
+									tip.innerHTML = html;
+								}
+								function hideTip(){
+									if (!tip) return;
+									tip.style.display = 'none';
+									if (cross) cross.setAttribute('opacity', '0');
+									svg.querySelectorAll('.scraper-daily-dot').forEach(function(d){ d.setAttribute('r', '4.2'); });
+								}
+
+								svg.querySelectorAll('.scraper-daily-dot').forEach(function(dot){
+									dot.addEventListener('mouseenter', function(){
+										var date = dot.getAttribute('data-date');
+										var rows = [];
+										svg.querySelectorAll('.scraper-daily-dot[data-date="'+date+'"]').forEach(function(d){
+											var k = d.getAttribute('data-series');
+											if (!active[k]) return;
+											d.setAttribute('r', '6.5');
+											rows.push('<div style="display:flex;justify-content:space-between;gap:14px;margin:2px 0"><span style="color:'+d.getAttribute('data-color')+'">● '+d.getAttribute('data-label')+'</span><strong>'+toFa(d.getAttribute('data-val'))+'</strong></div>');
+										});
+										var cx = parseFloat(dot.getAttribute('cx')) || 0;
+										if (cross) {
+											cross.setAttribute('x1', cx);
+											cross.setAttribute('x2', cx);
+											cross.setAttribute('opacity', '1');
+										}
+										showTip('<div style="opacity:.7;margin-bottom:4px;direction:ltr;text-align:left">📅 '+date+'</div>' + rows.join(''));
+									});
+									dot.addEventListener('mouseleave', hideTip);
+								});
+							})();
+							</script>
 						</div>
 
 						<!-- 4. Messenger Notification Toggles for Funnel Events -->

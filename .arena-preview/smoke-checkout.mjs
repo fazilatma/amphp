@@ -68,16 +68,22 @@ const gws = root.querySelectorAll('.sf-gw');
 const fields = root.querySelectorAll('.sf-co-field');
 
 // Static feature checks (must pass even if interaction flaky)
+const paybar = root.querySelector('.sf-co-paybar');
+const paybarBtn = root.querySelector('.sf-co-paybar-btn');
 const staticOk = (
   !!burger &&
   css.includes('sf-burger-btn') &&
   css.includes('sf-checkout') &&
+  css.includes('sf-co-paybar') &&
   (css.includes('midnight') && css.includes('bazaar') && css.includes('boutique') && css.includes('minimal')) &&
   js.includes('scraper_custom_checkout_place_order') &&
   js.includes('sf-gateways') &&
+  js.includes('sf-co-paybar') &&
   agent.includes('ajax_custom_checkout_place_order') &&
   agent.includes('get_active_payment_gateways_list') &&
   agent.includes('enable_custom_checkout') &&
+  agent.includes('function send_messenger_notification') &&
+  agent.includes('send_message_to_messengers') &&
   boot.includes('enable_custom_checkout') &&
   boot.includes('gateways')
 );
@@ -95,6 +101,9 @@ const result = {
   bundleHasPlaceOrder: js.includes('scraper_custom_checkout_place_order'),
   agentHasGateways: agent.includes('get_active_payment_gateways_list'),
   themesInCss: ['midnight','minimal','bazaar','boutique'].every(t => css.includes(t)),
+  paybar: !!paybar,
+  paybarBtn: !!(paybarBtn && /پرداخت|ثبت/.test(paybarBtn.textContent||'')),
+  messengerAlias: agent.includes('function send_messenger_notification'),
 };
 console.log(JSON.stringify(result, null, 2));
 process.exit(staticOk ? 0 : 2);

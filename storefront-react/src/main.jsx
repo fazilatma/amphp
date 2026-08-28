@@ -317,7 +317,7 @@ function useScrollProgress() {
         const y = window.pageYOffset || document.documentElement.scrollTop || 0;
         const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
         setProgress(clamp((y / max) * 100, 0, 100));
-        setScrolled(y > 16);
+        setScrolled(y > 48);
       });
     };
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -791,14 +791,29 @@ function CheckoutPage({
                 <span>جمع کل</span>
                 <strong>{formatMoney(total, currency)}</strong>
               </div>
-              <button type="button" className="sf-btn primary block lg" disabled={busy || !items.length} onClick={placeOrder}>
-                {busy ? 'در حال ثبت سفارش…' : 'ثبت نهایی سفارش'}
+              <button type="button" className="sf-btn primary block lg sf-co-pay-desk" disabled={busy || !items.length} onClick={placeOrder}>
+                {busy ? 'در حال ثبت سفارش…' : 'ثبت و پرداخت'}
               </button>
               <p className="sf-co-secure">🔒 پرداخت امن · اطلاعات شما محفوظ است</p>
             </section>
           </aside>
         </div>
       )}
+
+      {!done ? (
+        <div className="sf-co-paybar" role="region" aria-label="پرداخت">
+          <div className="sf-co-paybar-inner">
+            <div className="sf-co-paybar-meta">
+              <span className="lbl">مبلغ قابل پرداخت</span>
+              <strong>{formatMoney(total, currency)}</strong>
+              <small>{toFa(items.reduce((s, it) => s + (it.qty || 1), 0))} کالا</small>
+            </div>
+            <button type="button" className="sf-btn primary lg sf-co-paybar-btn" disabled={busy || !items.length} onClick={placeOrder}>
+              {busy ? 'در حال ثبت…' : 'ثبت سفارش و پرداخت'}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1140,8 +1155,6 @@ function StoreApp({ boot }) {
                   <p>{settings.shop_subtitle || ''}</p>
                   <div className="sf-chips">
                     <span className="sf-chip live">● آنلاین</span>
-                    <span className="sf-chip">⚡ ارسال سریع</span>
-                    {settings.support_hours ? <span className="sf-chip">🕒 {settings.support_hours}</span> : null}
                   </div>
                 </div>
               </a>
@@ -1234,14 +1247,18 @@ function StoreApp({ boot }) {
                   <span className="sf-burger-ico" aria-hidden><i /><i /><i /></span>
                   <span className="sf-burger-lbl">منو</span>
                 </button>
-                {boot.urls?.admin ? (
-                  <a className="sf-action-btn" href={boot.urls.admin}><span>⚙️</span><span className="lbl">مدیریت</span></a>
-                ) : null}
-                <a className="sf-action-btn" href={boot.urls?.account || '#'}><span>👤</span><span className="lbl">حساب</span></a>
+                <a className="sf-action-btn sf-action-account" href={boot.urls?.account || '#'} aria-label="حساب کاربری">
+                  <span className="sf-action-ico" aria-hidden>👤</span>
+                  <span className="lbl">حساب</span>
+                </a>
                 <button type="button" className="sf-action-btn cart" onClick={() => setCartOpen(true)} aria-label="سبد خرید">
-                  <span>🛒</span><span className="lbl">سبد خرید</span>
+                  <span className="sf-action-ico" aria-hidden>🛒</span>
+                  <span className="lbl">سبد</span>
                   {cartCount > 0 ? <span className="sf-badge">{toFa(cartCount)}</span> : null}
                 </button>
+                {boot.urls?.admin ? (
+                  <a className="sf-action-btn sf-action-admin" href={boot.urls.admin} aria-label="مدیریت"><span className="sf-action-ico">⚙️</span></a>
+                ) : null}
               </div>
             </div>
 
@@ -1265,7 +1282,7 @@ function StoreApp({ boot }) {
                   <a className="sf-nav-link" href={`tel:${settings.contact_phone}`}>📞 تماس با ما</a>
                 ) : null}
               </div>
-              <div className="sf-nav-status"><span className="sf-topbar-live" style={{ padding: '2px 8px' }}><span className="dot" /></span> فروشگاه آنلاین • ارسال فوری</div>
+              <div className="sf-nav-status" aria-hidden="true" />
 
               {megaOpen ? (
                 <div className="sf-mega">

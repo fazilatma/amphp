@@ -62,5 +62,5 @@ window.AMPHP_STOREFRONT = {
     { id: 'bacs', title: 'کارت به کارت / واریز', description: 'شماره کارت پس از ثبت سفارش ارسال می‌شود', icon: '', method_title: 'BACS' },
     { id: 'zarinpal', title: 'زرین‌پال', description: 'پرداخت آنلاین امن', icon: '', method_title: 'Zarinpal' }
   ],
-  meta: { version: '13.1.6', engine: 'react', count: 6, is_admin: false }
+  meta: { version: '13.1.7', engine: 'react', count: 6, is_admin: false }
 };

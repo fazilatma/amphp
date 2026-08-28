@@ -288,26 +288,35 @@ SF_FONTS.iransans = SF_FONTS.iranyekan;
 SF_FONTS.morabba = SF_FONTS.sahel;
 SF_FONTS.custom = SF_FONTS.vazirmatn;
 
+/** v13.3.3: فونت سرور (preferred / APP_FONT_SERVER) اولویت دارد — برای همهٔ دستگاه‌ها یکسان */
 function resolveFontKey(preferred) {
+  const pref = String(preferred || '').trim();
+  const known = (k) => !!(k && ((typeof window !== 'undefined' && window.APP_FONTS?.[k]) || SF_FONTS[k]));
+  if (pref && known(pref)) return pref;
   try {
     if (typeof window !== 'undefined') {
+      const srv = window.APP_FONT_SERVER;
+      if (known(srv)) return srv;
       if (typeof window.appFontCurrent === 'function') {
         const k = window.appFontCurrent();
-        if (k && (window.APP_FONTS?.[k] || SF_FONTS[k])) return k;
+        if (known(k)) return k;
       }
+      // localStorage فقط وقتی سرور فونت نداده
       const ls = localStorage.getItem(FONT_KEY);
-      if (ls && (window.APP_FONTS?.[ls] || SF_FONTS[ls])) return ls;
+      if (known(ls)) return ls;
     }
   } catch (_) {}
-  const pref = String(preferred || '').trim();
-  if (pref && SF_FONTS[pref]) return pref;
   return 'vazirmatn';
 }
 
 function applyStorefrontFont(key) {
   const k = resolveFontKey(key);
   if (typeof window !== 'undefined' && typeof window.appFontApply === 'function' && window.APP_FONTS) {
-    try { window.appFontApply(k, false); return k; } catch (_) {}
+    try {
+      /* save=false — فقط اعمال؛ منبع حقیقت سرور است نه LS */
+      window.appFontApply(k, false);
+      return k;
+    } catch (_) {}
   }
   const pack = (typeof window !== 'undefined' && window.APP_FONTS && window.APP_FONTS[k])
     ? window.APP_FONTS[k]
@@ -1268,21 +1277,16 @@ function StoreApp({ boot }) {
 
   useEffect(() => {
     document.documentElement.style.setProperty('--sf-accent', accent);
-    applyStorefrontFont(settings.shop_title_font || settings.app_font || 'vazirmatn');
-    try {
-      const onStorage = (e) => {
-        if (e && e.key === FONT_KEY) applyStorefrontFont(settings.shop_title_font);
-      };
-      window.addEventListener('storage', onStorage);
-      return () => window.removeEventListener('storage', onStorage);
-    } catch {}
+    /* v13.3.3: همیشه فونت سرور از boot settings — نه localStorage دستگاه */
+    const serverFont = settings.shop_title_font || settings.app_font || (typeof window !== 'undefined' && window.APP_FONT_SERVER) || 'vazirmatn';
+    applyStorefrontFont(serverFont);
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_track_event');
       fd.append('event_type', 'site_visit');
       fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' }).catch(() => {});
     } catch {}
-  }, []);
+  }, [settings.shop_title_font, settings.app_font, accent]);
 
   useEffect(() => {
     const onDoc = (e) => {

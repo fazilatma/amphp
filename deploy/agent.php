@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.2
+ * Version: 13.3.3
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -156,10 +156,26 @@ class Scraper_Auto_Shop_Plugin {
 		$opts     = get_option( self::OPTION_NAME, $defaults );
 
 		if ( ! is_array( $opts ) ) {
-			return $defaults;
+			$opts = $defaults;
+		} else {
+			$opts = array_merge( $defaults, $opts );
 		}
 
-		return array_merge( $defaults, $opts );
+		/* v13.3.3: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
+		try {
+			$cn = self::get_scraper_connections();
+			if ( is_array( $cn ) ) {
+				$fk = trim( (string) ( $cn['ui_font'] ?? $cn['app_font'] ?? '' ) );
+				if ( $fk !== '' ) {
+					$opts['shop_title_font'] = $fk;
+					$opts['app_font']        = $fk;
+				}
+			}
+		} catch ( \Throwable $e ) {
+			// ignore
+		}
+
+		return $opts;
 	}
 
 	/**
@@ -669,7 +685,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( function_exists( 'wc_get_products' ) ) {
 			$wc_prods = wc_get_products( array(
-				'limit'   => -1, /* v13.3.2: همهٔ محصولات ووکامرس */
+				'limit'   => -1, /* v13.3.3: همهٔ محصولات ووکامرس */
 				'status'  => 'publish',
 				'orderby' => 'date',
 				'order'   => 'DESC',
@@ -726,7 +742,7 @@ class Scraper_Auto_Shop_Plugin {
 			$raw_posts = get_posts( array(
 				'post_type'      => 'product',
 				'post_status'    => 'publish',
-				'posts_per_page' => -1, /* v13.3.2 all */
+				'posts_per_page' => -1, /* v13.3.3 all */
 			) );
 
 			if ( ! empty( $raw_posts ) ) {
@@ -771,7 +787,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.2: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
+	 * v13.3.3: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
 	 * مسیر پروفایل مثل get_profiles_summary چندجا چک می‌شود.
 	 *
 	 * @return array
@@ -1597,6 +1613,54 @@ class Scraper_Auto_Shop_Plugin {
 				'store_url'     => $w['store_url'] ?? '',
 			),
 		) );
+	}
+
+	/**
+	 * v13.3.3: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
+	 *
+	 * @param string $font_key
+	 * @return bool
+	 */
+	public static function sync_ui_font_to_connections( $font_key ) {
+		$font_key = sanitize_key( (string) $font_key );
+		if ( $font_key === '' ) {
+			return false;
+		}
+		$locations = array(
+			dirname( __FILE__ ) . '/connections.json',
+			plugin_dir_path( __FILE__ ) . 'connections.json',
+			defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR . '/uploads/connections.json' : '',
+		);
+		$written = false;
+		foreach ( $locations as $loc ) {
+			if ( empty( $loc ) ) {
+				continue;
+			}
+			$data = array();
+			if ( file_exists( $loc ) ) {
+				$raw = @file_get_contents( $loc );
+				$decoded = @json_decode( (string) $raw, true );
+				if ( is_array( $decoded ) ) {
+					$data = $decoded;
+				}
+			}
+			$data['ui_font']  = $font_key;
+			$data['app_font'] = $font_key;
+			$data['ui_font_at'] = time();
+			$json = wp_json_encode( $data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT );
+			if ( false === $json ) {
+				continue;
+			}
+			$dir = dirname( $loc );
+			if ( ! is_dir( $dir ) ) {
+				@wp_mkdir_p( $dir );
+			}
+			if ( @file_put_contents( $loc, $json ) !== false ) {
+				$written = true;
+				break;
+			}
+		}
+		return $written;
 	}
 
 	public static function get_scraper_connections() {
@@ -4450,7 +4514,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 
 	/**
-	 * v13.3.2: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
+	 * v13.3.3: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
 	 *
 	 * @param string $html Raw AI / stored description.
 	 * @return string Safe HTML fragment.
@@ -4569,7 +4633,7 @@ class Scraper_Auto_Shop_Plugin {
 		delete_transient( $lock_key );
 
 		if ( $filled_prod && is_array( $filled_prod ) ) {
-			/* v13.3.2: HTML خام entity-encoded را قبل از ذخیره پاک کن */
+			/* v13.3.3: HTML خام entity-encoded را قبل از ذخیره پاک کن */
 			foreach ( array( 'long_desc', 'longDesc', 'description', 'desc' ) as $fk ) {
 				if ( ! empty( $filled_prod[ $fk ] ) && is_string( $filled_prod[ $fk ] ) ) {
 					$filled_prod[ $fk ] = self::sanitize_product_description_html( $filled_prod[ $fk ] );
@@ -4747,7 +4811,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
 		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
-		// v13.3.2: HTML واقعی برای PDP (نه entity-encoded)
+		// v13.3.3: HTML واقعی برای PDP (نه entity-encoded)
 		$desc_out = self::sanitize_product_description_html( $desc );
 		$short_clean = trim( html_entity_decode( wp_strip_all_tags( $short ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 		if ( $desc_out === '' && $short_clean !== '' ) {
@@ -4765,7 +4829,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
 			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
 		}
-		/* v13.3.2: متن تنوع بلند (جمله) را نشان نده */
+		/* v13.3.3: متن تنوع بلند (جمله) را نشان نده */
 		if ( $variations_text !== '' && mb_strlen( $variations_text, 'UTF-8' ) > 160 ) {
 			$variations_text = '';
 		}
@@ -6237,7 +6301,7 @@ class Scraper_Auto_Shop_Plugin {
 		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
 		$site     = get_bloginfo( 'name' );
 		// Prefer PHP proxy URLs so shop works even when /asset/*.js is missing or blocked by host.
-		$ver = '13.3.2';
+		$ver = '13.3.3';
 		$css_url  = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url   = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Fail only if neither disk files NOR embedded payload exist (v13.1.5+ embeds JS/CSS).
@@ -6266,7 +6330,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.2' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.3' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6327,7 +6391,7 @@ img{max-width:100%;height:auto}
 		$products = self::get_all_scraped_products();
 		$total_catalog = is_array( $products ) ? count( $products ) : 0;
 
-		/* v13.3.2: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
+		/* v13.3.3: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
 		   payload lean است (بدون گالری/توضیح بلند) تا TTFB سبک بماند. */
 		$safe_products = array();
 		foreach ( (array) $products as $p ) {
@@ -6462,7 +6526,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.2',
+				'version'     => '13.3.3',
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
 				'total_count' => isset( $total_catalog ) ? (int) $total_catalog : count( $safe_products ),
@@ -6472,7 +6536,7 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.3.2';
+		$ver = '13.3.3';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
@@ -6484,7 +6548,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.2 -->
+		<!-- AMPHP Storefront v13.3.3 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -6566,9 +6630,32 @@ img{max-width:100%;height:auto}
 			'yekan'     => array( 'label' => 'یکان', 'stack' => 'Yekan,' . $fb, 'css' => '', 'face' => '' ),
 			'estedad'   => array( 'label' => 'استعداد', 'stack' => 'Estedad,' . $fb, 'css' => '', 'face' => '' ),
 		);
+		/* v13.3.3: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
+		$server_key = 'vazirmatn';
+		try {
+			$st = self::get_settings();
+			$cand = trim( (string) ( $st['shop_title_font'] ?? $st['app_font'] ?? '' ) );
+			if ( $cand !== '' && isset( $reg[ $cand ] ) ) {
+				$server_key = $cand;
+			} elseif ( $cand !== '' && isset( $reg['vazirmatn'] ) ) {
+				/* alias map */
+				$map = array( 'dana' => 'vazirmatn', 'yekanbakh' => 'yekan', 'iransans' => 'iranyekan', 'morabba' => 'sahel', 'custom' => 'vazirmatn' );
+				$server_key = isset( $map[ $cand ] ) ? $map[ $cand ] : 'vazirmatn';
+			}
+		} catch ( \Throwable $e ) {
+			$server_key = 'vazirmatn';
+		}
+		if ( ! isset( $reg[ $server_key ] ) ) {
+			$server_key = 'vazirmatn';
+		}
+		$server_stack = $reg[ $server_key ]['stack'];
+		$server_css   = $reg[ $server_key ]['css'];
 		$json = wp_json_encode( $reg, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
-		$html  = '<style id="appFontVars">:root{--app-font:' . esc_attr( $fb ) . '}</style>';
-		$html .= '<script>(function(){var F=' . $json . ';var KEY="scraper_font",FB=' . wp_json_encode( $fb ) . ';window.APP_FONTS=F;window.APP_FONT_KEY=KEY;window.APP_FONT_FALLBACK=FB;function head(){return document.head||document.documentElement;}function readFont(){try{var v=localStorage.getItem(KEY);return (v&&F[v])?v:"vazirmatn";}catch(e){return"vazirmatn";}}function applyFont(k,save){if(!F[k])k="vazirmatn";var f=F[k];if(save){try{localStorage.setItem(KEY,k);}catch(e){}}try{document.documentElement.style.setProperty("--app-font",f.stack);}catch(e){}if(f.css){var lid="appFontLink_"+k;if(!document.getElementById(lid)){var l=document.createElement("link");l.id=lid;l.rel="stylesheet";l.href=f.css;head().appendChild(l);}}if(f.face){var sid="appFontFace_"+k;if(!document.getElementById(sid)){var s=document.createElement("style");s.id=sid;s.appendChild(document.createTextNode(f.face));head().appendChild(s);}}window.APP_FONT_CURRENT=k;return k;}window.appFontApply=applyFont;window.appFontCurrent=readFont;applyFont(readFont(),false);try{window.addEventListener("storage",function(e){if(e&&e.key===KEY)applyFont(readFont(),false);});}catch(e){}})();</script>';
+		$html  = '<style id="appFontVars">:root{--app-font:' . esc_attr( $server_stack ) . '}</style>';
+		if ( $server_css !== '' ) {
+			$html .= '<link id="appFontLink_' . esc_attr( $server_key ) . '" rel="stylesheet" href="' . esc_url( $server_css ) . '">';
+		}
+		$html .= '<script>(function(){var F=' . $json . ';var KEY="scraper_font",FB=' . wp_json_encode( $fb ) . ',SERVER_FONT=' . wp_json_encode( $server_key ) . ';window.APP_FONTS=F;window.APP_FONT_KEY=KEY;window.APP_FONT_FALLBACK=FB;window.APP_FONT_SERVER=SERVER_FONT;function head(){return document.head||document.documentElement;}function readFont(){if(SERVER_FONT&&F[SERVER_FONT])return SERVER_FONT;try{var v=localStorage.getItem(KEY);return (v&&F[v])?v:"vazirmatn";}catch(e){return"vazirmatn";}}function applyFont(k,save){if(!F[k])k="vazirmatn";var f=F[k];if(save){try{localStorage.setItem(KEY,k);}catch(e){}}try{document.documentElement.style.setProperty("--app-font",f.stack);if(document.body)document.body.style.fontFamily=f.stack;}catch(e){}if(f.css){var lid="appFontLink_"+k;if(!document.getElementById(lid)){var l=document.createElement("link");l.id=lid;l.rel="stylesheet";l.href=f.css;head().appendChild(l);}}if(f.face){var sid="appFontFace_"+k;if(!document.getElementById(sid)){var s=document.createElement("style");s.id=sid;s.appendChild(document.createTextNode(f.face));head().appendChild(s);}}window.APP_FONT_CURRENT=k;return k;}window.appFontApply=applyFont;window.appFontCurrent=readFont;applyFont(readFont(),false);})();</script>';
 		return $html;
 	}
 
@@ -6683,7 +6770,7 @@ img{max-width:100%;height:auto}
 	 */
 	public static function storefront_asset_url( $file ) {
 		$file = basename( (string) $file );
-		$ver = '13.3.2';
+		$ver = '13.3.3';
 		return add_query_arg(
 			array(
 				'amphp_sf' => $file,
@@ -6878,6 +6965,8 @@ img{max-width:100%;height:auto}
 				'wp_cron_interval'            => sanitize_text_field( $_POST['wp_cron_interval'] ?? 'every_30_mins' ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
+			/* v13.3.3: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
+			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
 			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;
 		}

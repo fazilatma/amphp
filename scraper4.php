@@ -292,8 +292,8 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.105';
-const APP_VERSION_DATE = '1405/06/08';
+const APP_VERSION = '10.106';
+const APP_VERSION_DATE = '1405/06/09';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -402,6 +402,42 @@ function app_fonts_registry(): array {
  * کاربر را می‌گیرد و متغیرِ CSS --app-font را روی <html> می‌نشاند.
  * چون همهٔ صفحه‌ها هم‌مبدأ هستند، localStorage بینشان مشترک است.
  */
+/**
+ * v10.106: فونتِ سراسری سرور — برای همهٔ دستگاه‌ها/بازدیدکننده‌ها.
+ * اول connections.json (ui_font)، وگرنه localStorage مرورگر.
+ */
+function app_font_server_key(): string {
+    $reg = app_fonts_registry();
+    $key = '';
+    try {
+        if (function_exists('loadConnections')) {
+            $cn = loadConnections();
+            $key = trim((string)($cn['ui_font'] ?? $cn['app_font'] ?? ''));
+        }
+    } catch (Throwable $e) {}
+    if ($key === '' || !isset($reg[$key])) {
+        $key = 'vazirmatn';
+        if (!isset($reg[$key])) $key = 'system';
+    }
+    return $key;
+}
+
+function app_font_save_server(string $key): bool {
+    $reg = app_fonts_registry();
+    if (!isset($reg[$key])) return false;
+    try {
+        $cn = function_exists('loadConnections') ? loadConnections() : [];
+        if (!is_array($cn)) $cn = [];
+        $cn['ui_font'] = $key;
+        $cn['app_font'] = $key;
+        $cn['ui_font_at'] = time();
+        if (function_exists('saveConnections')) {
+            return (bool)saveConnections($cn);
+        }
+    } catch (Throwable $e) {}
+    return false;
+}
+
 function app_font_boot(): string {
     $reg = [];
     foreach (app_fonts_registry() as $k => $v) {
@@ -410,24 +446,41 @@ function app_font_boot(): string {
     $json = json_encode($reg, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
     $key  = APP_FONT_KEY;
     $fb   = APP_FONT_FALLBACK;
+    $serverKey = app_font_server_key();
+    if (!isset($reg[$serverKey])) $serverKey = 'vazirmatn';
+    if (!isset($reg[$serverKey])) $serverKey = 'system';
+    $serverStack = $reg[$serverKey]['stack'] ?? $fb;
+    $serverCss = $reg[$serverKey]['css'] ?? '';
+    $serverFace = $reg[$serverKey]['face'] ?? '';
 
-    return '<style id="appFontVars">:root{--app-font:' . $fb . '}</style>' . "\n"
+    /* CSS فوری (ضد FOUC) با فونت سرور */
+    $early = '<style id="appFontVars">:root{--app-font:' . htmlspecialchars($serverStack, ENT_QUOTES, 'UTF-8') . '}</style>' . "\n";
+    if ($serverCss !== '') {
+        $early .= '<link id="appFontLink_' . htmlspecialchars($serverKey, ENT_QUOTES, 'UTF-8') . '" rel="stylesheet" href="' . htmlspecialchars($serverCss, ENT_QUOTES, 'UTF-8') . '">' . "\n";
+    }
+    if ($serverFace !== '') {
+        $early .= '<style id="appFontFace_' . htmlspecialchars($serverKey, ENT_QUOTES, 'UTF-8') . '">' . $serverFace . '</style>' . "\n";
+    }
+
+    return $early
          . '<script>(function(){' . "\n"
          . 'var F=' . $json . ';' . "\n"
          . 'var KEY=' . json_encode($key) . ',FB=' . json_encode($fb) . ';' . "\n"
-         . 'window.APP_FONTS=F;window.APP_FONT_KEY=KEY;window.APP_FONT_FALLBACK=FB;' . "\n"
+         . 'var SERVER_FONT=' . json_encode($serverKey) . ';' . "\n"
+         . 'window.APP_FONTS=F;window.APP_FONT_KEY=KEY;window.APP_FONT_FALLBACK=FB;window.APP_FONT_SERVER=SERVER_FONT;' . "\n"
          . 'function head(){return document.head||document.getElementsByTagName("head")[0]||document.documentElement;}' . "\n"
-         . 'function readFont(){try{var v=localStorage.getItem(KEY);return (v&&F[v])?v:"system";}catch(e){return "system";}}' . "\n"
+         /* v10.106: اولویت با فونت سرور — برای همهٔ بازدیدکننده‌ها یکسان */
+         . 'function readFont(){if(SERVER_FONT&&F[SERVER_FONT])return SERVER_FONT;try{var v=localStorage.getItem(KEY);return (v&&F[v])?v:(F.vazirmatn?"vazirmatn":"system");}catch(e){return F.vazirmatn?"vazirmatn":"system";}}' . "\n"
          . 'function applyFont(k,save){' . "\n"
-         . '  if(!F[k])k="system";var f=F[k];' . "\n"
+         . '  if(!F[k])k=(F.vazirmatn?"vazirmatn":"system");var f=F[k];' . "\n"
          . '  if(save){try{localStorage.setItem(KEY,k);}catch(e){}}' . "\n"
-         . '  try{document.documentElement.style.setProperty("--app-font",f.stack);}catch(e){}' . "\n"
+         . '  try{document.documentElement.style.setProperty("--app-font",f.stack);if(document.body)document.body.style.fontFamily=f.stack;}catch(e){}' . "\n"
          . '  if(f.css){var lid="appFontLink_"+k;if(!document.getElementById(lid)){var l=document.createElement("link");l.id=lid;l.rel="stylesheet";l.href=f.css;head().appendChild(l);}}' . "\n"
          . '  if(f.face){var sid="appFontFace_"+k;if(!document.getElementById(sid)){var s=document.createElement("style");s.id=sid;s.appendChild(document.createTextNode(f.face));head().appendChild(s);}}' . "\n"
          . '  window.APP_FONT_CURRENT=k;return k;}' . "\n"
          . 'window.appFontApply=applyFont;window.appFontCurrent=readFont;' . "\n"
          . 'applyFont(readFont(),false);' . "\n"
-         . 'try{window.addEventListener("storage",function(e){if(e&&e.key===KEY)applyFont(readFont(),false);});}catch(e){}' . "\n"
+         . 'try{window.addEventListener("storage",function(e){if(e&&e.key===KEY&&!SERVER_FONT)applyFont(readFont(),false);});}catch(e){}' . "\n"
          . '})();</' . 'script>';
 }
 
@@ -27191,6 +27244,17 @@ if (isset($_GET['selftest'])) {
           && strpos($selfSrc, "\$stPgQ === (string)(\$running['id'] ?? '')") !== false
           && strpos($selfSrc, "\$chk['resume_from'] ?? \$chk['current'] ?? 0") !== false));
 
+    /* ==== v10.106: global server font ==== */
+    $add('10.106', 'نسخهٔ ۱۰.۱۰۶',
+         strpos($selfSrc, "const APP_VERSION = '10.106'") !== false);
+    $add('10.106', 'server font key + save',
+         strpos($selfSrc, 'function app_font_server_key') !== false
+         && strpos($selfSrc, 'function app_font_save_server') !== false
+         && strpos($selfSrc, "action'] === 'save_ui_font'") !== false);
+    $add('10.106', 'font boot prefers SERVER_FONT',
+         strpos($selfSrc, 'APP_FONT_SERVER') !== false
+         && strpos($selfSrc, 'SERVER_FONT&&F[SERVER_FONT]') !== false);
+
     /* ==== v10.105: AI desc sanitize + short variations ==== */
     $add('10.105', 'نسخهٔ ۱۰.۱۰۵',
          str_contains($selfSrc, "const APP_VERSION = '10.105';")
@@ -42377,6 +42441,34 @@ return $days.' روز'.($hrRem>0?' '.$hrRem.' ساعت':'');
 return $hours.' ساعت'.($minRem>0?' '.$minRem.' دقیقه':'');
 }
 
+
+/* v10.106: ذخیرهٔ فونت سراسری روی سرور (برای همهٔ دستگاه‌ها) */
+if (isset($_GET['action']) && $_GET['action'] === 'save_ui_font') {
+    header('Content-Type: application/json; charset=UTF-8');
+    $fk = trim((string)($_POST['font'] ?? $_GET['font'] ?? ''));
+    if ($fk === '' || !isset(app_fonts_registry()[$fk])) {
+        echo json_encode(['ok' => false, 'error' => 'فونت نامعتبر'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $ok = app_font_save_server($fk);
+    /* همگام با WP option اگر در دسترس باشد */
+    if (function_exists('update_option')) {
+        $opt = function_exists('get_option') ? (get_option('scraper_auto_shop_settings') ?: []) : [];
+        if (!is_array($opt)) $opt = [];
+        $opt['shop_title_font'] = $fk;
+        $opt['app_font'] = $fk;
+        @update_option('scraper_auto_shop_settings', $opt, false);
+    }
+    echo json_encode(['ok' => $ok, 'font' => $fk, 'scope' => 'global'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+if (isset($_GET['action']) && $_GET['action'] === 'get_ui_font') {
+    header('Content-Type: application/json; charset=UTF-8');
+    $fk = app_font_server_key();
+    echo json_encode(['ok' => true, 'font' => $fk, 'label' => (app_fonts_registry()[$fk]['label'] ?? $fk)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if(isset($_GET['action']) && $_GET['action'] === 'bsl_diag'){
 header('Content-Type: application/json; charset=UTF-8');
 $queue=bslReadQueue();
@@ -50212,10 +50304,9 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 نمونهٔ متن: قیمت این محصول ۱٬۲۵۰٬۰۰۰ تومان است. <b>ضخیم</b>
 </div>
 <div style="font-size:10px;color:#64748b;line-height:1.7;margin-bottom:10px">
-فونت روی <b>کل برنامه</b> — شامل صفحهٔ انتخاب سلکتور و صفحهٔ خودآزمون — اعمال می‌شود و
-در همین مرورگر ذخیره می‌ماند. فایل فونت فقط وقتی از اینترنت گرفته می‌شود که آن را انتخاب
-کنید؛ گزینهٔ «پیش‌فرض سیستم» هیچ چیزی دانلود نمی‌کند. اگر اینترنتِ کاربر به CDN نرسد،
-به‌صورت خودکار همان فونت قبلی نمایش داده می‌شود.
+فونت روی <b>کل برنامه و ویترین فروشگاه</b> اعمال می‌شود و روی <b>سرور</b> ذخیره می‌گردد —
+یعنی برای <b>همهٔ بازدیدکننده‌ها و همهٔ دستگاه‌ها</b> (موبایل، دسکتاپ، هر کشور) یکسان است.
+فایل فونت فقط وقتی از CDN گرفته می‌شود که آن را انتخاب کنید؛ گزینهٔ «پیش‌فرض سیستم» چیزی دانلود نمی‌کند.
 </div>
 
 <!-- v9.94: رنگ‌بندی (تم) کل برنامه -->
@@ -54809,9 +54900,23 @@ function initAutoScrollPref(){
 function setAppFont(key){
   if(typeof window.appFontApply!=='function')return;
   const k=window.appFontApply(key,true);
+  /* v10.106: فونت سرور = منبع حقیقت سراسری برای همهٔ دستگاه‌ها */
+  try{ window.APP_FONT_SERVER = k; }catch(e){}
   const f=(window.APP_FONTS||{})[k];
   syncAppFontPreview(k);
-  showToast('فونت برنامه: '+((f&&f.label)||k));
+  showToast('فونت برنامه: '+((f&&f.label)||k)+' — در حال ذخیره برای همه…');
+  try{
+    const fd=new FormData();
+    fd.append('font', k);
+    fetch('?action=save_ui_font',{method:'POST',body:fd,credentials:'same-origin'})
+      .then(r=>r.json()).then(d=>{
+        if(d&&d.ok){
+          showToast('✓ فونت «'+((f&&f.label)||k)+'» برای همهٔ بازدیدکننده‌ها ذخیره شد', true);
+        }else{
+          showToast('⚠️ فونت محلی اعمال شد ولی ذخیرهٔ سرور ناموفق: '+(d&&d.error?d.error:''), true);
+        }
+      }).catch(()=>{ showToast('⚠️ ذخیرهٔ سرور فونت ناموفق — فقط همین مرورگر', true); });
+  }catch(e){}
 }
 /** جعبهٔ نمونهٔ زیر کشویی را با فونت انتخابی نشان بده */
 function syncAppFontPreview(k){
@@ -54821,7 +54926,8 @@ function syncAppFontPreview(k){
 }
 /** کشویی را با فونتِ ذخیره‌شده هم‌تراز کن */
 function initAppFontPref(){
-  const k=(typeof window.appFontCurrent==='function')?window.appFontCurrent():'system';
+  const k=(typeof window.appFontCurrent==='function')?window.appFontCurrent()
+    :(window.APP_FONT_SERVER||'vazirmatn');
   const sel=document.getElementById('appFontSel');
   if(sel)sel.value=k;
   syncAppFontPreview(k);

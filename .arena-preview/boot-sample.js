@@ -45,7 +45,11 @@ window.AMPHP_STOREFRONT = {
     checkout_field_notes_req: false,
     checkout_show_gateways: true,
     checkout_cod_label: 'پرداخت در محل (COD)',
-    checkout_success_msg: 'سفارش شما با موفقیت ثبت شد!'
+    checkout_success_msg: 'سفارش شما با موفقیت ثبت شد!',
+    shop_title_font: 'sahel',
+    app_font: 'sahel',
+    shop_title_font_size: 'normal',
+    shop_title_font_weight: '900'
   },
   products: [
     {id:'1',title:'ساعت هوشمند اولترا پرو',has_price:true,price:1450000,price_formatted:'۱٬۴۵۰٬۰۰۰ تومان',old_price:1950000,old_price_formatted:'۱٬۹۵۰٬۰۰۰ تومان',has_discount:true,discount_pct:26,image:'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&auto=format&fit=crop&q=60',category:'گجت',description:'سنسور سلامت و ضدآب',in_stock:true},
@@ -62,5 +66,5 @@ window.AMPHP_STOREFRONT = {
     { id: 'bacs', title: 'کارت به کارت / واریز', description: 'شماره کارت پس از ثبت سفارش ارسال می‌شود', icon: '', method_title: 'BACS' },
     { id: 'zarinpal', title: 'زرین‌پال', description: 'پرداخت آنلاین امن', icon: '', method_title: 'Zarinpal' }
   ],
-  meta: { version: '13.1.7', engine: 'react', count: 6, is_admin: false }
+  meta: { version: '13.3.3', engine: 'react', count: 6, is_admin: false }
 };

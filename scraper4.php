@@ -15529,107 +15529,274 @@ if (isset($_GET['manual_sync_status'])) {
     exit;
 }
 if (isset($_GET['manual_sync'])) {
-    /* اگر یک همگام‌سازیِ دستیِ زنده در جریان است، دومی راه نیفتد — وگرنه
-       دو پردازه روی یک فایلِ پیشرفت می‌نویسند و هیچ‌کدام قابلِ رصد نیست.
-       معیارِ «زنده» همان معیارِ همیشگی است: پیشرفتِ تازه. */
+    /* =====================================================================
+     *  v10.81: همگام‌سازی دستی = همان دکمهٔ «استخراج بک‌اند» + بقیهٔ کارها
+     *
+     *  قبلاً وارد مسیر کران (cron_run) می‌شدیم: قفل، اعلان، watchdog، …
+     *  و گاهی قبل از رسیدن به runBackendExtract می‌مُرد یا رد می‌شد — صف خالی.
+     *
+     *  حالا دقیقاً مثل ?action=backend_extract:
+     *    ۱) همان لحظه runBackendExtract(..., emitEarly=true) → ردیف در EXTRACT_QUEUE
+     *    ۲) بعد از استخراج: بایگانی/بازنشستگی + صف ارسال (bsl/woo) مثل حلقهٔ کران
+     *    ۳) پمپ ارسال سرورساید
+     *  ===================================================================== */
     $_msPrev = readProgress(MANUAL_SYNC_PROGRESS_FILE);
     $_msAge  = time() - (int)($_msPrev['last_progress_ts'] ?? ($_msPrev['ts'] ?? 0));
-    /* v10.58 (۷۲): پیش از ردِّ اجرایِ دوم، مطمئن شو که اجرایِ اول زنده است.
-       اجرایِ کشته‌شدهٔ هاست (پیشرفتِ بی‌حرکت) نباید دکمه را چند دقیقه
-       قفل کند: به‌عنوانِ «نیمه‌کاره» بسته و اجرأ تازه شروع می‌شود —
-       چک‌پوینتِ رویِ دیسک جلوی تکرارِ کارِ شده را می‌گیرد. */
     if (!empty($_msPrev['running']) && empty($_msPrev['done']) && empty($_GET['takeover'])) {
-        /* v10.67 (81): پنجرهٔ «در حال اجرا» حالا حداکثر یک چرخهٔ نگهبان
-           (نه دو): فایلِ پیشرفت در حینِ اجرا هر چند ثانیه تازه می‌شود،
-           پس اگر یک دورهٔ کامل چیز نوشته نشده، پردژه مرده است و دکمه
-           نباید قفل بماند. */
         $_msMaxD = max(120, (int)(loadConnections()['stall_after'] ?? 300));
         if ($_msAge >= $_msMaxD) {
-            $_msPrev['running']   = false;
-            $_msPrev['done']      = true;
-            $_msPrev['cancelled'] = false;
-            $_msPrev['phase']     = 'نیمه‌کاره ماند';
-            $_msPrev['error']     = 'اجرایِ قبلی نیمه‌کاره ماند (' . $_msAge . ' ثانیه بی‌حرکت) — بسته شد و اجرایِ تازه شروع می‌شود.';
-            $_msPrev['ts'] = time();
-            $_msPrev['last_progress_ts'] = time();
+            $_msPrev['running'] = false; $_msPrev['done'] = true;
+            $_msPrev['phase'] = 'نیمه‌کاره ماند';
+            $_msPrev['error'] = 'اجرای قبلی نیمه‌کاره ماند (' . $_msAge . 'ث) — بسته شد.';
+            $_msPrev['ts'] = time(); $_msPrev['last_progress_ts'] = time();
             writeProgress(MANUAL_SYNC_PROGRESS_FILE, $_msPrev);
         } else {
             header('Content-Type: application/json; charset=UTF-8');
             echo json_encode(['ok' => false, 'busy' => true,
-                'error' => 'یک همگام‌سازیِ دستی همین حالا در حال اجراست'], JSON_UNESCAPED_UNICODE);
+                'error' => 'یک همگام‌سازی دستی همین حالا در حال اجراست'], JSON_UNESCAPED_UNICODE);
             exit;
         }
     }
     @unlink(MANUAL_SYNC_STOP_FILE);
-    /* v10.79: سیگنال توقف استخراج/ارسال جامانده را پاک کن تا همگام‌سازی
-       دستی بلافاصله بعد از «توقف» قبلی گیر نکند. */
     if (defined('EXTRACT_STOP_FILE') && is_file(EXTRACT_STOP_FILE)) @unlink(EXTRACT_STOP_FILE);
     if (defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
     if (defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
 
-    $_msKey  = trim((string)($_GET['profile'] ?? ''));
-    $_msProf = $_msKey !== '' ? (loadProfiles()[$_msKey] ?? null) : null;
-    /* v10.67 (81): حلِّ ممتنِ کلید. تا حالا اگر فرمولِ مرورگر با کلیدِ
-       رویِ دیسک دقیقاً نمی‌خورد (تفاوتِ percent-decode، یا کلان URL به‌جای
-       کلید)، حلقهٔ پروفایل‌ها سراسر را با فیلترِ only رد می‌کرد: نه ردیفی
-       به صف می‌نشست، نه خطایی — همگام‌سازی «تقریباً هیچ کاری نمی‌کرد».
-       حالا کلید با URL ذخیره‌شدهٔ پروفایل‌ها پیدا می‌شود؛ اگر اصلاً نباشد
-       همان لحظه خطای صریح برمی‌گردد، نه اجرایِ خالی. */
+    $_msKey  = trim((string)($_GET['profile'] ?? $_GET['profile_key'] ?? ''));
+    $_msAll  = loadProfiles();
+    $_msProf = ($_msKey !== '' && isset($_msAll[$_msKey]) && is_array($_msAll[$_msKey])) ? $_msAll[$_msKey] : null;
     if ($_msKey !== '' && !is_array($_msProf)) {
-        $_msAll = loadProfiles();
         $_msRes = profileResolveKey($_msKey, $_msAll);
-        if ($_msRes !== null && $_msRes !== $_msKey) {
+        if ($_msRes !== null) {
             $_msKey  = $_msRes;
             $_msProf = $_msAll[$_msRes] ?? null;
         }
     }
-    if ($_msKey !== '' && !is_array($_msProf)) {
+    if ($_msKey === '' || !is_array($_msProf)) {
         writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
             'running' => false, 'done' => true, 'cancelled' => false,
             'phase' => 'خطا', 'started_at' => time(), 'ts' => time(),
-            'last_progress_ts' => time(), 'total' => 3, 'current' => 0,
+            'last_progress_ts' => time(), 'total' => 4, 'current' => 0,
             'profile_key' => $_msKey, 'profile_name' => $_msKey,
-            'recent_log' => ['❌ پروفایلی با کلیدِ «' . mb_substr($_msKey, 0, 80) . '» روی سرور پیدا نشد'],
+            'recent_log' => ['❌ پروفایل یافت نشد — اول ذخیره کنید'],
             'total_log_count' => 1,
         ]);
         header('Content-Type: application/json; charset=UTF-8');
-        echo json_encode(['ok' => false,
-            'error' => 'پروفایلی با این کلید روی سرور پیدا نشد — اول پروفایل را ذخیره کنید، بعد همگام‌سازی کنید'],
-            JSON_UNESCAPED_UNICODE);
+        echo json_encode(['ok' => false, 'error' => 'پروفایل یافت نشد'], JSON_UNESCAPED_UNICODE);
         exit;
     }
-    /* v10.79/v10.80: قبل از شروع، ردیف‌های مرده و قفل کهنه را آزاد کن */
-    $_msCleared = 0;
+
     try {
-        $_msCleared = extractClearStaleBlockers($_msKey, [
+        extractClearStaleBlockers($_msKey, [
             'max_idle' => min(90, max(60, (int)(loadConnections()['stall_after'] ?? 300))),
             'clear_waiting' => true,
             'reason' => 'جایگزین شد توسط همگام‌سازی دستی',
         ]);
-    } catch (Throwable $_msExClr) { /* never block start */ }
+    } catch (Throwable $e) {}
 
+    $GLOBALS['_manualSync'] = true;
+    $GLOBALS['_msKeepConn'] = true;
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+
+    $_msName = (string)($_msProf['name'] ?? $_msKey);
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
         'running' => true, 'done' => false, 'cancelled' => false,
-        'phase' => 'شروع', 'started_at' => time(), 'ts' => time(),
+        'phase' => 'استخراج بک‌اند', 'started_at' => time(), 'ts' => time(),
         'last_progress_ts' => time(),
-        'total' => 3, 'current' => 0,
-        'profile_key' => $_msKey,
-        'profile_name' => is_array($_msProf) ? (string)($_msProf['name'] ?? $_msKey) : $_msKey,
-        'recent_log' => array_values(array_filter([
-            '▶ همگام‌سازیِ دستی شروع شد',
-            $_msKey !== '' ? ('🔑 پروفایل: ' . $_msKey) : null,
-            !empty($_msCleared) ? ('🧹 ' . (int)$_msCleared . ' مانع کهنه (قفل/ردیف) پاک شد') : null,
-        ])),
-        'total_log_count' => 1,
+        'total' => 4, 'current' => 1,
+        'profile_key' => $_msKey, 'profile_name' => $_msName,
+        'recent_log' => [
+            '▶ همگام‌سازی دستی — همان مسیر «استخراج بک‌اند»',
+            '🔑 ' . $_msKey,
+            '⚡ شروع runBackendExtract (صف استخراج همین لحظه پر می‌شود)',
+        ],
+        'total_log_count' => 3,
     ]);
-    /* از همین‌جا وارد مسیرِ کران می‌شویم — کپیِ منطق ممنوع */
-    $_GET['cron_run'] = '1';
-    $_GET['force']    = '1';
-    if ($_msKey !== '') $_GET['only'] = $_msKey;
-    /* v10.61 (۷۵): همگام‌سازیِ دستی «جدا نمی‌شود» — اتصالِ مرورگر تا
-       پایانِ کار باز می‌ماند تا هاست پردژه را نکُشد (msKeepConnStart). */
-    $GLOBALS['_msKeepConn'] = true;
+
+    /* پاسخ فوری + keep-conn (مثل backend_extract + msKeepConn) */
+    if (function_exists('msKeepConnStart')) {
+        try { msKeepConnStart(); } catch (Throwable $e) {}
+    } else {
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['ok' => true, 'started' => true, 'profile' => $_msKey], JSON_UNESCAPED_UNICODE);
+        if (function_exists('fastcgi_finish_request')) { @fastcgi_finish_request(); }
+    }
+
+    $_msResults = ['ok' => true, 'manual_sync' => true, 'profile' => $_msKey, 'via' => 'backend_extract'];
+
+    /* ── ۱) استخراج = عین دکمهٔ استخراج بک‌اند ── */
+    manualSyncProgress(['phase' => 'استخراج بک‌اند', 'current' => 1],
+        '⚡ استخراج بک‌اند: ' . $_msName);
+    msAlive('extract');
+    $_msSyncCfg = is_array($_msProf['syncConfig'] ?? null) ? $_msProf['syncConfig'] : [];
+    $_msNoEx = !empty($_msSyncCfg['noExtract']);
+    $_msPhase = 'all';
+    if ($_msNoEx) {
+        $_msPhase = 'detail';
+        manualSyncProgress([], '📋 پروفایل بدون‌استخراج فهرست — فاز detail');
+    }
+    /* emitEarlyResponse=false چون خودمان پاسخ را فرستادیم؛ trigger=manual_sync */
+    $_msEx = runBackendExtract($_msKey, 'manual_sync', false, $_msPhase, true);
+    $_msResults['extract'] = [
+        'ok' => !empty($_msEx['ok']),
+        'error' => (string)($_msEx['error'] ?? ''),
+        'extracted' => (int)($_msEx['extracted'] ?? 0),
+        'new' => (int)($_msEx['new'] ?? 0),
+        'price_changed' => (int)($_msEx['price_changed'] ?? 0),
+        'removed' => (int)($_msEx['removed'] ?? 0),
+        'duplicate' => !empty($_msEx['duplicate']),
+        'locked' => !empty($_msEx['locked']),
+        'queue_id' => (string)($_msEx['queue_id'] ?? ''),
+    ];
+    if (!empty($_msEx['ok'])) {
+        manualSyncProgress(['current' => 2, 'phase' => 'استخراج تمام'],
+            '✅ استخراج: ' . (int)($_msEx['extracted'] ?? 0) . ' محصول'
+            . (!empty($_msEx['new']) ? (' · جدید ' . (int)$_msEx['new']) : '')
+            . (!empty($_msEx['price_changed']) ? (' · قیمت ' . (int)$_msEx['price_changed']) : ''));
+        try {
+            $cnN = loadConnections();
+            notifSourceChanges($cnN, $_msEx, $_msName);
+        } catch (Throwable $e) {}
+        /* پروفایل تازه بعد از extract */
+        $_msAll = loadProfiles();
+        $_msProf = $_msAll[$_msKey] ?? $_msProf;
+    } else {
+        $_msErr = (string)($_msEx['error'] ?? 'استخراج ناموفق');
+        if (!empty($_msEx['duplicate'])) $_msErr .= ' (ردیف فعال در صف)';
+        if (!empty($_msEx['locked'])) $_msErr .= ' (قفل استخراج)';
+        manualSyncProgress(['phase' => 'خطای استخراج'], '❌ ' . mb_substr($_msErr, 0, 280));
+        /* استخراج fail نباید کل همگام را بکشد اگر محصول روی دیسک هست — ادامه برای ارسال */
+        if (empty($_msProf['products'])) {
+            writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
+                'running' => false, 'done' => true, 'error' => $_msErr,
+                'phase' => 'خطا', 'ts' => time(), 'last_progress_ts' => time(),
+            ]));
+            /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
+"; @ob_flush(); @flush(); } } catch (Throwable $e) {}
+            exit;
+        }
+        manualSyncProgress([], '⚠️ استخراج شکست — ادامه با محصولات ذخیره‌شده برای ارسال');
+    }
+
+    if (manualSyncStopped()) {
+        writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
+            'running' => false, 'done' => true, 'cancelled' => true,
+            'phase' => 'متوقف شد', 'ts' => time(), 'last_progress_ts' => time(),
+        ]));
+        /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
+"; @ob_flush(); @flush(); } } catch (Throwable $e) {}
+        exit;
+    }
+
+    /* ── ۲) صف‌سازی ارسال (باسلام / ووکامرس) — همان منطق کران برای یک پروفایل ── */
+    manualSyncProgress(['phase' => 'صف ارسال', 'current' => 3], '📤 آماده‌سازی صف ارسال…');
+    msAlive('queue_send');
+    try {
+        $_msCn = loadConnections();
+        $_msTarget = (string)($_msSyncCfg['target'] ?? 'woo');
+        if (!in_array($_msTarget, ['woo', 'bsl', 'both', 'none'], true)) $_msTarget = 'woo';
+        $_msResults['target'] = $_msTarget;
+
+        /* محصولات برای ارسال */
+        $_msProducts = [];
+        if (is_array($_msProf['products'] ?? null)) {
+            foreach ($_msProf['products'] as $_mp) {
+                if (is_array($_mp) && count($_mp) === 2 && is_array($_mp[1])) {
+                    $_msProducts[$_mp[0]] = $_mp[1];
+                } elseif (is_array($_mp)) {
+                    $_k = (string)($_mp['key'] ?? $_mp['id'] ?? '');
+                    if ($_k !== '') $_msProducts[$_k] = $_mp;
+                }
+            }
+        }
+        /* اگر exRes محصولات را برگرداند ترجیح بده */
+        if (!empty($_msEx['products']) && is_array($_msEx['products'])) {
+            // leave disk products as source of truth after extract already saved
+        }
+
+        if ($_msTarget === 'none') {
+            manualSyncProgress([], '⏭ مقصد none — ارسالی صف نمی‌شود');
+        } else {
+            /* فراخوانی کمک‌تابع اگر وجود دارد؛ وگرنه منطق inline از cron */
+            if (function_exists('cronEnqueueSendsForProfile')) {
+                $_msEnq = cronEnqueueSendsForProfile($_msKey, $_msProf, $_msCn, $_msEx ?? [], true);
+                $_msResults['enqueue'] = $_msEnq;
+                manualSyncProgress([], '📋 صف ارسال: ' . json_encode($_msEnq, JSON_UNESCAPED_UNICODE));
+            } else {
+                /* Inline minimal enqueue mirroring cron bsl/woo blocks */
+                $_msEnq = manualSyncEnqueueSends($_msKey, $_msProf, $_msCn, is_array($_msEx) ? $_msEx : []);
+                $_msResults['enqueue'] = $_msEnq;
+                if (!empty($_msEnq['log'])) {
+                    foreach ((array)$_msEnq['log'] as $_ln) manualSyncProgress([], (string)$_ln);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        manualSyncProgress([], '⚠️ صف ارسال: ' . mb_substr($e->getMessage(), 0, 200));
+        $_msResults['enqueue_error'] = $e->getMessage();
+    }
+
+    if (manualSyncStopped()) {
+        writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
+            'running' => false, 'done' => true, 'cancelled' => true,
+            'phase' => 'متوقف شد', 'ts' => time(), 'last_progress_ts' => time(),
+        ]));
+        /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
+"; @ob_flush(); @flush(); } } catch (Throwable $e) {}
+        exit;
+    }
+
+    /* ── ۳) پمپ ارسال سرورساید ── */
+    manualSyncProgress(['phase' => 'ارسال', 'current' => 3], '📡 ارسال از صف…');
+    msAlive('send');
+    try {
+        $_msSendRes = manualServerSendRun();
+        $_msResults['ms_server_send'] = $_msSendRes;
+        if (!empty($_msSendRes['stopped'])) {
+            manualSyncProgress([], '⏹ ارسال با درخواست کاربر متوقف شد');
+        } else {
+            manualSyncProgress([], '✅ مرحله ارسال تمام شد');
+        }
+    } catch (Throwable $e) {
+        manualSyncProgress([], '⚠️ ارسال: ' . mb_substr($e->getMessage(), 0, 200));
+        $_msResults['ms_server_send'] = ['error' => $e->getMessage()];
+    }
+
+    /* ── ۴) گزارش ── */
+    try { cronMarkRun($_msKey, 'manual_done'); } catch (Throwable $e) {}
+    manualSyncProgress(['phase' => 'تمام شد', 'current' => 4], '✅ همگام‌سازی دستی تمام شد');
+    $_msDone = readProgress(MANUAL_SYNC_PROGRESS_FILE);
+    $_msDone['running'] = false;
+    $_msDone['done'] = true;
+    $_msDone['cancelled'] = false;
+    $_msDone['current'] = 4;
+    $_msDone['phase'] = 'تمام شد';
+    $_msDone['ts'] = time();
+    $_msDone['last_progress_ts'] = time();
+    $_msDone['summary_data'] = $_msResults;
+    writeProgress(MANUAL_SYNC_PROGRESS_FILE, $_msDone);
+    @unlink(MANUAL_SYNC_STOP_FILE);
+
+    /* cron_last_run برای سازگاری */
+    try {
+        @file_put_contents(__DIR__ . '/cron_last_run.json', json_encode([
+            'ok' => true, 'manual_sync' => true, 'time' => time(),
+            'profiles' => [['key' => $_msKey, 'name' => $_msName, 'status' => 'done',
+                'extract' => $_msResults['extract'] ?? []]],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    } catch (Throwable $e) {}
+
+    try {
+        if (defined('MS_KEEP_CONN')) {
+            echo json_encode(['ok' => true, 'done' => true], JSON_UNESCAPED_UNICODE) . "\n";
+            @ob_flush(); @flush();
+        }
+    } catch (Throwable $e) {}
+    exit;
 }
+
+
 
 if (isset($_GET['cron_run']) || (($_POST['action'] ?? '') === 'cron_run')) {
 header('Content-Type: application/json; charset=UTF-8');
@@ -16262,7 +16429,15 @@ $detailWasUnfinished = in_array($stagePrev, ['list_done', 'detail'], true)
    اگر اجرای قبلی وسطِ جزئیات کشته شده باشد (stage=detail تازه)، مستقیم همان را
    با فازِ detail ادامه می‌دهیم (بدون گرفتن دوبارهٔ فهرست). */
 $stepMode = ($stagePrev === 'detail' && $stagePrevAge <= $stageStale) ? 'detail' : 'all';
-$exRes = runBackendExtract($key, manualSyncActive() ? 'manual_sync' : 'auto', false, $stepMode); /* v10.53 (۶۷) */
+/* v10.81: قبل از extract خودکار، موانع کهنهٔ همین پروفایل را بردار — مثل دکمهٔ بک‌اند */
+try {
+    extractClearStaleBlockers((string)$key, [
+        'max_idle' => max(120, (int)($cn['stall_after'] ?? 300)),
+        'clear_waiting' => false,
+        'reason' => 'پاک‌سازی پیش از extract خودکار',
+    ]);
+} catch (Throwable $_preEx) {}
+$exRes = runBackendExtract($key, manualSyncActive() ? 'manual_sync' : 'auto', false, $stepMode); /* v10.53 (۶۷) / v10.81 */
 $pResult['step'] = $stepMode;
 
 /* v9.67: «استخراج تفصیلیِ جداگانه» در هر اجرای کران حذف شد.
@@ -25444,7 +25619,148 @@ if (isset($_GET['selftest'])) {
     $add('10.50', 'نسخهٔ ۱۰.۵۰',
          str_contains($selfSrc, "const APP_VERSION = '10.50';"));
     $add('10.50', 'Manual sync send is fully server-side: manual worker drives queue in rounds',
-         (strpos($selfSrc, "function manualServerSendRun(int \$roundMs = 1500000, int \$maxRounds = 12): array {") !== false
+         (strpos($selfSrc, "
+/**
+ * v10.81: صف‌سازی ارسال برای یک پروفایل بعد از استخراج بک‌اند (همگام دستی).
+ * منطق خلاصه‌شده از حلقهٔ کران — بدون قفل کران.
+ */
+function manualSyncEnqueueSends(string $key, array $profile, array $cn, array $exRes): array {
+    $out = ['log' => [], 'woo' => false, 'bsl' => false];
+    $syncCfg = is_array($profile['syncConfig'] ?? null) ? $profile['syncConfig'] : [];
+    $target = (string)($syncCfg['target'] ?? 'woo');
+    if (!in_array($target, ['woo', 'bsl', 'both', 'none'], true)) $target = 'woo';
+    if ($target === 'none') {
+        $out['log'][] = '⏭ مقصد none';
+        return $out;
+    }
+    $now = time();
+    /* Build product list from profile disk */
+    $products = [];
+    foreach ((array)($profile['products'] ?? []) as $entry) {
+        if (is_array($entry) && count($entry) === 2 && is_array($entry[1])) {
+            $pk = (string)$entry[0];
+            $products[$pk] = $entry[1];
+            $products[$pk]['key'] = $pk;
+        }
+    }
+    if (!$products) {
+        $out['log'][] = '⚠️ محصولی روی دیسک نیست — صف ارسال خالی';
+        return $out;
+    }
+    $out['log'][] = '📦 ' . count($products) . ' محصول برای صف ارسال';
+
+    $wooOn = ($target === 'woo' || $target === 'both') && !empty($syncCfg['wooAddUpdate']);
+    $bslOn = ($target === 'bsl' || $target === 'both') && !empty($syncCfg['bslAddUpdate']);
+    /* اگر تیک add/update نبود ولی target هست، باز هم صف کن (رفتار force دستی) */
+    if (!$wooOn && ($target === 'woo' || $target === 'both')) $wooOn = true;
+    if (!$bslOn && ($target === 'bsl' || $target === 'both')) $bslOn = true;
+
+    $bslForceAll = empty($syncCfg['bslOnlyChanged']); /* force full on manual */
+    $wooForceAll = empty($syncCfg['wooOnlyChanged']);
+    /* manual always prefers sending something */
+    $bslOnlyChanged = false;
+    $wooOnlyChanged = false;
+
+    /* Serialize products file for queue */
+    $qDir = __DIR__;
+    $stamp = date('Ymd_His');
+    $safeKey = preg_replace('~[^a-zA-Z0-9_\-]+~', '_', $key);
+
+    if ($wooOn && function_exists('wooReadQueue') && function_exists('wooWriteQueue')) {
+        try {
+            $wooSend = array_values($products);
+            $wooQFile = $qDir . '/woo_queue_' . $safeKey . '_' . $stamp . '.json';
+            @file_put_contents($wooQFile, json_encode($wooSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $wooQueue = wooReadQueue();
+            if (!isset($wooQueue['entries']) || !is_array($wooQueue['entries'])) $wooQueue['entries'] = [];
+            /* clear stale for this profile */
+            foreach ($wooQueue['entries'] as &$we) {
+                if (!is_array($we)) continue;
+                if ((string)($we['profile_key'] ?? '') !== $key) continue;
+                if (in_array((string)($we['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
+                    $we['status'] = 'failed';
+                    $we['error'] = 'جایگزین همگام دستی';
+                    $we['done_at'] = $now;
+                }
+            }
+            unset($we);
+            $wooQueueId = 'woo_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+            $wooSuffix = (string)($profile['titleSuffix'] ?? '');
+            $wooCatId = (int)($syncCfg['wooCategoryId'] ?? 0);
+            $wooQueue['entries'][] = [
+                'id' => $wooQueueId, 'status' => 'waiting',
+                'products_file' => $wooQFile, 'total' => count($wooSend),
+                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                'started_at' => 0, 'done_at' => 0,
+                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
+                'only_changed' => $wooOnlyChanged, 'trigger' => 'manual_sync',
+                'config' => ['title_suffix' => $wooSuffix, 'category_id' => $wooCatId, 'force_all' => true],
+            ];
+            wooWriteQueue($wooQueue);
+            $out['woo'] = true;
+            $out['woo_total'] = count($wooSend);
+            $out['log'][] = '🛒 ووکامرس: ' . count($wooSend) . ' در صف';
+        } catch (Throwable $e) {
+            $out['log'][] = '⚠️ ووکامرس: ' . mb_substr($e->getMessage(), 0, 120);
+        }
+    }
+
+    if ($bslOn && function_exists('bslReadQueue') && function_exists('bslWriteQueue')) {
+        try {
+            $bslSend = array_values($products);
+            $qFile = $qDir . '/bsl_queue_' . $safeKey . '_' . $stamp . '.json';
+            @file_put_contents($qFile, json_encode($bslSend, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $queue = bslReadQueue();
+            if (!isset($queue['entries']) || !is_array($queue['entries'])) $queue['entries'] = [];
+            foreach ($queue['entries'] as &$be) {
+                if (!is_array($be)) continue;
+                if ((string)($be['profile_key'] ?? '') !== $key) continue;
+                if (in_array((string)($be['status'] ?? ''), ['waiting', 'running', 'paused'], true)) {
+                    $be['status'] = 'failed';
+                    $be['error'] = 'جایگزین همگام دستی';
+                    $be['done_at'] = $now;
+                }
+            }
+            unset($be);
+            $queueId = 'bsl_' . $safeKey . '_' . time() . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+            $catId = (int)($profile['bslCategoryId'] ?? $syncCfg['bslCategoryId'] ?? 0);
+            $autoCat = !empty($syncCfg['bslAutoCategory']);
+            $titleSuffix = (string)($profile['titleSuffix'] ?? '');
+            $delayMs = (int)($cn['basalam']['delay_ms'] ?? 400);
+            $retryDelayMs = (int)($cn['basalam']['retry_delay_ms'] ?? 1500);
+            $allFallbackCats = is_array($profile['bslFallbackCatIds'] ?? null) ? $profile['bslFallbackCatIds'] : [];
+            $queue['entries'][] = [
+                'id' => $queueId, 'status' => 'waiting',
+                'products_file' => $qFile, 'total' => count($bslSend),
+                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                'started_at' => 0, 'done_at' => 0, 'paused_at' => 0,
+                'only_changed' => false,
+                'config' => [
+                    'category_id' => $catId, 'auto_category' => $autoCat,
+                    'title_suffix' => $titleSuffix, 'delay_ms' => $delayMs,
+                    'retry_delay_ms' => $retryDelayMs, 'fallback_cat_ids' => $allFallbackCats,
+                    'send_all_shops' => !empty($cn['basalam']['send_all_shops']),
+                    'force_all' => true,
+                ],
+                'profile_key' => $key, 'profile_name' => (string)($profile['name'] ?? $key),
+                'trigger' => 'manual_sync', 'auto_sync' => true,
+            ];
+            bslWriteQueue($queue);
+            $out['bsl'] = true;
+            $out['bsl_total'] = count($bslSend);
+            $out['log'][] = '⭐ باسلام: ' . count($bslSend) . ' در صف';
+        } catch (Throwable $e) {
+            $out['log'][] = '⚠️ باسلام: ' . mb_substr($e->getMessage(), 0, 120);
+        }
+    }
+
+    if (!$out['woo'] && !$out['bsl']) {
+        $out['log'][] = 'ℹ️ مقصد فعالی برای صف ارسال نبود (target=' . $target . ')';
+    }
+    return $out;
+}
+
+function manualServerSendRun(int \$roundMs = 1500000, int \$maxRounds = 12): array {") !== false
           && strpos($selfSrc, "function msQueuePendingRow(string \$which): ?array {") !== false
           && strpos($selfSrc, "function msLockFresh(string \$which): bool {") !== false
           && strpos($selfSrc, "\$_msSendRes = manualServerSendRun();") !== false
@@ -52663,6 +52979,9 @@ function msFire(pkey){
   if($('msPhase'))$('msPhase').textContent='⏳ در حال شروع…';
   if($('msLog'))$('msLog').innerHTML='';
   try{ if(typeof switchMainTab==='function') switchMainTab('start'); }catch(e){}
+  /* v10.81: مثل استخراج بک‌اند — پنل پیشرفت استخراج + صف را همان لحظه باز کن */
+  try{ if(typeof openExtractPanel==='function') openExtractPanel('🔄 همگام‌سازی دستی — استخراج بک‌اند'); }catch(e){}
+  try{ if(typeof watchExtractProgress==='function') watchExtractProgress(); }catch(e){}
   try{ if(typeof refreshExtractQueue==='function') refreshExtractQueue(); }catch(e){}
   fetch('?manual_sync=1&profile='+encodeURIComponent(pkey)+'&force=1')
     .then(r=>r.text()).then(t=>{

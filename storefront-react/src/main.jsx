@@ -525,7 +525,151 @@ function ToastHost({ toasts, dismiss }) {
   );
 }
 
-function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial }) {
+
+/** True when URL looks like empty / WC / SnappShop generic placeholder */
+function isBadProductImageUrl(url) {
+  const u = String(url || '').toLowerCase().trim();
+  if (!u) return true;
+  if (u.startsWith('data:image')) return true;
+  const bad = [
+    'placeholder', 'no-image', 'no_image', 'noimage', 'default-image', 'default_image',
+    'woocommerce-placeholder', 'wc-placeholder', 'blank.gif', 'blank.png', '1x1.',
+    'spacer', 'transparent', 'loading.gif', 'snappshop', 'snapp.ir/static', 'cdn.snapp',
+    'default_product', 'product_placeholder', 'product-default', 'img-placeholder',
+    'empty-product', 'without-image', 'dummy-image', 'dummy_image',
+  ];
+  return bad.some((b) => u.includes(b));
+}
+
+/**
+ * Inline pinch-zoom on PDP main image (two-finger spread/pinch) + open lightbox on tap.
+ */
+function PdpMainImage({ src, alt, onOpenZoom }) {
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const pinch = useRef(null);
+  const moved = useRef(false);
+  const scaleRef = useRef(1);
+
+  useEffect(() => { setScale(1); setTx(0); setTy(0); scaleRef.current = 1; }, [src]);
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1;
+
+  const onTouchStart = (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      moved.current = true;
+      pinch.current = { d: dist(e.touches[0], e.touches[1]), s: scaleRef.current };
+    }
+  };
+  const onTouchMove = (e) => {
+    if (e.touches.length === 2 && pinch.current) {
+      e.preventDefault();
+      moved.current = true;
+      const ratio = dist(e.touches[0], e.touches[1]) / pinch.current.d;
+      const n = Math.min(4, Math.max(1, pinch.current.s * ratio));
+      setScale(n);
+      if (n <= 1) { setTx(0); setTy(0); }
+    }
+  };
+  const onTouchEnd = () => {
+    pinch.current = null;
+    if (scaleRef.current <= 1.05) {
+      setScale(1); setTx(0); setTy(0);
+    }
+  };
+  const onClick = () => {
+    if (moved.current) { moved.current = false; return; }
+    onOpenZoom?.();
+  };
+
+  if (!src) return <div className="sf-pdp-ph">📦</div>;
+  return (
+    <div
+      className="sf-pdp-main-pinch"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenZoom?.(); } }}
+      title="پینچ برای زوم · کلیک برای تمام‌صفحه"
+    >
+      <img
+        src={src}
+        alt={alt || ''}
+        draggable={false}
+        style={{ transform: `translate3d(${tx}px,${ty}px,0) scale(${scale})` }}
+      />
+    </div>
+  );
+}
+
+
+function ProductThumbImage({ p, ajax, onImageFix, aiImages = true }) {
+  const initial = isBadProductImageUrl(p.image) ? '' : (p.image || '');
+  const [src, setSrc] = useState(initial);
+  const [trying, setTrying] = useState(false);
+  const tried = useRef(false);
+
+  useEffect(() => {
+    setSrc(isBadProductImageUrl(p.image) ? '' : (p.image || ''));
+    tried.current = false;
+  }, [p.id, p.image]);
+
+  useEffect(() => {
+    if (src || tried.current || !ajax?.ajaxUrl || aiImages === false) return;
+    let cancelled = false;
+    tried.current = true;
+    (async () => {
+      setTrying(true);
+      try {
+        const fd = new FormData();
+        fd.append('action', 'scraper_ai_enrich_one_image');
+        fd.append('nonce', ajax.cartNonce || '');
+        fd.append('id', p.id || '');
+        fd.append('title', p.title || '');
+        fd.append('category', p.category || '');
+        fd.append('image', p.image || '');
+        const res = await fetch(ajax.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const url = data?.data?.image || data?.data?.remote || '';
+        if (!cancelled && data?.success && url && !isBadProductImageUrl(url)) {
+          setSrc(url);
+          onImageFix?.(p.id, url);
+        }
+      } catch { /* ignore */ }
+      finally { if (!cancelled) setTrying(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [src, p.id]);
+
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={p.title}
+        loading="lazy"
+        onError={(e) => {
+          e.currentTarget.style.display = 'none';
+          e.currentTarget.parentElement.querySelector('.sf-thumb-empty')?.classList.add('show');
+          setSrc('');
+        }}
+      />
+    );
+  }
+  return (
+    <div className={`sf-thumb-empty show${trying ? ' sf-thumb-ai' : ''}`} style={{ display: 'grid' }}>
+      {trying ? '🔍' : '📦'}
+      {trying ? <small className="sf-thumb-ai-lbl">جستجوی تصویر…</small> : null}
+    </div>
+  );
+}
+
+function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial, ajax, onImageFix, aiImages = true }) {
   const inStock = p.in_stock !== false;
   const meta = productVisualMeta(p);
   const price = Number(p.price) || 0;
@@ -553,18 +697,7 @@ function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, sh
           ) : null}
         </div>
         <span className={`sf-stock ${inStock ? '' : 'out'}`}>{inStock ? 'موجود' : 'ناموجود'}</span>
-        {p.image ? (
-          <img
-            src={p.image}
-            alt={p.title}
-            loading="lazy"
-            onError={(e) => {
-              e.currentTarget.style.display = 'none';
-              e.currentTarget.parentElement.querySelector('.sf-thumb-empty')?.classList.add('show');
-            }}
-          />
-        ) : null}
-        <div className="sf-thumb-empty" style={{ display: p.image ? 'none' : 'grid' }}>📦</div>
+        <ProductThumbImage p={p} ajax={ajax} onImageFix={onImageFix} aiImages={aiImages} />
         <div className="sf-thumb-hover">
           <button type="button" className="sf-btn primary sm" onClick={(e) => { e.stopPropagation(); onAdd(p); }}>＋ سبد</button>
           <button type="button" className="sf-btn ghost sm" onClick={(e) => { e.stopPropagation(); onOpen(p); }}>جزئیات</button>
@@ -709,10 +842,19 @@ function ImageZoomLightbox({ src, alt, onClose, onPrev, onNext, hasNav }) {
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
   const drag = useRef(null);
+  const pinch = useRef(null);
   const wrapRef = useRef(null);
+  const scaleRef = useRef(1);
+  const txRef = useRef(0);
+  const tyRef = useRef(0);
+
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+  useEffect(() => { txRef.current = tx; }, [tx]);
+  useEffect(() => { tyRef.current = ty; }, [ty]);
 
   useEffect(() => {
     setScale(1); setTx(0); setTy(0);
+    scaleRef.current = 1; txRef.current = 0; tyRef.current = 0;
   }, [src]);
 
   useEffect(() => {
@@ -732,27 +874,92 @@ function ImageZoomLightbox({ src, alt, onClose, onPrev, onNext, hasNav }) {
     };
   }, [onClose, onPrev, onNext]);
 
+  const clampScale = (s) => Math.min(5, Math.max(1, s));
+
   const onWheel = (e) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.15 : 0.15;
     setScale((s) => {
-      const n = Math.min(5, Math.max(1, s + delta));
+      const n = clampScale(s + delta);
       if (n <= 1) { setTx(0); setTy(0); }
       return n;
     });
   };
 
+  const touchDist = (t0, t1) => {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.hypot(dx, dy) || 1;
+  };
+  const touchMid = (t0, t1) => ({
+    x: (t0.clientX + t1.clientX) / 2,
+    y: (t0.clientY + t1.clientY) / 2,
+  });
+
+  const onTouchStart = (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const d = touchDist(e.touches[0], e.touches[1]);
+      const m = touchMid(e.touches[0], e.touches[1]);
+      pinch.current = {
+        dist: d,
+        scale: scaleRef.current,
+        tx: txRef.current,
+        ty: tyRef.current,
+        midX: m.x,
+        midY: m.y,
+      };
+      drag.current = null;
+      return;
+    }
+    if (e.touches.length === 1 && scaleRef.current > 1) {
+      const t = e.touches[0];
+      drag.current = { x: t.clientX, y: t.clientY, tx: txRef.current, ty: tyRef.current };
+    }
+  };
+  const onTouchMove = (e) => {
+    if (e.touches.length === 2 && pinch.current) {
+      e.preventDefault();
+      const d = touchDist(e.touches[0], e.touches[1]);
+      const ratio = d / (pinch.current.dist || 1);
+      const n = clampScale(pinch.current.scale * ratio);
+      setScale(n);
+      // light pan follow midpoint delta
+      const m = touchMid(e.touches[0], e.touches[1]);
+      setTx(pinch.current.tx + (m.x - pinch.current.midX));
+      setTy(pinch.current.ty + (m.y - pinch.current.midY));
+      if (n <= 1) { setTx(0); setTy(0); }
+      return;
+    }
+    if (e.touches.length === 1 && drag.current) {
+      e.preventDefault();
+      const t = e.touches[0];
+      setTx(drag.current.tx + (t.clientX - drag.current.x));
+      setTy(drag.current.ty + (t.clientY - drag.current.y));
+    }
+  };
+  const onTouchEnd = (e) => {
+    if (e.touches.length < 2) pinch.current = null;
+    if (e.touches.length === 0) drag.current = null;
+    if (scaleRef.current <= 1) { setTx(0); setTy(0); }
+  };
+
   const onPointerDown = (e) => {
+    if (e.pointerType === 'touch') return; // handled by touch handlers
     if (scale <= 1) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, tx, ty };
   };
   const onPointerMove = (e) => {
+    if (e.pointerType === 'touch') return;
     if (!drag.current) return;
     setTx(drag.current.tx + (e.clientX - drag.current.x));
     setTy(drag.current.ty + (e.clientY - drag.current.y));
   };
-  const onPointerUp = () => { drag.current = null; };
+  const onPointerUp = (e) => {
+    if (e.pointerType === 'touch') return;
+    drag.current = null;
+  };
 
   const zoomIn = () => setScale((s) => Math.min(5, s + 0.35));
   const zoomOut = () => setScale((s) => {
@@ -786,6 +993,10 @@ function ImageZoomLightbox({ src, alt, onClose, onPrev, onNext, hasNav }) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onTouchCancel={onTouchEnd}
       >
         <img
           src={src}
@@ -797,7 +1008,7 @@ function ImageZoomLightbox({ src, alt, onClose, onPrev, onNext, hasNav }) {
           }}
         />
       </div>
-      <div className="sf-zoom-hint">اسکرول یا ＋/− برای زوم · دابل‌کلیک · کشیدن برای جابه‌جایی · Esc بستن</div>
+      <div className="sf-zoom-hint">پینچ دو انگشتی · اسکرول · ＋/− · دابل‌کلیک · کشیدن · Esc</div>
     </div>
   );
 }
@@ -838,6 +1049,28 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
             setAiFilling(true);
           } else {
             setAiFilling(false);
+          }
+          /* v13.3.14: if still no real image, ask server to web-search one */
+          const curImg = det.image || det.gallery?.[0] || product.image || '';
+          if (isBadProductImageUrl(curImg) && ajax?.ajaxUrl) {
+            try {
+              const fd2 = new FormData();
+              fd2.append('action', 'scraper_ai_enrich_one_image');
+              fd2.append('nonce', ajax.cartNonce || '');
+              fd2.append('id', product.id || det.id || '');
+              fd2.append('title', det.title || product.title || '');
+              fd2.append('category', det.category || product.category || '');
+              const r2 = await fetch(ajax.ajaxUrl, { method: 'POST', body: fd2, credentials: 'same-origin' });
+              const d2 = await r2.json().catch(() => ({}));
+              const url = d2?.data?.image || d2?.data?.remote || '';
+              if (!cancelled && d2?.success && url && !isBadProductImageUrl(url)) {
+                setFull((prev) => ({
+                  ...prev,
+                  image: url,
+                  gallery: [url, ...((prev.gallery || []).filter((g) => g && g !== url))],
+                }));
+              }
+            } catch (_) { /* ignore */ }
           }
         }
       } catch (_) {
@@ -910,21 +1143,14 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
 
         <div className="sf-pdp-grid">
           <div className="sf-pdp-gallery">
-            <div
-              className="sf-pdp-main sf-pdp-main-zoomable"
-              role={mainImg ? 'button' : undefined}
-              tabIndex={mainImg ? 0 : undefined}
-              onClick={() => { if (mainImg) setZoomOpen(true); }}
-              onKeyDown={(e) => { if (mainImg && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setZoomOpen(true); } }}
-              title={mainImg ? 'برای بزرگ‌نمایی کلیک کنید' : undefined}
-            >
+            <div className="sf-pdp-main sf-pdp-main-zoomable">
               {p.has_discount && p.discount_pct ? (
                 <span className="sf-pdp-disc-float">{toFa(p.discount_pct)}٪ تخفیف</span>
               ) : null}
               {mainImg
-                ? <img src={mainImg} alt={p.title} />
+                ? <PdpMainImage src={mainImg} alt={p.title} onOpenZoom={() => setZoomOpen(true)} />
                 : <div className="sf-pdp-ph">📦</div>}
-              {mainImg ? <span className="sf-pdp-zoom-hint">🔍 بزرگ‌نمایی</span> : null}
+              {mainImg ? <span className="sf-pdp-zoom-hint">🔍 پینچ یا کلیک برای زوم</span> : null}
               {loading ? <span className="sf-pdp-loading">بارگذاری جزئیات…</span> : null}
             </div>
             {gallery.length > 1 ? (
@@ -937,7 +1163,7 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
               </div>
             ) : null}
             <div className="sf-pdp-gallery-note">
-              <span>🔍 روی تصویر بزنید تا بزرگ شود · اسکرول برای زوم</span>
+              <span>🔍 پینچ دو انگشتی · کلیک تمام‌صفحه · اسکرول زوم</span>
               <span>{toFa(gallery.length || 1)} تصویر</span>
             </div>
           </div>
@@ -1930,13 +2156,19 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 function StoreApp({ boot }) {
   const settings = boot.settings || {};
   const meta = boot.meta || {};
-  const products = Array.isArray(boot.products) ? boot.products : [];
+  const [products, setProducts] = useState(() => Array.isArray(boot.products) ? boot.products : []);
   /* v13.3.1: total_count = کل کاتالوگ (هم‌تراز پروفایل‌های اسکریپر) */
   const catalogTotal = Math.max(
     Number(meta.total_count) || 0,
     Number(meta.count) || 0,
     products.length,
   );
+  const fixProductImage = useCallback((id, url) => {
+    if (!id || !url) return;
+    setProducts((list) => list.map((x) => (String(x.id) === String(id)
+      ? { ...x, image: url, gallery: [url, ...((x.gallery || []).filter((g) => g && g !== url))], image_source: 'ai_web' }
+      : x)));
+  }, []);
   const ajax = boot.ajax || {};
   const currency = settings.currency_symbol || 'تومان';
   const palette = settings.store_palette || 'digikala-red';
@@ -2783,6 +3015,9 @@ function StoreApp({ boot }) {
                 onAdd={addToCart}
                 onAsk={askAboutProduct}
                 showSpecial={!!settings.show_special_badge}
+                ajax={ajax}
+                onImageFix={fixProductImage}
+                aiImages={settings.enable_ai_product_images !== false}
               />
               {((idx + 1) % 8 === 0 && idx + 1 < pageItems.length) ? (
                 <div className="sf-grid-banner" key={`bn-${idx}`}>

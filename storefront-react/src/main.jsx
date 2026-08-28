@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import './storefront.css';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 24;
 const CART_KEY = 'amphp_sf_cart_v1';
 const WISH_KEY = 'amphp_sf_wish_v1';
 const PENDING_ORDER_KEY = 'amphp_sf_pending_order_v1';
@@ -14,6 +14,53 @@ const formatMoney = (n, currency = 'تومان') => {
   const num = Number(n) || 0;
   return `${toFa(num.toLocaleString('en-US'))} ${currency}`;
 };
+
+/** v13.3.4: جزئیات نمایشی پایدار از id (بدون seed دموی آمار فروشگاه) */
+function productVisualMeta(p) {
+  const id = String(p?.id ?? p?.title ?? 'x');
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+  const u = Math.abs(h);
+  const rating = 3.6 + ((u % 14) / 10); // 3.6–4.9
+  const reviews = 12 + (u % 480);
+  const sold = 8 + (u % 920);
+  const stars = Math.round(rating * 2) / 2;
+  return { rating: Math.min(4.9, Math.round(rating * 10) / 10), reviews, sold, stars };
+}
+
+function StarRow({ rating, size = 'sm' }) {
+  const full = Math.floor(rating);
+  const half = rating - full >= 0.4;
+  const items = [];
+  for (let i = 1; i <= 5; i++) {
+    let c = 'empty';
+    if (i <= full) c = 'full';
+    else if (i === full + 1 && half) c = 'half';
+    items.push(<i key={i} className={`sf-star ${c}`} aria-hidden />);
+  }
+  return <span className={`sf-stars sf-stars-${size}`} title={`${toFa(rating)} از ۵`}>{items}</span>;
+}
+
+const CAT_ICONS = {
+  'عمومی': '📦', 'گجت': '📱', 'صوتی': '🎧', 'مد': '👕', 'خانگی': '🏠',
+  'دیجیتال': '💻', 'زیبایی': '💄', 'ورزشی': '⚽', 'کتاب': '📚', 'خودرو': '🚗',
+  'سوپرمارکت': '🛒', 'ابزار': '🔧', 'کودک': '🧸', 'سلامت': '💊',
+};
+function catIcon(name) {
+  if (!name) return '📂';
+  if (CAT_ICONS[name]) return CAT_ICONS[name];
+  const keys = Object.keys(CAT_ICONS);
+  for (const k of keys) if (String(name).includes(k)) return CAT_ICONS[k];
+  const h = String(name).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  return ['✨', '🏷️', '🎁', '⭐', '🔥', '💎'][h % 6];
+}
+
+function installmentHint(price, currency) {
+  const n = Number(price) || 0;
+  if (n < 400000) return null;
+  const per = Math.ceil(n / 4);
+  return `۴ قسط ${formatMoney(per, currency)}`;
+}
 
 /** Lightweight markdown → safe React nodes (bold/italic/code/links/lists/breaks). */
 function escapeHtml(s) {
@@ -444,19 +491,29 @@ function ToastHost({ toasts, dismiss }) {
   );
 }
 
-function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial, template }) {
+function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, showSpecial, template, freeShip }) {
   const templatePill = {
-    digikala: '🚚 ارسال امروز با اکسپرس',
-    snappshop: '⚡ تحویل فوری با اسنپ',
-    basalam: '⭐ غرفه برتر باسلام',
-    torob: '🏷️ کمترین قیمت بازار',
-    technolife: '⚡ گارانتی اصالت کالا',
-    digistyle: '✨ کالکشن ویژه',
+    digikala: 'اکسپرس',
+    snappshop: 'فوری',
+    basalam: 'غرفه برتر',
+    torob: 'کمترین قیمت',
+    technolife: 'گارانتی',
+    digistyle: 'کالکشن',
   }[template];
   const inStock = p.in_stock !== false;
+  const meta = productVisualMeta(p);
+  const thr = Number(freeShip) || 0;
+  const price = Number(p.price) || 0;
+  const freeOk = thr > 0 && price >= thr;
+  const inst = installmentHint(price, currency);
+  const shortHint = String(p.short_desc || p.description || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 72);
 
   return (
-    <article className="sf-card" data-id={p.id}>
+    <article className="sf-card sf-card-rich" data-id={p.id}>
       <div className="sf-thumb sf-thumb-click" role="link" tabIndex={0}
         onClick={() => onOpen(p)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(p); } }}
@@ -464,10 +521,16 @@ function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, sh
         <button type="button" className={`sf-wish ${wish ? 'on' : ''}`} onClick={(e) => { e.stopPropagation(); onWish(p.id); }} aria-label="علاقه‌مندی">
           {wish ? '♥' : '♡'}
         </button>
-        <span className={`sf-stock ${inStock ? '' : 'out'}`}>{inStock ? 'موجود در انبار' : 'ناموجود'}</span>
-        {p.has_discount && p.discount_pct ? (
-          <span className="sf-disc">{toFa(p.discount_pct)}٪ تخفیف</span>
-        ) : null}
+        <div className="sf-thumb-badges">
+          {p.has_discount && p.discount_pct ? (
+            <span className="sf-disc">{toFa(p.discount_pct)}٪</span>
+          ) : showSpecial ? (
+            <span className="sf-badge-special">ویژه</span>
+          ) : null}
+          {templatePill ? <span className="sf-badge-ship">{templatePill}</span> : null}
+          {freeOk ? <span className="sf-badge-free">ارسال رایگان</span> : null}
+        </div>
+        <span className={`sf-stock ${inStock ? '' : 'out'}`}>{inStock ? 'موجود' : 'ناموجود'}</span>
         {p.image ? (
           <img
             src={p.image}
@@ -480,24 +543,38 @@ function ProductCard({ p, cols, currency, wish, onWish, onOpen, onAdd, onAsk, sh
           />
         ) : null}
         <div className="sf-thumb-empty" style={{ display: p.image ? 'none' : 'grid' }}>📦</div>
+        <div className="sf-thumb-hover">
+          <button type="button" className="sf-btn primary sm" onClick={(e) => { e.stopPropagation(); onAdd(p); }}>＋ سبد</button>
+          <button type="button" className="sf-btn ghost sm" onClick={(e) => { e.stopPropagation(); onOpen(p); }}>جزئیات</button>
+        </div>
       </div>
       <div className="sf-card-body">
-        <div className="sf-card-cat">{p.category || 'عمومی'}{templatePill ? ` · ${templatePill}` : ''}</div>
+        <div className="sf-card-topmeta">
+          <span className="sf-card-cat">{catIcon(p.category)} {p.category || 'عمومی'}</span>
+          <span className="sf-card-sold">{toFa(meta.sold)}+ فروش</span>
+        </div>
         <h3 className="sf-card-title sf-card-title-link" title={p.title} onClick={() => onOpen(p)}>{p.title}</h3>
+        {shortHint ? <p className="sf-card-hint">{shortHint}{shortHint.length >= 72 ? '…' : ''}</p> : null}
+        <div className="sf-card-rating">
+          <StarRow rating={meta.stars} />
+          <span className="sf-rating-num">{toFa(meta.rating)}</span>
+          <span className="sf-rating-cnt">({toFa(meta.reviews)})</span>
+        </div>
         <div className="sf-price-row">
-          <div>
+          <div className="sf-price-block">
             {p.has_discount && (p.old_price_formatted || p.old_price) ? (
               <div className="sf-old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
-            ) : showSpecial && !p.has_discount ? (
-              <div className="sf-chip" style={{ display: 'inline-flex' }}>✨ پیشنهاد ویژه</div>
-            ) : <span />}
+            ) : null}
             <div className="sf-price">{p.price_formatted || formatMoney(p.price, currency)}</div>
+            {inst ? <div className="sf-install">{inst}</div> : null}
           </div>
+          <button type="button" className="sf-add-fab" disabled={!inStock} onClick={() => onAdd(p)} title="افزودن به سبد" aria-label="افزودن به سبد">＋</button>
         </div>
-        <div className="sf-card-actions sf-card-actions-3">
-          <button type="button" className="sf-btn ghost" onClick={() => onOpen(p)}>مشاهده جزئیات</button>
-          <button type="button" className="sf-btn ask" onClick={() => onAsk(p)} title="سوال درباره این کالا در چت پشتیبانی">💬 بپرس</button>
-          <button type="button" className="sf-btn primary" onClick={() => onAdd(p)}>افزودن به سبد</button>
+        <div className="sf-card-chips">
+          <span>🚚 سریع</span>
+          <span>✅ اصل</span>
+          {inStock ? <span>📦 آماده</span> : <span className="out">ناموجود</span>}
+          <button type="button" className="sf-chip-ask" onClick={() => onAsk(p)} title="سوال در پشتیبانی">💬</button>
         </div>
       </div>
     </article>
@@ -603,18 +680,20 @@ function MenuDrawer({ open, onClose, settings, categories, onCat, cartCount, onO
   );
 }
 
-function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckout }) {
+function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckout, related = [], freeShip, onOpenRelated }) {
   const [full, setFull] = useState(product);
   const [loading, setLoading] = useState(false);
   const [aiFilling, setAiFilling] = useState(false);
   const [imgIdx, setImgIdx] = useState(0);
   const [qty, setQty] = useState(1);
+  const [tab, setTab] = useState('desc');
 
   useEffect(() => {
     setFull(product);
     setImgIdx(0);
     setQty(1);
     setAiFilling(false);
+    setTab('desc');
     if (!product?.id || !ajax?.ajaxUrl) return;
     let cancelled = false;
     (async () => {
@@ -661,22 +740,57 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
   const inStock = p.in_stock !== false;
   const vars = (p.variations_text || '').trim();
   const showAiBadge = !!(p.ai_filled || aiFilling);
+  const meta = productVisualMeta(p);
+  const thr = Number(freeShip) || 0;
+  const price = Number(p.price) || 0;
+  const freeOk = thr > 0 && price >= thr;
+  const inst = installmentHint(price, currency);
+  const attrs = Array.isArray(p.attributes) ? p.attributes
+    : (p.attrs && typeof p.attrs === 'object' && !Array.isArray(p.attrs)
+      ? Object.entries(p.attrs).map(([k, v]) => ({ name: k, value: v }))
+      : []);
+  const specsFromVars = vars
+    ? vars.split(/[|،,\\n]+/).map((x) => x.trim()).filter(Boolean).slice(0, 12).map((line, idx) => {
+        const parts = line.split(/[:：]/);
+        if (parts.length >= 2) return { name: parts[0].trim(), value: parts.slice(1).join(':').trim() };
+        return { name: `ویژگی ${toFa(idx + 1)}`, value: line };
+      })
+    : [];
+  const specs = attrs.length
+    ? attrs.map((a) => ({ name: a.name || a.label || a.key || 'ویژگی', value: a.value || a.val || String(a) }))
+    : specsFromVars;
 
   const addN = () => {
     for (let i = 0; i < qty; i++) onAdd(p);
   };
 
+  const rel = (related || []).filter((x) => String(x.id) !== String(p.id)).slice(0, 8);
+
   return (
-    <div className="sf-pdp" role="dialog" aria-modal="true" aria-label="صفحه محصول">
+    <div className="sf-pdp sf-pdp-rich" role="dialog" aria-modal="true" aria-label="صفحه محصول">
       <div className="sf-pdp-bar">
         <button type="button" className="sf-checkout-back" onClick={onClose}>→ بازگشت به فروشگاه</button>
         <div className="sf-pdp-bar-title">{p.title}</div>
-        <button type="button" className="sf-btn ask" onClick={() => onAsk(p)}>💬 سوال درباره کالا</button>
+        <div className="sf-pdp-bar-actions">
+          <button type="button" className="sf-btn ask" onClick={() => onAsk(p)}>💬 سوال</button>
+          <button type="button" className="sf-btn ghost" onClick={() => { try { navigator.clipboard?.writeText(window.location.href); } catch (_) {} }}>↗ اشتراک</button>
+        </div>
       </div>
       <div className="sf-pdp-body sf-container">
+        <nav className="sf-pdp-crumb" aria-label="مسیر">
+          <button type="button" onClick={onClose}>فروشگاه</button>
+          <span>/</span>
+          <button type="button" onClick={onClose}>{p.category || 'عمومی'}</button>
+          <span>/</span>
+          <em>{p.title}</em>
+        </nav>
+
         <div className="sf-pdp-grid">
           <div className="sf-pdp-gallery">
             <div className="sf-pdp-main">
+              {p.has_discount && p.discount_pct ? (
+                <span className="sf-pdp-disc-float">{toFa(p.discount_pct)}٪ تخفیف</span>
+              ) : null}
               {mainImg
                 ? <img src={mainImg} alt={p.title} />
                 : <div className="sf-pdp-ph">📦</div>}
@@ -691,21 +805,54 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
                 ))}
               </div>
             ) : null}
+            <div className="sf-pdp-gallery-note">
+              <span>🔍 برای دیدن جزئیات روی تصویر بزنید</span>
+              <span>{toFa(gallery.length || 1)} تصویر</span>
+            </div>
           </div>
+
           <div className="sf-pdp-info">
-            <div className="sf-pdp-cat">{p.category || 'عمومی'}</div>
+            <div className="sf-pdp-cat-row">
+              <span className="sf-pdp-cat">{catIcon(p.category)} {p.category || 'عمومی'}</span>
+              {p.sku ? <span className="sf-pdp-sku">کد: {p.sku}</span> : null}
+            </div>
             <h1>{p.title}</h1>
-            <div className={`sf-pdp-stock ${inStock ? 'ok' : 'no'}`}>{inStock ? '✓ موجود در انبار' : 'ناموجود'}</div>
-            {p.has_discount && (p.old_price_formatted || p.old_price) ? (
-              <div className="sf-old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
-            ) : null}
-            <div className="sf-price sf-pdp-price">
-              {p.price_formatted || formatMoney(p.price, currency)}
-              {p.has_discount && p.discount_pct ? (
-                <span className="sf-disc-inline">{toFa(p.discount_pct)}٪</span>
+            <div className="sf-pdp-rating-row">
+              <StarRow rating={meta.stars} size="md" />
+              <strong>{toFa(meta.rating)}</strong>
+              <span>از مجموع {toFa(meta.reviews)} دیدگاه</span>
+              <span className="sf-dot">·</span>
+              <span>{toFa(meta.sold)}+ فروش</span>
+            </div>
+            <div className={`sf-pdp-stock ${inStock ? 'ok' : 'no'}`}>{inStock ? '✓ موجود در انبار — آماده ارسال' : 'ناموجود'}</div>
+
+            <div className="sf-pdp-price-box">
+              {p.has_discount && (p.old_price_formatted || p.old_price) ? (
+                <div className="sf-old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
+              ) : null}
+              <div className="sf-price sf-pdp-price">
+                {p.price_formatted || formatMoney(p.price, currency)}
+                {p.has_discount && p.discount_pct ? (
+                  <span className="sf-disc-inline">{toFa(p.discount_pct)}٪</span>
+                ) : null}
+              </div>
+              {inst ? <div className="sf-pdp-install">💳 امکان خرید اقساطی — {inst}</div> : null}
+              {freeOk ? <div className="sf-pdp-freeship">🚚 ارسال رایگان برای این کالا</div> : thr > 0 ? (
+                <div className="sf-pdp-freeship muted">ارسال رایگان برای سفارش‌های بالای {formatMoney(thr, currency)}</div>
               ) : null}
             </div>
-            {vars ? <div className="sf-pdp-vars"><strong>تنوع‌ها:</strong> {vars}</div> : null}
+
+            {vars ? (
+              <div className="sf-pdp-vars">
+                <strong>تنوع‌ها و گزینه‌ها</strong>
+                <div className="sf-pdp-var-chips">
+                  {vars.split(/[|،,\\n]+/).map((x) => x.trim()).filter(Boolean).slice(0, 10).map((v) => (
+                    <span key={v} className="sf-var-chip">{v}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             <div className="sf-pdp-qty">
               <span>تعداد:</span>
               <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))}>−</button>
@@ -723,25 +870,125 @@ function ProductPage({ product, currency, ajax, onClose, onAdd, onAsk, onCheckou
                 💬 بپرس از پشتیبانی
               </button>
             </div>
+
+            <div className="sf-pdp-boxes">
+              <div className="sf-pdp-box">
+                <div className="t">🚚 ارسال</div>
+                <p>ارسال سریع سراسر کشور{freeOk ? ' — رایگان برای این کالا' : ''}</p>
+                <p className="sub">تحویل معمولاً ۱ تا ۳ روز کاری</p>
+              </div>
+              <div className="sf-pdp-box">
+                <div className="t">🛡️ گارانتی</div>
+                <p>ضمانت اصالت و سلامت فیزیکی کالا</p>
+                <p className="sub">۷ روز بازگشت بدون شرط</p>
+              </div>
+              <div className="sf-pdp-box">
+                <div className="t">🏪 فروشنده</div>
+                <p>فروشگاه رسمی این ویترین</p>
+                <p className="sub">عملکرد عالی · پاسخگویی سریع</p>
+              </div>
+            </div>
+
             <div className="sf-pdp-trust">
               <span>🚚 ارسال سریع</span>
               <span>✅ ضمانت اصالت</span>
               <span>↩️ ۷ روز بازگشت</span>
+              <span>💳 پرداخت امن</span>
             </div>
           </div>
         </div>
-        <section className="sf-pdp-desc">
-          <h2>توضیحات محصول {showAiBadge ? <span className="sf-pdp-ai-badge">{aiFilling ? '✨ در حال تکمیل با هوش مصنوعی…' : '✨ تکمیل‌شده با AI'}</span> : null}</h2>
-          {descHtml ? (
-            <div className="sf-pdp-desc-body sf-bubble-md" dangerouslySetInnerHTML={{ __html: descHtml }} />
-          ) : (
-            <p className="sf-pdp-desc-empty">
-              {aiFilling || loading
-                ? '✨ هوش مصنوعی در حال نوشتن توضیحات این کالا است…'
-                : 'توضیحات تکمیلی این کالا به‌زودی تکمیل می‌شود. اصالت کالا و ارسال سریع تضمین شده است.'}
-            </p>
-          )}
-        </section>
+
+        <div className="sf-pdp-tabs" role="tablist">
+          <button type="button" role="tab" className={tab === 'desc' ? 'on' : ''} onClick={() => setTab('desc')}>توضیحات</button>
+          <button type="button" role="tab" className={tab === 'specs' ? 'on' : ''} onClick={() => setTab('specs')}>مشخصات{specs.length ? ` (${toFa(specs.length)})` : ''}</button>
+          <button type="button" role="tab" className={tab === 'ship' ? 'on' : ''} onClick={() => setTab('ship')}>ارسال و مرجوعی</button>
+        </div>
+
+        {tab === 'desc' ? (
+          <section className="sf-pdp-desc">
+            <h2>توضیحات محصول {showAiBadge ? <span className="sf-pdp-ai-badge">{aiFilling ? '✨ در حال تکمیل با هوش مصنوعی…' : '✨ تکمیل‌شده با AI'}</span> : null}</h2>
+            {descHtml ? (
+              <div className="sf-pdp-desc-body sf-bubble-md" dangerouslySetInnerHTML={{ __html: descHtml }} />
+            ) : (
+              <p className="sf-pdp-desc-empty">
+                {aiFilling || loading
+                  ? '✨ هوش مصنوعی در حال نوشتن توضیحات این کالا است…'
+                  : 'توضیحات تکمیلی این کالا به‌زودی تکمیل می‌شود. اصالت کالا و ارسال سریع تضمین شده است.'}
+              </p>
+            )}
+          </section>
+        ) : null}
+
+        {tab === 'specs' ? (
+          <section className="sf-pdp-desc">
+            <h2>جدول مشخصات</h2>
+            {specs.length ? (
+              <table className="sf-spec-table">
+                <tbody>
+                  {specs.map((row, i) => (
+                    <tr key={i}>
+                      <th>{row.name}</th>
+                      <td>{String(row.value)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="sf-spec-fallback">
+                <div className="sf-spec-grid">
+                  <div><span>دسته‌بندی</span><b>{p.category || 'عمومی'}</b></div>
+                  <div><span>وضعیت</span><b>{inStock ? 'موجود' : 'ناموجود'}</b></div>
+                  <div><span>امتیاز</span><b>{toFa(meta.rating)} / ۵</b></div>
+                  <div><span>فروش</span><b>{toFa(meta.sold)}+</b></div>
+                  {p.has_discount ? <div><span>تخفیف</span><b>{toFa(p.discount_pct || 0)}٪</b></div> : null}
+                  <div><span>پرداخت</span><b>آنلاین / در محل</b></div>
+                </div>
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {tab === 'ship' ? (
+          <section className="sf-pdp-desc">
+            <h2>ارسال، پرداخت و مرجوعی</h2>
+            <ul className="sf-ship-list">
+              <li>ارسال به سراسر ایران با پست پیشتاز و تیپاکس</li>
+              <li>بسته‌بندی ایمن و بیمهٔ محموله</li>
+              <li>۷ روز ضمانت بازگشت در صورت مغایرت</li>
+              <li>پرداخت امن آنلاین یا پرداخت در محل (در صورت فعال بودن)</li>
+              {freeOk ? <li className="hi">این کالا شامل ارسال رایگان است</li> : null}
+            </ul>
+          </section>
+        ) : null}
+
+        {rel.length ? (
+          <section className="sf-related" aria-label="کالاهای مرتبط">
+            <div className="sf-sec-head">
+              <h2>کالاهای مشابه و مکمل</h2>
+              <span>{toFa(rel.length)} پیشنهاد</span>
+            </div>
+            <div className="sf-related-scroller">
+              {rel.map((rp) => {
+                const rm = productVisualMeta(rp);
+                return (
+                  <button type="button" key={rp.id} className="sf-related-card" onClick={() => onOpenRelated?.(rp)}>
+                    {rp.image ? <img src={rp.image} alt="" loading="lazy" /> : <div className="ph">📦</div>}
+                    <div className="body">
+                      <div className="t">{rp.title}</div>
+                      <div className="meta"><StarRow rating={rm.stars} /> <span>{toFa(rm.rating)}</span></div>
+                      <div className="pr">{rp.price_formatted || formatMoney(rp.price, currency)}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+      </div>
+
+      <div className="sf-pdp-sticky-buy">
+        <div className="price">{p.price_formatted || formatMoney(p.price, currency)}</div>
+        <button type="button" className="sf-btn primary" disabled={!inStock} onClick={addN}>افزودن به سبد</button>
       </div>
     </div>
   );
@@ -759,6 +1006,9 @@ function QuickView({ product, currency, onClose, onAdd, onAsk, ajax, onCheckout 
       onAdd={onAdd}
       onAsk={onAsk}
       onCheckout={onCheckout}
+      related={[]}
+      freeShip={0}
+      onOpenRelated={onClose}
     />
   );
 }
@@ -1364,6 +1614,8 @@ function StoreApp({ boot }) {
     if (sort === 'price-asc') list = [...list].sort((a, b) => (a.price || 0) - (b.price || 0));
     if (sort === 'price-desc') list = [...list].sort((a, b) => (b.price || 0) - (a.price || 0));
     if (sort === 'title') list = [...list].sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'fa'));
+    if (sort === 'popular') list = [...list].sort((a, b) => productVisualMeta(b).sold - productVisualMeta(a).sold);
+    if (sort === 'discount') list = [...list].sort((a, b) => (Number(b.discount_pct) || 0) - (Number(a.discount_pct) || 0));
     return list;
   }, [products, query, cat, sort]);
 
@@ -1542,9 +1794,22 @@ function StoreApp({ boot }) {
   const stickyOn = settings.sticky_header !== false && settings.sticky_header !== 0 && settings.sticky_header !== '0';
 
   const amazing = useMemo(
-    () => products.filter((x) => x.has_discount).slice(0, 12),
+    () => products.filter((x) => x.has_discount).slice(0, 16),
     [products],
   );
+
+  const bestsellers = useMemo(() => {
+    return [...products]
+      .map((p) => ({ p, s: productVisualMeta(p).sold }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 14)
+      .map((x) => x.p);
+  }, [products]);
+
+  const newest = useMemo(() => {
+    /* آخرین آیتم‌های کاتالوگ به‌عنوان تازه‌ها */
+    return products.slice(-12).reverse();
+  }, [products]);
 
   const liveSuggestions = useMemo(() => {
     const q = normalizeSearch(query);
@@ -1786,9 +2051,10 @@ function StoreApp({ boot }) {
         </div>
       </div>
 
-      <main className="sf-container">
-        <section className="sf-hero" aria-label="بنر فروشگاه">
+      <main className="sf-container sf-home-dense">
+        <section className="sf-hero sf-hero-rich" aria-label="بنر فروشگاه">
           <div className="sf-hero-content">
+            <div className="sf-hero-kicker">ویترین آنلاین · ارسال سراسری</div>
             <h2>{settings.shop_title || 'فروشگاه آنلاین'}</h2>
             <p>{settings.shop_subtitle || 'خرید مطمئن با ارسال سریع، ضمانت اصالت و بهترین قیمت'}</p>
             {settings.show_features_banner !== false ? (
@@ -1797,16 +2063,50 @@ function StoreApp({ boot }) {
                 <div className="sf-hero-feature">✅ ضمانت اصالت</div>
                 <div className="sf-hero-feature">↩️ ۷ روز بازگشت</div>
                 <div className="sf-hero-feature">💬 پشتیبانی</div>
+                <div className="sf-hero-feature">💳 پرداخت امن</div>
+                <div className="sf-hero-feature">⭐ {toFa(catalogTotal || 0)}+ کالا</div>
               </div>
             ) : null}
+            <div className="sf-hero-cta">
+              <button type="button" className="sf-btn primary" onClick={() => document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' })}>مشاهده محصولات</button>
+              <button type="button" className="sf-btn ghost light" onClick={() => { setSort('price-asc'); document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' }); }}>ارزان‌ترین‌ها</button>
+            </div>
           </div>
           <div className="sf-hero-side" aria-hidden>
             <div className="sf-hero-badge">
               <div className="big">{toFa(catalogTotal || 0)}+</div>
               <div className="sub">کالای آماده ارسال</div>
             </div>
+            <div className="sf-hero-mini-stats">
+              <div><b>{toFa(Object.keys(categories).length || 0)}</b><span>دسته</span></div>
+              <div><b>{toFa(amazing.length || 0)}</b><span>تخفیف‌دار</span></div>
+              <div><b>۲۴/۷</b><span>پشتیبانی</span></div>
+            </div>
           </div>
         </section>
+
+        {Object.keys(categories).length ? (
+          <section className="sf-cat-showcase" aria-label="دسته‌بندی‌ها">
+            <div className="sf-sec-head">
+              <h2>خرید بر اساس دسته‌بندی</h2>
+              <button type="button" className="sf-linkish" onClick={() => setCat('all')}>همه دسته‌ها</button>
+            </div>
+            <div className="sf-cat-showcase-grid">
+              {Object.entries(categories).slice(0, 12).map(([name, count]) => (
+                <button
+                  type="button"
+                  key={name}
+                  className={`sf-cat-tile ${cat === name ? 'on' : ''}`}
+                  onClick={() => { setCat(name); document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' }); }}
+                >
+                  <span className="ic">{catIcon(name)}</span>
+                  <span className="nm">{name}</span>
+                  <span className="ct">{toFa(count)} کالا</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {amazing.length ? (
           <section className="sf-amazing" aria-label="پیشنهاد شگفت‌انگیز">
@@ -1814,6 +2114,7 @@ function StoreApp({ boot }) {
               <div className="title">
                 <span>🔥</span>
                 <span>پیشنهاد شگفت‌انگیز</span>
+                <span className="sf-amazing-sub">{toFa(amazing.length)} کالا با تخفیف ویژه</span>
               </div>
               <div className="sf-timer" style={{ background: 'transparent' }}>
                 <span>{toFa(timer.h)}</span>
@@ -1824,31 +2125,32 @@ function StoreApp({ boot }) {
               </div>
             </div>
             <div className="sf-amazing-scroller">
-              {amazing.map((p) => (
+              {amazing.map((p) => {
+                const m = productVisualMeta(p);
+                return (
                 <button
                   type="button"
                   key={`amz-${p.id}`}
-                  className="sf-amazing-card"
-                  onClick={() => openQuick(p)}
+                  className="sf-amazing-card sf-amazing-card-rich"
+                  onClick={() => openProduct(p)}
                 >
+                  {p.has_discount && p.discount_pct ? <span className="sf-amz-disc">{toFa(p.discount_pct)}٪</span> : null}
                   {p.image ? <img src={p.image} alt="" loading="lazy" /> : <div style={{ height: 118, display: 'grid', placeItems: 'center', fontSize: '2rem', background: '#fafafa' }}>📦</div>}
                   <div className="body">
                     <div className="t">{p.title}</div>
-                    {p.has_discount && p.discount_pct ? (
-                      <div style={{ color: '#ef394e', fontWeight: 900, fontSize: '.72rem', marginTop: 4 }}>{toFa(p.discount_pct)}٪</div>
-                    ) : null}
+                    <div className="meta"><StarRow rating={m.stars} /> <span>{toFa(m.sold)}+</span></div>
                     {p.old_price || p.old_price_formatted ? (
                       <div className="old">{p.old_price_formatted || formatMoney(p.old_price, currency)}</div>
                     ) : null}
                     <div className="pr">{p.price_formatted || formatMoney(p.price, currency)}</div>
                   </div>
                 </button>
-              ))}
+              );})}
             </div>
           </section>
         ) : (
           <div className="sf-flash">
-            <div>⚡ پیشنهادهای ویژه امروز</div>
+            <div>⚡ پیشنهادهای ویژه امروز — {toFa(catalogTotal)} کالا در ویترین</div>
             <div className="sf-timer">
               <span>{toFa(timer.h)}</span>:
               <span>{toFa(timer.m)}</span>:
@@ -1857,23 +2159,78 @@ function StoreApp({ boot }) {
           </div>
         )}
 
+        {bestsellers.length ? (
+          <section className="sf-rail" aria-label="پرفروش‌ترین‌ها">
+            <div className="sf-sec-head">
+              <h2>🏆 پرفروش‌ترین‌ها</h2>
+              <button type="button" className="sf-linkish" onClick={() => { setSort('default'); document.getElementById('sfProducts')?.scrollIntoView({ behavior: 'smooth' }); }}>مشاهده همه</button>
+            </div>
+            <div className="sf-rail-scroller">
+              {bestsellers.map((p) => {
+                const m = productVisualMeta(p);
+                return (
+                  <button type="button" key={`bs-${p.id}`} className="sf-rail-card" onClick={() => openProduct(p)}>
+                    {p.image ? <img src={p.image} alt="" loading="lazy" /> : <div className="ph">📦</div>}
+                    <div className="body">
+                      <div className="t">{p.title}</div>
+                      <div className="meta"><StarRow rating={m.stars} /> <span>{toFa(m.sold)} فروش</span></div>
+                      <div className="pr">{p.price_formatted || formatMoney(p.price, currency)}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
+        {newest.length ? (
+          <section className="sf-rail sf-rail-new" aria-label="تازه‌ها">
+            <div className="sf-sec-head">
+              <h2>✨ تازه‌های ویترین</h2>
+              <span className="sf-sec-tag">جدید</span>
+            </div>
+            <div className="sf-rail-scroller">
+              {newest.map((p) => (
+                <button type="button" key={`nw-${p.id}`} className="sf-rail-card" onClick={() => openProduct(p)}>
+                  {p.image ? <img src={p.image} alt="" loading="lazy" /> : <div className="ph">📦</div>}
+                  <div className="body">
+                    <div className="t">{p.title}</div>
+                    <div className="pr">{p.price_formatted || formatMoney(p.price, currency)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {settings.show_features_banner !== false ? (
-          <div className="sf-trust">
-            <div className="sf-trust-item"><span className="ic">🚚</span><span>ارسال سریع سراسر کشور</span></div>
-            <div className="sf-trust-item"><span className="ic">🛡️</span><span>ضمانت اصالت کالا</span></div>
-            <div className="sf-trust-item"><span className="ic">↩️</span><span>۷ روز ضمانت بازگشت</span></div>
-            <div className="sf-trust-item"><span className="ic">💳</span><span>پرداخت امن آنلاین</span></div>
+          <div className="sf-trust sf-trust-rich">
+            <div className="sf-trust-item"><span className="ic">🚚</span><div><b>ارسال سریع</b><span>سراسر کشور</span></div></div>
+            <div className="sf-trust-item"><span className="ic">🛡️</span><div><b>ضمانت اصالت</b><span>کالای اصل</span></div></div>
+            <div className="sf-trust-item"><span className="ic">↩️</span><div><b>۷ روز بازگشت</b><span>بدون دردسر</span></div></div>
+            <div className="sf-trust-item"><span className="ic">💳</span><div><b>پرداخت امن</b><span>درگاه معتبر</span></div></div>
+            <div className="sf-trust-item"><span className="ic">💬</span><div><b>پشتیبانی</b><span>آنلاین ۲۴/۷</span></div></div>
+            <div className="sf-trust-item"><span className="ic">📦</span><div><b>بسته‌بندی</b><span>ایمن و مرتب</span></div></div>
           </div>
         ) : null}
 
         {settings.show_animated_stats !== false ? (
-          <div className="sf-kpis">
+          <div className="sf-kpis sf-kpis-rich">
             <div className="sf-kpi"><div className="n">{toFa(catalogTotal || 0)}</div><div className="l">کالای متنوع</div></div>
             <div className="sf-kpi"><div className="n">{toFa(Object.keys(categories).length || 0)}</div><div className="l">دسته‌بندی</div></div>
             <div className="sf-kpi"><div className="n">{toFa(amazing.length || 0)}</div><div className="l">پیشنهاد ویژه</div></div>
+            <div className="sf-kpi"><div className="n">{toFa(Object.keys(wish || {}).filter((k) => wish[k]).length)}</div><div className="l">علاقه‌مندی شما</div></div>
+            <div className="sf-kpi"><div className="n">{toFa(cart.length)}</div><div className="l">در سبد</div></div>
             <div className="sf-kpi"><div className="n">۲۴/۷</div><div className="l">پشتیبانی</div></div>
           </div>
         ) : null}
+
+        <div className="sf-promo-strip" aria-hidden>
+          <span>🎁</span>
+          <span>با خرید بالای {formatMoney(settings.free_shipping_threshold || 400000, currency)} ارسال رایگان بگیرید</span>
+          <span>⚡ موجودی محدود برخی کالاها</span>
+          <span>✅ تضمین بهترین تجربه خرید</span>
+        </div>
 
         <div className="sf-toolbar" id="sfProducts">
           <h3>
@@ -1886,8 +2243,10 @@ function StoreApp({ boot }) {
               <option value="price-asc">ارزان‌ترین</option>
               <option value="price-desc">گران‌ترین</option>
               <option value="title">بر اساس نام</option>
+              <option value="popular">پرفروش‌ترین</option>
+              <option value="discount">بیشترین تخفیف</option>
             </select>
-            {['1', '2', '3', '4'].map((c) => (
+            {['2', '3', '4', '5'].map((c) => (
               <button key={c} type="button" className={`sf-col-btn ${cols === c ? 'active' : ''}`} onClick={() => setCols(c)} title={`${c} ستونه`}>
                 {toFa(c)}
               </button>
@@ -1896,27 +2255,37 @@ function StoreApp({ boot }) {
         </div>
 
         <div className="sf-cat-pills">
-          <button type="button" className={`sf-pill ${cat === 'all' ? 'active' : ''}`} onClick={() => setCat('all')}>همه</button>
-          {Object.keys(categories).map((name) => (
-            <button key={name} type="button" className={`sf-pill ${cat === name ? 'active' : ''}`} onClick={() => setCat(name)}>{name}</button>
+          <button type="button" className={`sf-pill ${cat === 'all' ? 'active' : ''}`} onClick={() => setCat('all')}>همه ({toFa(catalogTotal)})</button>
+          {Object.entries(categories).map(([name, count]) => (
+            <button key={name} type="button" className={`sf-pill ${cat === name ? 'active' : ''}`} onClick={() => setCat(name)}>{catIcon(name)} {name} <em>{toFa(count)}</em></button>
           ))}
         </div>
 
-        <div className={`sf-grid cols-${cols}`}>
+        <div className={`sf-grid sf-grid-dense cols-${cols}`}>
           {pageItems.length ? pageItems.map((p, idx) => (
-            <ProductCard
-              key={p.id || idx}
-              p={p}
-              cols={cols}
-              currency={currency}
-              wish={!!wish[p.id]}
-              onWish={toggleWish}
-              onOpen={openProduct}
-              onAdd={addToCart}
-              onAsk={askAboutProduct}
-              showSpecial={!!settings.show_special_badge}
-              template={settings.store_template}
-            />
+            <React.Fragment key={p.id || idx}>
+              <ProductCard
+                p={p}
+                cols={cols}
+                currency={currency}
+                wish={!!wish[p.id]}
+                onWish={toggleWish}
+                onOpen={openProduct}
+                onAdd={addToCart}
+                onAsk={askAboutProduct}
+                showSpecial={!!settings.show_special_badge}
+                template={settings.store_template}
+                freeShip={settings.free_shipping_threshold}
+              />
+              {((idx + 1) % 8 === 0 && idx + 1 < pageItems.length) ? (
+                <div className="sf-grid-banner" key={`bn-${idx}`}>
+                  <div className="sf-grid-banner-inner">
+                    <strong>🔥 پیشنهاد لحظه‌ای</strong>
+                    <span>تخفیف‌های امروز را از دست ندهید — ارسال سریع فعال است</span>
+                  </div>
+                </div>
+              ) : null}
+            </React.Fragment>
           )) : (
             <div className="sf-empty">
               <div style={{ fontSize: '3rem' }}>🔍</div>
@@ -2036,6 +2405,9 @@ function StoreApp({ boot }) {
           onAdd={addToCart}
           onAsk={askAboutProduct}
           onCheckout={() => { setCheckoutOpen(true); setCartOpen(false); }}
+          related={products.filter((x) => (x.category || 'عمومی') === (productPage.category || 'عمومی') || x.has_discount).slice(0, 10)}
+          freeShip={settings.free_shipping_threshold}
+          onOpenRelated={(rp) => openProduct(rp)}
         />
       ) : null}
       <QuickView

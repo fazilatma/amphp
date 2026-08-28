@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.3
+ * Version: 13.3.4
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -161,7 +161,7 @@ class Scraper_Auto_Shop_Plugin {
 			$opts = array_merge( $defaults, $opts );
 		}
 
-		/* v13.3.3: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
+		/* v13.3.4: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
 		try {
 			$cn = self::get_scraper_connections();
 			if ( is_array( $cn ) ) {
@@ -685,7 +685,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( function_exists( 'wc_get_products' ) ) {
 			$wc_prods = wc_get_products( array(
-				'limit'   => -1, /* v13.3.3: همهٔ محصولات ووکامرس */
+				'limit'   => -1, /* v13.3.4: همهٔ محصولات ووکامرس */
 				'status'  => 'publish',
 				'orderby' => 'date',
 				'order'   => 'DESC',
@@ -742,7 +742,7 @@ class Scraper_Auto_Shop_Plugin {
 			$raw_posts = get_posts( array(
 				'post_type'      => 'product',
 				'post_status'    => 'publish',
-				'posts_per_page' => -1, /* v13.3.3 all */
+				'posts_per_page' => -1, /* v13.3.4 all */
 			) );
 
 			if ( ! empty( $raw_posts ) ) {
@@ -787,7 +787,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.3: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
+	 * v13.3.4: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
 	 * مسیر پروفایل مثل get_profiles_summary چندجا چک می‌شود.
 	 *
 	 * @return array
@@ -1616,7 +1616,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.3: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
+	 * v13.3.4: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
 	 *
 	 * @param string $font_key
 	 * @return bool
@@ -4514,7 +4514,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 
 	/**
-	 * v13.3.3: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
+	 * v13.3.4: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
 	 *
 	 * @param string $html Raw AI / stored description.
 	 * @return string Safe HTML fragment.
@@ -4633,7 +4633,7 @@ class Scraper_Auto_Shop_Plugin {
 		delete_transient( $lock_key );
 
 		if ( $filled_prod && is_array( $filled_prod ) ) {
-			/* v13.3.3: HTML خام entity-encoded را قبل از ذخیره پاک کن */
+			/* v13.3.4: HTML خام entity-encoded را قبل از ذخیره پاک کن */
 			foreach ( array( 'long_desc', 'longDesc', 'description', 'desc' ) as $fk ) {
 				if ( ! empty( $filled_prod[ $fk ] ) && is_string( $filled_prod[ $fk ] ) ) {
 					$filled_prod[ $fk ] = self::sanitize_product_description_html( $filled_prod[ $fk ] );
@@ -4811,7 +4811,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
 		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
-		// v13.3.3: HTML واقعی برای PDP (نه entity-encoded)
+		// v13.3.4: HTML واقعی برای PDP (نه entity-encoded)
 		$desc_out = self::sanitize_product_description_html( $desc );
 		$short_clean = trim( html_entity_decode( wp_strip_all_tags( $short ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 		if ( $desc_out === '' && $short_clean !== '' ) {
@@ -4829,7 +4829,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
 			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
 		}
-		/* v13.3.3: متن تنوع بلند (جمله) را نشان نده */
+		/* v13.3.4: متن تنوع بلند (جمله) را نشان نده */
 		if ( $variations_text !== '' && mb_strlen( $variations_text, 'UTF-8' ) > 160 ) {
 			$variations_text = '';
 		}
@@ -6301,7 +6301,7 @@ class Scraper_Auto_Shop_Plugin {
 		$title    = (string) ( $settings['shop_title'] ?? 'فروشگاه آنلاین' );
 		$site     = get_bloginfo( 'name' );
 		// Prefer PHP proxy URLs so shop works even when /asset/*.js is missing or blocked by host.
-		$ver = '13.3.3';
+		$ver = '13.3.4';
 		$css_url  = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url   = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Fail only if neither disk files NOR embedded payload exist (v13.1.5+ embeds JS/CSS).
@@ -6330,7 +6330,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.3' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.4' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6391,7 +6391,7 @@ img{max-width:100%;height:auto}
 		$products = self::get_all_scraped_products();
 		$total_catalog = is_array( $products ) ? count( $products ) : 0;
 
-		/* v13.3.3: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
+		/* v13.3.4: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
 		   payload lean است (بدون گالری/توضیح بلند) تا TTFB سبک بماند. */
 		$safe_products = array();
 		foreach ( (array) $products as $p ) {
@@ -6526,7 +6526,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.3',
+				'version'     => '13.3.4',
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
 				'total_count' => isset( $total_catalog ) ? (int) $total_catalog : count( $safe_products ),
@@ -6536,7 +6536,7 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.3.3';
+		$ver = '13.3.4';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
@@ -6548,7 +6548,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.3 -->
+		<!-- AMPHP Storefront v13.3.4 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -6630,7 +6630,7 @@ img{max-width:100%;height:auto}
 			'yekan'     => array( 'label' => 'یکان', 'stack' => 'Yekan,' . $fb, 'css' => '', 'face' => '' ),
 			'estedad'   => array( 'label' => 'استعداد', 'stack' => 'Estedad,' . $fb, 'css' => '', 'face' => '' ),
 		);
-		/* v13.3.3: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
+		/* v13.3.4: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
 		$server_key = 'vazirmatn';
 		try {
 			$st = self::get_settings();
@@ -6770,7 +6770,7 @@ img{max-width:100%;height:auto}
 	 */
 	public static function storefront_asset_url( $file ) {
 		$file = basename( (string) $file );
-		$ver = '13.3.3';
+		$ver = '13.3.4';
 		return add_query_arg(
 			array(
 				'amphp_sf' => $file,
@@ -6965,7 +6965,7 @@ img{max-width:100%;height:auto}
 				'wp_cron_interval'            => sanitize_text_field( $_POST['wp_cron_interval'] ?? 'every_30_mins' ),
 			);
 			update_option( self::OPTION_NAME, $new_settings );
-			/* v13.3.3: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
+			/* v13.3.4: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
 			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
 			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;

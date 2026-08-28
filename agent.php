@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.1.0
+ * Version: 13.1.1
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -4497,38 +4497,31 @@ class Scraper_Auto_Shop_Plugin {
 	 * Strip every theme/plugin front asset so only the React storefront ships.
 	 */
 	public static function strip_all_theme_assets() {
-		if ( is_admin() || ! self::is_bare_storefront_request() ) {
+		if ( is_admin() || ! empty( $GLOBALS['amphp_bare_storefront'] ) ) {
+			return;
+		}
+		if ( ! self::is_bare_storefront_request() ) {
 			return;
 		}
 		global $wp_styles, $wp_scripts;
 		$keep_style = array( 'amphp-storefront', 'admin-bar', 'dashicons' );
-		$keep_script = array( 'amphp-storefront', 'admin-bar', 'hoverintent-js', 'hoverIntent' );
+		$keep_script = array( 'amphp-storefront', 'admin-bar', 'hoverintent-js', 'hoverIntent', 'jquery', 'jquery-core', 'jquery-migrate' );
 
+		// Only dequeue from print queue — do NOT deregister (breaks late printers / our bundle).
 		if ( $wp_styles instanceof \WP_Styles ) {
-			foreach ( (array) $wp_styles->queue as $handle ) {
-				if ( ! in_array( $handle, $keep_style, true ) ) {
-					wp_dequeue_style( $handle );
-					wp_deregister_style( $handle );
-				}
+			foreach ( array_keys( (array) $wp_styles->queue ) as $i ) {
+				$handle = $wp_styles->queue[ $i ] ?? null;
 			}
-			// Also clear registered leftovers that may re-print.
-			foreach ( (array) $wp_styles->registered as $handle => $obj ) {
-				if ( ! in_array( $handle, $keep_style, true ) ) {
-					wp_deregister_style( $handle );
+			foreach ( (array) $wp_styles->queue as $handle ) {
+				if ( $handle && ! in_array( $handle, $keep_style, true ) ) {
+					wp_dequeue_style( $handle );
 				}
 			}
 		}
 		if ( $wp_scripts instanceof \WP_Scripts ) {
 			foreach ( (array) $wp_scripts->queue as $handle ) {
-				if ( ! in_array( $handle, $keep_script, true ) ) {
+				if ( $handle && ! in_array( $handle, $keep_script, true ) ) {
 					wp_dequeue_script( $handle );
-					wp_deregister_script( $handle );
-				}
-			}
-			foreach ( (array) $wp_scripts->registered as $handle => $obj ) {
-				if ( ! in_array( $handle, $keep_script, true ) ) {
-					// Keep jquery only if somehow needed — prefer none.
-					wp_deregister_script( $handle );
 				}
 			}
 		}
@@ -4665,7 +4658,7 @@ class Scraper_Auto_Shop_Plugin {
 		$site     = get_bloginfo( 'name' );
 		$css_url  = self::storefront_asset_url( 'storefront.css' );
 		$js_url   = self::storefront_asset_url( 'storefront.js' );
-		$ver      = '13.1.0';
+		$ver      = '13.1.1';
 		$shop_html = self::render_shop_shortcode( true ); // skip asset tags; we print once below
 		$adminbar  = '';
 		if ( is_user_logged_in() && current_user_can( 'manage_options' ) ) {
@@ -4708,7 +4701,18 @@ img{max-width:100%;height:auto}
 <div class="scraper-shop-fullscreen-wrap" id="amphp-bare-root">
 <?php echo $shop_html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 </div>
-<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js" defer></script>
+<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js"></script>
+<script>
+(function(){
+  setTimeout(function(){
+    var el = document.getElementById('amphp-storefront-root');
+    if (!el || el.getAttribute('data-mounted') === '1') return;
+    if (el.querySelector('.amphp-sf-bootwait')) {
+      el.innerHTML = '<div style="padding:28px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">فروشگاه بارگذاری نشد.<br><span style="font-weight:600;color:#64748b;font-size:.85rem">فایل JS پیدا نشد یا خطا دارد. مسیر: <?php echo esc_js( $js_url ); ?></span></div>';
+    }
+  }, 8000);
+})();
+</script>
 </body>
 </html><?php
 		exit;
@@ -4718,7 +4722,16 @@ img{max-width:100%;height:auto}
 	 * Shortcode [scraped_shop] / [modern_shop] HTML Renderer.
 	 * 100% customer-facing, ultra-modern luxury e-commerce experience.
 	 */
-	public static function render_shop_shortcode( $bare_assets = false ) {
+	public static function render_shop_shortcode( $atts = array(), $content = null, $tag = '' ) {
+		// Allow internal bare-shell call: render_shop_shortcode( true )
+		$bare_assets = false;
+		if ( true === $atts || 1 === $atts || '1' === $atts ) {
+			$bare_assets = true;
+			$atts = array();
+		} elseif ( is_array( $atts ) && ! empty( $atts['bare'] ) ) {
+			$bare_assets = true;
+		}
+
 		$settings = self::get_settings();
 		$products = self::get_all_scraped_products();
 
@@ -4803,8 +4816,8 @@ img{max-width:100%;height:auto}
 				'checkoutUrl'=> esc_url_raw( $checkout ),
 			),
 			'meta'     => array(
-				'version'   => '13.1.0',
-				'engine'    => 'preact',
+				'version'   => '13.1.1',
+				'engine'    => 'react',
 				'count'     => count( $safe_products ),
 				'is_admin'  => current_user_can( 'manage_options' ),
 			),
@@ -4812,25 +4825,42 @@ img{max-width:100%;height:auto}
 
 		$css_url = self::storefront_asset_url( 'storefront.css' );
 		$js_url  = self::storefront_asset_url( 'storefront.js' );
-		$ver     = '13.1.0';
+		$ver     = '13.1.1';
 
 		// Mark assets as printed so wp_enqueue does not double-load the bundle.
 		$GLOBALS['amphp_storefront_assets_printed'] = true;
 
 		$boot_json = wp_json_encode( $boot, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_UNESCAPED_SLASHES );
+		if ( false === $boot_json ) {
+			$boot_json = '{"settings":{},"products":[],"urls":{},"ajax":{},"meta":{"error":"json"}}';
+		}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.1 lite -->
+		<!-- AMPHP Storefront v13.1.1 -->
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
 		<?php endif; ?>
-		<div id="amphp-storefront-root" class="amphp-storefront-root" data-engine="preact" dir="rtl">
-			<div style="padding:32px 16px;text-align:center;font-family:Tahoma,sans-serif;color:#64748b;font-size:.95rem;font-weight:700;">در حال بارگذاری…</div>
+		<div id="amphp-storefront-root" class="amphp-storefront-root" data-engine="react" dir="rtl">
+			<div class="amphp-sf-bootwait" style="padding:32px 16px;text-align:center;font-family:Tahoma,sans-serif;color:#64748b;font-size:.95rem;font-weight:700;">در حال بارگذاری…</div>
 		</div>
-		<script>window.AMPHP_STOREFRONT=<?php echo $boot_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;</script>
+		<script id="amphp-storefront-boot">
+		window.AMPHP_STOREFRONT = <?php echo $boot_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;
+		</script>
 		<?php if ( empty( $bare_assets ) ) : ?>
-		<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js" defer></script>
+		<script src="<?php echo esc_url( $js_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-js"></script>
+		<script>
+		(function(){
+			// Fail-soft if bundle 404 / blocked
+			setTimeout(function(){
+				var el = document.getElementById('amphp-storefront-root');
+				if (!el || el.getAttribute('data-mounted') === '1') return;
+				if (el.querySelector('.amphp-sf-bootwait')) {
+					el.innerHTML = '<div style="padding:28px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">فروشگاه بارگذاری نشد.<br><span style="font-weight:600;color:#64748b;font-size:.85rem">مسیر اسکریپت را بررسی کنید یا کش را پاک کنید.</span></div>';
+				}
+			}, 8000);
+		})();
+		</script>
 		<?php endif; ?>
 		<?php
 		return ob_get_clean();
@@ -4864,7 +4894,7 @@ img{max-width:100%;height:auto}
 		}
 		$css = self::storefront_asset_url( 'storefront.css' );
 		$js  = self::storefront_asset_url( 'storefront.js' );
-		$ver = '13.1.0';
+		$ver = '13.1.1';
 		wp_register_style( 'amphp-storefront', $css, array(), $ver );
 		wp_enqueue_style( 'amphp-storefront' );
 		wp_register_script( 'amphp-storefront', $js, array(), $ver, true );

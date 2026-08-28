@@ -801,17 +801,39 @@ function StoreApp({ boot }) {
 }
 
 function mount() {
-  const el = document.getElementById('amphp-storefront-root');
-  if (!el) return;
-  const boot = window.AMPHP_STOREFRONT || {};
-  const root = createRoot(el);
-  root.render(<StoreApp boot={boot} />);
+  try {
+    const el = document.getElementById('amphp-storefront-root');
+    if (!el) {
+      console.error('[AMPHP] #amphp-storefront-root not found');
+      return;
+    }
+    if (el.getAttribute('data-mounted') === '1') return;
+    const boot = (typeof window !== 'undefined' && window.AMPHP_STOREFRONT) ? window.AMPHP_STOREFRONT : {};
+    const root = createRoot(el);
+    root.render(<StoreApp boot={boot} />);
+    el.setAttribute('data-mounted', '1');
+    try { el.querySelector('.amphp-sf-bootwait')?.remove(); } catch (_) {}
+  } catch (err) {
+    console.error('[AMPHP] mount failed', err);
+    const el = document.getElementById('amphp-storefront-root');
+    if (el) {
+      el.innerHTML = '<div style="padding:24px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">خطا در اجرای فروشگاه<br><span style="font-size:.8rem;font-weight:600;color:#64748b">' + String(err && err.message || err) + '</span></div>';
+    }
+  }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', mount);
-} else {
-  mount();
+function scheduleMount() {
+  const run = () => mount();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', run, { once: true });
+  } else {
+    run();
+  }
+  // Extra safety for late boot injection
+  setTimeout(run, 50);
+  setTimeout(run, 300);
 }
+
+scheduleMount();
 
 export default StoreApp;

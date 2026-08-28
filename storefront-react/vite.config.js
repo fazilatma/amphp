@@ -4,14 +4,6 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  resolve: {
-    alias: {
-      react: 'preact/compat',
-      'react-dom': 'preact/compat',
-      'react-dom/client': 'preact/compat/client',
-      'react/jsx-runtime': 'preact/jsx-runtime',
-    },
-  },
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
@@ -32,7 +24,7 @@ export default defineConfig({
           if (assetInfo.name && assetInfo.name.endsWith('.css')) {
             return 'storefront.css';
           }
-          return assetInfo.name;
+          return assetInfo.name || 'asset';
         },
         inlineDynamicImports: true,
       },

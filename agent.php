@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.6
+ * Version: 13.3.7
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -163,7 +163,7 @@ class Scraper_Auto_Shop_Plugin {
 			$opts = array_merge( $defaults, $opts );
 		}
 
-		/* v13.3.6: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
+		/* v13.3.7: فونت سراسری از connections.json (انتخاب اسکرپر) اولویت دارد */
 		try {
 			$cn = self::get_scraper_connections();
 			if ( is_array( $cn ) ) {
@@ -687,7 +687,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		if ( function_exists( 'wc_get_products' ) ) {
 			$wc_prods = wc_get_products( array(
-				'limit'   => -1, /* v13.3.6: همهٔ محصولات ووکامرس */
+				'limit'   => -1, /* v13.3.7: همهٔ محصولات ووکامرس */
 				'status'  => 'publish',
 				'orderby' => 'date',
 				'order'   => 'DESC',
@@ -747,7 +747,7 @@ class Scraper_Auto_Shop_Plugin {
 			$raw_posts = get_posts( array(
 				'post_type'      => 'product',
 				'post_status'    => 'publish',
-				'posts_per_page' => -1, /* v13.3.6 all */
+				'posts_per_page' => -1, /* v13.3.7 all */
 			) );
 
 			if ( ! empty( $raw_posts ) ) {
@@ -795,7 +795,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.6: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
+	 * v13.3.7: همهٔ محصولات استخراج‌شده از profiles.json (بدون سقف).
 	 * مسیر پروفایل مثل get_profiles_summary چندجا چک می‌شود.
 	 *
 	 * @return array
@@ -823,7 +823,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.6: منبع کاتالوگ ویترین — scraper | woocommerce | merge
+	 * v13.3.7: منبع کاتالوگ ویترین — scraper | woocommerce | merge
 	 */
 	public static function resolve_catalog_source( $settings = null ) {
 		if ( ! is_array( $settings ) ) {
@@ -1096,7 +1096,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
-		/* v13.3.6: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
+		/* v13.3.7: ادغام با ووکامرس یا fallback اگر اسکرپر خالی است */
 		$need_woo = ( $source === 'merge' ) || empty( $products );
 		if ( $need_woo ) {
 			$woo_list = self::get_woocommerce_native_products();
@@ -1672,7 +1672,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.6: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
+	 * v13.3.7: ذخیرهٔ فونت سراسری در connections.json (منبع حقیقت اسکرپر + ویترین).
 	 *
 	 * @param string $font_key
 	 * @return bool
@@ -2153,7 +2153,9 @@ class Scraper_Auto_Shop_Plugin {
 		@ob_start();
 		try {
 			require_once $scraper_file;
-			$loaded = function_exists( 'aiMasterKey' ) || function_exists( 'aiCandidates' );
+			$loaded = function_exists( 'aiMasterKey' )
+				|| function_exists( 'aiCandidates' )
+				|| function_exists( 'aiProviderCall' );
 		} catch ( \Throwable $e ) {
 			error_log( 'Error loading scraper4 AI engine: ' . $e->getMessage() );
 			$loaded = false;
@@ -2310,6 +2312,59 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
+	 * Resolve first usable API key from scraper provider config (apiKey / apiKeys[] / keys[]).
+	 *
+	 * @param array|null $prov_cfg
+	 * @param string     $fallback
+	 * @return string
+	 */
+	public static function resolve_provider_api_key( $prov_cfg, $fallback = '' ) {
+		if ( ! is_array( $prov_cfg ) ) {
+			return trim( (string) $fallback );
+		}
+		// Prefer scraper's live helpers (apiKeys rotation + legacy apiKey mirror).
+		if ( function_exists( 'aiProviderKeys' ) ) {
+			$slots = aiProviderKeys( $prov_cfg );
+			foreach ( (array) $slots as $sl ) {
+				if ( isset( $sl['enabled'] ) && false === $sl['enabled'] ) {
+					continue;
+				}
+				$k = trim( (string) ( $sl['key'] ?? '' ) );
+				if ( $k !== '' ) {
+					return $k;
+				}
+			}
+		}
+		$candidates = array();
+		$legacy = trim( (string) ( $prov_cfg['apiKey'] ?? '' ) );
+		if ( $legacy !== '' ) {
+			$candidates[] = $legacy;
+		}
+		foreach ( array( 'apiKeys', 'keys' ) as $field ) {
+			if ( empty( $prov_cfg[ $field ] ) || ! is_array( $prov_cfg[ $field ] ) ) {
+				continue;
+			}
+			foreach ( $prov_cfg[ $field ] as $row ) {
+				if ( is_array( $row ) ) {
+					if ( isset( $row['enabled'] ) && false === $row['enabled'] ) {
+						continue;
+					}
+					$k = trim( (string) ( $row['key'] ?? $row['api_key'] ?? $row['token'] ?? '' ) );
+				} else {
+					$k = trim( (string) $row );
+				}
+				if ( $k !== '' ) {
+					$candidates[] = $k;
+				}
+			}
+		}
+		if ( ! empty( $candidates ) ) {
+			return $candidates[0];
+		}
+		return trim( (string) $fallback );
+	}
+
+	/**
 	 * Retrieve Master AI model directly from scraper4 (connections.json / ai_votes.json / ai_providers.json).
 	 *
 	 * @param array|null $settings
@@ -2320,13 +2375,22 @@ class Scraper_Auto_Shop_Plugin {
 			$settings = self::get_settings();
 		}
 
+		// Ensure scraper AI helpers (aiProvidersLoad / aiProviderKeys / aiMasterKey) are available.
+		self::load_scraper_ai_engine();
+
 		$cands_info = self::get_scraper_ai_candidates();
 		$master_key = $cands_info['master'];
 		$pin_key    = $cands_info['pin'];
 
 		$plugin_dir = plugin_dir_path( __FILE__ );
-		$prov_file  = $plugin_dir . 'ai_providers.json';
-		$prov_data  = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
+		$prov_data  = array();
+		if ( function_exists( 'aiProvidersLoad' ) ) {
+			$prov_data = aiProvidersLoad();
+		}
+		if ( empty( $prov_data ) ) {
+			$prov_file = $plugin_dir . 'ai_providers.json';
+			$prov_data = file_exists( $prov_file ) ? ( @json_decode( file_get_contents( $prov_file ), true ) ?: array() ) : array();
+		}
 
 		$provider_id = '';
 		$model_id    = '';
@@ -2334,7 +2398,14 @@ class Scraper_Auto_Shop_Plugin {
 			list( $provider_id, $model_id ) = explode( '::', $master_key, 2 );
 		}
 
-		$prov_cfg = $prov_data[ $provider_id ] ?? null;
+		$prov_cfg = null;
+		if ( $provider_id !== '' && isset( $prov_data[ $provider_id ] ) && is_array( $prov_data[ $provider_id ] ) ) {
+			$prov_cfg = $prov_data[ $provider_id ];
+			if ( empty( $prov_cfg['id'] ) ) {
+				$prov_cfg['id'] = $provider_id;
+			}
+		}
+
 		$model_name = $model_id;
 		if ( $prov_cfg && ! empty( $prov_cfg['models'] ) && is_array( $prov_cfg['models'] ) ) {
 			foreach ( $prov_cfg['models'] as $m ) {
@@ -2355,13 +2426,33 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		$custom_key = trim( (string) ( $settings['ai_api_key'] ?? '' ) );
-		$api_key = $prov_cfg['apiKey'] ?? ( $prov_cfg['keys'][0]['key'] ?? $custom_key );
-		if ( empty( $api_key ) && ! empty( $custom_key ) ) {
-			$api_key = $custom_key;
+		$api_key    = self::resolve_provider_api_key( $prov_cfg, $custom_key );
+		// Keep provider mirror in sync so aiProviderCall sees a key even when only apiKeys[] is filled.
+		if ( is_array( $prov_cfg ) && $api_key !== '' && trim( (string) ( $prov_cfg['apiKey'] ?? '' ) ) === '' ) {
+			$prov_cfg['apiKey'] = $api_key;
 		}
 
-		$endpoint = $prov_cfg['endpoint'] ?? ( $prov_cfg['url'] ?? '' );
-		if ( empty( $endpoint ) ) {
+		$endpoint = '';
+		if ( is_array( $prov_cfg ) ) {
+			$endpoint = trim( (string) ( $prov_cfg['endpoint'] ?? '' ) );
+			if ( $endpoint === '' ) {
+				$endpoint = trim( (string) ( $prov_cfg['url'] ?? '' ) );
+			}
+			// Build OpenAI-compatible chat URL the same way scraper does.
+			if ( $endpoint !== '' && function_exists( 'aiProviderEndpoint' ) ) {
+				$ep = aiProviderEndpoint( $prov_cfg, $model_id );
+				if ( ! empty( $ep['url'] ) && ( $ep['kind'] ?? '' ) !== 'cloudflare' ) {
+					$endpoint = (string) $ep['url'];
+				}
+			} elseif ( $endpoint !== '' && ! preg_match( '~/chat/completions/?$~i', $endpoint )
+				&& ! preg_match( '~/ai/run~i', $endpoint ) ) {
+				$path = (string) ( parse_url( $endpoint, PHP_URL_PATH ) ?: '' );
+				if ( $path === '' || $path === '/' || preg_match( '~/v\d+(\.\d+)?/?$~i', $path ) ) {
+					$endpoint = rtrim( $endpoint, '/' ) . '/chat/completions';
+				}
+			}
+		}
+		if ( $endpoint === '' ) {
 			$endpoints_map = array(
 				'openrouter' => 'https://openrouter.ai/api/v1/chat/completions',
 				'groq'       => 'https://api.groq.com/openai/v1/chat/completions',
@@ -2373,26 +2464,35 @@ class Scraper_Auto_Shop_Plugin {
 			$endpoint = $endpoints_map[ $provider_id ] ?? 'https://openrouter.ai/api/v1/chat/completions';
 		}
 
+		$has_live = ( $api_key !== '' )
+			|| ( strpos( $endpoint, '127.0.0.1' ) !== false )
+			|| ( strpos( $endpoint, 'localhost' ) !== false )
+			|| ( is_array( $prov_cfg ) && function_exists( 'aiProviderKeys' ) && count( aiProviderKeys( $prov_cfg ) ) > 0 )
+			|| ( is_array( $prov_cfg ) && ! empty( $prov_cfg ) );
+
 		return array(
 			'provider_id'   => $provider_id ?: 'openrouter',
 			'model_id'      => $model_id ?: 'meta-llama/llama-3.3-70b-instruct:free',
 			'key'           => $master_key ?: 'openrouter::meta-llama/llama-3.3-70b-instruct:free',
 			'model_name'    => $model_name ?: 'Llama 3.3 70B (رایگان)',
-			'provider_name' => $prov_cfg['name'] ?? ( $master_cand['providerName'] ?? ucfirst( $provider_id ?: 'openrouter' ) ),
-			'api_key'       => trim( (string) $api_key ),
+			'provider_name' => ( is_array( $prov_cfg ) ? ( $prov_cfg['name'] ?? null ) : null ) ?? ( $master_cand['providerName'] ?? ucfirst( $provider_id ?: 'openrouter' ) ),
+			'api_key'       => $api_key,
 			'endpoint'      => trim( (string) $endpoint ),
 			'provider'      => $prov_cfg,
-			'is_pinned'     => ( $pin_key === $master_key ),
-			'score'         => $master_cand['score'] ?? 0.889,
-			'wins'          => $master_cand['wins'] ?? 8,
-			'losses'        => $master_cand['losses'] ?? 1,
-			'votes'         => $master_cand['votes'] ?? 9,
+			'is_pinned'     => ( $pin_key === $master_key && $master_key !== '' ),
+			'score'         => $master_cand['score'] ?? 0,
+			'wins'          => $master_cand['wins'] ?? 0,
+			'losses'        => $master_cand['losses'] ?? 0,
+			'votes'         => $master_cand['votes'] ?? 0,
 			'source'        => 'scraper4_master',
+			'has_live'      => $has_live,
 		);
 	}
 
+
 	/**
-	 * Call Live AI Provider API (OpenAI / OpenRouter / Groq / DeepSeek / Ollama / Gemini).
+	 * Call Live AI Provider API via scraper4 engine (preferred) or WordPress HTTP fallback.
+	 * Uses the same master model path as scraper4 tests: key rotation, DoH/proxy, aiExtractAnswer.
 	 *
 	 * @param array  $master_ai
 	 * @param string $message
@@ -2401,15 +2501,16 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return string
 	 */
 	public static function call_ai_api( $master_ai, $message, $customer_name, $settings ) {
-		$endpoint = $master_ai['endpoint'];
-		$api_key  = $master_ai['api_key'];
-		$model_id = $master_ai['model_id'];
+		$endpoint = (string) ( $master_ai['endpoint'] ?? '' );
+		$api_key  = (string) ( $master_ai['api_key'] ?? '' );
+		$model_id = (string) ( $master_ai['model_id'] ?? '' );
+		$prov_cfg = isset( $master_ai['provider'] ) && is_array( $master_ai['provider'] ) ? $master_ai['provider'] : null;
 
 		if ( empty( $endpoint ) ) {
 			$endpoint = 'https://openrouter.ai/api/v1/chat/completions';
 		}
 
-		$site_name = get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' );
+		$site_name = function_exists( 'get_bloginfo' ) ? ( get_bloginfo( 'name' ) ?: ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' ) ) : ( $settings['shop_title'] ?? 'فروشگاه اینترنتی' );
 		$catalog_ctx = self::build_catalog_context_for_ai( 40 );
 		$threshold = number_format( (float) ( $settings['free_shipping_threshold'] ?? 400000 ) );
 		$currency  = $settings['currency_symbol'] ?? 'تومان';
@@ -2417,32 +2518,18 @@ class Scraper_Auto_Shop_Plugin {
 		$base_user_prompt = ! empty( $settings['ai_system_prompt'] )
 			? $settings['ai_system_prompt']
 			: "تو دستیار هوشمند و کارشناس فروش رسمی فروشگاه اینترنتی «{$site_name}» هستی.";
-		$system_prompt = $base_user_prompt . "
-"
-			. "نام مشتری: «{$customer_name}»
-"
-			. "ارسال رایگان برای خریدهای بالای {$threshold} {$currency}.
-"
-			. "ضمانت ۷ روز بازگشت و اصالت کالا.
-
-"
-			. "دسترسی زنده به داده فروشگاه (محصولات، سفارش‌ها، آمار):
-"
-			. $catalog_ctx . "
-
-"
-			. "قوانین پاسخ:
-"
-			. "۱. فقط بر اساس داده بالا جواب بده؛ اگر نبود بگو در دسترس نیست.
-"
-			. "۲. برای قیمت/موجودی از کاتالوگ دقیق نقل کن.
-"
-			. "۳. برای پیگیری سفارش، شماره سفارش یا موبایل بخواه و از بخش سفارش‌ها استفاده کن.
-"
-			. "۴. لحن گرم، حرفه‌ای و فارسی. خودت را ربات معرفی نکن.
-"
-			. "۵. می‌توانی Markdown سبک بنویسی: **پررنگ**، لیست با - یا ۱. ، `کد`، و لینک [متن](url).
-"
+		$system_prompt = $base_user_prompt . "\n"
+			. "نام مشتری: «{$customer_name}»\n"
+			. "ارسال رایگان برای خریدهای بالای {$threshold} {$currency}.\n"
+			. "ضمانت ۷ روز بازگشت و اصالت کالا.\n\n"
+			. "دسترسی زنده به داده فروشگاه (محصولات، سفارش‌ها، آمار):\n"
+			. $catalog_ctx . "\n\n"
+			. "قوانین پاسخ:\n"
+			. "۱. فقط بر اساس داده بالا جواب بده؛ اگر نبود بگو در دسترس نیست.\n"
+			. "۲. برای قیمت/موجودی از کاتالوگ دقیق نقل کن.\n"
+			. "۳. برای پیگیری سفارش، شماره سفارش یا موبایل بخواه و از بخش سفارش‌ها استفاده کن.\n"
+			. "۴. لحن گرم، حرفه‌ای و فارسی. خودت را ربات معرفی نکن.\n"
+			. "۵. می‌توانی Markdown سبک بنویسی: **پررنگ**، لیست با - یا ۱. ، `کد`، و لینک [متن](url).\n"
 			. "۶. پاسخ را خوانا و ساخت‌یافته نگه دار (نه یک پاراگراف شلوغ).";
 
 		$payload = array(
@@ -2455,20 +2542,65 @@ class Scraper_Auto_Shop_Plugin {
 			'temperature' => 0.7,
 		);
 
+		// v13.3.7: Prefer scraper4 live engine (same path as master model tests).
+		self::load_scraper_ai_engine();
+		if ( function_exists( 'aiProviderCall' ) && is_array( $prov_cfg ) && ! empty( $prov_cfg ) ) {
+			if ( empty( $prov_cfg['id'] ) && ! empty( $master_ai['provider_id'] ) ) {
+				$prov_cfg['id'] = $master_ai['provider_id'];
+			}
+			if ( $api_key !== '' && trim( (string) ( $prov_cfg['apiKey'] ?? '' ) ) === '' ) {
+				$prov_cfg['apiKey'] = $api_key;
+			}
+			// Ensure url field exists for endpoint builder (scraper uses 'url', some configs use 'endpoint').
+			if ( empty( $prov_cfg['url'] ) && ! empty( $prov_cfg['endpoint'] ) ) {
+				$prov_cfg['url'] = $prov_cfg['endpoint'];
+			}
+			try {
+				$r = aiProviderCall( $prov_cfg, $model_id, $payload );
+				$text = '';
+				if ( function_exists( 'aiExtractAnswer' ) ) {
+					$text = trim( (string) aiExtractAnswer( $r['body'] ?? null ) );
+				} elseif ( function_exists( 'aiExtractText' ) ) {
+					$text = trim( (string) aiExtractText( $r['body'] ?? null ) );
+				}
+				if ( $text === '' && ! empty( $r['body'] ) && is_array( $r['body'] ) ) {
+					$b = $r['body'];
+					if ( ! empty( $b['choices'][0]['message']['content'] ) ) {
+						$text = trim( (string) $b['choices'][0]['message']['content'] );
+					} elseif ( ! empty( $b['choices'][0]['text'] ) ) {
+						$text = trim( (string) $b['choices'][0]['text'] );
+					} elseif ( ! empty( $b['response'] ) ) {
+						$text = trim( (string) $b['response'] );
+					}
+				}
+				if ( $text !== '' ) {
+					$text = preg_replace( '/<think>.*?<\/think>/si', '', $text );
+					return trim( $text );
+				}
+			} catch ( \Throwable $e ) {
+				error_log( 'AMPHP call_ai_api scraper engine: ' . $e->getMessage() );
+			}
+		}
+
+		// Fallback: direct WordPress HTTP (no scraper network stack).
 		$headers = array(
 			'Content-Type' => 'application/json; charset=utf-8',
 		);
-		if ( ! empty( $api_key ) ) {
+		if ( $api_key !== '' ) {
 			$headers['Authorization'] = 'Bearer ' . $api_key;
 		}
 		if ( strpos( $endpoint, 'openrouter.ai' ) !== false ) {
-			$headers['HTTP-Referer'] = home_url();
+			$headers['HTTP-Referer'] = function_exists( 'home_url' ) ? home_url() : '';
 			$headers['X-Title']      = $site_name;
+		}
+
+		if ( ! function_exists( 'wp_remote_post' ) ) {
+			return '';
 		}
 
 		$response = wp_remote_post( $endpoint, array(
 			'method'    => 'POST',
-			'timeout'   => 12,
+			'timeout'   => 28,
 			'headers'   => $headers,
 			'body'      => wp_json_encode( $payload ),
 			'sslverify' => false,
@@ -2479,7 +2611,9 @@ class Scraper_Auto_Shop_Plugin {
 			$json = @json_decode( $body, true );
 			if ( is_array( $json ) ) {
 				$text = '';
-				if ( ! empty( $json['choices'][0]['message']['content'] ) ) {
+				if ( function_exists( 'aiExtractAnswer' ) ) {
+					$text = trim( (string) aiExtractAnswer( $json ) );
+				} elseif ( ! empty( $json['choices'][0]['message']['content'] ) ) {
 					$text = trim( (string) $json['choices'][0]['message']['content'] );
 				} elseif ( ! empty( $json['choices'][0]['text'] ) ) {
 					$text = trim( (string) $json['choices'][0]['text'] );
@@ -2488,14 +2622,14 @@ class Scraper_Auto_Shop_Plugin {
 				}
 				if ( ! empty( $text ) ) {
 					$text = preg_replace( '/<think>.*?<\/think>/si', '', $text );
-					$text = preg_replace( '/\s+/u', ' ', trim( $text ) );
-					return $text;
+					return trim( $text );
 				}
 			}
 		}
 
 		return '';
 	}
+
 
 	/**
 	 * Intelligent Dynamic E-Commerce NLP Engine (Analyzes Catalog, Prices, Features & Query).
@@ -2695,20 +2829,30 @@ class Scraper_Auto_Shop_Plugin {
 			return '';
 		}
 
-		// 1. Resolve master AI configuration
+		// 1. Resolve master AI configuration (loads scraper4 engine + apiKeys)
 		$master_ai = self::get_scraper_master_ai_model( $settings );
 
-		// 2. If an API key or local endpoint exists, query the live generative model
-		if ( ! empty( $master_ai['api_key'] ) || strpos( (string) $master_ai['endpoint'], '127.0.0.1' ) !== false || strpos( (string) $master_ai['endpoint'], 'localhost' ) !== false ) {
+		// 2. Always try live master model when scraper provider config / key / local endpoint is present
+		$try_live = ! empty( $master_ai['has_live'] )
+			|| ! empty( $master_ai['api_key'] )
+			|| ( is_array( $master_ai['provider'] ?? null ) && ! empty( $master_ai['provider'] ) )
+			|| strpos( (string) ( $master_ai['endpoint'] ?? '' ), '127.0.0.1' ) !== false
+			|| strpos( (string) ( $master_ai['endpoint'] ?? '' ), 'localhost' ) !== false;
+
+		if ( $try_live ) {
 			$reply = self::call_ai_api( $master_ai, $message, $customer_name, $settings );
 			if ( ! empty( $reply ) ) {
 				return $reply;
 			}
 		}
 
-		// 3. Dynamic Contextual E-Commerce NLP Engine (analyzes catalog, prices, features & query)
+		// 3. Only if live AI failed: local catalog NLP (not preferred for storefront)
+		if ( 'ai_only' === $coordination ) {
+			return 'متأسفانه ارتباط با پشتیبان هوشمند برقرار نشد. لطفاً چند لحظه بعد دوباره پیام بفرستید.';
+		}
 		return self::generate_smart_local_reply( $message, $customer_name, $settings );
 	}
+
 
 	/**
 	 * AJAX endpoint for live testing AI chat in Admin Tab 4.
@@ -2777,17 +2921,21 @@ class Scraper_Auto_Shop_Plugin {
 			$m_id = $c['model'];
 			$p_cfg = $prov_data[ $p_id ] ?? array();
 
+			if ( is_array( $p_cfg ) && empty( $p_cfg['id'] ) ) {
+				$p_cfg['id'] = $p_id;
+			}
 			$cand_master = array(
 				'provider_id' => $p_id,
 				'model_id'    => $m_id,
 				'model_name'  => $c['modelName'],
-				'api_key'     => $p_cfg['apiKey'] ?? ( $p_cfg['keys'][0]['key'] ?? ( $settings['ai_api_key'] ?? '' ) ),
+				'api_key'     => self::resolve_provider_api_key( $p_cfg, (string) ( $settings['ai_api_key'] ?? '' ) ),
 				'endpoint'    => $p_cfg['endpoint'] ?? ( $p_cfg['url'] ?? '' ),
 				'provider'    => $p_cfg,
+				'has_live'    => true,
 			);
 
 			$reply = '';
-			if ( ! empty( $cand_master['api_key'] ) || strpos( (string) $cand_master['endpoint'], '127.0.0.1' ) !== false ) {
+			if ( ! empty( $cand_master['api_key'] ) || ! empty( $p_cfg ) || strpos( (string) $cand_master['endpoint'], '127.0.0.1' ) !== false ) {
 				$reply = self::call_ai_api( $cand_master, $message, 'کاربر آزمایشی', $settings );
 			}
 			if ( empty( $reply ) ) {
@@ -4570,7 +4718,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 
 	/**
-	 * v13.3.6: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
+	 * v13.3.7: decode entity-escaped AI HTML so PDP never shows &lt;p&gt; literally.
 	 *
 	 * @param string $html Raw AI / stored description.
 	 * @return string Safe HTML fragment.
@@ -4689,7 +4837,7 @@ class Scraper_Auto_Shop_Plugin {
 		delete_transient( $lock_key );
 
 		if ( $filled_prod && is_array( $filled_prod ) ) {
-			/* v13.3.6: HTML خام entity-encoded را قبل از ذخیره پاک کن */
+			/* v13.3.7: HTML خام entity-encoded را قبل از ذخیره پاک کن */
 			foreach ( array( 'long_desc', 'longDesc', 'description', 'desc' ) as $fk ) {
 				if ( ! empty( $filled_prod[ $fk ] ) && is_string( $filled_prod[ $fk ] ) ) {
 					$filled_prod[ $fk ] = self::sanitize_product_description_html( $filled_prod[ $fk ] );
@@ -4907,7 +5055,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$desc = (string) ( $found['description'] ?? $found['long_desc'] ?? $found['longDesc'] ?? $found['desc'] ?? '' );
 		$short = (string) ( $found['short_desc'] ?? $found['shortDesc'] ?? '' );
-		// v13.3.6: HTML واقعی برای PDP (نه entity-encoded)
+		// v13.3.7: HTML واقعی برای PDP (نه entity-encoded)
 		$desc_out = self::sanitize_product_description_html( $desc );
 		$short_clean = trim( html_entity_decode( wp_strip_all_tags( $short ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 		if ( $desc_out === '' && $short_clean !== '' ) {
@@ -4925,7 +5073,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $variations_text === '' && ! empty( $found['variations'] ) && is_array( $found['variations'] ) ) {
 			$variations_text = implode( '، ', array_map( 'strval', $found['variations'] ) );
 		}
-		/* v13.3.6: متن تنوع بلند (جمله) را نشان نده */
+		/* v13.3.7: متن تنوع بلند (جمله) را نشان نده */
 		if ( $variations_text !== '' && mb_strlen( $variations_text, 'UTF-8' ) > 160 ) {
 			$variations_text = '';
 		}
@@ -5201,12 +5349,18 @@ class Scraper_Auto_Shop_Plugin {
 		$logs = array_slice( $logs, 0, 50 );
 		update_option( 'scraper_support_chat_logs', $logs, false );
 
+		$ai_source = ! empty( $ai_reply ) ? 'master' : 'none';
+		// Detect canned local NLP only when reply came from generate_smart_local_reply heuristics
+		// (master path already preferred; flag helps storefront/debug).
 		wp_send_json_success( array(
 			'message'    => 'پیام شما با موفقیت ثبت شد.',
 			'session_id' => $session_id,
 			'thread_id'  => $thread_id,
 			'ai_reply'   => $ai_reply,
+			'reply'      => $ai_reply, // alias for storefront clients
 			'ai_model'   => $model_lbl,
+			'ai_source'  => $ai_source,
+			'ai_key'     => $master_ai['key'] ?? '',
 			'thread'     => $thread,
 			'status'     => $send_result,
 		) );
@@ -6426,7 +6580,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.6' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.7' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -6487,7 +6641,7 @@ img{max-width:100%;height:auto}
 		$products = self::get_all_scraped_products();
 		$total_catalog = is_array( $products ) ? count( $products ) : 0;
 
-		/* v13.3.6: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
+		/* v13.3.7: همهٔ محصولات کاتالوگ — بدون سقف ۱۲۰.
 		   payload lean است (بدون گالری/توضیح بلند) تا TTFB سبک بماند. */
 		$safe_products = array();
 		foreach ( (array) $products as $p ) {
@@ -6655,7 +6809,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.6 -->
+		<!-- AMPHP Storefront v13.3.7 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -6737,7 +6891,7 @@ img{max-width:100%;height:auto}
 			'yekan'     => array( 'label' => 'یکان', 'stack' => 'Yekan,' . $fb, 'css' => '', 'face' => '' ),
 			'estedad'   => array( 'label' => 'استعداد', 'stack' => 'Estedad,' . $fb, 'css' => '', 'face' => '' ),
 		);
-		/* v13.3.6: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
+		/* v13.3.7: فونت سرور از settings/connections — برای همهٔ بازدیدکننده‌ها */
 		$server_key = 'vazirmatn';
 		try {
 			$st = self::get_settings();
@@ -7083,7 +7237,7 @@ img{max-width:100%;height:auto}
 			);
 			update_option( self::OPTION_NAME, $new_settings );
 			delete_transient( 'scraper_shop_cached_products' );
-			/* v13.3.6: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
+			/* v13.3.7: همگام فونت با connections.json برای همهٔ بازدیدکننده‌ها */
 			self::sync_ui_font_to_connections( (string) ( $new_settings['shop_title_font'] ?? 'vazirmatn' ) );
 			self::sync_wp_cron_schedule( $new_settings );
 			$updated = true;
@@ -7499,7 +7653,7 @@ img{max-width:100%;height:auto}
 							$merge_pref = 'scraper';
 						}
 						?>
-						<!-- v13.3.6: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
+						<!-- v13.3.7: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
 						<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
 							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
 								<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">

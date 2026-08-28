@@ -1385,6 +1385,11 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
       fd.append('action', 'scraper_submit_support_chat');
       fd.append('nonce', ajax.chatNonce || '');
       fd.append('message', msg);
+      /* keep session for multi-turn if present */
+      try {
+        const sid = sessionStorage.getItem('amphp_chat_sid') || '';
+        if (sid) fd.append('session_id', sid);
+      } catch (_) { /* ignore */ }
       if (ctx?.id) {
         fd.append('product_id', String(ctx.id));
         fd.append('product_title', String(ctx.title || ''));
@@ -1394,17 +1399,39 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
         if (ctx.description) bits.push(`توضیح: ${String(ctx.description).slice(0, 280)}`);
         fd.append('product_context', bits.join(' | '));
       }
-      const res = await fetch(ajax.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' });
+      const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
       const data = await res.json().catch(() => ({}));
-      const reply =
-        data?.data?.reply ||
-        data?.data?.ai_reply ||
-        data?.data?.message ||
-        data?.data?.response ||
-        (data?.success ? 'پیام شما دریافت شد. به‌زودی پاسخ می‌دهیم.' : 'ارسال انجام شد.');
+      if (data?.data?.session_id) {
+        try { sessionStorage.setItem('amphp_chat_sid', String(data.data.session_id)); } catch (_) { /* ignore */ }
+      }
+      /* Prefer real AI reply; never treat the generic "message registered" ack as the chat answer */
+      const ackPhrases = [
+        'پیام شما با موفقیت ثبت شد',
+        'پیام شما دریافت شد',
+        'ارسال انجام شد',
+      ];
+      let reply =
+        (typeof data?.data?.ai_reply === 'string' && data.data.ai_reply.trim()) ||
+        (typeof data?.data?.reply === 'string' && data.data.reply.trim()) ||
+        (typeof data?.data?.response === 'string' && data.data.response.trim()) ||
+        '';
+      if (reply && ackPhrases.some((p) => reply.includes(p))) {
+        reply = '';
+      }
+      if (!reply && data?.success) {
+        reply = 'پیام شما ثبت شد. پشتیبان هوشمند در حال حاضر پاسخ زنده‌ای برنگرداند؛ همکاران ما به‌زودی جواب می‌دهند.';
+      } else if (!reply) {
+        reply = data?.data?.message && !ackPhrases.some((p) => String(data.data.message).includes(p))
+          ? String(data.data.message)
+          : 'ارسال انجام نشد. لطفاً دوباره تلاش کنید.';
+      }
       setMsgs((m) => [...m, { id: `b${Date.now()}`, role: 'bot', text: String(reply) }]);
     } catch {
-      setMsgs((m) => [...m, { id: `b${Date.now()}`, role: 'bot', text: 'ارتباط برقرار نشد. کمی بعد دوباره تلاش کنید.' }]);
+      setMsgs((m) => [...m, { id: `b${Date.now()}`, role: 'bot', text: 'ارتباط با سرور برقرار نشد. کمی بعد دوباره تلاش کنید.' }]);
     } finally {
       setBusy(false);
     }

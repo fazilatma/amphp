@@ -44685,6 +44685,7 @@ const ARENA_PLUGINS_DIR   = __DIR__ . '/arena_plugins';
 const ARENA_WP_DIR        = __DIR__ . '/arena_wp_plugins';
 const ARENA_WP_DL_DIR     = __DIR__ . '/arena_wp_downloads';
 const ARENA_TRACK_STATE   = __DIR__ . '/arena_track_state.json';
+const ARENA_ANALYTICS_FILE = __DIR__ . '/arena_analytics.json'; /* v1.9: تجمیع روزانهٔ رویدادها برای نمودارهای پنل */
 const ARENA_IMG_CACHE     = __DIR__ . '/arena_img_cache';
 const ARENA_CUSTOMERS     = __DIR__ . '/arena_customers.json';
 const ARENA_ADMIN_FILE  = __DIR__ . '/arena_admin.json';
@@ -44719,7 +44720,7 @@ function arenaSettings(): array {
         'shipping'        => 25000,
         'free_shipping_over' => 500000,
         'vitrine_price_dest' => 'auto',
-        'events'       => ['product_view' => 1, 'add_cart' => 1, 'remove_cart' => 1, 'cart_view' => 1,
+        'events'       => ['site_view' => 1, 'product_view' => 1, 'add_cart' => 1, 'remove_cart' => 1, 'cart_view' => 1,
                            'checkout_start' => 1, 'order' => 1, 'wish_add' => 1, 'review_add' => 1,
                            'chat_msg' => 1, 'search' => 0, 'track' => 0],
         'flash'           => ['on' => false, 'start' => 0, 'end' => 0, 'pct' => 10],
@@ -44893,6 +44894,112 @@ function arenaEventEnabled(string $name): bool {
     if (!is_array($ev) || !array_key_exists($name, $ev)) return true;
     return !empty($ev[$name]);
 }
+/* ---------------- v1.9: آمار تحلیلی ویترین (نمودارها و اعلان‌های پنل ادمین) ----------------
+ * هر رویدادِ مشتری (بازدید سایت، مشاهده محصول، سبد خرید، سفارش و …) علاوه بر
+ * اعلانِ پیام‌رسان، در یک فایلِ تجمیعیِ روزانه هم ثبت می‌شود تا داشبورد پنل ادمین
+ * بتواند نمودار ۱۴روزه، شمارنده‌های امروز/هفته و پرفروش‌ترین/پربازدیدترین‌ها را نشان دهد. */
+function shopAnalyticsLoad(): array {
+    $d = arenaJson(ARENA_ANALYTICS_FILE, []);
+    if (!is_array($d)) $d = [];
+    $d['days']     = is_array($d['days'] ?? null) ? $d['days'] : [];
+    $d['products'] = is_array($d['products'] ?? null) ? $d['products'] : [];
+    $d['recent']   = is_array($d['recent'] ?? null) ? $d['recent'] : [];
+    return $d;
+}
+
+function shopAnalyticsSave(array $d): bool {
+    $d['updated'] = time();
+    return arenaSave(ARENA_ANALYTICS_FILE, $d);
+}
+
+function shopAnalyticsRecord(string $name, array $data = [], ?string $dayKey = null): void {
+    try {
+        $known = array_keys(arenaTrackDefs());
+        if (!in_array($name, $known, true)) $name = 'other';
+        $d = shopAnalyticsLoad();
+        $day = $dayKey ?: date('Y-m-d');
+        if (!isset($d['days'][$day]) || !is_array($d['days'][$day])) $d['days'][$day] = [];
+        $d['days'][$day][$name] = (int)($d['days'][$day][$name] ?? 0) + 1;
+        if ($name === 'order') {
+            $tot = (int)extractPriceNum((string)($data['total'] ?? 0));
+            if ($tot <= 0) $tot = (int)($data['total'] ?? 0);
+            $d['days'][$day]['revenue'] = (int)($d['days'][$day]['revenue'] ?? 0) + $tot;
+        }
+        /* پربازدیدها و پرکلیک‌ترین کالاها (برای نمودار/لیست داشبورد) */
+        $uid = trim((string)($data['uid'] ?? ''));
+        $title = mb_substr(trim((string)($data['title'] ?? '')), 0, 80);
+        if ($uid !== '' && in_array($name, ['product_view', 'add_cart', 'wish_add'], true)) {
+            if (!isset($d['products'][$uid]) || !is_array($d['products'][$uid])) {
+                $d['products'][$uid] = ['title' => $title, 'views' => 0, 'carts' => 0];
+            }
+            if ($title !== '' && ($d['products'][$uid]['title'] ?? '') === '') $d['products'][$uid]['title'] = $title;
+            if ($name === 'product_view') $d['products'][$uid]['views'] = (int)($d['products'][$uid]['views'] ?? 0) + 1;
+            if ($name === 'add_cart')    $d['products'][$uid]['carts'] = (int)($d['products'][$uid]['carts'] ?? 0) + 1;
+        }
+        /* فیدِ رویدادهای اخیر برای زنگ اعلان پنل */
+        $d['recent'][] = [
+            'at'    => time(),
+            'name'  => mb_substr($name, 0, 24),
+            'title' => $title !== '' ? $title : mb_substr(trim((string)($data['q'] ?? '')), 0, 60),
+            'ip'    => (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+        ];
+        if (count($d['recent']) > 250) $d['recent'] = array_slice($d['recent'], -250);
+        /* نگه‌داشتن ۹۰ روزِ آخر */
+        $cut = date('Y-m-d', time() - 90 * 86400);
+        foreach (array_keys($d['days']) as $dk) if ($dk < $cut) unset($d['days'][$dk]);
+        shopAnalyticsSave($d);
+    } catch (\Throwable $e) { /* آمار هرگز نباید مسیر اصلی را بندازد */ }
+}
+
+/** خلاصهٔ آماری برای نمودارها و اعلان‌های داشبورد ادمین */
+function arenaAnalyticsSummary(int $days = 14): array {
+    $d = shopAnalyticsLoad();
+    $series = [];
+    for ($i = $days - 1; $i >= 0; $i--) {
+        $day = date('Y-m-d', time() - $i * 86400);
+        $row = $d['days'][$day] ?? [];
+        $series[] = [
+            'd'            => $day,
+            'site_view'    => (int)($row['site_view'] ?? 0),
+            'product_view' => (int)($row['product_view'] ?? 0),
+            'add_cart'     => (int)($row['add_cart'] ?? 0),
+            'order'        => (int)($row['order'] ?? 0),
+            'revenue'      => (int)($row['revenue'] ?? 0),
+        ];
+    }
+    $totals = ['today' => ['site_view' => 0, 'product_view' => 0, 'add_cart' => 0, 'order' => 0, 'revenue' => 0, 'chat_msg' => 0, 'search' => 0, 'checkout_start' => 0],
+               'week'  => ['site_view' => 0, 'product_view' => 0, 'add_cart' => 0, 'order' => 0, 'revenue' => 0, 'chat_msg' => 0, 'search' => 0, 'checkout_start' => 0],
+               'month' => ['site_view' => 0, 'product_view' => 0, 'add_cart' => 0, 'order' => 0, 'revenue' => 0, 'chat_msg' => 0, 'search' => 0, 'checkout_start' => 0]];
+    foreach ($d['days'] as $day => $row) {
+        $age = (time() - strtotime($day . ' 12:00:00')) / 86400;
+        foreach (['today' => 1.5, 'week' => 7.5, 'month' => 31.5] as $k => $lim) {
+            if ($age <= $lim) {
+                foreach ($totals[$k] as $ev => $_) {
+                    if ($ev === 'revenue') $totals[$k][$ev] += (int)($row['revenue'] ?? 0);
+                    else $totals[$k][$ev] += (int)($row[$ev] ?? 0);
+                }
+            }
+        }
+    }
+    $top = $d['products'];
+    usort($top, fn($a, $b) => ((int)($b['views'] ?? 0) + (int)($b['carts'] ?? 0)) <=> ((int)($a['views'] ?? 0) + (int)($a['carts'] ?? 0)));
+    $recent = array_values(array_slice($d['recent'], -40));
+    $orders = arenaOrders();
+    $newOrders = 0;
+    foreach ($orders as $o) if (($o['status'] ?? '') === 'new') $newOrders++;
+    $chat = arenaChat();
+    $unread = 0;
+    foreach ($chat['customers'] as $c) $unread += (int)($c['unread'] ?? 0);
+    return [
+        'ok' => true,
+        'days'         => $series,
+        'totals'       => $totals,
+        'top_products' => array_slice($top, 0, 8),
+        'recent'       => $recent,
+        'counters'     => ['orders_new' => $newOrders, 'chat_unread' => $unread],
+    ];
+}
+
 function arenaTrackEvent(string $name, array $data): array {
     $def = arenaTrackDefs();
     if (!isset($def[$name])) return ['ok' => false, 'error' => 'رویداد نامعتبر'];
@@ -44922,10 +45029,8 @@ function arenaTrackEvent(string $name, array $data): array {
 " : '')
           . '🌐 ' . $ip;
     $head = mb_substr($def[$name]['title'] . ($title !== '' ? ' — ' . $title : ''), 0, 80);
-        // ثبت زنده رویداد در آمار تحلیلی فروشگاه
-    if (function_exists('shopAnalyticsRecord')) {
-        shopAnalyticsRecord($name, $data);
-    }
+    /* v1.9: ثبت زنده رویداد در آمار تحلیلی فروشگاه (نمودارها و اعلان‌های پنل) */
+    shopAnalyticsRecord($name, $data + ['ip' => $ip]);
 
     // بررسی سوئیچ‌های اختصاصی پیام‌رسان از تنظیمات پنل ادمین
     $shopNotifAllowed = true;
@@ -45335,6 +45440,9 @@ function arenaCreateOrder(array $items, array $customer, string $couponCode, str
         $delivery = ['skipped' => 'event disabled'];
         arenaLog('shop', 'سفارش جدید — ' . $id . ' (اعلام به پیام‌رسان خاموش است)', ['event' => 'order', 'total' => $total]);
     }
+    /* v1.9: سفارش همیشه در آمار تحلیلی (نمودار سفارش/فروش داشبورد) ثبت می‌شود،
+       حتی اگر اعلانِ پیام‌رسان خاموش باشد. */
+    shopAnalyticsRecord('order', ['total' => $total, 'title' => $lines ? ('سفارش ' . $id . ' — ' . $lines[0]['title']) : ('سفارش ' . $id)]);
     $order['messenger'] = $delivery;
     return ['ok' => true, 'order' => $order];
 }
@@ -46642,7 +46750,7 @@ function arenaSelfTest(): array {
 function arenaBackupPayload(): array {
     $files = ['settings' => ARENA_SETTINGS_FILE, 'products' => ARENA_PRODUCTS_FILE, 'orders' => ARENA_ORDERS_FILE,
               'chat' => ARENA_CHAT_FILE, 'reviews' => ARENA_REVIEWS_FILE, 'coupons' => ARENA_COUPONS_FILE,
-              'plugins' => ARENA_PLUGINS_FILE, 'events' => ARENA_EVENTS_FILE,
+              'plugins' => ARENA_PLUGINS_FILE, 'events' => ARENA_EVENTS_FILE, 'analytics' => ARENA_ANALYTICS_FILE,
               'woo_cache' => ARENA_WOO_CACHE, 'bsl_cache' => ARENA_BSL_CACHE];
     $out = ['_meta' => ['tool' => 'arena-shop', 'version' => ARENA_VERSION, 'at' => time()]];
     foreach ($files as $k => $f) $out[$k] = arenaJson($f, []);
@@ -46652,7 +46760,7 @@ function arenaBackupPayload(): array {
 function arenaRestorePayload(array $d): array {
     $map = ['settings' => ARENA_SETTINGS_FILE, 'products' => ARENA_PRODUCTS_FILE, 'orders' => ARENA_ORDERS_FILE,
             'chat' => ARENA_CHAT_FILE, 'reviews' => ARENA_REVIEWS_FILE, 'coupons' => ARENA_COUPONS_FILE,
-            'plugins' => ARENA_PLUGINS_FILE, 'events' => ARENA_EVENTS_FILE,
+            'plugins' => ARENA_PLUGINS_FILE, 'events' => ARENA_EVENTS_FILE, 'analytics' => ARENA_ANALYTICS_FILE,
             'woo_cache' => ARENA_WOO_CACHE, 'bsl_cache' => ARENA_BSL_CACHE];
     $ok = 0;
     foreach ($map as $k => $f) if (isset($d[$k]) && arenaSave($f, $d[$k])) $ok++;
@@ -46874,7 +46982,7 @@ button:hover{filter:brightness(1.1)}
 }
 
 function arenaAdminDos(): array {
-    return ['shop_stats', 'selftest', 'products_list', 'product_save', 'product_delete', 'override_save',
+    return ['shop_stats', 'analytics_summary', 'selftest', 'products_list', 'product_save', 'product_delete', 'override_save',
             'cache_woo', 'cache_bsl', 'orders_list', 'order_status', 'coupons_list', 'coupon_save',
             'coupon_delete', 'chat_sessions', 'chat_messages', 'chat_admin_send', 'chat_mark_read',
             'ai_test', 'plugins_list', 'plugin_upload', 'plugin_toggle', 'plugin_delete', 'plugin_code',
@@ -46899,6 +47007,9 @@ function arenaApiJson(): string {
             /* ------------------------- عمومی ------------------------- */
             case 'shop_stats':
                 return json_encode(arenaStats(), JSON_UNESCAPED_UNICODE);
+            /* v1.9: دادهٔ نمودارها و اعلان‌های تحلیلی داشبورد */
+            case 'analytics_summary':
+                return json_encode(arenaAnalyticsSummary(max(7, min(30, (int)($jsonIn['days'] ?? 14)))), JSON_UNESCAPED_UNICODE);
             case 'selftest':
                 return json_encode(arenaSelfTest(), JSON_UNESCAPED_UNICODE);
             case 'catalog':
@@ -49098,7 +49209,7 @@ function arenaShopPageHome(array $get): array {
     $cats = arenaCategories();
     $flash = arenaFlashState();
     $baseQ = http_build_query(array_filter(['q' => $get['q'], 'src' => $get['src'] === 'all' ? '' : $get['src'], 'cat' => $get['cat'], 'sort' => $get['sort']]));
-    $js = '(function(){try{var _q=new URLSearchParams(location.search).get("q");if(_q)window.arenaEventOnce&&window.arenaEventOnce("sq_"+_q,"search",{q:_q});}catch(e){}const w=new Set(arena.loadWish());document.querySelectorAll(\'[data-wish]\').forEach(b=>b.classList.toggle(\'on\',w.has(b.dataset.wish)));})();';
+    $js = '(function(){try{var _q=new URLSearchParams(location.search).get("q");if(_q)window.arenaEventOnce&&window.arenaEventOnce("sq_"+_q,"search",{q:_q});}catch(e){}try{var _d=new Date().toISOString().slice(0,10);window.arenaEventOnce&&window.arenaEventOnce("sv_"+_d,"site_view",{title:"بازدید از صفحهٔ اصلی فروشگاه"});}catch(e){}const w=new Set(arena.loadWish());document.querySelectorAll(\'[data-wish]\').forEach(b=>b.classList.toggle(\'on\',w.has(b.dataset.wish)));})();';
     ob_start();
     ?>
 <?php if ($flash): ?>
@@ -49908,7 +50019,41 @@ app_theme_ob_start();   // v9.94: رنگ‌بندیِ انتخابیِ کارب�
 .cch h3{font-size:14px;margin:0;display:flex;align-items:center;gap:6px}.ccb{overflow:hidden}.ccb.collapsed{max-height:0!important;padding:0;margin:0;overflow:hidden}.cst{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700}.cst.on{background:#14532d;color:#86efac}.cst.off{background:#475569;color:#94a3b8}.cst.tg{background:#78350f;color:#fbbf24}.crow{display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap}.crow label{min-width:100px;color:#94a3b8;font-size:12px;flex-shrink:0}.crow input,.crow select{flex:1;min-width:150px}.cact{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.sres{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;max-height:500px;overflow-y:auto;font-size:11px;margin-top:10px}.sres .ok2{color:#4ade80;padding:2px 0;border-bottom:1px solid #1e293b}
 .sres .no2{color:#f87171;padding:2px 0;border-bottom:1px solid #1e293b}.sres a{color:#60a5fa;text-decoration:none}.scard{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:8px;margin:4px 0;display:flex;gap:8px;align-items:flex-start;transition:border-color .2s}.scard:hover{border-color:#475569}.scard-img{width:48px;height:48px;border-radius:6px;object-fit:cover;flex-shrink:0;background:#0f172a}.scard-noimg{width:48px;height:48px;border-radius:6px;flex-shrink:0;background:#0f172a;display:flex;align-items:center;justify-content:center;color:#475569;font-size:18px}.scard-body{flex:1;min-width:0;direction:rtl}.scard-title{color:#e2e8f0;font-weight:700;font-size:11px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl}.scard-meta{display:flex;gap:6px;flex-wrap:wrap;font-size:10px;margin-bottom:2px;direction:rtl}
 .scard-meta span{display:inline-flex;align-items:center;gap:2px}.scard-price{color:#4ade80;font-family:monospace;font-size:10px;direction:ltr}.scard-cat{color:#c084fc;font-size:9px}.scard-unit{color:#64748b;font-size:9px}.scard-result{font-size:10px;font-weight:700;margin-top:2px}.scard-ok{color:#4ade80}.scard-up{color:#facc15}.scard-skip{color:#94a3b8}.scard-fail{color:#f87171}.scard.scard-ok{border-left:3px solid #4ade80}.scard.scard-up{border-left:3px solid #facc15}.scard.scard-skip{border-left:3px solid #94a3b8}.scard.scard-fail{border-left:3px solid #f87171}.scard-err{color:#f87171;font-size:9px;margin-top:2px;direction:rtl;background:#7f1d1d20;padding:1px 6px;border-radius:3px}.scard-reason{color:#fbbf24;font-size:9px;margin-top:2px;direction:rtl;background:#42200620;padding:1px 6px;border-radius:3px}.scard-rid{color:#60a5fa;font-size:9px;direction:ltr}
-.ssum{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}.ssum .si{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center}.ssum .si b{font-size:18px;display:block}.ssum .si span{color:#64748b;font-size:10px}@media(min-width:900px){body{padding:16px;padding-bottom:16px}h1{font-size:22px}.main-tabs{position:static;border-top:none;box-shadow:none;background:#1e293b;border:1px solid #334155;border-radius:12px;margin-bottom:14px;padding:3px}.main-tab{padding:12px;border-radius:8px;flex-direction:row;gap:8px;font-size:13px}.main-tab .t-icon{font-size:16px}.main-tab.active{background:#3b82f6}.main-tab .badge{position:static;margin-right:4px;min-width:auto}.visual-container{grid-template-columns:1fr 320px}.grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.btn{padding:10px 16px}.profile-row{flex-wrap:nowrap}}
+.ssum{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}.ssum .si{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center}.ssum .si b{font-size:18px;display:block}.ssum .si span{color:#64748b;font-size:10px}
+/* v1.9: داشبورد تحلیلی — نمودارها، شمارنده‌های امروز و زنگ اعلان رویدادها */
+.shop-analytics{margin-top:12px}
+.shop-analytics .an-today b{color:#67e8f9}
+.an-card{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:12px}
+.an-title{font-size:12px;font-weight:800;color:#e2e8f0;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.an-sum{color:#64748b;font-size:10px;font-weight:600}
+.an-chart{width:100%}
+.an-chart svg{display:block;width:100%;height:120px}
+.an-bar{fill:#3b82f6;rx:3}
+.an-bar:hover{fill:#60a5fa}
+.an-lbl{fill:#64748b;font-size:8.5px;text-anchor:middle}
+.an-val{fill:#cbd5e1;font-size:8.5px;text-anchor:middle;font-weight:700}
+.an-axis{stroke:#1e293b;stroke-width:1}
+.an-top-row{display:flex;align-items:center;gap:8px;font-size:11px;color:#cbd5e1;background:#1e293b;border:1px solid #334155;border-radius:9px;padding:6px 9px}
+.an-top-row .rk{width:20px;height:20px;border-radius:6px;background:#3b82f6;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;flex-shrink:0}
+.an-top-row .tt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.an-top-row .vv{color:#67e8f9;font-weight:800;flex-shrink:0}
+.shop-bell{position:relative;display:inline-block}
+.shop-bell-btn{position:relative;background:#1e293b;border:1px solid #334155;border-radius:10px;color:#e2e8f0;font-size:16px;width:38px;height:34px;cursor:pointer;transition:all .15s}
+.shop-bell-btn:hover{border-color:#f59e0b;color:#fbbf24}
+.shop-bell-badge{position:absolute;top:-6px;left:-6px;background:#e11d48;color:#fff;font-size:9px;font-weight:900;min-width:17px;height:17px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 3px}
+.shop-bell-drop{position:absolute;top:42px;left:0;width:min(360px,86vw);background:#0f172a;border:1px solid #334155;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55);z-index:99990;display:none;overflow:hidden}
+.shop-bell-drop.open{display:block}
+.shop-bell-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #1e293b;font-size:12px;color:#e2e8f0}
+.shop-bell-hdr button{background:none;border:none;color:#38bdf8;font-size:10px;cursor:pointer;font-family:inherit}
+.shop-bell-list{max-height:320px;overflow-y:auto}
+.shop-bell-item{display:flex;gap:9px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid #101827;font-size:11px;color:#cbd5e1;cursor:pointer}
+.shop-bell-item:hover{background:#1e293b}
+.shop-bell-item .ico{font-size:16px;flex-shrink:0;line-height:1}
+.shop-bell-item .bd{flex:1;min-width:0}
+.shop-bell-item .bd b{display:block;font-size:11px;color:#e2e8f0}
+.shop-bell-item .bd small{color:#64748b;font-size:9.5px}
+.shop-bell-item.fresh{background:rgba(59,130,246,.08)}
+.shop-bell-empty{padding:18px 12px;color:#64748b;font-size:11px;text-align:center}@media(min-width:900px){body{padding:16px;padding-bottom:16px}h1{font-size:22px}.main-tabs{position:static;border-top:none;box-shadow:none;background:#1e293b;border:1px solid #334155;border-radius:12px;margin-bottom:14px;padding:3px}.main-tab{padding:12px;border-radius:8px;flex-direction:row;gap:8px;font-size:13px}.main-tab .t-icon{font-size:16px}.main-tab.active{background:#3b82f6}.main-tab .badge{position:static;margin-right:4px;min-width:auto}.visual-container{grid-template-columns:1fr 320px}.grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.btn{padding:10px 16px}.profile-row{flex-wrap:nowrap}}
 .bsl-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100001;display:flex;align-items:center;justify-content:center;padding:10px}.bsl-modal{background:#0f172a;border:1px solid #334155;border-radius:14px;max-width:95vw;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;width:900px}.bsl-modal-head{padding:12px 16px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between}.bsl-modal-head h2{margin:0;font-size:15px;color:#67e8f9}
 /* =====================================================================
    v9.96: نوارهای فشردهٔ سربرگِ مودال‌ها
@@ -53722,7 +53867,19 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
         <a class="btn btn-red" href="?arena=logout">⎋ خروج از ادمین</a>
         <button class="btn btn-gray" onclick="shopSelftest()">🩺 خودآزمایی</button>
         <span id="shopAiChip" class="shop-badge-src woo" style="display:none">🤖</span>
-    
+
+        <!-- v1.9: زنگ اعلان رویدادهای فروشگاه -->
+        <div class="shop-bell" id="shopBell">
+          <button type="button" class="shop-bell-btn" onclick="shopBellToggle(event)" title="اعلان رویدادها (بازدید، محصول، سفارش، چت)">🔔<span class="shop-bell-badge" id="shopBellBadge" style="display:none">۰</span></button>
+          <div class="shop-bell-drop" id="shopBellDrop">
+            <div class="shop-bell-hdr">
+              <b>🔔 اعلان رویدادها</b>
+              <button type="button" onclick="shopBellMarkAll()">علامت‌گذاری به‌عنوان خوانده‌شده</button>
+            </div>
+            <div class="shop-bell-list" id="shopBellList"><div class="shop-bell-empty">رویدادی ثبت نشده است.</div></div>
+          </div>
+        </div>
+
         <a class="btn btn-purple" target="_blank" href="scraper4.php" style="background:#6366f1;color:#fff;text-decoration:none">⚙️ بازگشت به پنل اسکریپر و هوش مصنوعی ↗</a></div>
 
     <div class="ssum" id="shopStats" style="grid-template-columns:repeat(4,1fr)">
@@ -53730,6 +53887,27 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
         <div class="si"><b id="stOrders">—</b><span>سفارش‌ها (جدید)</span></div>
         <div class="si"><b id="stRev">—</b><span>فروش کل</span></div>
         <div class="si"><b id="stChat">—</b><span>چت‌های خوانده‌نشده</span></div>
+    </div>
+
+    <!-- v1.9: شمارنده‌های امروز + نمودارهای ۱۴روزه + پربازدیدترین کالاها -->
+    <div class="shop-analytics">
+      <div class="ssum" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
+        <div class="si an-today"><b id="anTodayViews">—</b><span>👁️ بازدید سایت (امروز)</span></div>
+        <div class="si an-today"><b id="anTodayProds">—</b><span>🔍 مشاهدهٔ محصول (امروز)</span></div>
+        <div class="si an-today"><b id="anTodayCarts">—</b><span>🛒 افزوده به سبد (امروز)</span></div>
+        <div class="si an-today"><b id="anTodayOrders">—</b><span>🧾 سفارش (امروز)</span></div>
+        <div class="si an-today"><b id="anTodayRevenue">—</b><span>💰 فروش (امروز)</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:12px">
+        <div class="an-card"><div class="an-title">👁️ بازدید سایت — ۱۴ روزِ اخیر <small id="anSumViews" class="an-sum"></small></div><div id="anChartViews" class="an-chart"></div></div>
+        <div class="an-card"><div class="an-title">🔍 مشاهدهٔ محصول — ۱۴ روزِ اخیر <small id="anSumProds" class="an-sum"></small></div><div id="anChartProds" class="an-chart"></div></div>
+        <div class="an-card"><div class="an-title">🧾 سفارش‌ها — ۱۴ روزِ اخیر <small id="anSumOrders" class="an-sum"></small></div><div id="anChartOrders" class="an-chart"></div></div>
+        <div class="an-card"><div class="an-title">💰 فروش (تومان) — ۱۴ روزِ اخیر <small id="anSumRev" class="an-sum"></small></div><div id="anChartRev" class="an-chart"></div></div>
+      </div>
+      <div class="an-card" style="margin-top:12px">
+        <div class="an-title">🏆 پربازدیدترین کالاها (۹۰ روزِ اخیر)</div>
+        <div id="anTopProducts" style="display:flex;flex-direction:column;gap:6px"><span style="color:#64748b;font-size:11px">هنوز داده‌ای ثبت نشده — با بازدید مشتریان از ویترین، همین‌جا جمع می‌شود.</span></div>
+      </div>
     </div>
 
         <div class="shop-framesbar">
@@ -53992,6 +54170,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
                 <div style="font-size:12px;font-weight:800;margin-bottom:6px">📣 رویدادهای فروشگاه → پیام‌رسان‌ها</div>
                 <p style="font-size:10px;color:#64748b;margin-bottom:10px">فعالیتِ مشتریانِ ویترین به‌صورت رویدادهای جداگانه و با محدودیتِ نرخ (برای هر رویداد) به بله/روبیکا/تلگرامِ تنظیم‌شده ارسال می‌شود و در تبِ «رویدادها» ثبت می‌شود:</p>
                 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:7px">
+                    <label style="display:flex;gap:7px;align-items:center;font-size:11px;color:#cbd5e1;cursor:pointer"><input type="checkbox" id="ev_site_view" style="width:auto;accent-color:#7c3aed">🌐 بازدید از سایت</label>
                     <label style="display:flex;gap:7px;align-items:center;font-size:11px;color:#cbd5e1;cursor:pointer"><input type="checkbox" id="ev_product_view" style="width:auto;accent-color:#7c3aed">👁 مشاهده محصول</label>
                     <label style="display:flex;gap:7px;align-items:center;font-size:11px;color:#cbd5e1;cursor:pointer"><input type="checkbox" id="ev_add_cart" style="width:auto;accent-color:#7c3aed">🛒 افزودن به سبد</label>
                     <label style="display:flex;gap:7px;align-items:center;font-size:11px;color:#cbd5e1;cursor:pointer"><input type="checkbox" id="ev_remove_cart" style="width:auto;accent-color:#7c3aed">🗑 حذف از سبد</label>
@@ -74862,6 +75041,148 @@ async function shopLoadStats(){
 }
 window.shopLoadStats = shopLoadStats;
 
+/* ---------------- v1.9: نمودارها و اعلان‌های تحلیلی رویدادها ---------------- */
+var AN_EV = {
+  site_view:    { ico:'👁️', t:'بازدید سایت' },
+  product_view: { ico:'🔍', t:'مشاهدهٔ محصول' },
+  add_cart:     { ico:'🛒', t:'افزودن به سبد' },
+  remove_cart:  { ico:'🗑️', t:'حذف از سبد' },
+  cart_view:    { ico:'🧺', t:'مشاهدهٔ سبد' },
+  checkout_start:{ico:'📝', t:'شروع خرید' },
+  order:        { ico:'🧾', t:'سفارش جدید' },
+  wish_add:     { ico:'💜', t:'علاقه‌مندی' },
+  review_add:   { ico:'⭐', t:'ثبت دیدگاه' },
+  chat_msg:     { ico:'💬', t:'پیام مشتری' },
+  search:       { ico:'🔎', t:'جست‌وجو' },
+  track:        { ico:'📦', t:'پیگیری سفارش' },
+  other:        { ico:'📍', t:'رویداد' }
+};
+function shopAnDayLabel(ds){
+  try { return new Intl.DateTimeFormat('fa-IR', { day: 'numeric' }).format(new Date(ds + 'T12:00:00')); }
+  catch(e) { return ds.slice(-2); }
+}
+function shopAnRel(ts){
+  var d = Math.floor(Date.now()/1000) - (+ts||0);
+  if (d < 60) return 'همین حالا';
+  if (d < 3600) return shopFm(Math.floor(d/60)) + ' دقیقه پیش';
+  if (d < 86400) return shopFm(Math.floor(d/3600)) + ' ساعت پیش';
+  return shopFm(Math.floor(d/86400)) + ' روز پیش';
+}
+/* نمودار میله‌ای SVG سبک — بدون هیچ CDN خارجی */
+function shopAnBarChart(el, rows, key, color, isMoney){
+  if (!el) return;
+  var vals = rows.map(function(r){ return +r[key] || 0; });
+  var W = 300, H = 120, pad = 16, base = H - 20;
+  var max = Math.max.apply(null, vals.concat([1]));
+  var bw = (W - pad*2) / vals.length;
+  var bars = '', labels = '';
+  for (var i = 0; i < vals.length; i++) {
+    var h = Math.round((vals[i] / max) * (base - 26)) + (vals[i] > 0 ? 2 : 0);
+    var x = pad + i * bw + bw * 0.16;
+    var y = base - h;
+    var ico = rows[i].d || '';
+    bars += '<rect class="an-bar" x="' + x.toFixed(1) + '" y="' + y + '" width="' + (bw*0.68).toFixed(1) + '" height="' + Math.max(h, vals[i] > 0 ? 2 : 0) + '" rx="2.5" fill="' + color + '"><title>' + shopEsc(ico) + ' — ' + (isMoney ? shopMoney(vals[i]) : shopFm(vals[i])) + '</title></rect>';
+    if (vals.length <= 14 ? (i % 2 === (vals.length - 1) % 2) : i % 3 === 0) {
+      labels += '<text class="an-lbl" x="' + (pad + i*bw + bw/2).toFixed(1) + '" y="' + (H - 6) + '">' + shopAnDayLabel(ico) + '</text>';
+    }
+  }
+  var sum = vals.reduce(function(a,b){ return a + b; }, 0);
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none"><line class="an-axis" x1="' + pad + '" y1="' + base + '" x2="' + (W-pad) + '" y2="' + base + '"></line>' + bars + labels + '</svg>'
+    + '<div style="display:flex;justify-content:space-between;font-size:9px;color:#64748b;margin-top:2px"><span>اوج: ' + (isMoney ? shopMoney(max) : shopFm(max)) + '</span><span>جمعِ دوره: ' + (isMoney ? shopMoney(sum) : shopFm(sum)) + '</span></div>';
+}
+var shopAnalyticsData = null;
+window.shopLoadAnalytics = async function(){
+  try {
+    var d = await shopApi('analytics_summary', { days: 14 }, 'POST');
+    if (!d.ok) return;
+    shopAnalyticsData = d;
+    var t = d.totals || {};
+    var set = function(id, v){ var el = $s(id); if (el) el.textContent = v; };
+    set('anTodayViews', shopFm((t.today||{}).site_view || 0));
+    set('anTodayProds', shopFm((t.today||{}).product_view || 0));
+    set('anTodayCarts', shopFm((t.today||{}).add_cart || 0));
+    set('anTodayOrders', shopFm((t.today||{}).order || 0));
+    set('anTodayRevenue', shopMoney((t.today||{}).revenue || 0));
+    set('anSumViews', '· هفته: ' + shopFm((t.week||{}).site_view || 0));
+    set('anSumProds', '· هفته: ' + shopFm((t.week||{}).product_view || 0));
+    set('anSumOrders', '· هفته: ' + shopFm((t.week||{}).order || 0));
+    set('anSumRev', '· هفته: ' + shopMoney((t.week||{}).revenue || 0));
+    shopAnBarChart($s('anChartViews'), d.days || [], 'site_view', '#38bdf8', false);
+    shopAnBarChart($s('anChartProds'), d.days || [], 'product_view', '#a78bfa', false);
+    shopAnBarChart($s('anChartOrders'), d.days || [], 'order', '#34d399', false);
+    shopAnBarChart($s('anChartRev'), d.days || [], 'revenue', '#fbbf24', true);
+    var tp = d.top_products || [];
+    var box = $s('anTopProducts');
+    if (box) {
+      box.innerHTML = tp.length ? tp.map(function(p, i){
+        return '<div class="an-top-row"><span class="rk">' + shopFm(i+1) + '</span><span class="tt">' + shopEsc(p.title || 'کالا') + '</span><span class="vv">👁️ ' + shopFm(p.views||0) + ' · 🛒 ' + shopFm(p.carts||0) + '</span></div>';
+      }).join('') : '<span style="color:#64748b;font-size:11px">هنوز داده‌ای ثبت نشده — با بازدید مشتریان از ویترین، همین‌جا جمع می‌شود.</span>';
+    }
+    shopBellRender();
+  } catch(e) {}
+};
+window.shopBellSeenTs = function(){
+  try { return parseInt(localStorage.getItem('arena_bell_seen') || '0', 10) || 0; } catch(e) { return 0; }
+};
+window.shopBellToggle = function(ev){
+  if (ev) ev.stopPropagation();
+  var drop = $s('shopBellDrop');
+  if (!drop) return;
+  var open = drop.classList.toggle('open');
+  if (open) { shopBellMarkAll(true); }
+};
+window.shopBellMarkAll = function(silent){
+  try { localStorage.setItem('arena_bell_seen', String(Math.floor(Date.now()/1000))); } catch(e) {}
+  var b = $s('shopBellBadge'); if (b) b.style.display = 'none';
+  document.querySelectorAll('#shopBellList .shop-bell-item').forEach(function(x){ x.classList.remove('fresh'); });
+  if (!silent) shopToast('✓ همهٔ اعلان‌ها خوانده شد');
+};
+window.shopBellRender = function(){
+  var d = shopAnalyticsData;
+  if (!d) return;
+  var list = $s('shopBellList');
+  var seen = shopBellSeenTs();
+  var items = [];
+  /* سفارش‌های در انتظار و چت‌های خوانده‌نشده همیشه بالای اعلان‌ها */
+  var cnt = d.counters || {};
+  if (+cnt.orders_new > 0) items.push({ at: Math.floor(Date.now()/1000), name: 'order_pending', title: shopFm(cnt.orders_new) + ' سفارش جدید در انتظار پردازش', fresh: true, go: 'orders' });
+  if (+cnt.chat_unread > 0) items.push({ at: Math.floor(Date.now()/1000), name: 'chat_msg', title: shopFm(cnt.chat_unread) + ' پیام خوانده‌نشده از مشتریان', fresh: true, go: 'chat' });
+  (d.recent || []).slice().reverse().forEach(function(r){
+    items.push({ at: +r.at || 0, name: r.name, title: (r.title ? r.title : ((AN_EV[r.name]||{}).t || r.name)), ip: r.ip, go: (r.name === 'order' ? 'orders' : (r.name === 'chat_msg' ? 'chat' : '')) });
+  });
+  items = items.slice(0, 40);
+  var freshN = 0;
+  if (list) {
+    list.innerHTML = items.length ? items.map(function(it){
+      var meta = AN_EV[it.name] || AN_EV.other;
+      var fresh = it.fresh || (+it.at > seen);
+      if (fresh) freshN++;
+      return '<div class="shop-bell-item' + (fresh ? ' fresh' : '') + '"' + (it.go ? ' data-go="' + it.go + '"' : '') + '>'
+        + '<span class="ico">' + meta.ico + '</span>'
+        + '<span class="bd"><b>' + meta.t + (it.title && it.title !== meta.t ? ' — ' + shopEsc(it.title) : '') + '</b>'
+        + '<small>' + shopAnRel(it.at) + (it.ip ? ' · ' + shopEsc(it.ip) : '') + '</small></span></div>';
+    }).join('') : '<div class="shop-bell-empty">رویدادی ثبت نشده است.</div>';
+    list.querySelectorAll('.shop-bell-item[data-go]').forEach(function(x){
+      x.addEventListener('click', function(){
+        shopBellToggle();
+        var g = x.getAttribute('data-go');
+        if (g === 'orders' && typeof shopImpSwitch === 'function') shopImpSwitch('orders');
+        else if (g === 'chat' && typeof shopImpSwitch === 'function') shopImpSwitch('chat');
+      });
+    });
+  }
+  var badge = $s('shopBellBadge');
+  if (badge) {
+    badge.textContent = shopFm(freshN);
+    badge.style.display = freshN > 0 ? 'flex' : 'none';
+  }
+};
+document.addEventListener('click', function(e){
+  var bell = $s('shopBell');
+  var drop = $s('shopBellDrop');
+  if (drop && drop.classList.contains('open') && bell && !bell.contains(e.target)) drop.classList.remove('open');
+});
+
 /* ---------------- products ---------------- */
 var shopCurSrc = 'all';
 function imgUA(u){ u = (u == null ? '' : String(u)).trim(); return /^https?:\/\//i.test(u) ? '?arena=img&u=' + encodeURIComponent(u) : u; }
@@ -75326,7 +75647,7 @@ window.shopSettingsLoad = function(){
   if ($s('set_default_product_src')) $s('set_default_product_src').value = s.default_product_src || 'prof';
   var curTmpl = s.theme_template || 'saba';
   if (typeof shopSelectTheme === 'function') shopSelectTheme(curTmpl, true);
-  ['product_view','add_cart','remove_cart','cart_view','checkout_start','order','wish_add','review_add','chat_msg','search','track'].forEach(function(k){ var el = $s('ev_' + k); if (el) el.checked = (s.events && k in s.events) ? !!s.events[k] : (k !== 'search' && k !== 'track'); });
+  ['site_view','product_view','add_cart','remove_cart','cart_view','checkout_start','order','wish_add','review_add','chat_msg','search','track'].forEach(function(k){ var el = $s('ev_' + k); if (el) el.checked = (s.events && k in s.events) ? !!s.events[k] : (k !== 'search' && k !== 'track'); });
   set('set_hero_title', s.hero_title); set('set_hero_sub', s.hero_sub);
   set('set_accent', s.accent); set('set_accent2', s.accent2); set('set_logo', s.logo);
   set('set_shipping', s.shipping); set('set_free_shipping_over', s.free_shipping_over);
@@ -75387,7 +75708,7 @@ window.shopSettingsSave = async function(){
       search: $s('set_hdr_search') ? $s('set_hdr_search').classList.contains('on') : true,
       nav_links: (typeof shopHdrCollectLinks === 'function') ? shopHdrCollectLinks() : []
     },
-    events: (function(){ var m = {}; ['product_view','add_cart','remove_cart','cart_view','checkout_start','order','wish_add','review_add','chat_msg','search','track'].forEach(function(k){ var el = $s('ev_' + k); if (el) m[k] = el.checked ? 1 : 0; }); return m; })()
+    events: (function(){ var m = {}; ['site_view','product_view','add_cart','remove_cart','cart_view','checkout_start','order','wish_add','review_add','chat_msg','search','track'].forEach(function(k){ var el = $s('ev_' + k); if (el) m[k] = el.checked ? 1 : 0; }); return m; })()
   };
   var r = await shopApi('settings_save', data, 'POST');
   shopToast(r.ok ? '✓ تنظیمات ذخیره شد' : 'خطا', !r.ok);
@@ -75466,10 +75787,12 @@ window.shopSelftest = async function(){
   if (fu) fu.textContent = location.href.split('?')[0].split('#')[0] + '?arena=shop';
 })();
 setTimeout(function(){ shopLoadStats(); }, 400);
+setTimeout(function(){ shopLoadAnalytics(); }, 700);   /* v1.9: نمودارها و اعلان‌ها */
 setInterval(function(){
   var pane = $s('shopPane_chat') || $s('shopPane_view');
   if (pane && pane.classList.contains('active')) shopLoadStats();
 }, 15000);
+setInterval(function(){ shopLoadAnalytics(); }, 45000);   /* v1.9: تازه‌سازی نمودار/زنگ اعلان */
 if (typeof switchMainTab === 'function') {
   var _origSwitch = window.switchMainTab;
   window.switchMainTab = function(name){

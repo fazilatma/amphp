@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 12.7.1
+ * Version: 12.7.2
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -3086,8 +3086,7 @@ class Scraper_Auto_Shop_Plugin {
 						}
 						$product_scores[ $pid ]['sales'] += intval( $item->get_quantity() );
 						$product_scores[ $pid ]['carts'] += intval( $item->get_quantity() );
-						// Approximate views from sales when no view counter exists.
-						$product_scores[ $pid ]['views'] += max( 3, intval( $item->get_quantity() ) * 4 );
+						// views stay from real hit tracker only — do not invent from sales.
 					}
 					$add_to_cart += max( 1, $item_count );
 
@@ -3146,45 +3145,7 @@ class Scraper_Auto_Shop_Plugin {
 		$wp_users     = intval( count_users()['total_users'] ?? 0 );
 		$wp_media     = intval( wp_count_posts( 'attachment' )->inherit ?? 0 );
 
-		if ( $product_views <= 0 && ! empty( $top_products ) ) {
-			foreach ( $top_products as $tp ) {
-				$product_views += intval( $tp['views'] ?? 0 );
-			}
-		}
-		if ( $site_visits <= 0 ) {
-			// Soft estimate from content volume so UI is not empty on fresh installs.
-			$site_visits = max( 1, $wp_users * 3 + $wp_comments + $orders_placed * 8 );
-		}
-		if ( $product_views <= 0 ) {
-			$product_views = max( 0, intval( $site_visits * 0.55 ) );
-		}
-		if ( $add_to_cart <= 0 && $orders_placed > 0 ) {
-			$add_to_cart = max( $orders_placed, intval( $orders_placed * 2.2 ) );
-		}
-		if ( $checkout_steps <= 0 && $orders_placed > 0 ) {
-			$checkout_steps = max( $orders_placed, intval( $orders_placed * 1.3 ) );
-		}
-
-		// Fill daily add_to_cart/checkout proportionally when zero but totals exist.
-		$days_with_orders = 0;
-		foreach ( $daily as $drow ) {
-			if ( intval( $drow['order_placed'] ?? 0 ) > 0 ) {
-				$days_with_orders++;
-			}
-		}
-		if ( $days_with_orders > 0 ) {
-			foreach ( $daily as $d => $drow ) {
-				$op = intval( $drow['order_placed'] ?? 0 );
-				if ( $op > 0 ) {
-					if ( intval( $drow['checkout_step'] ?? 0 ) < $op ) {
-						$daily[ $d ]['checkout_step'] = $op;
-					}
-					if ( intval( $drow['add_to_cart'] ?? 0 ) < $op ) {
-						$daily[ $d ]['add_to_cart'] = max( $op, intval( ceil( $op * 1.5 ) ) );
-					}
-				}
-			}
-		}
+		// No synthetic padding: only real tracked hits, WC orders and WP Statistics.
 
 		return array(
 			'totals' => array(
@@ -3320,6 +3281,100 @@ class Scraper_Auto_Shop_Plugin {
 	 *
 	 * @return array
 	 */
+	/**
+	 * Empty analytics skeleton (no demo / hardcoded numbers).
+	 *
+	 * @return array
+	 */
+	public static function get_empty_analytics_data() {
+		return array(
+			'totals' => array(
+				'site_visit'    => 0,
+				'product_view'  => 0,
+				'add_to_cart'   => 0,
+				'checkout_step' => 0,
+				'order_placed'  => 0,
+			),
+			'daily'          => array(),
+			'top_products'   => array(),
+			'recent_events'  => array(),
+			'wp_core_meta'   => array(),
+			'source'         => 'internal',
+		);
+	}
+
+	/**
+	 * Detect legacy seeded/demo analytics payload so it can be wiped.
+	 *
+	 * @param array $data
+	 * @return bool
+	 */
+	public static function is_hardcoded_demo_analytics( $data ) {
+		if ( ! is_array( $data ) ) {
+			return false;
+		}
+		$totals = $data['totals'] ?? array();
+		// Exact legacy seed totals.
+		if (
+			intval( $totals['site_visit'] ?? 0 ) === 3530
+			&& intval( $totals['product_view'] ?? 0 ) === 2206
+			&& intval( $totals['add_to_cart'] ?? 0 ) === 482
+			&& intval( $totals['checkout_step'] ?? 0 ) === 236
+			&& intval( $totals['order_placed'] ?? 0 ) === 101
+		) {
+			return true;
+		}
+		$top = $data['top_products'] ?? array();
+		if ( is_array( $top ) ) {
+			$demo_keys = array( 'prod_t800', 'prod_earbuds', 'prod_pbank', 'prod_speaker', 'prod_holder' );
+			$hits = 0;
+			foreach ( $demo_keys as $dk ) {
+				if ( isset( $top[ $dk ] ) ) {
+					$hits++;
+				}
+			}
+			if ( $hits >= 3 ) {
+				return true;
+			}
+			// Title-based detection for re-keyed demo products.
+			$demo_titles = array(
+				'ساعت هوشمند T800',
+				'هندزفری بلوتوثی دو گوشی',
+				'پاوربانک ۲۰۰۰۰',
+				'اسپیکر قابل حمل ضدآب',
+				'پایه نگهدارنده و شارژر وایرلس',
+			);
+			$title_hits = 0;
+			foreach ( $top as $tp ) {
+				$t = (string) ( $tp['title'] ?? '' );
+				foreach ( $demo_titles as $dt ) {
+					if ( $t && false !== strpos( $t, $dt ) ) {
+						$title_hits++;
+						break;
+					}
+				}
+			}
+			if ( $title_hits >= 3 ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Persist analytics payload to option + JSON file.
+	 *
+	 * @param array $data
+	 */
+	public static function save_analytics_data( $data ) {
+		if ( ! is_array( $data ) ) {
+			$data = self::get_empty_analytics_data();
+		}
+		update_option( 'scraper_analytics_data', $data, false );
+		$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
+		@file_put_contents( $file, wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+	}
+
 	public static function get_analytics_data() {
 		$data = get_option( 'scraper_analytics_data', false );
 		if ( false === $data || ! is_array( $data ) ) {
@@ -3329,43 +3384,35 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 
-		if ( ! is_array( $data ) || empty( $data['totals'] ) ) {
-			$data = array(
-				'totals' => array(
-					'site_visit'    => 3530,
-					'product_view'  => 2206,
-					'add_to_cart'   => 482,
-					'checkout_step' => 236,
-					'order_placed'  => 101,
-				),
-				'daily' => array(),
-				'top_products' => array(
-					'prod_t800' => array( 'title' => 'ساعت هوشمند T800 الترا با قابلیت مکالمه', 'views' => 385, 'carts' => 74 ),
-					'prod_earbuds' => array( 'title' => 'هندزفری بلوتوثی دو گوشی لمسی گیمینگ', 'views' => 295, 'carts' => 58 ),
-					'prod_pbank' => array( 'title' => 'پاوربانک ۲۰۰۰۰ میلی‌آمپر فست شارژ', 'views' => 230, 'carts' => 44 ),
-					'prod_speaker' => array( 'title' => 'اسپیکر قابل حمل ضدآب بیس‌دار', 'views' => 188, 'carts' => 35 ),
-					'prod_holder' => array( 'title' => 'پایه نگهدارنده و شارژر وایرلس مگنتی', 'views' => 142, 'carts' => 26 ),
-				),
-				'recent_events' => array(),
-			);
+		// Wipe legacy hardcoded demo seed if still present.
+		if ( self::is_hardcoded_demo_analytics( $data ) ) {
+			$data = self::get_empty_analytics_data();
+			self::save_analytics_data( $data );
+			return $data;
+		}
 
-			$now = time();
-			$today = date( 'Y-m-d' );
-			for ( $i = 13; $i >= 0; $i-- ) {
-				$d = date( 'Y-m-d', strtotime( "-{$i} days" ) );
-				$factor = 1.0 + ( ( 13 - $i ) * 0.05 );
-				$data['daily'][ $d ] = array(
-					'site_visit'    => (int) ( 185 * $factor + ( ( $i * 3 ) % 17 ) ),
-					'product_view'  => (int) ( 115 * $factor + ( ( $i * 5 ) % 13 ) ),
-					'add_to_cart'   => (int) ( 24 * $factor + ( ( $i * 2 ) % 7 ) ),
-					'checkout_step' => (int) ( 12 * $factor + ( $i % 4 ) ),
-					'order_placed'  => (int) ( 5 * $factor + ( $i % 3 ) ),
-				);
+		if ( ! is_array( $data ) || empty( $data['totals'] ) || ! is_array( $data['totals'] ) ) {
+			$data = self::get_empty_analytics_data();
+			self::save_analytics_data( $data );
+			return $data;
+		}
+
+		// Normalize missing keys to zero (never invent demo numbers).
+		foreach ( array( 'site_visit', 'product_view', 'add_to_cart', 'checkout_step', 'order_placed' ) as $k ) {
+			if ( ! isset( $data['totals'][ $k ] ) ) {
+				$data['totals'][ $k ] = 0;
+			} else {
+				$data['totals'][ $k ] = max( 0, intval( $data['totals'][ $k ] ) );
 			}
-
-			update_option( 'scraper_analytics_data', $data, false );
-			$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
-			@file_put_contents( $file, wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+		}
+		if ( empty( $data['daily'] ) || ! is_array( $data['daily'] ) ) {
+			$data['daily'] = array();
+		}
+		if ( empty( $data['top_products'] ) || ! is_array( $data['top_products'] ) ) {
+			$data['top_products'] = array();
+		}
+		if ( empty( $data['recent_events'] ) || ! is_array( $data['recent_events'] ) ) {
+			$data['recent_events'] = array();
 		}
 
 		return $data;
@@ -3444,10 +3491,8 @@ class Scraper_Auto_Shop_Plugin {
 			$data['recent_events'] = array_slice( $data['recent_events'], 0, 80 );
 		}
 
-		// Persist
-		update_option( 'scraper_analytics_data', $data, false );
-		$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
-		@file_put_contents( $file, wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ), LOCK_EX );
+		// Persist (real events only)
+		self::save_analytics_data( $data );
 
 		// Check and dispatch messenger notifications
 		$settings = self::get_settings();
@@ -3575,13 +3620,14 @@ class Scraper_Auto_Shop_Plugin {
 		}
 
 		delete_option( 'scraper_analytics_data' );
+		delete_option( self::WP_CORE_STATS_OPTION );
 		$file = plugin_dir_path( __FILE__ ) . 'scraper_analytics.json';
 		if ( file_exists( $file ) ) {
 			@unlink( $file );
 		}
 
-		// Re-initialize clean
-		self::get_analytics_data();
+		// Persist a real empty skeleton (no demo numbers).
+		self::save_analytics_data( self::get_empty_analytics_data() );
 		wp_send_json_success( array( 'ok' => true, 'message' => 'آمار فروشگاه با موفقیت بازنشانی شد.' ) );
 	}
 
@@ -11787,17 +11833,17 @@ class Scraper_Auto_Shop_Plugin {
 
 						<?php
 						$totals         = $analytics_data['totals'] ?? array();
-						$site_visits    = max( 1, intval( $totals['site_visit'] ?? 0 ) );
-						$product_views  = intval( $totals['product_view'] ?? 0 );
-						$add_to_cart    = intval( $totals['add_to_cart'] ?? 0 );
-						$checkout_steps = intval( $totals['checkout_step'] ?? 0 );
-						$orders_placed  = intval( $totals['order_placed'] ?? 0 );
+						$site_visits    = max( 0, intval( $totals['site_visit'] ?? 0 ) );
+						$product_views  = max( 0, intval( $totals['product_view'] ?? 0 ) );
+						$add_to_cart    = max( 0, intval( $totals['add_to_cart'] ?? 0 ) );
+						$checkout_steps = max( 0, intval( $totals['checkout_step'] ?? 0 ) );
+						$orders_placed  = max( 0, intval( $totals['order_placed'] ?? 0 ) );
 
-						$view_rate     = round( ( $product_views / $site_visits ) * 100, 1 );
-						$cart_rate     = round( ( $add_to_cart / max( 1, $product_views ) ) * 100, 1 );
-						$checkout_rate = round( ( $checkout_steps / max( 1, $add_to_cart ) ) * 100, 1 );
-						$order_rate    = round( ( $orders_placed / max( 1, $checkout_steps ) ) * 100, 1 );
-						$overall_conv  = round( ( $orders_placed / $site_visits ) * 100, 2 );
+						$view_rate     = $site_visits > 0 ? round( ( $product_views / $site_visits ) * 100, 1 ) : 0;
+						$cart_rate     = $product_views > 0 ? round( ( $add_to_cart / $product_views ) * 100, 1 ) : 0;
+						$checkout_rate = $add_to_cart > 0 ? round( ( $checkout_steps / $add_to_cart ) * 100, 1 ) : 0;
+						$order_rate    = $checkout_steps > 0 ? round( ( $orders_placed / $checkout_steps ) * 100, 1 ) : 0;
+						$overall_conv  = $site_visits > 0 ? round( ( $orders_placed / $site_visits ) * 100, 2 ) : 0;
 						?>
 
 						<!-- 1. KPI Metric Summary Cards -->
@@ -11874,6 +11920,16 @@ class Scraper_Auto_Shop_Plugin {
 								<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">تبدیل بازدید به سفارش</div>
 							</div>
 						</div>
+
+						<?php if ( $site_visits + $product_views + $add_to_cart + $checkout_steps + $orders_placed <= 0 ) : ?>
+						<div style="margin-bottom:18px; background:linear-gradient(90deg,#eef2ff,#fdf2f8); border:1.5px solid #c7d2fe; border-radius:14px; padding:14px 18px; display:flex; gap:12px; align-items:flex-start;">
+							<span style="font-size:1.4rem;">🧹</span>
+							<div>
+								<strong style="display:block; color:#312e81; font-size:0.95rem;">آمار ساختگی حذف شد — شروع از صفر</strong>
+								<span style="font-size:0.82rem; color:#64748b; line-height:1.6;">اعداد دمو (مثل ۳۵۳۰ بازدید) دیگر نمایش داده نمی‌شوند. منبع آمار را روی «هسته وردپرس» یا «ترکیبی» بگذارید تا داده واقعی ووکامرس/بازدیدها نشان داده شود، یا منتظر رویدادهای زنده ویترین بمانید.</span>
+							</div>
+						</div>
+						<?php endif; ?>
 
 						<!-- 2. Visual Conversion Funnel — elegant line/area chart -->
 						<div class="admin-card" style="overflow:hidden;">
@@ -12057,24 +12113,7 @@ class Scraper_Auto_Shop_Plugin {
 							}
 							ksort( $daily_stats );
 							$recent_days = array_slice( $daily_stats, -14, 14, true );
-							// Ensure at least a few points for a readable line
-							if ( count( $recent_days ) < 2 ) {
-								$today_k = date( 'Y-m-d' );
-								$recent_days = array(
-									date( 'Y-m-d', strtotime( '-1 day' ) ) => array(
-										'site_visit' => max( 1, intval( $site_visits * 0.9 ) ),
-										'product_view' => max( 0, intval( $product_views * 0.9 ) ),
-										'add_to_cart' => max( 0, intval( $add_to_cart * 0.9 ) ),
-										'order_placed' => max( 0, intval( $orders_placed * 0.9 ) ),
-									),
-									$today_k => array(
-										'site_visit' => max( 1, $site_visits ),
-										'product_view' => $product_views,
-										'add_to_cart' => $add_to_cart,
-										'order_placed' => $orders_placed,
-									),
-								);
-							}
+							// Keep real days only — never invent synthetic series for empty stats.
 
 							$series_def = array(
 								'site_visit'    => array( 'label' => 'بازدید سایت', 'color' => '#3b82f6', 'color2' => '#93c5fd' ),
@@ -12162,6 +12201,15 @@ class Scraper_Auto_Shop_Plugin {
 							}
 							?>
 
+							<?php if ( $n_days < 1 ) : ?>
+							<div style="background:linear-gradient(135deg,#f8fafc,#eef2ff); border:1.5px dashed #c7d2fe; border-radius:16px; padding:36px 20px; text-align:center;">
+								<div style="font-size:2rem; margin-bottom:8px;">📭</div>
+								<div style="font-weight:900; color:#312e81; font-size:1rem;">هنوز آمار واقعی ثبت نشده است</div>
+								<p style="margin:8px auto 0; max-width:420px; color:#64748b; font-size:0.86rem; line-height:1.7;">
+									اعداد نمایشی ساختگی حذف شده‌اند. با بازدید کاربران از فروشگاه، مشاهده محصولات و ثبت سفارش، نمودارها به‌صورت خودکار با داده‌های واقعی پر می‌شوند.
+								</p>
+							</div>
+							<?php else : ?>
 							<div style="position:relative; background:
 								radial-gradient(1200px 200px at 10% -10%, rgba(59,130,246,0.10), transparent 60%),
 								radial-gradient(900px 180px at 90% 0%, rgba(236,72,153,0.08), transparent 55%),
@@ -12264,6 +12312,7 @@ class Scraper_Auto_Shop_Plugin {
 									<line id="scraperDailyCrosshair" x1="0" y1="<?php echo $dv_pt; ?>" x2="0" y2="<?php echo $dv_pt + $dv_ph; ?>" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" stroke-dasharray="4 4" opacity="0"/>
 								</svg>
 							</div>
+							<?php endif; ?>
 
 							<script type="application/json" id="scraperDailyChartData"><?php echo wp_json_encode( $daily_chart_payload, JSON_UNESCAPED_UNICODE ); ?></script>
 							<script>

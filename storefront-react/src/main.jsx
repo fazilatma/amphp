@@ -266,8 +266,21 @@ const PALETTE_ACCENTS = {
   'luxury-purple': '#7c3aed',
   'amber-gold': '#d97706',
   'persian-turquoise': '#0d9488',
+  'midnight-ink': '#6366f1',
+  forest: '#16a34a',
+  sunset: '#f97316',
   modern: '#2563eb',
+  midnight: '#6366f1',
+  minimal: '#0f172a',
+  bazaar: '#ea580c',
+  boutique: '#db2777',
 };
+
+const IRAN_PROVINCES = [
+  'تهران','اصفهان','فارس','خراسان رضوی','آذربایجان شرقی','آذربایجان غربی','خوزستان','مازندران','گیلان','کرمان',
+  'البرز','قم','قزوین','همدان','کرمانشاه','یزد','سیستان و بلوچستان','گلستان','لرستان','مرکزی','هرمزگان',
+  'بوشهر','زنجان','اردبیل','کردستان','سمنان','چهارمحال و بختیاری','کهگیلویه و بویراحمد','ایلام','خراسان شمالی','خراسان جنوبی',
+];
 
 
 function useAdminBarOffset() {
@@ -396,9 +409,12 @@ function ProductCard({ p, cols, currency, wish, onWish, onQuick, onAdd, showSpec
   );
 }
 
-function CartDrawer({ open, onClose, items, currency, onQty, onRemove, onCheckout, busy }) {
+function CartDrawer({ open, onClose, items, currency, onQty, onRemove, onCheckout, busy, freeShip }) {
   if (!open) return null;
   const total = items.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0);
+  const thr = Number(freeShip) || 0;
+  const remain = thr > 0 ? Math.max(0, thr - total) : 0;
+  const progress = thr > 0 ? Math.min(100, Math.round((total / thr) * 100)) : 0;
   return (
     <>
       <div className="sf-overlay" onClick={onClose} />
@@ -408,6 +424,14 @@ function CartDrawer({ open, onClose, items, currency, onQty, onRemove, onCheckou
           <button type="button" className="sf-close" onClick={onClose}>✕</button>
         </div>
         <div className="sf-drawer-body">
+          {thr > 0 && items.length ? (
+            <div className="sf-ship-bar">
+              {remain > 0
+                ? <span>فقط {formatMoney(remain, currency)} تا ارسال رایگان 🚚</span>
+                : <span className="ok">ارسال این سفارش رایگان است ✓</span>}
+              <div className="sf-ship-track"><i style={{ width: `${progress}%` }} /></div>
+            </div>
+          ) : null}
           {!items.length ? (
             <div className="sf-empty" style={{ border: 'none', boxShadow: 'none' }}>
               <div style={{ fontSize: '2.4rem' }}>🛍️</div>
@@ -436,7 +460,7 @@ function CartDrawer({ open, onClose, items, currency, onQty, onRemove, onCheckou
             <span>{formatMoney(total, currency)}</span>
           </div>
           <button type="button" className="sf-btn primary block lg" disabled={!items.length || busy} onClick={onCheckout}>
-            {busy ? 'در حال انتقال…' : 'ادامه و تسویه‌حساب'}
+            {busy ? 'در حال آماده‌سازی…' : 'ادامه و تسویه‌حساب'}
           </button>
         </div>
       </aside>
@@ -450,8 +474,13 @@ function MenuDrawer({ open, onClose, settings, categories, onCat, cartCount, onO
     <>
       <div className="sf-overlay" onClick={onClose} />
       <aside className="sf-drawer left" role="dialog" aria-label="منو">
-        <div className="sf-drawer-head">
-          <h3>☰ منوی فروشگاه</h3>
+        <div className="sf-drawer-head sf-menu-head">
+          <div className="sf-menu-head-title">
+            <span className="sf-burger-ico" aria-hidden>
+              <i /><i /><i />
+            </span>
+            <h3>منوی فروشگاه</h3>
+          </div>
           <button type="button" className="sf-close" onClick={onClose}>✕</button>
         </div>
         <div className="sf-drawer-body">
@@ -504,6 +533,272 @@ function QuickView({ product, currency, onClose, onAdd }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+function fieldOn(settings, key, defOn = true) {
+  const v = settings?.[key];
+  if (v === undefined || v === null) return defOn;
+  return !!v;
+}
+
+function CheckoutPage({
+  open, onClose, items, currency, settings, ajax, gateways: bootGateways,
+  onQty, onRemove, onClearCart, toast,
+}) {
+  const [gateways, setGateways] = useState(() => Array.isArray(bootGateways) ? bootGateways : []);
+  const [payment, setPayment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const [err, setErr] = useState('');
+  const [form, setForm] = useState({
+    name: '', phone: '', email: '', province: '', city: '', address: '', postal: '', notes: '',
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    setErr('');
+    setDone(null);
+    let cancelled = false;
+    (async () => {
+      try {
+        const fd = new FormData();
+        fd.append('action', 'scraper_get_payment_gateways');
+        const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        const list = data?.data?.gateways || data?.gateways || [];
+        if (!cancelled && Array.isArray(list) && list.length) {
+          setGateways(list);
+          setPayment((p) => p || list[0].id);
+        } else if (!cancelled && (!gateways || !gateways.length)) {
+          const fallback = [{ id: 'cod', title: settings.checkout_cod_label || 'پرداخت در محل', description: 'پرداخت هنگام تحویل', icon: '' }];
+          setGateways(fallback);
+          setPayment('cod');
+        }
+      } catch {
+        if (!cancelled && !gateways.length) {
+          setGateways([{ id: 'cod', title: settings.checkout_cod_label || 'پرداخت در محل', description: '', icon: '' }]);
+          setPayment('cod');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  useEffect(() => {
+    if (gateways.length && !payment) setPayment(gateways[0].id);
+  }, [gateways, payment]);
+
+  if (!open) return null;
+
+  const total = items.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const validate = () => {
+    const checks = [
+      ['name', 'checkout_field_name', 'checkout_field_name_req', 'نام و نام خانوادگی', true],
+      ['phone', 'checkout_field_phone', 'checkout_field_phone_req', 'شماره موبایل', true],
+      ['email', 'checkout_field_email', 'checkout_field_email_req', 'ایمیل', false],
+      ['province', 'checkout_field_province', 'checkout_field_province_req', 'استان', true],
+      ['city', 'checkout_field_city', 'checkout_field_city_req', 'شهر', true],
+      ['address', 'checkout_field_address', 'checkout_field_address_req', 'آدرس', true],
+      ['postal', 'checkout_field_postal', 'checkout_field_postal_req', 'کد پستی', false],
+      ['notes', 'checkout_field_notes', 'checkout_field_notes_req', 'توضیحات', false],
+    ];
+    for (const [key, en, req, label, defOn] of checks) {
+      if (fieldOn(settings, en, defOn) && fieldOn(settings, req, false) && !String(form[key] || '').trim()) {
+        return `لطفاً فیلد «${label}» را تکمیل کنید.`;
+      }
+    }
+    if (fieldOn(settings, 'checkout_show_gateways', true) && gateways.length && !payment) {
+      return 'روش پرداخت را انتخاب کنید.';
+    }
+    if (!items.length) return 'سبد خرید خالی است.';
+    return '';
+  };
+
+  const placeOrder = async () => {
+    const v = validate();
+    if (v) { setErr(v); return; }
+    setBusy(true); setErr('');
+    try {
+      const fd = new FormData();
+      fd.append('action', 'scraper_custom_checkout_place_order');
+      fd.append('nonce', ajax.cartNonce || '');
+      fd.append('items', JSON.stringify(items.map((it) => ({
+        id: it.id, title: it.title, price: it.price, qty: it.qty || 1, image: it.image || '',
+      }))));
+      Object.entries(form).forEach(([k, val]) => fd.append(k, val));
+      fd.append('payment_method', payment);
+      const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!data?.success) {
+        setErr(data?.data || data?.message || 'ثبت سفارش ناموفق بود.');
+        return;
+      }
+      const payload = data.data || {};
+      setDone(payload);
+      onClearCart?.();
+      toast?.(payload.message || 'سفارش ثبت شد', 'ok');
+      if (payload.pay_url && payload.payment_method && payload.payment_method !== 'cod') {
+        // short delay so user sees success then redirect to gateway
+        setTimeout(() => {
+          try { window.location.href = payload.pay_url; } catch {}
+        }, 1200);
+      }
+    } catch {
+      setErr('خطا در ارتباط با سرور. دوباره تلاش کنید.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const showGw = fieldOn(settings, 'checkout_show_gateways', true);
+
+  return (
+    <div className="sf-checkout" role="dialog" aria-modal="true" aria-label="تسویه حساب">
+      <div className="sf-checkout-top">
+        <button type="button" className="sf-checkout-back" onClick={onClose}>→ بازگشت به فروشگاه</button>
+        <div>
+          <h2>{settings.checkout_title || 'تسویه حساب امن'}</h2>
+          {settings.checkout_note ? <p>{settings.checkout_note}</p> : null}
+        </div>
+        <div className="sf-checkout-steps">
+          <span className="on">۱. سبد</span>
+          <span className="on">۲. اطلاعات</span>
+          <span className={done ? 'on' : ''}>۳. پرداخت</span>
+        </div>
+      </div>
+
+      {done ? (
+        <div className="sf-checkout-success">
+          <div className="ico">✓</div>
+          <h3>{done.message || settings.checkout_success_msg || 'سفارش شما ثبت شد'}</h3>
+          <p>شماره سفارش: <strong>{toFa(done.order_id)}</strong></p>
+          <p>مبلغ: <strong>{done.total_formatted || formatMoney(done.total, currency)}</strong></p>
+          <p>روش پرداخت: <strong>{done.payment_title || done.payment_method}</strong></p>
+          {done.pay_url && done.payment_method !== 'cod' ? (
+            <a className="sf-btn primary lg" href={done.pay_url}>ادامه پرداخت در درگاه ↗</a>
+          ) : (
+            <button type="button" className="sf-btn primary lg" onClick={onClose}>بازگشت به فروشگاه</button>
+          )}
+        </div>
+      ) : (
+        <div className="sf-checkout-grid">
+          <div className="sf-checkout-main">
+            <section className="sf-co-card">
+              <h3>اطلاعات گیرنده</h3>
+              <div className="sf-co-fields">
+                {fieldOn(settings, 'checkout_field_name', true) ? (
+                  <label className="sf-co-field">
+                    <span>نام و نام خانوادگی{fieldOn(settings, 'checkout_field_name_req', true) ? ' *' : ''}</span>
+                    <input value={form.name} onChange={(e) => set('name', e.target.value)} autoComplete="name" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_phone', true) ? (
+                  <label className="sf-co-field">
+                    <span>موبایل{fieldOn(settings, 'checkout_field_phone_req', true) ? ' *' : ''}</span>
+                    <input value={form.phone} onChange={(e) => set('phone', e.target.value)} inputMode="tel" dir="ltr" autoComplete="tel" placeholder="09xxxxxxxxx" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_email', false) ? (
+                  <label className="sf-co-field">
+                    <span>ایمیل{fieldOn(settings, 'checkout_field_email_req', false) ? ' *' : ''}</span>
+                    <input value={form.email} onChange={(e) => set('email', e.target.value)} type="email" dir="ltr" autoComplete="email" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_province', true) ? (
+                  <label className="sf-co-field">
+                    <span>استان{fieldOn(settings, 'checkout_field_province_req', true) ? ' *' : ''}</span>
+                    <select value={form.province} onChange={(e) => set('province', e.target.value)}>
+                      <option value="">انتخاب استان</option>
+                      {IRAN_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_city', true) ? (
+                  <label className="sf-co-field">
+                    <span>شهر{fieldOn(settings, 'checkout_field_city_req', true) ? ' *' : ''}</span>
+                    <input value={form.city} onChange={(e) => set('city', e.target.value)} autoComplete="address-level2" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_address', true) ? (
+                  <label className="sf-co-field full">
+                    <span>آدرس کامل{fieldOn(settings, 'checkout_field_address_req', true) ? ' *' : ''}</span>
+                    <textarea rows={2} value={form.address} onChange={(e) => set('address', e.target.value)} autoComplete="street-address" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_postal', false) ? (
+                  <label className="sf-co-field">
+                    <span>کد پستی{fieldOn(settings, 'checkout_field_postal_req', false) ? ' *' : ''}</span>
+                    <input value={form.postal} onChange={(e) => set('postal', e.target.value)} dir="ltr" inputMode="numeric" />
+                  </label>
+                ) : null}
+                {fieldOn(settings, 'checkout_field_notes', false) ? (
+                  <label className="sf-co-field full">
+                    <span>توضیحات سفارش{fieldOn(settings, 'checkout_field_notes_req', false) ? ' *' : ''}</span>
+                    <textarea rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} />
+                  </label>
+                ) : null}
+              </div>
+            </section>
+
+            {showGw ? (
+              <section className="sf-co-card">
+                <h3>روش پرداخت</h3>
+                <p className="sf-co-hint">درگاه‌های فعال ووکامرس / وردپرس</p>
+                <div className="sf-gateways">
+                  {gateways.map((g) => (
+                    <label key={g.id} className={`sf-gw ${payment === g.id ? 'on' : ''}`}>
+                      <input type="radio" name="sf_pay" value={g.id} checked={payment === g.id} onChange={() => setPayment(g.id)} />
+                      <span className="sf-gw-body">
+                        {g.icon ? <img src={g.icon} alt="" className="sf-gw-icon" /> : <span className="sf-gw-ph">💳</span>}
+                        <span>
+                          <strong>{g.title}</strong>
+                          {g.description ? <small>{g.description}</small> : null}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {err ? <div className="sf-co-err">{err}</div> : null}
+          </div>
+
+          <aside className="sf-checkout-side">
+            <section className="sf-co-card sticky">
+              <h3>خلاصه سفارش</h3>
+              <div className="sf-co-items">
+                {items.map((it) => (
+                  <div className="sf-co-item" key={it.id}>
+                    {it.image ? <img src={it.image} alt="" /> : <span className="ph">📦</span>}
+                    <div className="meta">
+                      <strong>{it.title}</strong>
+                      <span>{toFa(it.qty || 1)} × {it.price_txt || formatMoney(it.price, currency)}</span>
+                    </div>
+                    <div className="sf-qty mini">
+                      <button type="button" onClick={() => onQty(it.id, (it.qty || 1) - 1)}>−</button>
+                      <button type="button" onClick={() => onRemove(it.id)} title="حذف">🗑</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="sf-co-sum">
+                <span>جمع کل</span>
+                <strong>{formatMoney(total, currency)}</strong>
+              </div>
+              <button type="button" className="sf-btn primary block lg" disabled={busy || !items.length} onClick={placeOrder}>
+                {busy ? 'در حال ثبت سفارش…' : 'ثبت نهایی سفارش'}
+              </button>
+              <p className="sf-co-secure">🔒 پرداخت امن · اطلاعات شما محفوظ است</p>
+            </section>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
@@ -616,6 +911,7 @@ function StoreApp({ boot }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [megaOpen, setMegaOpen] = useState(false);
   const [quick, setQuick] = useState(null);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const megaRef = useRef(null);
@@ -743,6 +1039,23 @@ function StoreApp({ boot }) {
 
   const checkout = async () => {
     if (!cart.length) return;
+    try {
+      const tfd = new FormData();
+      tfd.append('action', 'scraper_track_event');
+      tfd.append('event_type', 'checkout_step');
+      tfd.append('count', cartCount);
+      tfd.append('total', cart.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0));
+      fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: tfd, credentials: 'same-origin' }).catch(() => {});
+    } catch {}
+
+    // Custom React checkout page (admin toggle)
+    if (settings.enable_custom_checkout !== false && settings.enable_custom_checkout !== 0 && settings.enable_custom_checkout !== '0') {
+      setCartOpen(false);
+      setCheckoutOpen(true);
+      return;
+    }
+
+    // Fallback: sync to WooCommerce checkout URL
     setCheckoutBusy(true);
     try {
       const fd = new FormData();
@@ -758,14 +1071,6 @@ function StoreApp({ boot }) {
       const res = await fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: fd, credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
       const url = data?.data?.checkout_url || data?.data?.url || ajax.checkoutUrl;
-      try {
-        const tfd = new FormData();
-        tfd.append('action', 'scraper_track_event');
-        tfd.append('event_type', 'checkout_step');
-        tfd.append('count', cartCount);
-        tfd.append('total', cart.reduce((s, it) => s + (Number(it.price) || 0) * (it.qty || 1), 0));
-        fetch(ajax.ajaxUrl || '/wp-admin/admin-ajax.php', { method: 'POST', body: tfd, credentials: 'same-origin' }).catch(() => {});
-      } catch {}
       if (url) window.location.href = url;
       else toast('آدرس تسویه در دسترس نیست', 'err');
     } catch {
@@ -802,7 +1107,7 @@ function StoreApp({ boot }) {
 
   return (
     <div
-      className="sf-app"
+      className={`sf-app${checkoutOpen ? ' is-checkout' : ''}${scrolled ? ' is-scrolled' : ''}`}
       data-palette={palette}
       data-template={settings.store_template || 'digikala'}
       style={{ ['--sf-accent']: accent }}
@@ -925,7 +1230,10 @@ function StoreApp({ boot }) {
               </div>
 
               <div className="sf-actions">
-                <button type="button" className="sf-icon-btn" onClick={() => setMenuOpen(true)} aria-label="منو">☰</button>
+                <button type="button" className={`sf-burger-btn ${menuOpen ? 'is-open' : ''}`} onClick={() => setMenuOpen(true)} aria-label="باز کردن منو" title="منو">
+                  <span className="sf-burger-ico" aria-hidden><i /><i /><i /></span>
+                  <span className="sf-burger-lbl">منو</span>
+                </button>
                 {boot.urls?.admin ? (
                   <a className="sf-action-btn" href={boot.urls.admin}><span>⚙️</span><span className="lbl">مدیریت</span></a>
                 ) : null}
@@ -1172,8 +1480,8 @@ function StoreApp({ boot }) {
         <button type="button" className="sf-mob-item active" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
           <span>🏠</span><span>خانه</span>
         </button>
-        <button type="button" className="sf-mob-item" onClick={() => setMenuOpen(true)}>
-          <span>☰</span><span>منو</span>
+        <button type="button" className="sf-mob-item sf-mob-menu" onClick={() => setMenuOpen(true)}>
+          <span className="sf-burger-ico sm" aria-hidden><i /><i /><i /></span><span>منو</span>
         </button>
         <button type="button" className="sf-mob-item" onClick={() => setCartOpen(true)}>
           <span>🛒</span><span>سبد</span>
@@ -1193,6 +1501,20 @@ function StoreApp({ boot }) {
         onRemove={(id) => setCart((c) => c.filter((x) => x.id !== id))}
         onCheckout={checkout}
         busy={checkoutBusy}
+        freeShip={settings.free_shipping_threshold}
+      />
+      <CheckoutPage
+        open={checkoutOpen}
+        onClose={() => setCheckoutOpen(false)}
+        items={cart}
+        currency={currency}
+        settings={settings}
+        ajax={ajax}
+        gateways={boot.gateways || []}
+        onQty={setQty}
+        onRemove={(id) => setCart((c) => c.filter((x) => x.id !== id))}
+        onClearCart={() => setCart([])}
+        toast={toast}
       />
       <MenuDrawer
         open={menuOpen}

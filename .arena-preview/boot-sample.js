@@ -22,7 +22,30 @@ window.AMPHP_STOREFRONT = {
     chat_button_position: 'left',
     chat_window_title: 'پشتیبانی',
     chat_welcome_message: 'سلام! چطور می‌تونم کمکتون کنم؟',
-    free_shipping_threshold: 400000
+    free_shipping_threshold: 400000,
+    enable_custom_checkout: true,
+    checkout_title: 'تسویه حساب امن',
+    checkout_note: 'پس از ثبت، به درگاه هدایت می‌شوید یا با شما تماس می‌گیریم.',
+    checkout_require_login: false,
+    checkout_field_name: true,
+    checkout_field_name_req: true,
+    checkout_field_phone: true,
+    checkout_field_phone_req: true,
+    checkout_field_email: true,
+    checkout_field_email_req: false,
+    checkout_field_province: true,
+    checkout_field_province_req: true,
+    checkout_field_city: true,
+    checkout_field_city_req: true,
+    checkout_field_address: true,
+    checkout_field_address_req: true,
+    checkout_field_postal: true,
+    checkout_field_postal_req: false,
+    checkout_field_notes: true,
+    checkout_field_notes_req: false,
+    checkout_show_gateways: true,
+    checkout_cod_label: 'پرداخت در محل (COD)',
+    checkout_success_msg: 'سفارش شما با موفقیت ثبت شد!'
   },
   products: [
     {id:'1',title:'ساعت هوشمند اولترا پرو',has_price:true,price:1450000,price_formatted:'۱٬۴۵۰٬۰۰۰ تومان',old_price:1950000,old_price_formatted:'۱٬۹۵۰٬۰۰۰ تومان',has_discount:true,discount_pct:26,image:'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&auto=format&fit=crop&q=60',category:'گجت',description:'سنسور سلامت و ضدآب',in_stock:true},
@@ -34,5 +57,10 @@ window.AMPHP_STOREFRONT = {
   ],
   urls: { account: '#', admin: '', home: '/', checkout: '#' },
   ajax: { ajaxUrl: '/admin-ajax.php', cartNonce: 'test', chatNonce: 'test', checkoutUrl: '#' },
-  meta: { version: '13.1.1', engine: 'react', count: 6, is_admin: false }
+  gateways: [
+    { id: 'cod', title: 'پرداخت در محل', description: 'پرداخت هنگام تحویل سفارش', icon: '', method_title: 'COD' },
+    { id: 'bacs', title: 'کارت به کارت / واریز', description: 'شماره کارت پس از ثبت سفارش ارسال می‌شود', icon: '', method_title: 'BACS' },
+    { id: 'zarinpal', title: 'زرین‌پال', description: 'پرداخت آنلاین امن', icon: '', method_title: 'Zarinpal' }
+  ],
+  meta: { version: '13.1.6', engine: 'react', count: 6, is_admin: false }
 };

@@ -12456,12 +12456,21 @@ if($dup!==null){
     if($_dupTs<=0)$_dupTs=(int)($dup['started_at']??0);
     $_dupIdle=$_dupTs>0?(time()-$_dupTs):PHP_INT_MAX;
     $_dupMax=max(120,(int)(loadConnections()['stall_after']??300));
+    /* v10.79: همگام‌سازی/استخراج دستی — آستانهٔ کوتاه‌تر و بستن waiting/paused */
+    $_dupIsManual = in_array((string)$trigger, ['manual', 'manual_sync'], true);
+    if ($_dupIsManual) {
+        $_dupMax = min($_dupMax, 90);
+        $_dupSt = (string)($dup['status'] ?? '');
+        if ($_dupSt === 'waiting' || $_dupSt === 'paused') {
+            $_dupIdle = PHP_INT_MAX; // force replace
+        }
+    }
     if($_dupIdle>$_dupMax){
         // مرده است — ردیفش را ببند و ادامه بده
         foreach($queue['entries'] as &$_qe){
             if(($_qe['id']??'')!==($dup['id']??''))continue;
             $_qe['status']='failed';
-            $_qe['error']='بی‌حرکت ماند ('.$_dupIdle.' ثانیه) — اجرای تازه جایش را گرفت';
+            $_qe['error']='بی‌حرکت ماند ('.($_dupIdle===PHP_INT_MAX?'—':$_dupIdle).' ثانیه) — اجرای تازه جایش را گرفت';
             $_qe['done_at']=time();
         }
         unset($_qe);
@@ -15464,6 +15473,12 @@ if (isset($_GET['manual_sync'])) {
         }
     }
     @unlink(MANUAL_SYNC_STOP_FILE);
+    /* v10.79: سیگنال توقف استخراج/ارسال جامانده را پاک کن تا همگام‌سازی
+       دستی بلافاصله بعد از «توقف» قبلی گیر نکند. */
+    if (defined('EXTRACT_STOP_FILE') && is_file(EXTRACT_STOP_FILE)) @unlink(EXTRACT_STOP_FILE);
+    if (defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
+    if (defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
+
     $_msKey  = trim((string)($_GET['profile'] ?? ''));
     $_msProf = $_msKey !== '' ? (loadProfiles()[$_msKey] ?? null) : null;
     /* v10.67 (81): حلِّ ممتنِ کلید. تا حالا اگر فرمولِ مرورگر با کلیدِ
@@ -15495,6 +15510,55 @@ if (isset($_GET['manual_sync'])) {
             JSON_UNESCAPED_UNICODE);
         exit;
     }
+    /* v10.79: قبل از شروع، ردیف‌های مرده/کهنهٔ همین پروفایل در صف استخراج
+       و قفل سراسری کهنه را آزاد کن — وگرنه runBackendExtract با
+       «duplicate/locked» برمی‌گردد و هیچ ردیف تازه‌ای دیده نمی‌شود. */
+    try {
+        $_msCleared = 0;
+        $_msQ = extractReadQueue();
+        $_msEntries = is_array($_msQ['entries'] ?? null) ? $_msQ['entries'] : [];
+        $_msNow = time();
+        $_msStall = max(90, (int)(loadConnections()['stall_after'] ?? 300));
+        $_msProg = readProgress(EXTRACT_PROGRESS_FILE);
+        $_msDirtyQ = false;
+        foreach ($_msEntries as &$_msE) {
+            if (!is_array($_msE)) continue;
+            $_msPk = (string)($_msE['profile_key'] ?? '');
+            $_msSt = (string)($_msE['status'] ?? '');
+            if ($_msKey !== '' && $_msPk !== '' && $_msPk !== $_msKey) continue;
+            if (!in_array($_msSt, ['running', 'waiting', 'paused'], true)) continue;
+            $_msMine = ((string)($_msProg['queue_id'] ?? '')) === ((string)($_msE['id'] ?? ''));
+            $_msTs = $_msMine ? (int)($_msProg['last_progress_ts'] ?? 0) : 0;
+            if ($_msTs <= 0) $_msTs = (int)($_msE['started_at'] ?? 0);
+            $_msIdle = $_msTs > 0 ? ($_msNow - $_msTs) : PHP_INT_MAX;
+            /* برای همگام‌سازی دستی: waiting/paused کهنه یا running بی‌حرکت را ببند */
+            if ($_msSt === 'waiting' || $_msSt === 'paused' || $_msIdle > min(90, $_msStall)) {
+                $_msE['status'] = 'failed';
+                $_msE['error'] = 'جایگزین شد توسط همگام‌سازی دستی (' . ($_msIdle === PHP_INT_MAX ? 'بدون پیشرفت' : ($_msIdle . 'ث بی‌حرکت')) . ')';
+                $_msE['done_at'] = $_msNow;
+                $_msCleared++;
+                $_msDirtyQ = true;
+            }
+        }
+        unset($_msE);
+        if ($_msDirtyQ) {
+            $_msQ['entries'] = $_msEntries;
+            extractWriteQueue($_msQ);
+        }
+        /* قفل استخراج کهنه (extract.lock) */
+        if (defined('EXTRACT_LOCK_FILE') && is_file(EXTRACT_LOCK_FILE)) {
+            $_msLk = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
+            $_msLkAge = is_array($_msLk) ? ($_msNow - (int)($_msLk['at'] ?? 0)) : ($_msNow - (int)@filemtime(EXTRACT_LOCK_FILE));
+            $_msLkProgRunning = !empty($_msProg['running']) && empty($_msProg['done']);
+            $_msLkProgIdle = $_msNow - (int)($_msProg['last_progress_ts'] ?? 0);
+            $_msLkMine = is_array($_msLk) && $_msKey !== '' && (string)($_msLk['profile_key'] ?? '') === $_msKey;
+            if ($_msLkMine || !$_msLkProgRunning || $_msLkProgIdle > min(90, $_msStall) || $_msLkAge > min(90, $_msStall)) {
+                @unlink(EXTRACT_LOCK_FILE);
+                $_msCleared++;
+            }
+        }
+    } catch (Throwable $_msExClr) { /* never block start */ }
+
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
         'running' => true, 'done' => false, 'cancelled' => false,
         'phase' => 'شروع', 'started_at' => time(), 'ts' => time(),
@@ -15502,7 +15566,12 @@ if (isset($_GET['manual_sync'])) {
         'total' => 3, 'current' => 0,
         'profile_key' => $_msKey,
         'profile_name' => is_array($_msProf) ? (string)($_msProf['name'] ?? $_msKey) : $_msKey,
-        'recent_log' => ['▶ همگام‌سازیِ دستی شروع شد'], 'total_log_count' => 1,
+        'recent_log' => array_values(array_filter([
+            '▶ همگام‌سازیِ دستی شروع شد',
+            $_msKey !== '' ? ('🔑 پروفایل: ' . $_msKey) : null,
+            !empty($_msCleared) ? ('🧹 ' . (int)$_msCleared . ' مانع کهنه (قفل/ردیف) پاک شد') : null,
+        ])),
+        'total_log_count' => 1,
     ]);
     /* از همین‌جا وارد مسیرِ کران می‌شویم — کپیِ منطق ممنوع */
     $_GET['cron_run'] = '1';
@@ -16218,7 +16287,14 @@ if (manualSyncActive()) {
         manualSyncProgress([], '✅ استخراج: ' . (int)($exRes['extracted'] ?? 0) . ' محصول ('
             . (int)($exRes['new'] ?? 0) . ' جدید، ' . (int)($exRes['price_changed'] ?? 0) . ' تغییرِ قیمت)');
     } else {
-        manualSyncProgress([], '❌ استخراج: ' . mb_substr((string)($exRes['error'] ?? 'خطای نامشخص'), 0, 300));
+        $_exErr = mb_substr((string)($exRes['error'] ?? 'خطای نامشخص'), 0, 300);
+        if (!empty($exRes['duplicate'])) {
+            $_exErr .= ' — ردیف قبلی هنوز فعال است؛ اگر کهنه است دوباره همگام‌سازی بزنید';
+        }
+        if (!empty($exRes['locked'])) {
+            $_exErr .= ' — قفل استخراج مشغول است';
+        }
+        manualSyncProgress([], '❌ استخراج: ' . $_exErr);
     }
 }
 }   // پایانِ else حالتِ عادی (مقابل noExtract) — v9.45
@@ -16644,6 +16720,33 @@ try {
    درخواستِ فرزند با مهلتِ طولانی). اگر کارگر وسط راه بمیرد، پمپِ
    کرانِ v10.49 از همان چک‌پوینت برمی‌دارد.
    ===================================================================== */
+/* v10.79: اگر only= کلید هیچ پروفایلی را نزد، صریح بگو — قبلاً silent no-op بود */
+if (manualSyncActive() && $_onlyKey !== '') {
+    $_matchedOnly = false;
+    foreach ((array)($results['profiles'] ?? []) as $_rp) {
+        if ((string)($_rp['key'] ?? '') === $_onlyKey) { $_matchedOnly = true; break; }
+    }
+    if (!$_matchedOnly) {
+        $results['profiles'][] = [
+            'key' => $_onlyKey, 'name' => $_onlyKey, 'status' => 'not_found',
+            'error' => 'پروفایل با این کلید در حلقه اجرا نشد (کلید نامعتبر یا فیلتر only)',
+        ];
+        manualSyncProgress(['phase' => 'خطا'],
+            '❌ پروفایل «' . mb_substr($_onlyKey, 0, 80) . '» در فهرست سرور اجرا نشد — کلید را از کشوی پروفایل دوباره انتخاب کنید');
+    } elseif (count($results['profiles']) === 1) {
+        $_one = $results['profiles'][0];
+        if ((string)($_one['status'] ?? '') === 'sync_disabled') {
+            manualSyncProgress([], '⚠️ همگام‌سازی این پروفایل در تنظیمات خاموش است — با force اجرا شد؟');
+        }
+        if (!empty($_one['extract_error'])) {
+            manualSyncProgress([], '⚠️ علت استخراج: ' . mb_substr((string)$_one['extract_error'], 0, 200));
+        }
+        if (!empty($_one['add_update_hold'])) {
+            manualSyncProgress([], '⚠️ ارسال متوقف: ' . mb_substr((string)$_one['add_update_hold'], 0, 200));
+        }
+    }
+}
+
 if (manualSyncActive() && empty($results['manual_stopped'])) {
     try {
         $_msSendRes = manualServerSendRun();
@@ -52459,7 +52562,25 @@ function startManualSync(){
   if(!confirm('کلِ فرآیندِ همین پروفایل همین حالا اجرا شود؟\n\n'
      +'استخراج ← بایگانیِ محصولاتِ رفته ← صف‌سازی و ارسال ← گزارش\n\n'
      +'بسته به تعدادِ محصولات ممکن است چند دقیقه طول بکشد؛ بستنِ صفحه کار را قطع نمی‌کند.'))return;
-  const go=()=>msFire(profileKey(url));
+  /* v10.79: کلید واقعی پروفایل (از آرایهٔ profiles / currentProfileKey)
+     — نه فقط profileKey(url) که گاهی با کلید روی دیسک یکی نیست
+     و فیلتر only در سرور هیچ پروفایلی پیدا نمی‌کند → صف خالی می‌ماند. */
+  const resolveManualKey=()=>{
+    try{
+      if(typeof currentProfileKey==='string'&&currentProfileKey.trim()){
+        if(Array.isArray(profiles)&&profiles.some(p=>p&&p.key===currentProfileKey))return currentProfileKey.trim();
+      }
+    }catch(e){}
+    try{
+      if(Array.isArray(profiles)){
+        const hit=profiles.find(p=>p&&(p.url===url||p.key===url||(p.url&&profileKey(p.url)===profileKey(url))));
+        if(hit&&hit.key)return String(hit.key);
+        if(hit&&hit.url)return profileKey(hit.url)||String(hit.key||'');
+      }
+    }catch(e){}
+    return profileKey(url)||url;
+  };
+  const go=()=>msFire(resolveManualKey());
   /* موتورِ سرور پروفایل را از دیسک می‌خواند، پس تغییرِ ذخیره‌نشده اول
      باید بنشیند وگرنه با سلکتور/ضریبِ قدیمی اجرا می‌شود. */
   if(typeof isDirty!=='undefined'&&isDirty&&typeof saveProfileSilent==='function'){
@@ -52479,7 +52600,9 @@ function msFire(pkey){
   msSetState('در حال اجرا','on');
   if($('msPhase'))$('msPhase').textContent='⏳ در حال شروع…';
   if($('msLog'))$('msLog').innerHTML='';
-  fetch('?manual_sync=1&profile='+encodeURIComponent(pkey))
+  try{ if(typeof switchMainTab==='function') switchMainTab('start'); }catch(e){}
+  try{ if(typeof refreshExtractQueue==='function') refreshExtractQueue(); }catch(e){}
+  fetch('?manual_sync=1&profile='+encodeURIComponent(pkey)+'&force=1')
     .then(r=>r.text()).then(t=>{
       /* v10.61 (۷۵): پاسخ ndjson است — خطِ اول «شروع شد» و هر خطِ بعدی
          یک ضربانِ زنده تا پایانِ کار. نتیجهٔ واقعی را همان‌طور از فایلِ
@@ -52492,9 +52615,12 @@ function msFire(pkey){
         msFinish(false,(last.error||'شروع نشد'));
         return;
       }
+      try{ if(typeof refreshExtractQueue==='function') refreshExtractQueue(); }catch(e){}
     }).catch(()=>{/* خطای شبکه — وضعیت را از پویینگِ دستی می‌پرسیم */});
-  showToast('🔄 همگام‌سازی شروع شد — پیشرفت را همین‌جا ببینید');
+  showToast('🔄 همگام‌سازی شروع شد — پیشرفت و صف استخراج را همین‌جا ببینید');
   msWatch();
+  setTimeout(()=>{ try{ refreshExtractQueue(); }catch(e){} }, 800);
+  setTimeout(()=>{ try{ refreshExtractQueue(); }catch(e){} }, 2500);
 }
 
 function msWatch(){
@@ -52513,6 +52639,8 @@ function msPoll(){
     const lg=$('msLog');
     if(lg&&Array.isArray(p.recent_log))
       lg.innerHTML=p.recent_log.slice(-20).map(l=>'<div>'+esc(String(l))+'</div>').join('');
+    /* v10.79: صف استخراج را حین اجرا هم تازه کن تا کاربر ردیف را ببیند */
+    try{ if(typeof refreshExtractQueue==='function') refreshExtractQueue(); }catch(e){}
     if(p.done){
       /* v10.58 (۷۲): اگر اجرا از دستِ هاست نیمه‌کاره مانده، سرور آن را با
          error بسته است — پیامش را نشان بده تا کاربر بداند و دوباره بزند. */

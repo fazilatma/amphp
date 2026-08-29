@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.22
+ * Version: 13.3.23
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -36,11 +36,11 @@ class Scraper_Auto_Shop_Plugin {
 			'enable_scraped_products'     => true, // سازگاری عقب‌رو (true = اسکرپر یا ادغام)
 			'catalog_source'              => 'scraper', // scraper | woocommerce | merge
 			'catalog_merge_prefer'        => 'scraper', // scraper | woocommerce | keep_both
-			'takeover_front_page'         => true, // v13.3.22: صفحه نخست هم ویترین React
+			'takeover_front_page'         => true, // v13.3.23: صفحه نخست هم ویترین React
 			'enable_native_wp_template'   => true, // قالب بومی فقط برای برگهٔ پشتیبان (نه ویترین اصلی React)
 			'native_fallback_page_id'     => 0, // برگه پشتیبان فروشگاه (جدا از فروشگاه اصلی)
 			'enable_404_shop_redirect'    => true, // ریدایرکت 404 به صفحه پشتیبان
-			'set_wc_shop_to_fallback'     => false, // v13.3.22: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
+			'set_wc_shop_to_fallback'     => false, // v13.3.23: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
 			'auto_create_fallback_page'   => true, // ساخت خودکار برگه پشتیبان
 			'replace_site_header'         => true, // حذف کامل هدر و منوی قالب وردپرس
 			'show_top_bar'                => true,
@@ -2832,7 +2832,7 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			}
 
-			// v13.3.22: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
+			// v13.3.23: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
 			if ( ! empty( $media ) && is_array( $media ) ) {
 				foreach ( array_slice( $media, 0, 8 ) as $it ) {
 					if ( ! is_array( $it ) ) {
@@ -2858,7 +2858,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.22: ارسال یک آیتم رسانه به یک پیام‌رسان.
+	 * v13.3.23: ارسال یک آیتم رسانه به یک پیام‌رسان.
 	 * $item = [ kind => photo|video|animation|audio|document|link, url, caption, name ]
 	 */
 	public static function send_media_to_messenger( $key, $m, $item ) {
@@ -2942,7 +2942,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.22: تشخیص نوع رسانه از URL یا MIME.
+	 * v13.3.23: تشخیص نوع رسانه از URL یا MIME.
 	 */
 	public static function media_kind_from_meta( $url, $mime = '', $name = '' ) {
 		$mime = strtolower( (string) $mime );
@@ -2966,7 +2966,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.22: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
+	 * v13.3.23: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
 	 * @return array{ok:bool,item?:array,error?:string,path?:string,url?:string}
 	 */
 	public static function handle_support_chat_upload() {
@@ -3044,7 +3044,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.22: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
+	 * v13.3.23: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
 	 */
 	public static function extract_links_as_media( $text ) {
 		$items = array();
@@ -6438,7 +6438,7 @@ class Scraper_Auto_Shop_Plugin {
 		$email   = sanitize_email( $_POST['email'] ?? '' );
 		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
-		$media_items = array(); // v13.3.22
+		$media_items = array(); // v13.3.23
 		$product_id    = sanitize_text_field( $_POST['product_id'] ?? '' );
 		$product_title = sanitize_text_field( $_POST['product_title'] ?? '' );
 		$product_ctx   = sanitize_textarea_field( $_POST['product_context'] ?? '' );
@@ -8731,11 +8731,11 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			self::sync_native_template_to_theme();
 			update_option( 'scraper_native_fallback_page_id', $page_id, false );
-			// v13.3.22: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
+			// v13.3.23: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
 			$settings['native_fallback_page_id'] = $page_id;
 			update_option( self::OPTION_NAME, $settings );
 
-			/* v13.3.22: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
+			/* v13.3.23: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
 			   فروشگاه ووکامرس را روی پشتیبان بگذار — وگرنه ویترین React می‌میرد. */
 			$react_takeover = ! empty( $settings['enable_shop_takeover'] );
 			$tpl_now = (string) ( $settings['store_template'] ?? 'digikala' );
@@ -8853,7 +8853,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.22: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
+	 * v13.3.23: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
 	 * ویترین React فعال است، ارتباط را قطع کن تا رفرش دوباره native نیاید.
 	 */
 	public static function maybe_detach_fallback_from_primary_shop() {
@@ -8897,7 +8897,7 @@ class Scraper_Auto_Shop_Plugin {
 						'at'          => time(),
 						'fallback_id' => $fb_id,
 						'primary_id'  => $primary_id,
-						'reason'      => 'v13.3.22_react_primary',
+						'reason'      => 'v13.3.23_react_primary',
 					),
 					false
 				);
@@ -8932,7 +8932,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.22: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
+	 * v13.3.23: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
 	 *
 	 * @param array $settings
 	 * @param int   $fallback_id
@@ -9014,7 +9014,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.22: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
+	 * v13.3.23: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
 	 */
 	public static function should_render_react_storefront( $settings = null ) {
 		if ( null === $settings ) {
@@ -9194,7 +9194,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.22' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.23' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -9410,7 +9410,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.22',
+				'version'     => '13.3.23',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -9436,7 +9436,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- ویترین فروشگاه v13.3.22 -->
+		<!-- ویترین فروشگاه v13.3.23 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -9590,7 +9590,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.22' );
+		$parts = array( '13.3.23' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -9617,7 +9617,7 @@ public static function get_embedded_storefront_assets() {
 				return $cache;
 			}
 		}
-		// Inline fallback baked at build time (v13.3.22) — single-file deploy.
+		// Inline fallback baked at build time (v13.3.23) — single-file deploy.
 		$cache = array(
 			'storefront.js'  => array(
 				'mime' => 'application/javascript; charset=UTF-8',
@@ -9751,7 +9751,7 @@ public static function get_embedded_storefront_assets() {
 	 */
 	
 	/**
-	 * v13.3.22: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
+	 * v13.3.23: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
 	 *
 	 * @return array
 	 */
@@ -9784,7 +9784,7 @@ public static function get_embedded_storefront_assets() {
 				'nonce'     => wp_create_nonce( 'scraper_support_chat_nonce' ),
 			),
 			'meta'      => array(
-				'version'   => '13.3.22',
+				'version'   => '13.3.23',
 				'asset_ver' => self::storefront_assets_ver(),
 				'mode'      => 'chat-only',
 			),
@@ -9796,7 +9796,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.22: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
+	 * v13.3.23: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
 	 * فقط FAB + پنجرهٔ چت (بدون کل ویترین).
 	 */
 	public static function print_native_support_chat_widget() {
@@ -9841,7 +9841,7 @@ public static function get_embedded_storefront_assets() {
 		$css_url = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url  = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Minimal CSS isolation so theme chrome stays; chat FAB is fixed
-		echo "\n<!-- AMPHP support chat (native) v13.3.22 -->\n";
+		echo "\n<!-- AMPHP support chat (native) v13.3.23 -->\n";
 		echo '<link rel="stylesheet" href="' . esc_url( $css_url ) . '" id="amphp-storefront-css-chat" />' . "\n";
 		echo '<div id="amphp-support-chat-root" class="amphp-support-chat-root" data-engine="react-chat" dir="rtl" style="position:relative;z-index:99999;"></div>' . "\n";
 		echo '<script id="amphp-storefront-boot">window.AMPHP_STOREFRONT = ' . $boot_json . ';</script>' . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -9849,7 +9849,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.22: wp_footer hook — چت روی قالب بومی.
+	 * v13.3.23: wp_footer hook — چت روی قالب بومی.
 	 */
 	public static function maybe_print_native_support_chat() {
 		self::print_native_support_chat_widget();
@@ -10052,13 +10052,13 @@ public static function get_embedded_storefront_assets() {
 					$fb_res = self::ensure_fallback_shop_page( ! empty( $new_settings['set_wc_shop_to_fallback'] ) );
 					if ( ! empty( $fb_res['id'] ) ) {
 						$new_settings['native_fallback_page_id'] = intval( $fb_res['id'] );
-						// v13.3.22: shop_page_id را با پشتیبان یکی نکن
+						// v13.3.23: shop_page_id را با پشتیبان یکی نکن
 						update_option( self::OPTION_NAME, $new_settings );
 					}
 					self::maybe_detach_fallback_from_primary_shop();
 				} catch ( \Throwable $e ) { /* ignore */ }
 			}
-			// v13.3.22: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
+			// v13.3.23: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
 			if ( ! empty( $new_settings['enable_shop_takeover'] ) ) {
 				try {
 					$_tpl_s = (string) ( $new_settings['store_template'] ?? 'digikala' );
@@ -10125,7 +10125,7 @@ public static function get_embedded_storefront_assets() {
 				<div style="display:flex; gap:10px; flex-wrap:wrap;">
 					<a href="<?php echo esc_url( home_url( '/shop/' ) ); ?>" target="_blank" class="button button-secondary" style="font-weight:800; padding:8px 18px; border-radius:10px; font-size:0.92rem;">
 						مشاهده ویترین فروشگاه ↗
-					</a>
+					</a> <a href="#amphp-wc-shop-fallback-card" class="button" style="margin-right:8px;background:#ea580c;border-color:#c2410c;color:#fff;font-weight:800;">🟧 تیک ووکامرس = پشتیبان</a>
 					<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-primary" style="background:#2563eb; border:none; font-weight:800; padding:8px 20px; border-radius:10px; font-size:0.92rem;">
 						ورود به پنل اسکرپر ⚡
 					</a>
@@ -10551,7 +10551,7 @@ public static function get_embedded_storefront_assets() {
 
 
 \t\t\t\t\t\t<?php
-\t\t\t\t\t\t// v13.3.22: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
+\t\t\t\t\t\t// v13.3.23: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
 \t\t\t\t\t\t$_sf_take = ! empty( $opts['enable_shop_takeover'] );
 \t\t\t\t\t\t$_sf_tpl  = (string) ( $opts['store_template'] ?? 'digikala' );
 \t\t\t\t\t\t$_sf_wc_fb = ! empty( $opts['set_wc_shop_to_fallback'] );
@@ -10579,7 +10579,7 @@ public static function get_embedded_storefront_assets() {
 \t\t\t\t\t\t\t\t<li>تیک «ویترین React اختصاصی»: <strong style="color:<?php echo $_sf_take ? '#059669' : '#dc2626'; ?>"><?php echo $_sf_take ? 'روشن' : 'خاموش — روشن کنید'; ?></strong></li>
 \t\t\t\t\t\t\t\t<li>پوسته انتخاب‌شده: <strong><?php echo esc_html( $_sf_tpl ); ?></strong><?php echo ( $_sf_tpl === 'native-wp' ) ? ' <span style="color:#dc2626">(بومی = نه React؛ دیجی‌کالا را بزنید)</span>' : ''; ?></li>
 \t\t\t\t\t\t\t\t<li>تیک «صفحه فروشگاه ووکامرس = پشتیبان»: <strong style="color:<?php echo $_sf_wc_fb || $_sf_bound ? '#dc2626' : '#059669'; ?>"><?php echo ( $_sf_wc_fb || $_sf_bound ) ? 'روشن/متصل — برای React خاموش کنید' : 'خاموش (درست)'; ?></strong>
-\t\t\t\t\t\t\t\t\t— پایین‌تر در باکس نارنجی «🧱 قالب بومی…»</li>
+\t\t\t\t\t\t\t\t\t— کارت نارنجی <strong>بلافاصله زیر همین بنر</strong></li>
 \t\t\t\t\t\t\t</ul>
 \t\t\t\t\t\t\t<p style="margin:0; font-size:0.84rem; font-weight:800;">
 \t\t\t\t\t\t\t\t🔗 باز کردن ویترین React:
@@ -10588,7 +10588,50 @@ public static function get_embedded_storefront_assets() {
 \t\t\t\t\t\t\t</p>
 \t\t\t\t\t\t</div>
 
-						<!-- Visual eCommerce Storefront Templates Selector -->
+						
+						<!-- v13.3.23: تیک ووکامرس=پشتیبان — بالای صفحه، غیرقابل‌گم‌شدن -->
+						<div id="amphp-wc-shop-fallback-card" style="margin:0 0 22px;padding:18px 20px;background:linear-gradient(135deg,#fff7ed 0%,#ffedd5 100%);border:3px solid #ea580c;border-radius:16px;box-shadow:0 8px 28px rgba(234,88,12,.18);">
+							<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+								<div style="font-weight:900;font-size:1.12rem;color:#9a3412;">🟧 تیک مهم: صفحه فروشگاه ووکامرس = پشتیبان؟</div>
+								<span style="background:#ea580c;color:#fff;font-size:0.75rem;font-weight:900;padding:4px 12px;border-radius:999px;">این همان تیک نارنجی است</span>
+							</div>
+							<label for="chkWcShopFallback" style="display:flex;align-items:flex-start;gap:14px;margin:0;cursor:pointer;background:#fff;border:2px solid #fb923c;border-radius:12px;padding:14px 16px;">
+								<input type="checkbox" name="set_wc_shop_to_fallback" id="chkWcShopFallback" value="1" <?php checked( ! empty( $opts['set_wc_shop_to_fallback'] ) ); ?> style="width:24px;height:24px;margin-top:2px;accent-color:#ea580c;flex-shrink:0;">
+								<span style="line-height:1.75;">
+									<strong style="font-size:1.02rem;color:#7c2d12;display:block;margin-bottom:4px;">صفحهٔ فروشگاه ووکامرس را روی برگهٔ «… — پشتیبان» بگذار</strong>
+									<span style="display:block;font-size:0.86rem;font-weight:700;color:#9a3412;">
+										• برای <u>ویترین React / دیجی‌کالا</u> این تیک را <strong style="color:#b91c1c;">خاموش</strong> بگذارید (پیشنهاد).<br>
+										• فقط وقتی React را نمی‌خواهید و /shop باید همان برگهٔ پشتیبان بومی باشد، روشن کنید.<br>
+										• وضعیت الان:
+										<strong style="color:<?php echo ! empty( $opts['set_wc_shop_to_fallback'] ) ? '#b91c1c' : '#059669'; ?>">
+											<?php echo ! empty( $opts['set_wc_shop_to_fallback'] ) ? 'روشن (پشتیبان = فروشگاه ووکامرس)' : 'خاموش (مناسب React)'; ?>
+										</strong>
+									</span>
+								</span>
+							</label>
+							<p style="margin:10px 0 0;font-size:0.8rem;color:#78716c;font-weight:700;line-height:1.6;">
+								اگر این تیک را نمی‌دیدید، احتمالاً نسخهٔ قدیمی agent.php روی سرور است — فایل <code>agent.php</code> نسخه <strong>۱۳٫۳٫۲۳</strong> را دوباره آپلود کنید و Ctrl+F5 بزنید.
+							</p>
+						</div>
+						<script>
+						(function(){
+						  // v13.3.23: اگر #amphp-wc-shop-fallback-card در URL باشد تب ویترین را باز کن و اسکرول کن
+						  function goWcCard(){
+						    var card=document.getElementById('amphp-wc-shop-fallback-card');
+						    if(!card) return;
+						    var tabBtn=document.querySelector('.scraper-tab-link[data-tab="tab-storefront"]');
+						    if(tabBtn) tabBtn.click();
+						    setTimeout(function(){ card.scrollIntoView({behavior:'smooth',block:'center'}); card.style.outline='3px solid #ea580c'; }, 200);
+						  }
+						  if(location.hash==='#amphp-wc-shop-fallback-card' || location.hash==='#wc-fallback') goWcCard();
+						  document.querySelectorAll('a[href="#amphp-wc-shop-fallback-card"]').forEach(function(a){
+						    a.addEventListener('click', function(e){ e.preventDefault(); goWcCard(); });
+						  });
+						})();
+						</script>
+
+
+<!-- Visual eCommerce Storefront Templates Selector -->
 						<div style="margin-bottom:24px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 6px; font-size:1.05rem; color:#0f172a; font-weight:800;">🛍️ انتخاب پوسته فروشگاه (eCommerce Templates)</h4>
 							<p style="margin:0 0 16px; font-size:0.85rem; color:#64748b;">
@@ -10954,7 +10997,7 @@ public static function get_embedded_storefront_assets() {
 					</div>
 
 						
-						<!-- v13.3.22 قالب بومی وردپرس + برگه پشتیبان -->
+						<!-- v13.3.23 قالب بومی وردپرس + برگه پشتیبان -->
 						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f8fafc,#eff6ff); border:1px solid #93c5fd; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب بومی وردپرس + برگهٔ پشتیبان فروشگاه</h4>
 							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.85;">
@@ -10963,7 +11006,7 @@ public static function get_embedded_storefront_assets() {
 								عنوان «نام‌فروشگاه — پشتیبان» طبیعی است و <em>نباید</em> جای ویترین اصلی را بگیرد.
 							</p>
 							<p style="margin:0 0 14px; padding:10px 12px; background:#fef3c7; border:1px solid #f59e0b; border-radius:10px; color:#92400e; font-size:0.82rem; font-weight:700; line-height:1.7;">
-								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.22 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
+								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.23 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
 							</p>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; color:#0f172a;">
 								<input type="checkbox" name="enable_native_wp_template" value="1" <?php checked( ! isset( $opts['enable_native_wp_template'] ) || ! empty( $opts['enable_native_wp_template'] ) ); ?> style="width:18px;height:18px;accent-color:#2563eb;">
@@ -10977,17 +11020,11 @@ public static function get_embedded_storefront_assets() {
 								<input type="checkbox" name="enable_404_shop_redirect" value="1" <?php checked( ! isset( $opts['enable_404_shop_redirect'] ) || ! empty( $opts['enable_404_shop_redirect'] ) ); ?>>
 								هدایت خطای چهارصدوچهار به برگهٔ پشتیبان فروشگاه
 							</label>
-							<div id="amphp-wc-fallback-bind" style="margin:12px 0 14px; padding:14px 16px; background:#fff7ed; border:2px solid #f97316; border-radius:12px;">
-								<div style="font-weight:900; color:#9a3412; margin-bottom:8px; font-size:0.95rem;">🔗 اتصال صفحهٔ فروشگاه ووکامرس به پشتیبان</div>
-								<label style="display:flex; align-items:flex-start; gap:10px; margin:0; font-weight:800; color:#7c2d12; line-height:1.65; cursor:pointer;">
-									<input type="checkbox" name="set_wc_shop_to_fallback" id="chkWcShopFallback" value="1" <?php checked( ! empty( $opts['set_wc_shop_to_fallback'] ) ); ?> style="width:20px;height:20px;margin-top:2px;accent-color:#ea580c;flex-shrink:0;">
-									<span>
-										<strong>صفحه فروشگاه ووکامرس = برگهٔ پشتیبان</strong>
-										<span style="display:block; font-weight:700; color:#9a3412; font-size:0.82rem; margin-top:4px;">
-											⚠️ برای ویترین React (دیجی‌کالا) این تیک را <u>خاموش</u> نگه دارید. فقط وقتی React خاموش است و می‌خواهید /shop همان برگهٔ «… — پشتیبان» باشد روشن کنید.
-										</span>
-									</span>
-								</label>
+							<div id="amphp-wc-fallback-bind" style="margin:12px 0 14px; padding:12px 14px; background:#fff7ed; border:1px dashed #fb923c; border-radius:10px;">
+								<p style="margin:0; font-size:0.86rem; font-weight:800; color:#9a3412; line-height:1.7;">
+									🟧 تیک «صفحه فروشگاه ووکامرس = پشتیبان» را <a href="#amphp-wc-shop-fallback-card" style="color:#c2410c;text-decoration:underline;">بالای همین تب ویترین</a> (کارت نارنجی، زیر بنر وضعیت) ببینید و تغییر دهید.
+									وضعیت: <strong><?php echo ! empty( $opts['set_wc_shop_to_fallback'] ) ? 'روشن' : 'خاموش'; ?></strong>
+								</p>
 							</div>
 							<?php
 							$fb_id  = intval( $opts['native_fallback_page_id'] ?? get_option( 'scraper_native_fallback_page_id', 0 ) );

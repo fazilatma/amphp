@@ -67,6 +67,9 @@ const CATLEARN_MAX_WORDS = 5;
 const CATTRIED_FILE = __DIR__ . '/category_attempts.json';
 const CATTRIED_MAX_PRODUCTS = 2000;   // سقفِ حجم؛ قدیمی‌ترها هرس می‌شوند
 const RECON_PROGRESS_FILE = __DIR__ . '/recon_progress.json'; // v8.49
+const RECON_AUTO_STATE_FILE = __DIR__ . '/recon_auto_state.json'; // v10.107
+const CATFIX_AUTO_STATE_FILE = __DIR__ . '/catfix_auto_state.json'; // v10.107
+const RECON_FETCH_MAX_PAGES = 400; // v10.107: غرفه‌های بزرگ
 const SUFFIX_PROGRESS_FILE = __DIR__ . '/suffix_progress.json'; // v8.53
 // v10.02 (۱۶): حذفِ هوشمندِ محصولاتِ تکراری — کارِ بلندمدتِ سمتِ سرور
 const DEDUP_PROGRESS_FILE = __DIR__ . '/dedup_progress.json';
@@ -292,7 +295,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.106';
+const APP_VERSION = '10.107';
 const APP_VERSION_DATE = '1405/06/09';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -13429,6 +13432,41 @@ if (isset($_POST['rubika'])) { $rb = json_decode($_POST['rubika'], true) ?: []; 
 /* v10.78 (92): تلگرام — سومین پیام‌رسان، با همان ساختار بله/روبیکا */
 if (isset($_POST['telegram'])) { $tgm = json_decode($_POST['telegram'], true) ?: []; $conn['telegram'] = ['enabled'=>!empty($tgm['enabled']),'token'=>trim($tgm['token']??''),'chat_id'=>trim($tgm['chat_id']??'')]; }
 if (isset($_POST['notif_events'])) { $ne = json_decode($_POST['notif_events'], true) ?: []; $conn['notif_events'] = ['order_new'=>!empty($ne['order_new']),'order_status'=>!empty($ne['order_status']),'chat_msg'=>!empty($ne['chat_msg']),'product_status'=>!empty($ne['product_status']),'product_new'=>!empty($ne['product_new']),'order_refund'=>!empty($ne['order_refund']),'src_price'=>!empty($ne['src_price']),'src_stock'=>!empty($ne['src_stock']),'run_fail'=>!empty($ne['run_fail']),'retire'=>!empty($ne['retire']),'cron_ping'=>!empty($ne['cron_ping']),/* v10.35 (۴۷د): گزارشِ همگام‌سازی — پیش‌فرض روشن، پس نبودِ کلید یعنی روشن */'sync_report'=>!isset($ne['sync_report'])||!empty($ne['sync_report'])]; }
+/* v10.107: مغایرت‌گیری دوره‌ای + اصلاح دسته دوره‌ای */
+if (isset($_POST['recon_auto'])) {
+    $ra = json_decode($_POST['recon_auto'], true) ?: [];
+    $iv = max(1, min(168, (int)($ra['interval_h'] ?? 6)));
+    $mode = (string)($ra['extra_mode'] ?? 'off');
+    if (!function_exists('retireModes') || !isset(retireModes()[$mode])) $mode = 'off';
+    $conn['recon_auto'] = [
+        'enabled' => !empty($ra['enabled']),
+        'woo' => !isset($ra['woo']) || !empty($ra['woo']),
+        'bsl' => !isset($ra['bsl']) || !empty($ra['bsl']),
+        'all_vendors' => !isset($ra['all_vendors']) || !empty($ra['all_vendors']),
+        'all_profiles' => !isset($ra['all_profiles']) || !empty($ra['all_profiles']),
+        'fix_price' => !isset($ra['fix_price']) || !empty($ra['fix_price']),
+        'apply' => !empty($ra['apply']),
+        'extra_mode' => $mode,
+        'interval_h' => $iv,
+        'notify' => !isset($ra['notify']) || !empty($ra['notify']),
+        'enqueue_missing' => !empty($ra['enqueue_missing']),
+    ];
+}
+if (isset($_POST['catfix_auto'])) {
+    $ca = json_decode($_POST['catfix_auto'], true) ?: [];
+    $iv = max(1, min(168, (int)($ca['interval_h'] ?? 12)));
+    $mode = (string)($ca['mode'] ?? 'master');
+    if (!in_array($mode, ['ai_text','master','quorum','fallback','learned'], true)) $mode = 'master';
+    $conn['catfix_auto'] = [
+        'enabled' => !empty($ca['enabled']),
+        'mode' => $mode,
+        'all_vendors' => !isset($ca['all_vendors']) || !empty($ca['all_vendors']),
+        'use_learn' => !isset($ca['use_learn']) || !empty($ca['use_learn']),
+        'interval_h' => $iv,
+        'quorum' => max(1, min(8, (int)($ca['quorum'] ?? 2))),
+        'notify' => !empty($ca['notify']),
+    ];
+}
 /* v10.46 (۶۰): انتخاب غرفه برای رویداد «پیام مشتری» — 0 = همهٔ غرفه‌ها */
 if (isset($_POST['notif_chat_shop'])) $conn['notif_chat_shop'] = max(0, (int)$_POST['notif_chat_shop']);
 if (isset($_POST['notif_scan_limit'])) $conn['notif_scan_limit'] = max(5, min(50, (int)$_POST['notif_scan_limit'])); /* v10.86 (100) */
@@ -18505,6 +18543,23 @@ try {
     $results['auto_agent'] = ['error' => $e->getMessage()];
 }
 
+/* v10.107: مغایرت‌گیری دوره‌ای همهٔ غرفه‌ها/ووکامرس + اصلاح دسته با AI/یادگیری */
+try {
+    if (function_exists('reconAutoTick')) {
+        $results['recon_auto'] = reconAutoTick($cn, $now);
+    }
+} catch (Throwable $e) {
+    $results['recon_auto'] = ['error' => mb_substr($e->getMessage(), 0, 200)];
+}
+try {
+    if (function_exists('catfixAutoTick')) {
+        $results['catfix_auto'] = catfixAutoTick($cn, $now);
+    }
+} catch (Throwable $e) {
+    $results['catfix_auto'] = ['error' => mb_substr($e->getMessage(), 0, 200)];
+}
+
+
 // v8.62: گزارش شبانه — اگر ساعتش رسیده و امروز فرستاده نشده
 try {
     $digRes = digestMaybeSend($cn, $now);
@@ -19633,14 +19688,24 @@ if (isset($_GET['recon'])) {
     $fixPrice = !isset($_GET['fix_price']) || $_GET['fix_price'] !== '0';
     // v8.64: همهٔ پروفایل‌ها، نه فقط آن‌هایی که همگام‌سازی دوره‌ای دارند
     $allProf = !empty($_GET['all_profiles']);
+    // v10.107: همهٔ غرفه‌های باسلام / یک غرفهٔ مشخص
+    $allVendors = !empty($_GET['all_vendors']);
+    $onlyVid = (int)($_GET['vendor_id'] ?? 0);
+    if ($target === 'bsl' && !$allVendors && $onlyVid <= 0) {
+        // پیش‌فرض: اگر چند غرفه هست و کاربر تیک نزده، فقط پیش‌فرض — مگر all_vendors
+        $allVendors = !empty($_GET['all_shops']);
+    }
 
     @unlink(RECON_PROGRESS_FILE);
     reconProgress(['running' => true, 'done' => false, 'target' => $target,
         'apply' => $apply, 'mode' => $mode, 'all_profiles' => $allProf,
+        'all_vendors' => $allVendors, 'vendor_id' => $onlyVid,
         'started_at' => time(), 'phase' => 'start',
         'log_add' => [($apply ? '🚀 شروع اعمال تغییرات' : '🔍 شروع بررسی') . ' — '
             . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
-            . ($allProf ? ' · همهٔ پروفایل‌ها' : ' · فقط پروفایل‌های همگام‌شونده')]]);
+            . ($allProf ? ' · همهٔ پروفایل‌ها' : ' · فقط پروفایل‌های همگام‌شونده')
+            . ($target === 'bsl' && $allVendors ? ' · همهٔ غرفه‌ها' : '')
+            . ($onlyVid > 0 ? (' · غرفه #' . $onlyVid) : '')]]);
 
     // پاسخ فوری، بعد ادامهٔ کار در پس‌زمینه
     $early = json_encode(['ok' => true, 'started' => true, 'target' => $target],
@@ -19656,20 +19721,25 @@ if (isset($_GET['recon'])) {
     });
 
     try {
-        $res = reconRun($cn, $target, $apply, $mode, $fixPrice, $allProf);
+        $res = reconRun($cn, $target, $apply, $mode, $fixPrice, $allProf, $allVendors, $onlyVid);
     } catch (Throwable $e) {
         reconProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
             'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
         exit;
     }
-    foreach (['extra', 'price_diff', 'matched_items'] as $k) {
-        $res[$k . '_total'] = count($res[$k] ?? []);
-        if (isset($res[$k]) && count($res[$k]) > 300) $res[$k] = array_slice($res[$k], 0, 300);
+    foreach (['extra', 'price_diff', 'matched_items', 'missing'] as $k) {
+        if ($k === 'missing') {
+            $res['missing_total'] = (int)($res['missing_total'] ?? count($res['missing'] ?? []));
+        } else {
+            $res[$k . '_total'] = count($res[$k] ?? []);
+        }
+        if (isset($res[$k]) && count($res[$k]) > 400) $res[$k] = array_slice($res[$k], 0, 400);
     }
     @file_put_contents(__DIR__ . '/recon_result.json',
         json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
     reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
         'extra' => (int)$res['extra_total'], 'diff' => (int)$res['price_diff_total'],
+        'missing' => (int)($res['missing_total'] ?? 0),
         'matched' => (int)($res['matched'] ?? 0), 'repriced' => (int)($res['repriced'] ?? 0),
         'deleted' => (int)($res['deleted'] ?? 0), 'failed' => (int)($res['failed'] ?? 0),
         'result_ok' => !empty($res['ok']), 'error' => $res['error'] ?? '',
@@ -21616,9 +21686,17 @@ if (isset($_GET['dedup_stop'])) {
 if (isset($_GET['catfix_start'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $mode = (string)($_GET['mode'] ?? 'ai_text');
-    if (!in_array($mode, ['ai_text', 'master', 'quorum', 'fallback'], true)) $mode = 'ai_text';   /* v10.71 (85): روشِ چهارم */
+    if (!in_array($mode, ['ai_text', 'master', 'quorum', 'fallback', 'learned'], true)) $mode = 'ai_text';   /* v10.107: learned */
     $opts = ['quorum' => (int)($_GET['quorum'] ?? 2),
-             'product_id' => (int)($_GET['product_id'] ?? 0)];
+             'product_id' => (int)($_GET['product_id'] ?? 0),
+             'all_vendors' => !empty($_GET['all_vendors']),
+             'use_learn' => !isset($_GET['use_learn']) || $_GET['use_learn'] !== '0',
+             'vendor_id' => (int)($_GET['vendor_id'] ?? 0)];
+    if ($mode === 'learned') {
+        $mode = 'master';
+        $opts['use_learn'] = true;
+        $opts['learn_first'] = true;
+    }
 
     $lockFp = fopen(CATFIX_LOCK_FILE, 'c');
     if (!$lockFp || !flock($lockFp, LOCK_EX | LOCK_NB)) {
@@ -26804,6 +26882,14 @@ if (isset($_GET['selftest'])) {
     $add('10.103', 'نسخهٔ ۱۰.۱۰۳',
          version_compare(APP_VERSION, '10.103', '>=')
       && strpos($selfSrc, "{v:'10.103',") !== false);
+    $add('10.107', 'نسخهٔ ۱۰.۱۰۷',
+         version_compare(APP_VERSION, '10.107', '>=')
+      && strpos($selfSrc, "{v:'10.107',") !== false);
+    $add('10.107', 'مغایرت‌گیری چندغرفه + در مقصد نیست + دوره‌ای',
+         strpos($selfSrc, 'function reconRunOne') !== false
+      && strpos($selfSrc, 'function reconAutoTick') !== false
+      && strpos($selfSrc, 'function catfixAutoTick') !== false
+      && strpos($selfSrc, "missing_total") !== false);
     $add('10.103', 'ادامهٔ ۳‌باره + failed + idle retry',
          strpos($selfSrc, 'function queueResumeBook') !== false
       && strpos($selfSrc, 'function queueMarkEntryFailed') !== false
@@ -36440,7 +36526,8 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
 }
 
 /** همهٔ محصولات ووکامرس */
-function reconFetchWoo(array $w, int $maxPages = 60): array {
+function reconFetchWoo(array $w, int $maxPages = 0): array {
+    if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
     for ($page = 1; $page <= $maxPages; $page++) {
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
@@ -36469,7 +36556,8 @@ function reconFetchWoo(array $w, int $maxPages = 60): array {
 }
 
 /** همهٔ محصولات فعال باسلام. قیمت باسلام به ریال است. */
-function reconFetchBsl(string $tk, int $vid, int $maxPages = 60): array {
+function reconFetchBsl(string $tk, int $vid, int $maxPages = 0): array {
+    if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
     for ($page = 1; $page <= $maxPages; $page++) {
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
@@ -36504,23 +36592,95 @@ function reconFetchBsl(string $tk, int $vid, int $maxPages = 60): array {
  * مقایسه و در صورت درخواست، اعمال تغییرات.
  * $mode برای موارد اضافی: off | draft | outofstock | delete
  */
-function reconRun(array $cn, string $target, bool $apply = false,
-                  string $mode = 'off', bool $fixPrice = true, bool $allProfiles = false): array {
+
+/* =====================================================================
+ *  v10.107: مغایرت‌گیری چندغرفه + «در مقصد نیست» + اجرای دوره‌ای
+ * ===================================================================== */
+
+/** تنظیمات مغایرت‌گیری دوره‌ای از connections */
+function reconAutoCfg(?array $cn = null): array {
+    if ($cn === null) $cn = loadConnections();
+    $r = is_array($cn['recon_auto'] ?? null) ? $cn['recon_auto'] : [];
+    $iv = (int)($r['interval_h'] ?? 6);
+    if ($iv < 1) $iv = 1;
+    if ($iv > 168) $iv = 168;
+    $mode = (string)($r['extra_mode'] ?? 'off');
+    if (!function_exists('retireModes') || !isset(retireModes()[$mode])) $mode = 'off';
+    return [
+        'enabled'       => !empty($r['enabled']),
+        'woo'           => !isset($r['woo']) || !empty($r['woo']),
+        'bsl'           => !isset($r['bsl']) || !empty($r['bsl']),
+        'all_vendors'   => !isset($r['all_vendors']) || !empty($r['all_vendors']),
+        'all_profiles'  => !isset($r['all_profiles']) || !empty($r['all_profiles']),
+        'fix_price'     => !isset($r['fix_price']) || !empty($r['fix_price']),
+        'apply'         => !empty($r['apply']), // پیش‌فرض فقط گزارش
+        'extra_mode'    => $mode,
+        'interval_h'    => $iv,
+        'notify'        => !isset($r['notify']) || !empty($r['notify']),
+        'enqueue_missing' => !empty($r['enqueue_missing']), // صف‌کردن محصولاتِ «در مقصد نیست»
+    ];
+}
+
+function reconAutoStateLoad(): array {
+    if (!is_file(RECON_AUTO_STATE_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(RECON_AUTO_STATE_FILE), true);
+    return is_array($d) ? $d : [];
+}
+function reconAutoStateSave(array $s): void {
+    @file_put_contents(RECON_AUTO_STATE_FILE, json_encode($s, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+
+/** تنظیمات اصلاح دوره‌ای دسته با AI + یادگیری */
+function catfixAutoCfg(?array $cn = null): array {
+    if ($cn === null) $cn = loadConnections();
+    $r = is_array($cn['catfix_auto'] ?? null) ? $cn['catfix_auto'] : [];
+    $iv = (int)($r['interval_h'] ?? 12);
+    if ($iv < 1) $iv = 1;
+    if ($iv > 168) $iv = 168;
+    $mode = (string)($r['mode'] ?? 'master');
+    if (!in_array($mode, ['ai_text', 'master', 'quorum', 'fallback', 'learned'], true)) $mode = 'master';
+    return [
+        'enabled'     => !empty($r['enabled']),
+        'mode'        => $mode,
+        'all_vendors' => !isset($r['all_vendors']) || !empty($r['all_vendors']),
+        'use_learn'   => !isset($r['use_learn']) || !empty($r['use_learn']),
+        'interval_h'  => $iv,
+        'quorum'      => max(1, min(8, (int)($r['quorum'] ?? 2))),
+        'notify'      => !empty($r['notify']),
+    ];
+}
+function catfixAutoStateLoad(): array {
+    if (!is_file(CATFIX_AUTO_STATE_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(CATFIX_AUTO_STATE_FILE), true);
+    return is_array($d) ? $d : [];
+}
+function catfixAutoStateSave(array $s): void {
+    @file_put_contents(CATFIX_AUTO_STATE_FILE, json_encode($s, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+
+/**
+ * یک‌بار مغایرت‌گیری برای یک مقصد/غرفه.
+ * $vendorId>0 فقط همان غرفه؛ 0 = غرفه پیش‌فرض (سازگاری عقب‌رو).
+ */
+function reconRunOne(array $cn, string $target, bool $apply = false,
+                     string $mode = 'off', bool $fixPrice = true, bool $allProfiles = false,
+                     int $vendorId = 0, string $shopName = '', string $shopToken = ''): array {
     $out = ['ok' => true, 'target' => $target, 'apply' => $apply, 'mode' => $mode,
             'all_profiles' => $allProfiles,
+            'vendor_id' => $vendorId, 'shop_name' => $shopName,
             'expected' => 0, 'remote' => 0, 'extra' => [], 'price_diff' => [],
+            'missing' => [], // v10.107: در مبدأ هست، در مقصد نیست
             'matched' => 0, 'matched_items' => [], 'deleted' => 0, 'repriced' => 0, 'failed' => 0];
 
-    reconProgress(['phase' => 'profiles', 'log_add' => [$allProfiles
-        ? '🔎 خواندن همهٔ پروفایل‌ها...'
-        : '🔎 خواندن پروفایل‌های دارای همگام‌سازی دوره‌ای...']]);
+    reconProgress(['phase' => 'profiles', 'log_add' => [
+        ($shopName !== '' ? ('🏪 غرفه: ' . $shopName . ( $vendorId > 0 ? ' (#' . $vendorId . ')' : '')) : '')
+            ?: ($allProfiles ? '🔎 خواندن همهٔ پروفایل‌ها...' : '🔎 خواندن پروفایل‌های دارای همگام‌سازی دوره‌ای...')
+    ]]);
     $pstats = null;
     $expected = reconExpected($target, $allProfiles, $pstats);
     $out['expected'] = count($expected);
     $out['profile_stats'] = $pstats;
 
-    // v8.64: شرح تفکیکی هر پروفایل در گزارش زنده — تا معلوم باشد چرا
-    // عددها این‌طور شده‌اند و کدام پروفایل کنار گذاشته شد.
     $plog = [];
     foreach (($pstats['profiles'] ?? []) as $ps) {
         $plog[] = ($ps['n'] > 0 ? '  ✓ ' : '  ⏭ ') . $ps['name']
@@ -36544,14 +36704,15 @@ function reconRun(array $cn, string $target, bool $apply = false,
     }
 
     reconProgress(['phase' => 'fetch', 'log_add' => ['📥 دریافت محصولات '
-        . ($target === 'woo' ? 'ووکامرس' : 'باسلام') . '...']]);
+        . ($target === 'woo' ? 'ووکامرس' : ('باسلام' . ($shopName !== '' ? ' · ' . $shopName : ''))) . '...']]);
     if ($target === 'woo') {
         $w = $cn['woocommerce'] ?? [];
         if (empty($w['store_url'])) { $out['ok'] = false; $out['error'] = 'تنظیمات ووکامرس ناقص'; return $out; }
         $remote = reconFetchWoo($w);
+        $tk = ''; $vid = 0;
     } else {
-        $tk = (string)($cn['basalam']['token'] ?? '');
-        $vid = (int)($cn['basalam']['vendor_id'] ?? 0);
+        $tk = $shopToken !== '' ? $shopToken : (string)($cn['basalam']['token'] ?? '');
+        $vid = $vendorId > 0 ? $vendorId : (int)($cn['basalam']['vendor_id'] ?? 0);
         if ($tk === '' || $vid <= 0) { $out['ok'] = false; $out['error'] = 'تنظیمات باسلام ناقص'; return $out; }
         $remote = reconFetchBsl($tk, $vid);
     }
@@ -36564,16 +36725,13 @@ function reconRun(array $cn, string $target, bool $apply = false,
         return $out;
     }
 
-    // دسته‌بندی
-    // v8.64: مقایسه هم گزارش زنده دارد — هر ۲۵ محصول یک به‌روزرسانی، و
-    // چند نمونهٔ واقعی از هر دسته، تا کاربر ببیند دقیقاً چه اتفاقی می‌افتد.
-    // v8.65: اول با شناسهٔ ثبت‌شده تطبیق بده، بعد با عنوان.
-    // محصولی که در مقصد تغییر نام داده، با عنوان پیدا نمی‌شود ولی شناسه‌اش
-    // همان است — بدون این، «اضافی» گزارش می‌شد و با حذف از بین می‌رفت.
     $idMap  = remoteMapById($target);
     $byKey  = is_array($pstats['by_key'] ?? null) ? $pstats['by_key'] : [];
     $byIdN  = 0;
     $cmpN = 0; $sampleExtra = []; $sampleDiff = []; $noPriceN = 0;
+    $hitTitles = []; // v10.107: عنوان‌های مبدأ که در مقصد پیدا شدند
+    $hitKeys = [];
+
     foreach ($remote as $r) {
         $cmpN++;
         $rid = (int)($r['id'] ?? 0);
@@ -36584,28 +36742,35 @@ function reconRun(array $cn, string $target, bool $apply = false,
             $byIdN++;
         }
         if ($hit === null) {
-            $out['extra'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $r['price']];
+            $out['extra'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $r['price'],
+                'vendor_id' => $vid, 'shop_name' => $shopName,
+                'why' => 'در هیچ پروفایل/مبدأ نیست'];
             if (count($sampleExtra) < 5) $sampleExtra[] = '  🗑 ' . mb_substr($r['title'], 0, 45);
         } else {
+            $hitTitles[$key] = true;
+            $pk = trim((string)($hit['key'] ?? ''));
+            if ($pk !== '') $hitKeys[$pk] = true;
             $want = (int)$hit['price'];
             $have = $target === 'bsl' ? (int)($r['price_toman'] ?? 0) : (int)$r['price'];
             if ($want <= 0) {
-                // قیمت مبدأ صفر است — مغایرت حساب نمی‌شود، وگرنه همه‌چیز صفر می‌شد
                 $noPriceN++;
                 $out['matched']++;
                 if (count($out['matched_items']) < 500) {
-                    $out['matched_items'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $have];
+                    $out['matched_items'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $have,
+                        'vendor_id' => $vid, 'shop_name' => $shopName];
                 }
             } elseif ($have !== $want) {
                 $out['price_diff'][] = ['id' => $r['id'], 'title' => $r['title'],
-                    'from' => $have, 'to' => $want, 'profile' => (string)($hit['profile'] ?? '')];
+                    'from' => $have, 'to' => $want, 'profile' => (string)($hit['profile'] ?? ''),
+                    'vendor_id' => $vid, 'shop_name' => $shopName,
+                    'key' => $pk];
                 if (count($sampleDiff) < 5) $sampleDiff[] = '  💰 ' . mb_substr($r['title'], 0, 38)
                     . ' — ' . number_format($have) . ' → ' . number_format($want);
             } else {
                 $out['matched']++;
-                // v8.50: فهرست یکسان‌ها هم نگه داشته می‌شود تا شمارندهٔ آن قابل کلیک باشد
                 if (count($out['matched_items']) < 500) {
-                    $out['matched_items'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $have];
+                    $out['matched_items'][] = ['id' => $r['id'], 'title' => $r['title'], 'price' => $have,
+                        'vendor_id' => $vid, 'shop_name' => $shopName];
                 }
             }
         }
@@ -36619,25 +36784,55 @@ function reconRun(array $cn, string $target, bool $apply = false,
                     . '، یکسان ' . $out['matched']]]);
         }
     }
+
+    // v10.107: محصولات مبدأ که در مقصد نیستند → باید سینک شوند
+    $missN = 0;
+    foreach ($expected as $etitle => $eh) {
+        $pk = trim((string)($eh['key'] ?? ''));
+        $found = isset($hitTitles[$etitle]) || ($pk !== '' && isset($hitKeys[$pk]));
+        if ($found) continue;
+        $missN++;
+        if (count($out['missing']) < 800) {
+            $out['missing'][] = [
+                'title' => $etitle,
+                'price' => (int)($eh['price'] ?? 0),
+                'profile' => (string)($eh['profile'] ?? ''),
+                'key' => $pk,
+                'vendor_id' => $vid,
+                'shop_name' => $shopName,
+                'why' => 'در مبدأ/پروفایل هست ولی در مقصد نیست',
+            ];
+        }
+    }
+    $out['missing_total'] = $missN;
+
     $out['no_src_price'] = $noPriceN;
     $out['matched_by_id'] = $byIdN;
     $out['id_map_size'] = count($idMap);
 
-    $doneLog = ['📊 اضافی: ' . count($out['extra'])
+    $doneLog = ['📊 اضافی (در مبدأ نیست): ' . count($out['extra'])
         . ' · مغایرت قیمت: ' . count($out['price_diff'])
-        . ' · یکسان: ' . $out['matched']];
+        . ' · یکسان: ' . $out['matched']
+        . ' · در مقصد نیست: ' . $missN];
     if ($byIdN > 0) $doneLog[] = '🔗 ' . $byIdN . ' محصول با شناسهٔ ثبت‌شده تطبیق خورد '
         . '(عنوانشان در مقصد عوض شده بود)';
     if ($noPriceN > 0) $doneLog[] = 'ℹ️ ' . $noPriceN . ' محصول در مبدأ قیمت ندارد — قیمتشان مقایسه نشد';
     if ($sampleDiff)  { $doneLog[] = 'نمونهٔ مغایرت قیمت:';  foreach ($sampleDiff as $l) $doneLog[] = $l; }
-    if ($sampleExtra) { $doneLog[] = 'نمونهٔ «در هیچ پروفایلی نیست»:'; foreach ($sampleExtra as $l) $doneLog[] = $l; }
+    if ($sampleExtra) { $doneLog[] = 'نمونهٔ «در مبدأ نیست»:'; foreach ($sampleExtra as $l) $doneLog[] = $l; }
+    if (count($out['missing']) > 0) {
+        $doneLog[] = 'نمونهٔ «در مقصد نیست» (نیاز به سینک):';
+        foreach (array_slice($out['missing'], 0, 5) as $mrow) {
+            $doneLog[] = '  📤 ' . mb_substr((string)($mrow['title'] ?? ''), 0, 45)
+                . (!empty($mrow['profile']) ? (' · ' . $mrow['profile']) : '');
+        }
+    }
     if (count($out['extra']) > 0 && count($out['extra']) === count($remote)) {
         $doneLog[] = '⚠️ هیچ محصولی تطبیق نخورد — احتمالاً عنوان‌های مقصد با پروفایل فرق دارند '
                    . '(پسوند پروفایل یا تغییر نام). قبل از «حذف»، فهرست را ببینید.';
     }
     reconProgress(['phase' => $apply ? 'apply' : 'done',
         'extra' => count($out['extra']), 'diff' => count($out['price_diff']),
-        'matched' => $out['matched'], 'cur' => 0, 'cur_total' => 0,
+        'matched' => $out['matched'], 'missing' => $missN, 'cur' => 0, 'cur_total' => 0,
         'log_add' => $doneLog]);
 
     if (!$apply) return $out;
@@ -36652,8 +36847,7 @@ function reconRun(array $cn, string $target, bool $apply = false,
                     ['regular_price' => (string)$d['to']]);
                 $okRow = !empty($r['ok']);
             } else {
-                $tk = (string)$cn['basalam']['token']; $vid = (int)$cn['basalam']['vendor_id'];
-                $bu = ['primary_price' => $d['to'] * 10];      // باسلام ریال می‌خواهد
+                $bu = ['primary_price' => $d['to'] * 10];
                 $r = bslReq($tk, 'PATCH', 'products/' . $d['id'], $bu);
                 if ((int)($r['code'] ?? 0) === 404)
                     $r = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $d['id'], $bu);
@@ -36670,10 +36864,8 @@ function reconRun(array $cn, string $target, bool $apply = false,
         }
     }
 
-    // --- حذف/بازنشستگی موارد اضافی ---
+    // --- حذف/بازنشستگی موارد اضافی (در مبدأ نیست) ---
     if ($mode !== 'off' && $out['extra']) {
-        // v8.47: مبنای درصد باید کل محصولات مقصد باشد. retireGuard خودش
-        // removed را به مخرج اضافه می‌کند، پس «باقی‌مانده» را می‌دهیم.
         $kept = max(0, count($remote) - count($out['extra']));
         $guard = retireGuard(count($out['extra']), $kept, $cn);
         $out['guard'] = $guard;
@@ -36692,23 +36884,21 @@ function reconRun(array $cn, string $target, bool $apply = false,
                 } elseif ($mode === 'outofstock') {
                     $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'],
                         'PUT', 'products/' . $d['id'], ['stock_status' => 'outofstock', 'stock_quantity' => 0]);
-                } else {
+                } else { // draft
                     $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'],
                         'PUT', 'products/' . $d['id'], ['status' => 'draft']);
                 }
                 $okRow = !empty($r['ok']);
             } else {
-                $tk = (string)$cn['basalam']['token']; $vid = (int)$cn['basalam']['vendor_id'];
-                if ($mode === 'delete') {
-                    // v8.62: باسلام حذف واقعی ندارد؛ بایگانی می‌کنیم
-                    $r = bslArchiveProduct($tk, $vid, (int)$d['id']);
-                } elseif ($mode === 'outofstock') {
-                    $r = bslEditProduct($tk, $vid, (int)$d['id'], ['stock' => 0]);
-                } else {
-                    $r = bslReq($tk, 'PATCH', 'products/' . $d['id'], ['status' => 3790]);
-                    if ((int)($r['code'] ?? 0) === 404) $r = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $d['id'], ['status' => 3790]);
+                // باسلام: بایگانی نزدیک‌ترین معادل حذف
+                if ($mode === 'delete' || $mode === 'draft' || $mode === 'outofstock') {
+                    $r = bslReq($tk, 'POST', 'products/' . $d['id'] . '/archive');
+                    if (empty($r['ok']))
+                        $r = bslReq($tk, 'PATCH', 'products/' . $d['id'], ['status' => 3790]);
+                    if (empty($r['ok']))
+                        $r = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $d['id'], ['status' => 3790]);
+                    $okRow = !empty($r['ok']);
                 }
-                $okRow = !empty($r['ok']);
             }
             if ($okRow) $out['deleted']++; else $out['failed']++;
             $out['extra'][$i]['done'] = $okRow;
@@ -36719,8 +36909,283 @@ function reconRun(array $cn, string $target, bool $apply = false,
             usleep(200000);
         }
     }
+
     return $out;
 }
+
+/**
+ * v10.107: مغایرت‌گیری — پشتیبانی همهٔ غرفه‌های باسلام + گزارش «در مقصد نیست».
+ * $allVendors فقط برای target=bsl معنا دارد.
+ */
+function reconRun(array $cn, string $target, bool $apply = false,
+                  string $mode = 'off', bool $fixPrice = true, bool $allProfiles = false,
+                  bool $allVendors = false, int $onlyVendorId = 0): array {
+    if ($target !== 'bsl' || (!$allVendors && $onlyVendorId <= 0)) {
+        // سازگاری: یک غرفه/ووکامرس
+        $shopName = ''; $shopTok = ''; $vid = 0;
+        if ($target === 'bsl') {
+            $vid = $onlyVendorId > 0 ? $onlyVendorId : (int)($cn['basalam']['vendor_id'] ?? 0);
+            foreach (bslAllShops($cn) as $sh) {
+                if ((int)$sh['vendor_id'] === $vid) {
+                    $shopName = (string)$sh['shop_name'];
+                    $shopTok = (string)$sh['token'];
+                    break;
+                }
+            }
+            if ($shopTok === '') {
+                $shopTok = (string)($cn['basalam']['token'] ?? '');
+                $shopName = 'غرفهٔ پیش‌فرض';
+            }
+        }
+        return reconRunOne($cn, $target, $apply, $mode, $fixPrice, $allProfiles, $vid, $shopName, $shopTok);
+    }
+
+    $shops = bslAllShops($cn);
+    if ($onlyVendorId > 0) {
+        $shops = array_values(array_filter($shops, function ($s) use ($onlyVendorId) {
+            return (int)($s['vendor_id'] ?? 0) === $onlyVendorId;
+        }));
+    }
+    if (!$shops) {
+        return ['ok' => false, 'error' => 'هیچ غرفهٔ فعالی برای مغایرت‌گیری نیست', 'target' => 'bsl'];
+    }
+
+    $agg = ['ok' => true, 'target' => 'bsl', 'apply' => $apply, 'mode' => $mode,
+            'all_profiles' => $allProfiles, 'all_vendors' => true,
+            'shops' => [], 'expected' => 0, 'remote' => 0,
+            'extra' => [], 'price_diff' => [], 'missing' => [],
+            'matched' => 0, 'matched_items' => [],
+            'deleted' => 0, 'repriced' => 0, 'failed' => 0,
+            'missing_total' => 0, 'extra_total' => 0, 'price_diff_total' => 0];
+
+    reconProgress(['log_add' => ['🚚 مغایرت‌گیری همهٔ غرفه‌ها — ' . count($shops) . ' غرفه']]);
+
+    foreach ($shops as $si => $sh) {
+        $vid = (int)$sh['vendor_id'];
+        $name = (string)$sh['shop_name'];
+        $tok = (string)$sh['token'];
+        reconProgress(['log_add' => ['——— غرفه ' . ($si + 1) . '/' . count($shops) . ': ' . $name . ' (#' . $vid . ') ———']]);
+        $one = reconRunOne($cn, 'bsl', $apply, $mode, $fixPrice, $allProfiles, $vid, $name, $tok);
+        $agg['shops'][] = [
+            'vendor_id' => $vid, 'shop_name' => $name, 'ok' => !empty($one['ok']),
+            'error' => (string)($one['error'] ?? ''),
+            'remote' => (int)($one['remote'] ?? 0),
+            'extra' => count($one['extra'] ?? []),
+            'diff' => count($one['price_diff'] ?? []),
+            'missing' => (int)($one['missing_total'] ?? count($one['missing'] ?? [])),
+            'matched' => (int)($one['matched'] ?? 0),
+            'repriced' => (int)($one['repriced'] ?? 0),
+            'deleted' => (int)($one['deleted'] ?? 0),
+        ];
+        if (empty($one['ok']) && empty($agg['error'])) $agg['error'] = (string)($one['error'] ?? '');
+        // اگر حداقل یکی ok باشد، agg.ok می‌ماند true مگر همه fail
+        $agg['remote'] += (int)($one['remote'] ?? 0);
+        $agg['expected'] = max($agg['expected'], (int)($one['expected'] ?? 0));
+        $agg['matched'] += (int)($one['matched'] ?? 0);
+        $agg['repriced'] += (int)($one['repriced'] ?? 0);
+        $agg['deleted'] += (int)($one['deleted'] ?? 0);
+        $agg['failed'] += (int)($one['failed'] ?? 0);
+        $agg['missing_total'] += (int)($one['missing_total'] ?? count($one['missing'] ?? []));
+        foreach (['extra', 'price_diff', 'missing', 'matched_items'] as $k) {
+            foreach ((array)($one[$k] ?? []) as $row) {
+                if (count($agg[$k]) < 900) $agg[$k][] = $row;
+            }
+        }
+        if (!empty($one['profile_stats']) && empty($agg['profile_stats']))
+            $agg['profile_stats'] = $one['profile_stats'];
+        $agg['matched_by_id'] = (int)($agg['matched_by_id'] ?? 0) + (int)($one['matched_by_id'] ?? 0);
+        $agg['no_src_price'] = (int)($agg['no_src_price'] ?? 0) + (int)($one['no_src_price'] ?? 0);
+    }
+
+    $anyOk = false;
+    foreach ($agg['shops'] as $s) if (!empty($s['ok'])) { $anyOk = true; break; }
+    $agg['ok'] = $anyOk;
+    if (!$anyOk && empty($agg['error'])) $agg['error'] = 'مغایرت‌گیری هیچ غرفه‌ای موفق نبود';
+
+    reconProgress(['log_add' => ['🏁 جمع همهٔ غرفه‌ها: مقصد ' . $agg['remote']
+        . ' · اضافی ' . count($agg['extra'])
+        . ' · مغایرت ' . count($agg['price_diff'])
+        . ' · در مقصد نیست ' . $agg['missing_total']]]);
+
+    return $agg;
+}
+
+/**
+ * v10.107: تیک دوره‌ای مغایرت‌گیری داخل cron_run
+ */
+function reconAutoTick(array $cn, int $now = 0): array {
+    if ($now <= 0) $now = time();
+    $cfg = reconAutoCfg($cn);
+    $out = ['ok' => true, 'ran' => false, 'skipped' => ''];
+    if (empty($cfg['enabled'])) { $out['skipped'] = 'disabled'; return $out; }
+
+    $st = reconAutoStateLoad();
+    $last = (int)($st['last_run'] ?? 0);
+    $ivSec = max(3600, (int)$cfg['interval_h'] * 3600);
+    if ($last > 0 && ($now - $last) < $ivSec) {
+        $out['skipped'] = 'not_due';
+        $out['next_in'] = $ivSec - ($now - $last);
+        return $out;
+    }
+
+    // اگر مغایرت‌گیری دستی در جریان است، این دور را رد کن
+    $lockFile = __DIR__ . '/recon.lock';
+    if (is_file($lockFile) && (time() - (int)@filemtime($lockFile)) < 600) {
+        $out['skipped'] = 'busy'; return $out;
+    }
+
+    $st['last_run'] = $now;
+    $st['last_start'] = $now;
+    reconAutoStateSave($st);
+
+    $results = [];
+    $targets = [];
+    if (!empty($cfg['woo'])) $targets[] = 'woo';
+    if (!empty($cfg['bsl'])) $targets[] = 'bsl';
+
+    foreach ($targets as $t) {
+        try {
+            reconProgress(['running' => true, 'done' => false, 'target' => $t,
+                'apply' => !empty($cfg['apply']), 'started_at' => time(),
+                'log_add' => ['⏰ مغایرت‌گیری دوره‌ای — ' . ($t === 'woo' ? 'ووکامرس' : 'باسلام')]]);
+            $res = reconRun($cn, $t, !empty($cfg['apply']), (string)$cfg['extra_mode'],
+                !empty($cfg['fix_price']), !empty($cfg['all_profiles']),
+                $t === 'bsl' && !empty($cfg['all_vendors']), 0);
+            foreach (['extra', 'price_diff', 'matched_items', 'missing'] as $k) {
+                $res[$k . '_total'] = $k === 'missing'
+                    ? (int)($res['missing_total'] ?? count($res[$k] ?? []))
+                    : count($res[$k] ?? []);
+                if (isset($res[$k]) && count($res[$k]) > 300) $res[$k] = array_slice($res[$k], 0, 300);
+            }
+            $results[$t] = [
+                'ok' => !empty($res['ok']),
+                'remote' => (int)($res['remote'] ?? 0),
+                'extra' => (int)($res['extra_total'] ?? 0),
+                'diff' => (int)($res['price_diff_total'] ?? 0),
+                'missing' => (int)($res['missing_total'] ?? 0),
+                'matched' => (int)($res['matched'] ?? 0),
+                'repriced' => (int)($res['repriced'] ?? 0),
+                'deleted' => (int)($res['deleted'] ?? 0),
+                'shops' => $res['shops'] ?? [],
+                'error' => (string)($res['error'] ?? ''),
+            ];
+            @file_put_contents(__DIR__ . '/recon_result.json',
+                json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
+            reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
+                'extra' => (int)$results[$t]['extra'], 'diff' => (int)$results[$t]['diff'],
+                'matched' => (int)$results[$t]['matched'], 'missing' => (int)$results[$t]['missing'],
+                'result_ok' => !empty($res['ok']), 'error' => $res['error'] ?? '',
+                'log_add' => ['✅ پایان مغایرت‌گیری دوره‌ای ' . $t]]);
+        } catch (\Throwable $e) {
+            $results[$t] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 200)];
+        }
+    }
+
+    $out['ran'] = true;
+    $out['results'] = $results;
+    $st['last_finish'] = time();
+    $st['last_results'] = $results;
+    reconAutoStateSave($st);
+
+    if (!empty($cfg['notify']) && function_exists('notifSend')) {
+        $lines = ['⚖ مغایرت‌گیری دوره‌ای v' . APP_VERSION];
+        foreach ($results as $t => $r) {
+            $lbl = $t === 'woo' ? 'ووکامرس' : 'باسلام';
+            if (empty($r['ok'])) { $lines[] = "❌ {$lbl}: " . ($r['error'] ?? 'خطا'); continue; }
+            $lines[] = "✓ {$lbl}: مقصد " . (int)$r['remote']
+                . ' · در مبدأ نیست ' . (int)$r['extra']
+                . ' · مغایرت قیمت ' . (int)$r['diff']
+                . ' · در مقصد نیست ' . (int)$r['missing']
+                . ' · یکسان ' . (int)$r['matched'];
+            if (!empty($r['repriced']) || !empty($r['deleted'])) {
+                $lines[] = '  اعمال: قیمت ' . (int)$r['repriced'] . ' · حذف/بایگانی ' . (int)$r['deleted'];
+            }
+        }
+        $lines[] = '🕐 ' . date('Y/m/d H:i');
+        try { notifSend($cn, implode("\n", $lines), 'sync'); } catch (\Throwable $e) {}
+    }
+    return $out;
+}
+
+/**
+ * v10.107: تیک دوره‌ای اصلاح دسته با AI و/یا حافظهٔ یادگیری
+ */
+function catfixAutoTick(array $cn, int $now = 0): array {
+    if ($now <= 0) $now = time();
+    $cfg = catfixAutoCfg($cn);
+    $out = ['ok' => true, 'ran' => false, 'skipped' => ''];
+    if (empty($cfg['enabled'])) { $out['skipped'] = 'disabled'; return $out; }
+
+    $st = catfixAutoStateLoad();
+    $last = (int)($st['last_run'] ?? 0);
+    $ivSec = max(3600, (int)$cfg['interval_h'] * 3600);
+    if ($last > 0 && ($now - $last) < $ivSec) {
+        $out['skipped'] = 'not_due';
+        $out['next_in'] = $ivSec - ($now - $last);
+        return $out;
+    }
+    if (is_file(CATFIX_LOCK_FILE) && (time() - (int)@filemtime(CATFIX_LOCK_FILE)) < 900) {
+        $out['skipped'] = 'busy'; return $out;
+    }
+
+    $st['last_run'] = $now;
+    catfixAutoStateSave($st);
+
+    $mode = (string)$cfg['mode'];
+    $opts = [
+        'quorum' => (int)$cfg['quorum'],
+        'use_learn' => !empty($cfg['use_learn']),
+        'all_vendors' => !empty($cfg['all_vendors']),
+        'periodic' => true,
+    ];
+
+    try {
+        if (!function_exists('catfixRun')) {
+            $out['ok'] = false; $out['error'] = 'catfixRun missing'; return $out;
+        }
+        // learned-only mode: force use_learn and light AI fallback
+        if ($mode === 'learned') {
+            $opts['use_learn'] = true;
+            $mode = 'master'; // AI fallback when learn misses
+            $opts['learn_first'] = true;
+        }
+        $rep = catfixRun($cn, $mode, $opts);
+        $out['ran'] = true;
+        $out['report'] = [
+            'ok' => !empty($rep['ok']),
+            'fixed' => (int)($rep['fixed'] ?? 0),
+            'failed' => (int)($rep['failed'] ?? 0),
+            'no_cat' => (int)($rep['no_cat'] ?? 0),
+            'total' => (int)($rep['total'] ?? 0),
+            'learned_hits' => (int)($rep['learned_hits'] ?? 0),
+            'msg' => (string)($rep['msg'] ?? ''),
+            'error' => (string)($rep['error'] ?? ''),
+        ];
+        $st['last_finish'] = time();
+        $st['last_report'] = $out['report'];
+        catfixAutoStateSave($st);
+
+        if (!empty($cfg['notify']) && function_exists('notifSend') && !empty($rep['ok'])) {
+            $msg = "📂 اصلاح دوره‌ای دسته باسلام\n"
+                . '✅ اصلاح‌شده: ' . (int)($rep['fixed'] ?? 0)
+                . ' · یادگیری: ' . (int)($rep['learned_hits'] ?? 0)
+                . ' · ناموفق: ' . (int)($rep['failed'] ?? 0)
+                . ' · کل: ' . (int)($rep['total'] ?? 0)
+                . "\n🕐 " . date('Y/m/d H:i');
+            try { notifSend($cn, $msg, 'sync'); } catch (\Throwable $e) {}
+        }
+    } catch (\Throwable $e) {
+        $out['ok'] = false;
+        $out['error'] = mb_substr($e->getMessage(), 0, 200);
+    }
+    return $out;
+}
+
+
+/* legacy reconRun replaced by v10.107 multi-vendor wrapper above — body kept via reconRunOne */
+
+/* v10.107: legacy reconRun body removed — logic lives in reconRunOne/reconRun */
+
 
 /* =====================================================================
  *  v10.35 (۴۷د): گزارشِ کاملِ هر همگام‌سازی
@@ -45692,6 +46157,65 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
     if (empty($bs['token']) || empty($bs['vendor_id']))
         return ['ok' => false, 'error' => 'تنظیمات باسلام ناقص است'];
     $tk = (string)$bs['token']; $vid = (int)$bs['vendor_id'];
+    /* v10.107: چندغرفه + اولویت یادگیری */
+    $useLearn = !isset($opts['use_learn']) || !empty($opts['use_learn']);
+    $learnFirst = !empty($opts['learn_first']) || !empty($opts['periodic']);
+    $allVendors = !empty($opts['all_vendors']);
+    $onlyVid = (int)($opts['vendor_id'] ?? 0);
+    $learnedHits = 0;
+
+    if ($allVendors && empty($opts['product_id'])) {
+        $shops = function_exists('bslAllShops') ? bslAllShops($cn) : [];
+        if (count($shops) > 1) {
+            catfixProgress(['log_add' => ['🚚 اصلاح دسته برای ' . count($shops) . ' غرفه']]);
+            $agg = ['ok' => true, 'mode' => $mode, 'total' => 0, 'fixed' => 0, 'failed' => 0,
+                    'no_ai' => 0, 'no_cat' => 0, 'skip_same' => 0, 'skip_tried' => 0,
+                    'asked' => 0, 'cache_hits' => 0, 'learned_hits' => 0, 'items' => [],
+                    'shops' => [], 'took' => 0, 'at' => time()];
+            foreach ($shops as $sh) {
+                $ov = $opts;
+                $ov['all_vendors'] = false;
+                $ov['vendor_id'] = (int)$sh['vendor_id'];
+                $ov['_shop_token'] = (string)$sh['token'];
+                $ov['_shop_name'] = (string)$sh['shop_name'];
+                catfixProgress(['log_add' => ['——— ' . $sh['shop_name'] . ' (#' . $sh['vendor_id'] . ') ———']]);
+                // temporarily swap default vendor into a shallow cn copy
+                $cn2 = $cn;
+                $cn2['basalam'] = is_array($cn['basalam'] ?? null) ? $cn['basalam'] : [];
+                $cn2['basalam']['token'] = (string)$sh['token'];
+                $cn2['basalam']['vendor_id'] = (int)$sh['vendor_id'];
+                $one = catfixRun($cn2, $mode, $ov);
+                $agg['shops'][] = ['vendor_id' => (int)$sh['vendor_id'], 'shop_name' => (string)$sh['shop_name'],
+                    'ok' => !empty($one['ok']), 'fixed' => (int)($one['fixed'] ?? 0),
+                    'total' => (int)($one['total'] ?? 0), 'failed' => (int)($one['failed'] ?? 0),
+                    'learned_hits' => (int)($one['learned_hits'] ?? 0)];
+                foreach (['total','fixed','failed','no_ai','no_cat','skip_same','skip_tried','asked','cache_hits','learned_hits'] as $k)
+                    $agg[$k] += (int)($one[$k] ?? 0);
+                foreach ((array)($one['items'] ?? []) as $it) {
+                    if (count($agg['items']) < 500) {
+                        $it['shop_name'] = (string)$sh['shop_name'];
+                        $it['vendor_id'] = (int)$sh['vendor_id'];
+                        $agg['items'][] = $it;
+                    }
+                }
+                if (empty($one['ok']) && empty($agg['error'])) $agg['error'] = (string)($one['error'] ?? '');
+            }
+            $agg['took'] = round(microtime(true) - $t0, 1);
+            $agg['msg'] = 'اصلاح چندغرفه: ' . (int)$agg['fixed'] . ' از ' . (int)$agg['total']
+                . ' · یادگیری ' . (int)$agg['learned_hits'];
+            return $agg;
+        }
+    }
+    if ($onlyVid > 0 && !empty($opts['_shop_token'])) {
+        $tk = (string)$opts['_shop_token'];
+        $vid = $onlyVid;
+    } elseif ($onlyVid > 0 && function_exists('bslAllShops')) {
+        foreach (bslAllShops($cn) as $sh) {
+            if ((int)$sh['vendor_id'] === $onlyVid) {
+                $tk = (string)$sh['token']; $vid = $onlyVid; break;
+            }
+        }
+    }
 
     catfixProgress(['phase' => 'cats', 'log_add' => ['📂 دریافتِ درختِ دسته‌بندی‌های باسلام...']]);
     $cats = catfixFlatCats($tk);
@@ -45750,7 +46274,7 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
     if ($total === 0) {
         return ['ok' => true, 'mode' => $mode, 'total' => 0, 'fixed' => 0, 'failed' => 0,
                 'no_ai' => 0, 'no_cat' => 0, 'skip_same' => 0, 'skip_tried' => 0,
-                'asked' => 0, 'cache_hits' => 0, 'items' => [],
+                'asked' => 0, 'cache_hits' => 0, 'learned_hits' => 0, 'items' => [],
                 'partial' => !empty($partial['partial']),
                 'took' => round(microtime(true) - $t0, 1), 'at' => time(),
                 'msg' => 'هیچ محصولِ ردشده‌ای پیدا نشد'];
@@ -45784,7 +46308,8 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
         };
         catfixProgress(['current' => $idx, 'last_title' => mb_substr($pName, 0, 50, 'UTF-8'),
             'fixed' => $fixed, 'failed' => $failed, 'no_ai' => $noAi, 'no_cat' => $noCat,
-            'skip_same' => $skipSame, 'skip_tried' => $skipTried, 'asked' => $asked]);
+            'skip_same' => $skipSame, 'skip_tried' => $skipTried, 'asked' => $asked,
+            'learned_hits' => $learnedHits]);
 
         if ($pName === '' && $mode !== 'ai_text') {
             $failed++; $push('failed', 'عنوانِ محصول خالی است');
@@ -45793,6 +46318,28 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
         }
 
         $catId = 0; $catName = ''; $winKeys = [];
+
+        /* v10.107: اول حافظهٔ یادگیری (با نظارت AI قبلی/دستی)، بعد مدل */
+        if ($useLearn && $pName !== '' && function_exists('catLearnLookup')) {
+            $lid = (int)catLearnLookup($pName);
+            if ($lid > 0) {
+                $lname = '';
+                if (function_exists('bslCatName')) $lname = (string)bslCatName($lid);
+                if ($lname === '' && !empty($cats)) {
+                    foreach ($cats as $c) {
+                        if ((int)($c['id'] ?? 0) === $lid) { $lname = (string)($c['title'] ?? $c['name'] ?? ''); break; }
+                    }
+                }
+                $catId = $lid;
+                $catName = $lname !== '' ? $lname : ('#' . $lid);
+                $learnedHits++;
+                // اگر learn_first و دسته پیدا شد، مستقیم برو برای apply (پایین حلقه)
+                if ($learnFirst || $mode === 'learned') {
+                    // fall through to same-cat / apply logic below by skipping AI fetch
+                    goto CATFIX_AFTER_AI_PICK;
+                }
+            }
+        }
 
         if ($mode === 'ai_text') {
             /* متنِ توصیهٔ خودِ باسلام + علتِ ردها */
@@ -45902,6 +46449,8 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
         }
 
         /* --- دو نگهبانِ همیشگی: همان دستهٔ فعلی، و دستهٔ قبلاً امتحان‌شده --- */
+        CATFIX_AFTER_AI_PICK:
+
         if ($curCat > 0 && $catId === $curCat) {
             $skipSame++;
             catTriedRecord($pId, $catId, $catName, $mode, 'skipped', $pName, $curCat);
@@ -45961,7 +46510,7 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
     return ['ok' => true, 'mode' => $mode, 'total' => $total, 'processed' => $idx,
             'fixed' => $fixed, 'failed' => $failed, 'no_ai' => $noAi, 'no_cat' => $noCat,
             'skip_same' => $skipSame, 'skip_tried' => $skipTried,
-            'skipped' => $skipSame + $skipTried, 'asked' => $asked, 'cache_hits' => $cacheHits,
+            'skipped' => $skipSame + $skipTried, 'asked' => $asked, 'cache_hits' => $cacheHits, 'learned_hits' => $learnedHits,
             'stopped' => $stopped, 'partial' => !empty($partial['partial']),
             /* v10.36 (۴۹ه): چند محصول توانستند بافتِ پروفایل بگیرند — اگر
                این عدد صفر باشد یعنی نه دفترچه شناسه‌ای دارد نه پسوندی
@@ -50496,24 +51045,66 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 </div></div>
 
 <div class="smenu">
-<div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>🔍 مغایرت‌گیری با مقصد</h3><span class="arrow">▼</span></div>
+<div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>🔍 مغایرت‌گیری با مقصد</h3><span class="cst off" id="reconAutoBadge">دوره‌ای</span><span class="arrow">▼</span></div>
 <div class="smenu-body">
-<details class="hint-mini" style="margin-bottom:8px"><summary>این بررسی چه می‌کند؟</summary>
+<details class="hint-mini" style="margin-bottom:8px"><summary>این بررسی چه می‌کند؟ (v10.107)</summary>
 <div class="hint-body" style="font-size:10.5px;color:#64748b;line-height:1.7">
-همهٔ پروفایل‌هایی که «همگام‌سازی دوره‌ای» آن‌ها روشن است را با فروشگاه مقایسه می‌کند:
-محصولی که در هیچ پروفایلی نیست، و محصولی که قیمتش مغایرت دارد.
-اول فقط گزارش می‌گیرد؛ اعمال تغییرات با تأیید شماست.
+پروفایل‌های مبدأ را با <b>ووکامرس</b> و <b>همهٔ غرفه‌های باسلام</b> مقایسه می‌کند و سه دسته را نشان می‌دهد:
+<br>• <b style="color:#fca5a5">در مبدأ نیست</b> — روی مقصد هست ولی در هیچ پروفایلی نیست (اضافی)
+<br>• <b style="color:#fbbf24">مغایرت قیمت</b> — قیمت مقصد ≠ مبدأ
+<br>• <b style="color:#67e8f9">در مقصد نیست</b> — در مبدأ/پروفایل هست ولی هنوز به غرفه/ووکامرس نرسیده (نیاز سینک)
+<br>اول فقط گزارش؛ اعمال با تأیید شما. می‌توانید دوره‌ای از کران هم اجرا شود.
 </div></details>
 <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin-bottom:6px;cursor:pointer">
 <input type="checkbox" id="reconAllProfiles" checked style="width:14px;height:14px">
 <span>همهٔ پروفایل‌ها (نه فقط آن‌هایی که همگام‌سازی دوره‌ای دارند)</span></label>
-<details class="hint-mini" style="margin:-2px 0 8px"><summary>چرا این تیک مهم است؟</summary>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin-bottom:6px;cursor:pointer">
+<input type="checkbox" id="reconAllVendors" checked style="width:14px;height:14px">
+<span>🏪 همهٔ غرفه‌های باسلام (نه فقط غرفهٔ پیش‌فرض)</span></label>
+<details class="hint-mini" style="margin:-2px 0 8px"><summary>چرا این تیک‌ها مهم‌اند؟</summary>
 <div class="hint-body" style="font-size:10px;color:#64748b;line-height:1.8">
-💡 اگر محصولات را دستی می‌فرستید، این گزینه باید روشن باشد؛ وگرنه گزارش خالی درمی‌آید.
+💡 اگر محصولات را دستی می‌فرستید، «همهٔ پروفایل‌ها» باید روشن باشد.<br>
+🚚 اگر چند غرفه دارید، «همهٔ غرفه‌ها» را روشن کنید تا هیچ غرفه‌ای از قلم نیفتد.
 </div></details>
 <div class="cact">
 <button class="btn btn-purple" onclick="reconScan('woo')" style="flex:1">🛒 بررسی ووکامرس</button>
 <button class="btn btn-cyan" onclick="reconScan('bsl')" style="flex:1">🏪 بررسی باسلام</button>
+</div>
+<button class="btn btn-teal" onclick="reconScanAll()" style="width:100%;margin-top:6px;font-size:11px">⚖ بررسی کامل: ووکامرس + همهٔ غرفه‌ها</button>
+
+<!-- v10.107: مغایرت‌گیری دوره‌ای -->
+<div style="margin-top:10px;padding:10px;background:linear-gradient(135deg,#0f172a,#1e3a5f);border:1px solid #334155;border-radius:10px">
+<div style="font-size:12px;color:#93c5fd;font-weight:800;margin-bottom:6px">⏰ مغایرت‌گیری دوره‌ای (کران)</div>
+<div style="font-size:10.5px;color:#94a3b8;line-height:1.7;margin-bottom:8px">
+با هر اجرای <code>?cron_run</code>، اگر موعد رسیده باشد، ووکامرس و همهٔ غرفه‌ها را با مبدأ مقایسه می‌کند.
+پیش‌فرض فقط <b>گزارش</b> است تا چیزی ناخواسته حذف نشود.
+</div>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#e2e8f0;margin-bottom:6px;cursor:pointer">
+<input type="checkbox" id="reconAutoEn" onchange="reconAutoSave()" style="width:15px;height:15px">
+<span>فعال‌سازی مغایرت‌گیری دوره‌ای</span></label>
+<div class="crow" style="align-items:center;margin-bottom:4px">
+<label style="flex:0 0 auto">هر چند ساعت:</label>
+<input type="number" id="reconAutoIv" min="1" max="168" value="6" onchange="reconAutoSave()" style="flex:1">
+</div>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="reconAutoWoo" checked onchange="reconAutoSave()" style="width:14px;height:14px"><span>ووکامرس</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="reconAutoBsl" checked onchange="reconAutoSave()" style="width:14px;height:14px"><span>باسلام (همهٔ غرفه‌ها)</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="reconAutoFixPrice" checked onchange="reconAutoSave()" style="width:14px;height:14px"><span>در حالت اعمال: اصلاح قیمت</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#fbbf24;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="reconAutoApply" onchange="reconAutoSave()" style="width:14px;height:14px"><span>اعمال خودکار تغییرات (خطرناک — پیش‌فرض خاموش)</span></label>
+<div class="crow" style="align-items:center;margin:4px 0">
+<label style="flex:0 0 auto">با موارد اضافی:</label>
+<select id="reconAutoMode" onchange="reconAutoSave()" style="flex:1;font-size:11px">
+<option value="off">فقط گزارش / اصلاح قیمت</option>
+<option value="draft">پیش‌نویس/غیرفعال</option>
+<option value="outofstock">ناموجود</option>
+<option value="delete">حذف/بایگانی</option>
+</select></div>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="reconAutoNotify" checked onchange="reconAutoSave()" style="width:14px;height:14px"><span>گزارش به پیام‌رسان</span></label>
+<div id="reconAutoStatus" style="font-size:10.5px;color:#67e8f9;margin-top:6px"></div>
 </div>
 <!-- v8.65: دفترچهٔ شناسه‌ها -->
 <div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155">
@@ -50536,8 +51127,8 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>🧠 یادگیری دسته‌بندی</h3><span class="cst off" id="catWordsBadge">۱ کلمه</span><span class="arrow">▼</span></div>
 <div class="smenu-body">
 <div style="font-size:10.5px;color:#64748b;margin-bottom:8px;line-height:1.7">
-هر بار دستهٔ محصولی را دستی اصلاح کنید، سیستم چند کلمهٔ اولِ عنوان را با آن دسته به خاطر می‌سپارد
-و دفعهٔ بعد خودش همان را پیشنهاد می‌دهد.
+هر بار دسته را دستی یا با <b>هوش مصنوعی</b> اصلاح کنید، چند کلمهٔ اول عنوان با آن دسته ذخیره می‌شود.
+در اصلاح دوره‌ای، اول از همین حافظه (با نظارت AI) استفاده می‌شود، بعد مدل.
 </div>
 <!-- v8.60: چند کلمهٔ اول -->
 <div class="crow" style="align-items:center">
@@ -50574,6 +51165,41 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 </div>
 </div>
 <div id="catLearnR" style="margin-top:8px"></div>
+
+<!-- v10.107: اصلاح دوره‌ای دسته با AI + یادگیری -->
+<div style="margin-top:12px;padding:10px;background:linear-gradient(135deg,#1a1030,#0f172a);border:1px solid #4c1d95;border-radius:10px">
+<div style="font-size:12px;color:#c4b5fd;font-weight:800;margin-bottom:6px">📂 اصلاح دوره‌ای دستهٔ باسلام (AI + یادگیری)</div>
+<div style="font-size:10.5px;color:#94a3b8;line-height:1.7;margin-bottom:8px">
+محصولات ردشدهٔ باسلام را در همهٔ غرفه‌ها، دوره‌ای با حافظهٔ یادگیری و مدل‌های کاندید اصلاح می‌کند.
+از کران (<code>?cron_run</code>) اجرا می‌شود.
+</div>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#e2e8f0;margin-bottom:6px;cursor:pointer">
+<input type="checkbox" id="catfixAutoEn" onchange="catfixAutoSave()" style="width:15px;height:15px">
+<span>فعال‌سازی اصلاح دوره‌ای دسته</span></label>
+<div class="crow" style="align-items:center;margin-bottom:4px">
+<label style="flex:0 0 auto">روش:</label>
+<select id="catfixAutoMode" onchange="catfixAutoSave()" style="flex:1;font-size:11px">
+<option value="learned">اول یادگیری، بعد AI</option>
+<option value="master">مدل مستر</option>
+<option value="quorum">اجماع چندمدلی</option>
+<option value="fallback">زنجیره پشتیبان</option>
+<option value="ai_text">متن بررسی باسلام</option>
+</select></div>
+<div class="crow" style="align-items:center;margin-bottom:4px">
+<label style="flex:0 0 auto">هر چند ساعت:</label>
+<input type="number" id="catfixAutoIv" min="1" max="168" value="12" onchange="catfixAutoSave()" style="flex:1">
+</div>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="catfixAutoAllVendors" checked onchange="catfixAutoSave()" style="width:14px;height:14px"><span>همهٔ غرفه‌ها</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="catfixAutoLearn" checked onchange="catfixAutoSave()" style="width:14px;height:14px"><span>اولویت حافظهٔ یادگیری</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
+<input type="checkbox" id="catfixAutoNotify" onchange="catfixAutoSave()" style="width:14px;height:14px"><span>گزارش به پیام‌رسان</span></label>
+<div class="cact" style="margin-top:8px">
+<button class="btn btn-purple" onclick="catfixOpen('master')" style="flex:1;font-size:11px">▶ اصلاح دستی الان</button>
+</div>
+<div id="catfixAutoStatus" style="font-size:10.5px;color:#c4b5fd;margin-top:6px"></div>
+</div>
 </div></div>
 
 <!-- v8.62: ویرایش مستقیم محصولات مقصد -->
@@ -60658,6 +61284,97 @@ function reconLabel(t){return t==='woo'?'ووکامرس':'باسلام';}
 
 /** گام ۱: فقط گزارش، بدون هیچ تغییری */
 function reconScan(target){reconStart(target,false,'off',1);}
+function reconScanAll(){
+  // پشت‌سرهم ووکامرس بعد باسلام
+  const box=$('reconR');
+  if(box)box.innerHTML='<div style="color:#93c5fd;font-size:11px">⏳ بررسی کامل: اول ووکامرس...</div>';
+  reconStart('woo',false,'off',1);
+  // باسلام را بعد از اتمام ووکامرس — کاربر می‌تواند جدا هم بزند
+  setTimeout(function(){ if(!window.reconTimer) reconStart('bsl',false,'off',1); }, 2500);
+}
+
+function reconAutoCollect(){
+  return {
+    enabled: !!($('reconAutoEn')||{}).checked,
+    woo: !!($('reconAutoWoo')||{}).checked,
+    bsl: !!($('reconAutoBsl')||{}).checked,
+    all_vendors: true,
+    all_profiles: !!($('reconAllProfiles')||{}).checked,
+    fix_price: !!($('reconAutoFixPrice')||{}).checked,
+    apply: !!($('reconAutoApply')||{}).checked,
+    extra_mode: (($('reconAutoMode')||{}).value||'off'),
+    interval_h: parseInt(($('reconAutoIv')||{}).value||'6')||6,
+    notify: !!($('reconAutoNotify')||{}).checked
+  };
+}
+function reconAutoSave(){
+  const fd=new FormData();
+  fd.append('action','save_connections');
+  fd.append('recon_auto', JSON.stringify(reconAutoCollect()));
+  fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+    const st=$('reconAutoStatus');
+    if(st) st.textContent = (d&&d.ok) ? '✓ ذخیره شد — از کران بعدی اعمال می‌شود' : ('✗ '+(d&&d.error||'خطا'));
+    reconAutoBadge();
+    if(d&&d.ok) showToast('تنظیمات مغایرت دوره‌ای ذخیره شد');
+  }).catch(()=>{const st=$('reconAutoStatus'); if(st) st.textContent='✗ شبکه';});
+}
+function reconAutoApplyCfg(c){
+  c=c||{};
+  const chk=(id,v)=>{const e=$(id); if(e) e.checked=!!v;};
+  const set=(id,v)=>{const e=$(id); if(e) e.value=v;};
+  chk('reconAutoEn', c.enabled);
+  chk('reconAutoWoo', c.woo!==false);
+  chk('reconAutoBsl', c.bsl!==false);
+  chk('reconAutoFixPrice', c.fix_price!==false);
+  chk('reconAutoApply', c.apply);
+  chk('reconAutoNotify', c.notify!==false);
+  set('reconAutoIv', c.interval_h||6);
+  set('reconAutoMode', c.extra_mode||'off');
+  reconAutoBadge();
+  const st=$('reconAutoStatus');
+  if(st && c.enabled) st.textContent='فعال · هر '+(c.interval_h||6)+' ساعت';
+}
+function reconAutoBadge(){
+  const b=$('reconAutoBadge'); if(!b) return;
+  const on=!!($('reconAutoEn')||{}).checked;
+  b.textContent=on?'دوره‌ای روشن':'دوره‌ای';
+  b.className='cst '+(on?'on':'off');
+}
+
+function catfixAutoCollect(){
+  return {
+    enabled: !!($('catfixAutoEn')||{}).checked,
+    mode: (($('catfixAutoMode')||{}).value||'learned'),
+    all_vendors: !!($('catfixAutoAllVendors')||{}).checked,
+    use_learn: !!($('catfixAutoLearn')||{}).checked,
+    interval_h: parseInt(($('catfixAutoIv')||{}).value||'12')||12,
+    quorum: 2,
+    notify: !!($('catfixAutoNotify')||{}).checked
+  };
+}
+function catfixAutoSave(){
+  const fd=new FormData();
+  fd.append('action','save_connections');
+  fd.append('catfix_auto', JSON.stringify(catfixAutoCollect()));
+  fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+    const st=$('catfixAutoStatus');
+    if(st) st.textContent=(d&&d.ok)?'✓ ذخیره شد — از کران بعدی':'✗ خطا';
+    if(d&&d.ok) showToast('اصلاح دوره‌ای دسته ذخیره شد');
+  }).catch(()=>{});
+}
+function catfixAutoApplyCfg(c){
+  c=c||{};
+  const chk=(id,v)=>{const e=$(id); if(e) e.checked=!!v;};
+  const set=(id,v)=>{const e=$(id); if(e) e.value=v;};
+  chk('catfixAutoEn', c.enabled);
+  chk('catfixAutoAllVendors', c.all_vendors!==false);
+  chk('catfixAutoLearn', c.use_learn!==false);
+  chk('catfixAutoNotify', c.notify);
+  set('catfixAutoMode', c.mode||'learned');
+  set('catfixAutoIv', c.interval_h||12);
+  const st=$('catfixAutoStatus');
+  if(st && c.enabled) st.textContent='فعال · هر '+(c.interval_h||12)+' ساعت · '+(c.mode||'learned');
+}
 
 /* v8.65: دفترچهٔ شناسهٔ مقصد */
 function rmapShow(){
@@ -60711,6 +61428,8 @@ function reconStart(target,apply,mode,fixPrice){
   let q='?recon=1&target='+encodeURIComponent(target);
   // v8.64: همهٔ پروفایل‌ها یا فقط همگام‌شونده‌ها
   if(($('reconAllProfiles')||{}).checked)q+='&all_profiles=1';
+  // v10.107: همهٔ غرفه‌های باسلام
+  if(target==='bsl'&&($('reconAllVendors')||{}).checked)q+='&all_vendors=1';
   if(apply)q+='&apply=1&mode='+encodeURIComponent(mode||'off')+'&fix_price='+(fixPrice?1:0);
   if(box)box.innerHTML='<div style="color:#93c5fd;font-size:11px">⏳ در حال شروع...</div>';
   fetch(q).then(r=>r.json()).then(d=>{
@@ -60763,8 +61482,8 @@ function reconWatch(target){
         const cell=(lbl,v,col)=>v===undefined?'':
           '<span style="color:#94a3b8">'+lbl+': <b style="color:'+col+'">'+toFa(v)+'</b></span>';
         c.innerHTML=cell('پروفایل',st.expected,'#e2e8f0')+cell('مقصد',st.remote,'#e2e8f0')
-          +cell('یکسان',st.matched,'#86efac')+cell('اضافی',st.extra,'#fca5a5')
-          +cell('مغایرت',st.diff,'#fbbf24')
+          +cell('یکسان',st.matched,'#86efac')+cell('در مبدأ نیست',st.extra,'#fca5a5')
+          +cell('مغایرت',st.diff,'#fbbf24')+cell('در مقصد نیست',st.missing,'#67e8f9')
           +(st.repriced?cell('اصلاح‌شده',st.repriced,'#4ade80'):'')
           +(st.deleted?cell('حذف‌شده',st.deleted,'#4ade80'):'')
           +(st.cur&&st.cur_total?'<span style="color:#93c5fd">'+toFa(st.cur)+'/'+toFa(st.cur_total)+'</span>':'');
@@ -60816,6 +61535,7 @@ function reconReport(d,target){
   // v8.50: هر شمارنده قابل کلیک است و فهرست محصولاتش را باز می‌کند
   reconLast=d; reconLastTarget=target;
   const nExtra=d.extra_total||0, nDiff=d.price_diff_total||0;
+  const nMiss=d.missing_total||((d.missing||[]).length)||0;
   const nMatch=d.matched||0, nExp=d.expected||0, nRem=d.remote||0;
   const cell=(icon,label,val,color,kind,enabled)=>
     '<div class="rc-cell'+(enabled?' rc-on':'')+'"'
@@ -60828,6 +61548,7 @@ function reconReport(d,target){
    +cell('✓','یکسان',nMatch,'#86efac','matched',nMatch>0)
    +cell('🗑','اضافی',nExtra,nExtra?'#fca5a5':'#64748b','extra',nExtra>0)
    +cell('💰','مغایرت قیمت',nDiff,nDiff?'#fbbf24':'#64748b','diff',nDiff>0)
+    +cell('📤','در مقصد نیست',nMiss,nMiss?'#67e8f9':'#64748b','missing',nMiss>0)
    +'</div>';
   if(d.applied){
     h+='<div style="color:#4ade80;margin:6px 0">✅ اعمال شد — '
@@ -60852,6 +61573,19 @@ function reconReport(d,target){
     });
     h+='</div></details>';
   }
+    if(d.shops&&d.shops.length){
+    h+='<div style="margin:6px 0;padding:8px;background:#0b1220;border:1px solid #334155;border-radius:8px;font-size:10.5px;line-height:1.85">';
+    h+='<div style="color:#67e8f9;font-weight:800;margin-bottom:4px">🏪 خلاصهٔ غرفه‌ها ('+toFa(d.shops.length)+')</div>';
+    d.shops.forEach(function(s){
+      h+='<div style="color:'+(s.ok?'#cbd5e1':'#fca5a5')+'">'+(s.ok?'✓':'✗')+' '+esc(s.shop_name||('#'+s.vendor_id))
+        +' — مقصد '+toFa(s.remote||0)
+        +' · در مبدأ نیست '+toFa(s.extra||0)
+        +' · مغایرت '+toFa(s.diff||0)
+        +' · در مقصد نیست '+toFa(s.missing||0)
+        +(s.error?(' · '+esc(s.error)):'')+'</div>';
+    });
+    h+='</div>';
+  }
   if(d.matched_by_id>0){
     h+='<div style="color:#86efac;font-size:10.5px;margin-top:4px">🔗 '+toFa(d.matched_by_id)
       +' محصول با شناسهٔ ثبت‌شده تطبیق خورد — عنوانشان در مقصد عوض شده بود</div>';
@@ -60867,7 +61601,8 @@ function reconReport(d,target){
       +'(پسوند پروفایل، تغییر نام دستی، یا پروفایل اشتباه). '
       +'قبل از هر اقدامی روی «اضافی» بزنید و فهرست را ببینید.</div>';
   }
-  if(!nExtra&&!nDiff)h+='<div style="color:#4ade80;margin-top:4px">✓ همه‌چیز هماهنگ است</div>';
+  if(!nExtra&&!nDiff&&!nMiss)h+='<div style="color:#4ade80;margin-top:4px">✓ همه‌چیز هماهنگ است</div>';
+  else if(nMiss)h+='<div style="color:#67e8f9;margin-top:4px">📤 '+toFa(nMiss)+' محصول در مبدأ هست ولی هنوز در مقصد نیست — از ارسال/سینک صف استفاده کنید</div>';
   if(!d.applied&&(nExtra||nDiff)){
     h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155">';
     h+='<div style="color:#94a3b8;margin-bottom:5px">اقدام برای موارد اضافی:</div>';
@@ -60892,8 +61627,9 @@ var reconLastTarget='';
 function reconList(kind){
   const d=reconLast||{};
   const map={
-    extra:{rows:d.extra||[],total:d.extra_total||0,title:'🗑 در هیچ پروفایلی نیست',color:'#fca5a5'},
+    extra:{rows:d.extra||[],total:d.extra_total||0,title:'🗑 در مبدأ نیست (اضافی مقصد)',color:'#fca5a5'},
     diff:{rows:d.price_diff||[],total:d.price_diff_total||0,title:'💰 مغایرت قیمت',color:'#fbbf24'},
+    missing:{rows:d.missing||[],total:d.missing_total||0,title:'📤 در مقصد نیست (نیاز سینک)',color:'#67e8f9'},
     matched:{rows:d.matched_items||[],total:d.matched_items_total||d.matched||0,
              title:'✓ یکسان',color:'#86efac'}
   }[kind];
@@ -64401,7 +65137,10 @@ renderChangelog();
 // ========== Connection JS ==========
 let wSend=false,bSend=false,cn={woocommerce:{},basalam:{}},extractPollTimer=null,extractModalTimer=null;
 function loadConn(){fetch('',{method:'POST',body:new URLSearchParams('action=load_connections')}).then(r=>r.json()).then(d=>{if(d.ok){cn=d.connections;applyCn();}}).catch(()=>{});}
-function applyCn(){const w=cn.woocommerce||{},b=cn.basalam||{};if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;try{const sm=w.sync_mode||'api';if($('wcModeApi'))$('wcModeApi').checked=(sm!=='direct');if($('wcModeDirect'))$('wcModeDirect').checked=(sm==='direct');if($('wcSyncFallback'))$('wcSyncFallback').value=w.sync_fallback||'api_then_direct';}catch(e){}if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
+function applyCn(){const w=cn.woocommerce||{},b=cn.basalam||{};
+try{if(typeof reconAutoApplyCfg==='function') reconAutoApplyCfg(cn.recon_auto||{});}catch(e){}
+try{if(typeof catfixAutoApplyCfg==='function') catfixAutoApplyCfg(cn.catfix_auto||{});}catch(e){}
+if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;try{const sm=w.sync_mode||'api';if($('wcModeApi'))$('wcModeApi').checked=(sm!=='direct');if($('wcModeDirect'))$('wcModeDirect').checked=(sm==='direct');if($('wcSyncFallback'))$('wcSyncFallback').value=w.sync_fallback||'api_then_direct';}catch(e){}if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
 if($('bsIndirect'))$('bsIndirect').checked=!!b.net_indirect;// v7.48: Restore category in searchable dropdown
 if(b.category_id){$('bsCat').value=String(b.category_id);bslSelectedCatId=b.category_id;if(bslAllCats.length>0){renderBslCatDropdown(bslAllCats,b.category_id);}else{loadBslCats();}}else{$('bsCat').value='0';bslSelectedCatId=0;if($('bsCatSearch'))$('bsCatSearch').value='';}
 if($('bsAutoCat'))$('bsAutoCat').checked=!!b.auto_category;if($('bsSendAllShops')){$('bsSendAllShops').checked=!!b.send_all_shops;try{bslRenderShopsHint();}catch(e){}}if($('bsDelayMs')&&b.delay_ms)$('bsDelayMs').value=b.delay_ms;if($('bsRetryDelayMs')&&b.retry_delay_ms)$('bsRetryDelayMs').value=b.retry_delay_ms;
@@ -72550,6 +73289,10 @@ function catfixOpen(mode){
       +'<pre id="cpromptOut" class="hidden" dir="ltr" style="white-space:pre-wrap;background:#0b1220;border:1px solid #334155;border-radius:6px;padding:8px;font-size:10px;max-height:280px;overflow:auto;margin-top:6px"></pre>'
       +'</div></details>'
       +'<div style="display:flex;gap:6px;margin-top:8px">'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:6px 0;cursor:pointer">'
+      +'<input type="checkbox" id="cfAllVendors" checked style="width:14px;height:14px"> همهٔ غرفه‌های باسلام</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0 8px;cursor:pointer">'
+      +'<input type="checkbox" id="cfUseLearn" checked style="width:14px;height:14px"> اول حافظهٔ یادگیری، بعد AI</label>'
       +'<button class="btn btn-green" id="cfBtn" onclick="catfixStart()" style="flex:1">▶ شروعِ اصلاح</button>'
       +'<button class="btn btn-red hidden" id="cfStopBtn" onclick="catfixStop()" style="flex:0">⏹ توقف</button>'
       +'</div>'
@@ -72652,6 +73395,11 @@ function catfixStart(productId){
         url+='&quorum='+encodeURIComponent((q&&q.value)||2);
     }
     if(productId)url+='&product_id='+encodeURIComponent(productId);
+    // v10.107: همهٔ غرفه‌ها + یادگیری
+    const av=document.getElementById('cfAllVendors');
+    if(av&&av.checked) url+='&all_vendors=1';
+    const ul=document.getElementById('cfUseLearn');
+    if(!ul||ul.checked) url+='&use_learn=1';
     cfSeen=0;
     const L=id=>document.getElementById(id);
     if(L('cfBtn'))L('cfBtn').classList.add('hidden');

@@ -6,7 +6,7 @@
  *              مناسب به‌عنوان برگه پشتیبان وقتی ویترین اصلی خاموش، خراب یا با خطای ۴۰۴ است.
  *
  * @package AMPHP
- * @version 13.3.20
+ * @version 13.3.21
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -311,8 +311,14 @@ $currency_label = ! empty( $settings['currency_symbol'] ) ? (string) $settings['
     <div class="amphp-native-footer-hint">
       💡 این برگه می‌تواند «فروشگاه پشتیبان» باشد تا در خطای چهارصدوچهار یا خرابی ویترین اصلی، مشتری به اینجا بیاید.
       حتی پس از خاموش‌کردن افزونهٔ ویترین، لینک همین برگه و (در صورت تنظیم) صفحهٔ فروشگاه ووکامرس همچنان کار می‌کند.
+      چت پشتیبانی هوشمند (همان ویترین React) از گوشهٔ صفحه در دسترس است.
     </div>
   </div>
 </main>
 <?php
+/* v13.3.21: چت پشتیبانی هوشمند روی قالب بومی — قبل از فوتر هم force می‌شود */
+$GLOBALS['amphp_force_native_chat'] = true;
+if ( class_exists( 'Scraper_Auto_Shop_Plugin' ) && is_callable( array( 'Scraper_Auto_Shop_Plugin', 'print_native_support_chat_widget' ) ) ) {
+	Scraper_Auto_Shop_Plugin::print_native_support_chat_widget();
+}
 get_footer();

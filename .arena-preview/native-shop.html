@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>پیش‌نمایش فروشگاه بومی وردپرس — نسخه ۱۳٫۳٫۲۰</title>
+<title>پیش‌نمایش فروشگاه بومی وردپرس — نسخه ۱۳٫۳٫۲۱</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
 <style>
 :root { --accent:#2563eb; }
@@ -96,7 +96,7 @@ body{
 <body>
 <div class="top-links">
   <a href="/">← بازگشت به ویترین اصلی</a>
-  <span class="badge">نسخه ۱۳٫۳٫۲۰ · فروشگاه بومی</span>
+  <span class="badge">نسخه ۱۳٫۳٫۲۱ · فروشگاه بومی</span>
   <span>برگهٔ پشتیبان · در خطای چهارصدوچهار به اینجا هدایت می‌شوید</span>
 </div>
 <header class="theme-header">
@@ -137,7 +137,7 @@ body{
 
 <footer class="theme-footer">
   پاصفحهٔ قالب وردپرس (نمونه)<br>
-  فروشگاه بومی · نسخه ۱۳٫۳٫۲۰
+  فروشگاه بومی · نسخه ۱۳٫۳٫۲۱
 </footer>
 <script>
 const items=[
@@ -160,5 +160,26 @@ document.getElementById('grid').innerHTML=items.map(([e,t,p])=>`
   </div>
 </article>`).join('');
 </script>
+
+<!-- v13.3.21 chat preview (static sandbox — full widget needs WP ajax) -->
+<link rel="stylesheet" href="/?amphp_sf=storefront.css&ver=13.3.21">
+<div id="amphp-support-chat-root" class="amphp-support-chat-root" dir="rtl" style="position:relative;z-index:99999"></div>
+<script>
+window.AMPHP_STOREFRONT = {
+  mode: 'chat-only', chat_only: true,
+  settings: {
+    enable_support_chat: true,
+    chat_window_title: 'پشتیبانی هوشمند',
+    chat_welcome_message: 'سلام! از برگهٔ پشتیبان بومی پیام بفرستید — همان چت هوشمند ویترین.',
+    chat_button_position: 'left',
+    shop_title: 'فروشگاه پشتیبان',
+    accent_color: '#2563eb'
+  },
+  ajax: { ajaxUrl: '/__no_ajax__', url: '/__no_ajax__', chatNonce: 'preview' },
+  products: [], meta: { version: '13.3.21', mode: 'chat-only' }
+};
+</script>
+<script src="/?amphp_sf=storefront.js&ver=13.3.21"></script>
+
 </body>
 </html>

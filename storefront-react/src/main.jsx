@@ -2178,7 +2178,7 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   return (
     <>
-      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.20" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.21" onClick={() => setOpen((v) => !v)}>
         <span>💬</span>
         <span className="lbl">{settings.chat_window_title || 'پشتیبانی'}</span>
       </button>
@@ -3277,22 +3277,44 @@ function StoreApp({ boot }) {
   );
 }
 
+function ChatOnlyApp({ boot }) {
+  const settings = (boot && boot.settings) || {};
+  const ajax = (boot && boot.ajax) || {};
+  if (!settings.enable_support_chat) return null;
+  return (
+    <SupportChat
+      settings={settings}
+      ajax={ajax}
+      productCtx={null}
+      openSignal={0}
+      onClearProduct={() => {}}
+    />
+  );
+}
+
 function mount() {
   try {
-    const el = document.getElementById('amphp-storefront-root');
+    const boot = (typeof window !== 'undefined' && window.AMPHP_STOREFRONT) ? window.AMPHP_STOREFRONT : {};
+    const chatOnly = !!(boot && (boot.mode === 'chat-only' || boot.chat_only));
+    const el = document.getElementById(chatOnly ? 'amphp-support-chat-root' : 'amphp-storefront-root')
+      || document.getElementById('amphp-storefront-root')
+      || document.getElementById('amphp-support-chat-root');
     if (!el) {
-      console.error('[AMPHP] #amphp-storefront-root not found');
+      if (!chatOnly) console.error('[AMPHP] #amphp-storefront-root not found');
       return;
     }
     if (el.getAttribute('data-mounted') === '1') return;
-    const boot = (typeof window !== 'undefined' && window.AMPHP_STOREFRONT) ? window.AMPHP_STOREFRONT : {};
     const root = createRoot(el);
-    root.render(<StoreApp boot={boot} />);
+    if (chatOnly || el.id === 'amphp-support-chat-root') {
+      root.render(<ChatOnlyApp boot={boot} />);
+    } else {
+      root.render(<StoreApp boot={boot} />);
+    }
     el.setAttribute('data-mounted', '1');
     try { el.querySelector('.amphp-sf-bootwait')?.remove(); } catch (_) {}
   } catch (err) {
     console.error('[AMPHP] mount failed', err);
-    const el = document.getElementById('amphp-storefront-root');
+    const el = document.getElementById('amphp-storefront-root') || document.getElementById('amphp-support-chat-root');
     if (el) {
       el.innerHTML = '<div style="padding:24px;text-align:center;font-family:Tahoma,sans-serif;color:#b91c1c;font-weight:800;line-height:1.7">خطا در اجرای فروشگاه<br><span style="font-size:.8rem;font-weight:600;color:#64748b">' + String(err && err.message || err) + '</span></div>';
     }

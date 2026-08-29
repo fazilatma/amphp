@@ -295,7 +295,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.107';
+const APP_VERSION = '10.108';
 const APP_VERSION_DATE = '1405/06/09';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -22513,6 +22513,46 @@ if (isset($_GET['ar_run'])) {
 }
 
 /** v8.49: نتیجهٔ کامل آخرین مغایرت‌گیری */
+
+/**
+ * v10.108: صف‌کردن دستی «در مقصد نیست»
+ * ?recon_enqueue=1&target=woo|bsl
+ * اختیاری: body/POST missing=json  یا از آخرین recon_result.json
+ */
+if (isset($_GET['recon_enqueue'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $target = (string)($_GET['target'] ?? '');
+    if ($target !== 'woo' && $target !== 'bsl') {
+        echo json_encode(['ok' => false, 'error' => 'مقصد نامعتبر'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    $cn = loadConnections();
+    $missing = [];
+    $raw = (string)($_POST['missing'] ?? $_GET['missing'] ?? '');
+    if ($raw !== '') {
+        $d = json_decode($raw, true);
+        if (is_array($d)) $missing = $d;
+    }
+    if (!$missing && is_file(__DIR__ . '/recon_result.json')) {
+        $rr = json_decode((string)@file_get_contents(__DIR__ . '/recon_result.json'), true);
+        if (is_array($rr) && (string)($rr['target'] ?? '') === $target) {
+            $missing = is_array($rr['missing'] ?? null) ? $rr['missing'] : [];
+        } elseif (is_array($rr) && empty($rr['target']) && $target === 'bsl') {
+            $missing = is_array($rr['missing'] ?? null) ? $rr['missing'] : [];
+        }
+    }
+    if (!$missing) {
+        echo json_encode(['ok' => false, 'error' => 'لیست «در مقصد نیست» خالی است — اول مغایرت‌گیری کنید'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $max = max(1, min(5000, (int)($_GET['max'] ?? $_POST['max'] ?? 2000)));
+    $res = reconEnqueueMissingProducts($cn, $target, $missing, [
+        'max' => $max,
+        'vendor_id' => (int)($_GET['vendor_id'] ?? 0),
+    ]);
+    echo json_encode($res, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if (isset($_GET['recon_result'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $f = __DIR__ . '/recon_result.json';
@@ -26884,12 +26924,26 @@ if (isset($_GET['selftest'])) {
       && strpos($selfSrc, "{v:'10.103',") !== false);
     $add('10.107', 'نسخهٔ ۱۰.۱۰۷',
          version_compare(APP_VERSION, '10.107', '>=')
-      && strpos($selfSrc, "{v:'10.107',") !== false);
+      && strpos($selfSrc, "  {v:'10.108', t:'📤 صف خودکار «در مقصد نیست» — پر کردن حفرهٔ سینک غرفه/ووکامرس', items:[
+    'بعد از مغایرت‌گیری، محصولات مبدأ که در مقصد نیستند با یک کلیک به <b>صف ارسال</b> می‌روند',
+    'در مغایرت دوره‌ای: تیک «صف خودکار در مقصد نیست» برای کران',
+    'گروه‌بندی بر اساس پروفایل + fan-out غرفه‌ها (در صورت چندغرفه)',
+    'اندپوینت ?recon_enqueue=1 برای صف دستی از آخرین گزارش'
+  ]},
+{v:'10.107',") !== false);
     $add('10.107', 'مغایرت‌گیری چندغرفه + در مقصد نیست + دوره‌ای',
          strpos($selfSrc, 'function reconRunOne') !== false
       && strpos($selfSrc, 'function reconAutoTick') !== false
       && strpos($selfSrc, 'function catfixAutoTick') !== false
       && strpos($selfSrc, "missing_total") !== false);
+
+    $add('10.108', 'نسخهٔ ۱۰.۱۰۸',
+         version_compare(APP_VERSION, '10.108', '>=')
+      && strpos($selfSrc, "{v:'10.108',") !== false);
+    $add('10.108', 'صف خودکار در مقصد نیست',
+         strpos($selfSrc, 'function reconEnqueueMissingProducts') !== false
+      && strpos($selfSrc, 'recon_enqueue') !== false
+      && strpos($selfSrc, 'reconAutoEnqueue') !== false);
     $add('10.103', 'ادامهٔ ۳‌باره + failed + idle retry',
          strpos($selfSrc, 'function queueResumeBook') !== false
       && strpos($selfSrc, 'function queueMarkEntryFailed') !== false
@@ -36506,7 +36560,8 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
             $pk = trim((string)($p['key'] ?? ''));
             if ($pk !== '' && !isset($stats['by_key'][$pk])) {
                 $stats['by_key'][$pk] = ['price' => (int)($p['final_price'] ?? 0),
-                                         'profile' => $name, 'key' => $pk];
+                                         'profile' => $name, 'profile_key' => (string)$key,
+                                         'key' => $pk];
             }
             $title = reconNormTitle((string)($p['title'] ?? ''));
             if ($title === '') continue;
@@ -36515,6 +36570,7 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
             $n++;
             if (isset($out[$title]) && (int)$out[$title]['price'] > 0) continue;
             $out[$title] = ['price' => $price, 'profile' => $name,
+                            'profile_key' => (string)$key,
                             'key' => (string)($p['key'] ?? '')];
         }
         if ($n === 0) { $stats['no_products']++; $stats['profiles'][] = ['name' => $name, 'n' => 0, 'why' => 'محصولی ندارد']; continue; }
@@ -36797,6 +36853,7 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
                 'title' => $etitle,
                 'price' => (int)($eh['price'] ?? 0),
                 'profile' => (string)($eh['profile'] ?? ''),
+                'profile_key' => (string)($eh['profile_key'] ?? ''),
                 'key' => $pk,
                 'vendor_id' => $vid,
                 'shop_name' => $shopName,
@@ -37013,6 +37070,303 @@ function reconRun(array $cn, string $target, bool $apply = false,
 /**
  * v10.107: تیک دوره‌ای مغایرت‌گیری داخل cron_run
  */
+
+/**
+ * v10.108: محصولات «در مقصد نیست» را از روی پروفایل‌ها به صف ارسال
+ * ووکامرس / باسلام می‌گذارد تا سینک پر شود.
+ *
+ * $missingRows: [{key, title, profile, vendor_id, shop_name, price}, ...]
+ * $target: woo|bsl
+ *
+ * @return array{ok:bool,queued:int,products:int,skipped:int,errors:array,queues:array}
+ */
+function reconEnqueueMissingProducts(array $cn, string $target, array $missingRows, array $opts = []): array {
+    $out = ['ok' => true, 'queued' => 0, 'products' => 0, 'skipped' => 0,
+            'errors' => [], 'queues' => [], 'by_profile' => []];
+    if ($target !== 'woo' && $target !== 'bsl') {
+        return ['ok' => false, 'error' => 'مقصد نامعتبر', 'queued' => 0, 'products' => 0];
+    }
+    if (!$missingRows) {
+        $out['skipped'] = 0;
+        $out['msg'] = 'موردی برای صف نیست';
+        return $out;
+    }
+
+    $maxItems = (int)($opts['max'] ?? 2000);
+    if ($maxItems < 1) $maxItems = 2000;
+    if ($maxItems > 5000) $maxItems = 5000;
+
+    // group keys by profile name (as stored in missing) AND try match loadProfiles
+    $profiles = loadProfiles();
+    // map profile display name -> key, and key -> profile
+    $byName = [];
+    $byKey = [];
+    foreach ($profiles as $pk => $pr) {
+        if (!is_array($pr)) continue;
+        $byKey[$pk] = $pr;
+        $nm = trim((string)($pr['name'] ?? $pk));
+        if ($nm !== '') $byName[mb_strtolower($nm)] = $pk;
+        $byName[mb_strtolower((string)$pk)] = $pk;
+    }
+
+    // missing may have key=productKey and profile=name
+    $groups = []; // profileKey => [productKey => true]
+    $noKey = 0;
+    $n = 0;
+    foreach ($missingRows as $row) {
+        if (!is_array($row)) continue;
+        if ($n >= $maxItems) break;
+        $prodKey = trim((string)($row['key'] ?? ''));
+        if ($prodKey === '') { $noKey++; continue; }
+        $pName = trim((string)($row['profile'] ?? ''));
+        $pk = trim((string)($row['profile_key'] ?? ''));
+        if ($pk !== '' && !isset($byKey[$pk])) $pk = '';
+        if ($pk === '' && $pName !== '') {
+            $pk = $byName[mb_strtolower($pName)] ?? '';
+        }
+        // fallback: scan all profiles for this product key
+        if ($pk === '') {
+            foreach ($byKey as $candPk => $pr) {
+                $raw = $pr['products'] ?? [];
+                $found = false;
+                if (is_array($raw)) {
+                    foreach ($raw as $entry) {
+                        if (is_array($entry) && isset($entry[0]) && (string)$entry[0] === $prodKey) {
+                            $found = true; break;
+                        }
+                        if (is_string($entry) && $entry === $prodKey) { $found = true; break; }
+                    }
+                    // also associative map style
+                    if (!$found && isset($raw[$prodKey])) $found = true;
+                }
+                if ($found) { $pk = $candPk; break; }
+            }
+        }
+        if ($pk === '' || !isset($byKey[$pk])) {
+            $out['skipped']++;
+            continue;
+        }
+        if (!isset($groups[$pk])) $groups[$pk] = [];
+        $groups[$pk][$prodKey] = true;
+        $n++;
+    }
+    if ($noKey > 0) $out['errors'][] = $noKey . ' ردیف بدون کلید محصول نادیده گرفته شد';
+    if (!$groups) {
+        $out['ok'] = false;
+        $out['error'] = 'هیچ محصولی به پروفایل وصل نشد — دفترچه/کلید محصول ناقص است';
+        return $out;
+    }
+
+    $now = time();
+    $onlyVendorId = (int)($opts['vendor_id'] ?? 0);
+    $shopNameOpt = trim((string)($opts['shop_name'] ?? ''));
+
+    foreach ($groups as $pk => $keySet) {
+        $profile = $byKey[$pk];
+        $pName = (string)($profile['name'] ?? $pk);
+        $products = profileOrderedProducts($profile, $keySet, true);
+        if (!$products) {
+            $out['skipped'] += count($keySet);
+            $out['by_profile'][] = ['profile' => $pName, 'queued' => 0, 'why' => 'محصول در پروفایل پیدا نشد'];
+            continue;
+        }
+        $out['products'] += count($products);
+
+        if ($target === 'woo') {
+            if (!function_exists('wooReadQueue') || !function_exists('wooWriteQueue')) {
+                $out['errors'][] = 'صف ووکامرس در دسترس نیست';
+                continue;
+            }
+            $w = $cn['woocommerce'] ?? [];
+            if (empty($w['store_url'])) {
+                $out['errors'][] = 'تنظیمات ووکامرس ناقص';
+                continue;
+            }
+            $wooSuffix = trim($profile['titleSuffix'] ?? '') ?: trim($cn['basalam']['title_suffix'] ?? '');
+            $wooCatId = (int)($profile['wooCategoryId'] ?? 0);
+            if ($wooCatId <= 0) $wooCatId = (int)($cn['woocommerce']['default_category'] ?? 0);
+            $wooForceAll = true; // missing = must send
+
+            $wooQueue = wooReadQueue();
+            $wooDup = function_exists('queueDedupOn') && queueDedupOn($cn)
+                ? queueHasProfile($wooQueue['entries'], $pk, queueDedupStale($cn)) : null;
+            // Always allow a dedicated recon-missing queue id even if profile has another row
+            $wooQueueId = 'recon_miss_woo_' . substr(md5($pk . '_' . $now . '_' . count($products)), 0, 12);
+            $wooQFile = __DIR__ . '/woo_queue_products_' . $wooQueueId . '.json';
+            if (@file_put_contents($wooQFile, json_encode($products, JSON_UNESCAPED_UNICODE), LOCK_EX) === false) {
+                $out['errors'][] = 'ذخیرهٔ فایل صف ووکامرس ناموفق: ' . $pName;
+                continue;
+            }
+            $wooBusy = false;
+            foreach ($wooQueue['entries'] as $qe0) {
+                if (($qe0['status'] ?? '') === 'running') { $wooBusy = true; break; }
+            }
+            $wooStatus = $wooBusy ? 'waiting' : 'running';
+            if ($wooStatus === 'running' && defined('WOO_PRODUCTS_FILE')) {
+                @file_put_contents(WOO_PRODUCTS_FILE, json_encode($products, JSON_UNESCAPED_UNICODE), LOCK_EX);
+            }
+            $wooQueue['entries'][] = [
+                'id' => $wooQueueId,
+                'status' => $wooStatus,
+                'products_file' => $wooQFile,
+                'total' => count($products),
+                'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                'started_at' => $wooStatus === 'running' ? $now : 0,
+                'done_at' => 0,
+                'profile_key' => $pk,
+                'profile_name' => $pName,
+                'only_changed' => false,
+                'trigger' => 'recon_missing',
+                'auto_sync' => true,
+                'config' => [
+                    'title_suffix' => $wooSuffix,
+                    'category_id' => $wooCatId,
+                    'force_all' => $wooForceAll,
+                ],
+            ];
+            wooWriteQueue($wooQueue);
+            $out['queued']++;
+            $out['queues'][] = ['target' => 'woo', 'id' => $wooQueueId, 'n' => count($products), 'profile' => $pName, 'status' => $wooStatus];
+            $out['by_profile'][] = ['profile' => $pName, 'queued' => count($products), 'queue_id' => $wooQueueId, 'target' => 'woo'];
+        } else {
+            // basalam
+            if (!function_exists('bslReadQueue') || !function_exists('bslWriteQueue')) {
+                $out['errors'][] = 'صف باسلام در دسترس نیست';
+                continue;
+            }
+            $queueId = 'recon_miss_bsl_' . substr(md5($pk . '_' . $now . '_' . count($products)), 0, 12);
+            $qFile = __DIR__ . '/bsl_queue_products_' . $queueId . '.json';
+            if (@file_put_contents($qFile, json_encode($products, JSON_UNESCAPED_UNICODE), LOCK_EX) === false) {
+                $out['errors'][] = 'ذخیرهٔ فایل صف باسلام ناموفق: ' . $pName;
+                continue;
+            }
+            $catId = (int)($cn['basalam']['category_id'] ?? 0);
+            $autoCat = !empty($cn['basalam']['auto_category']);
+            $titleSuffix = trim($profile['titleSuffix'] ?? '') ?: trim($cn['basalam']['title_suffix'] ?? '');
+            $delayMs = max(0, (int)($cn['basalam']['delay_ms'] ?? 500));
+            $retryDelayMs = max(0, (int)($cn['basalam']['retry_delay_ms'] ?? 1000));
+            $fallbackCats = $cn['basalam']['fallback_cat_ids'] ?? [];
+            $profileCatId = (int)($profile['bslCategoryId'] ?? 0);
+            if ($profileCatId > 0) $catId = $profileCatId;
+            $profileFallbackCats = $profile['bslFallbackCatIds'] ?? [];
+            $allFallbackCats = array_values(array_unique(array_merge(
+                is_array($profileFallbackCats) ? $profileFallbackCats : [],
+                is_array($fallbackCats) ? $fallbackCats : []
+            )));
+            $queue = bslReadQueue();
+
+            // Prefer specific vendor from missing row if present
+            $fanout = [];
+            if ($onlyVendorId > 0 && function_exists('bslAllShops')) {
+                foreach (bslAllShops($cn) as $sh) {
+                    if ((int)$sh['vendor_id'] === $onlyVendorId) {
+                        $fanout[] = ['vendor_id' => $onlyVendorId, 'shop_name' => (string)($sh['shop_name'] ?? $shopNameOpt), 'is_default' => !empty($sh['is_default'])];
+                        break;
+                    }
+                }
+            }
+            // If missing rows carried vendor_ids, collect unique for this batch
+            if (!$fanout) {
+                $vids = [];
+                foreach ($missingRows as $row) {
+                    if (!is_array($row)) continue;
+                    $rk = trim((string)($row['key'] ?? ''));
+                    if ($rk === '' || empty($keySet[$rk])) continue;
+                    $vid = (int)($row['vendor_id'] ?? 0);
+                    if ($vid > 0) $vids[$vid] = trim((string)($row['shop_name'] ?? ''));
+                }
+                if ($vids && function_exists('bslAllShops')) {
+                    foreach (bslAllShops($cn) as $sh) {
+                        $vid = (int)$sh['vendor_id'];
+                        if (isset($vids[$vid])) {
+                            $fanout[] = ['vendor_id' => $vid, 'shop_name' => (string)$sh['shop_name'], 'is_default' => !empty($sh['is_default'])];
+                        }
+                    }
+                }
+            }
+            // Default: if send_all_shops, fanout all; else single default entry
+            if (!$fanout) {
+                if (!empty($cn['basalam']['send_all_shops']) && function_exists('bslFanoutShops')) {
+                    $fanout = bslFanoutShops($cn);
+                }
+            }
+
+            if (count($fanout) > 1) {
+                $first = true;
+                foreach ($fanout as $sh) {
+                    $vid = (int)$sh['vendor_id'];
+                    $queue['entries'][] = [
+                        'id' => $first ? $queueId : ($queueId . '_s' . $vid),
+                        'status' => 'waiting',
+                        'products_file' => $qFile,
+                        'total' => count($products),
+                        'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                        'started_at' => 0, 'done_at' => 0, 'paused_at' => 0,
+                        'only_changed' => false,
+                        'config' => [
+                            'category_id' => $catId, 'auto_category' => $autoCat,
+                            'title_suffix' => $titleSuffix, 'delay_ms' => $delayMs,
+                            'retry_delay_ms' => $retryDelayMs, 'fallback_cat_ids' => $allFallbackCats,
+                            'send_all_shops' => 0, 'fanout' => 1,
+                            'shop_vendor_id' => $vid, 'shop_name' => (string)$sh['shop_name'],
+                            'force_all' => true,
+                        ],
+                        'profile_key' => $pk, 'profile_name' => $pName,
+                        'shop_vendor_id' => $vid, 'shop_name' => (string)$sh['shop_name'],
+                        'shop_is_default' => !empty($sh['is_default']),
+                        'batch_id' => $queueId,
+                        'trigger' => 'recon_missing',
+                        'auto_sync' => true,
+                    ];
+                    $first = false;
+                    $out['queued']++;
+                }
+            } else {
+                $cfg = [
+                    'category_id' => $catId, 'auto_category' => $autoCat,
+                    'title_suffix' => $titleSuffix, 'delay_ms' => $delayMs,
+                    'retry_delay_ms' => $retryDelayMs, 'fallback_cat_ids' => $allFallbackCats,
+                    'send_all_shops' => !empty($cn['basalam']['send_all_shops']),
+                    'force_all' => true,
+                ];
+                if ($fanout) {
+                    $cfg['shop_vendor_id'] = (int)$fanout[0]['vendor_id'];
+                    $cfg['shop_name'] = (string)$fanout[0]['shop_name'];
+                    $cfg['fanout'] = 1;
+                    $cfg['send_all_shops'] = 0;
+                }
+                $entry = [
+                    'id' => $queueId, 'status' => 'waiting', 'products_file' => $qFile,
+                    'total' => count($products),
+                    'sent' => 0, 'updated' => 0, 'skipped' => 0, 'failed' => 0, 'current' => 0,
+                    'started_at' => 0, 'done_at' => 0, 'paused_at' => 0,
+                    'only_changed' => false,
+                    'config' => $cfg,
+                    'profile_key' => $pk, 'profile_name' => $pName,
+                    'trigger' => 'recon_missing', 'auto_sync' => true,
+                ];
+                if ($fanout) {
+                    $entry['shop_vendor_id'] = (int)$fanout[0]['vendor_id'];
+                    $entry['shop_name'] = (string)$fanout[0]['shop_name'];
+                }
+                $queue['entries'][] = $entry;
+                $out['queued']++;
+            }
+            bslWriteQueue($queue);
+            $out['queues'][] = ['target' => 'bsl', 'id' => $queueId, 'n' => count($products), 'profile' => $pName];
+            $out['by_profile'][] = ['profile' => $pName, 'queued' => count($products), 'queue_id' => $queueId, 'target' => 'bsl'];
+        }
+    }
+
+    $out['msg'] = 'صف شد: ' . (int)$out['queued'] . ' ردیف · ' . (int)$out['products'] . ' محصول'
+        . ($out['skipped'] ? (' · ردشده ' . (int)$out['skipped']) : '');
+    if ($out['queued'] <= 0 && empty($out['errors'])) {
+        $out['ok'] = false;
+        $out['error'] = $out['msg'] ?: 'صفی ساخته نشد';
+    }
+    return $out;
+}
+
 function reconAutoTick(array $cn, int $now = 0): array {
     if ($now <= 0) $now = time();
     $cfg = reconAutoCfg($cn);
@@ -37068,7 +37422,31 @@ function reconAutoTick(array $cn, int $now = 0): array {
                 'deleted' => (int)($res['deleted'] ?? 0),
                 'shops' => $res['shops'] ?? [],
                 'error' => (string)($res['error'] ?? ''),
+                'enqueued' => 0,
+                'enqueue_products' => 0,
             ];
+            /* v10.108: صف خودکار «در مقصد نیست» */
+            if (!empty($cfg['enqueue_missing']) && !empty($res['ok']) && !empty($res['missing'])) {
+                try {
+                    $eq = reconEnqueueMissingProducts($cn, $t, (array)$res['missing'], ['max' => 2000]);
+                    $results[$t]['enqueue'] = [
+                        'ok' => !empty($eq['ok']),
+                        'queued' => (int)($eq['queued'] ?? 0),
+                        'products' => (int)($eq['products'] ?? 0),
+                        'msg' => (string)($eq['msg'] ?? ($eq['error'] ?? '')),
+                    ];
+                    $results[$t]['enqueued'] = (int)($eq['queued'] ?? 0);
+                    $results[$t]['enqueue_products'] = (int)($eq['products'] ?? 0);
+                    $res['enqueue'] = $results[$t]['enqueue'];
+                    reconProgress(['log_add' => [
+                        !empty($eq['ok'])
+                            ? ('📤 صف خودکار: ' . (int)($eq['products'] ?? 0) . ' محصول در ' . (int)($eq['queued'] ?? 0) . ' ردیف')
+                            : ('⚠️ صف خودکار: ' . (string)($eq['error'] ?? $eq['msg'] ?? 'ناموفق'))
+                    ]]);
+                } catch (\Throwable $e) {
+                    $results[$t]['enqueue'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
+                }
+            }
             @file_put_contents(__DIR__ . '/recon_result.json',
                 json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
             reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
@@ -37099,6 +37477,10 @@ function reconAutoTick(array $cn, int $now = 0): array {
                 . ' · یکسان ' . (int)$r['matched'];
             if (!empty($r['repriced']) || !empty($r['deleted'])) {
                 $lines[] = '  اعمال: قیمت ' . (int)$r['repriced'] . ' · حذف/بایگانی ' . (int)$r['deleted'];
+            }
+            if (!empty($r['enqueue_products']) || !empty($r['enqueued'])) {
+                $lines[] = '  📤 صف سینک: ' . (int)($r['enqueue_products'] ?? 0)
+                    . ' محصول · ' . (int)($r['enqueued'] ?? 0) . ' ردیف';
             }
         }
         $lines[] = '🕐 ' . date('Y/m/d H:i');
@@ -51104,6 +51486,9 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 </select></div>
 <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin:4px 0;cursor:pointer">
 <input type="checkbox" id="reconAutoNotify" checked onchange="reconAutoSave()" style="width:14px;height:14px"><span>گزارش به پیام‌رسان</span></label>
+<label style="display:flex;align-items:flex-start;gap:6px;font-size:11px;color:#67e8f9;margin:8px 0 4px;cursor:pointer;line-height:1.6">
+<input type="checkbox" id="reconAutoEnqueue" onchange="reconAutoSave()" style="width:14px;height:14px;margin-top:2px">
+<span><b>صف خودکار «در مقصد نیست»</b> — محصولاتی که در مبدأ هستند ولی در غرفه/ووکامرس نیستند، بعد از مغایرت دوره‌ای به صف ارسال می‌روند تا سینک پر شود</span></label>
 <div id="reconAutoStatus" style="font-size:10.5px;color:#67e8f9;margin-top:6px"></div>
 </div>
 <!-- v8.65: دفترچهٔ شناسه‌ها -->
@@ -61304,7 +61689,8 @@ function reconAutoCollect(){
     apply: !!($('reconAutoApply')||{}).checked,
     extra_mode: (($('reconAutoMode')||{}).value||'off'),
     interval_h: parseInt(($('reconAutoIv')||{}).value||'6')||6,
-    notify: !!($('reconAutoNotify')||{}).checked
+    notify: !!($('reconAutoNotify')||{}).checked,
+    enqueue_missing: !!($('reconAutoEnqueue')||{}).checked
   };
 }
 function reconAutoSave(){
@@ -61328,6 +61714,7 @@ function reconAutoApplyCfg(c){
   chk('reconAutoFixPrice', c.fix_price!==false);
   chk('reconAutoApply', c.apply);
   chk('reconAutoNotify', c.notify!==false);
+  chk('reconAutoEnqueue', c.enqueue_missing);
   set('reconAutoIv', c.interval_h||6);
   set('reconAutoMode', c.extra_mode||'off');
   reconAutoBadge();
@@ -61603,6 +61990,14 @@ function reconReport(d,target){
   }
   if(!nExtra&&!nDiff&&!nMiss)h+='<div style="color:#4ade80;margin-top:4px">✓ همه‌چیز هماهنگ است</div>';
   else if(nMiss)h+='<div style="color:#67e8f9;margin-top:4px">📤 '+toFa(nMiss)+' محصول در مبدأ هست ولی هنوز در مقصد نیست — از ارسال/سینک صف استفاده کنید</div>';
+  if(nMiss>0 && !d.enqueued_done){
+    h+='<div style="margin-top:8px;padding:10px;background:#082f49;border:1px solid #0ea5e9;border-radius:8px">';
+    h+='<div style="color:#7dd3fc;font-weight:800;margin-bottom:6px">📤 سینک محصولات «در مقصد نیست»</div>';
+    h+='<div style="color:#94a3b8;font-size:10.5px;line-height:1.7;margin-bottom:8px">'+toFa(nMiss)+' محصول در مبدأ/پروفایل هست ولی در '+(target==='woo'?'ووکامرس':'باسلام')+' نیست. با صف‌کردن، به صف ارسال می‌روند تا غرفه/فروشگاه پر شود.</div>';
+    h+='<button class="btn btn-cyan" onclick="reconEnqueueMissing(\''+target+'\')" style="width:100%;font-size:11px">📤 صف‌کردن ' + toFa(nMiss) + ' محصول برای ارسال</button>';
+    h+='<div id="reconEnqueueStatus" style="margin-top:6px;font-size:10.5px;color:#7dd3fc"></div>';
+    h+='</div>';
+  }
   if(!d.applied&&(nExtra||nDiff)){
     h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155">';
     h+='<div style="color:#94a3b8;margin-bottom:5px">اقدام برای موارد اضافی:</div>';
@@ -61704,6 +62099,45 @@ function reconApply(target){
   msg+='\n\nادامه می‌دهید؟';
   if(!confirm(msg))return;
   reconStart(target,true,mode,fix);
+}
+
+/** v10.108: صف‌کردن «در مقصد نیست» از آخرین گزارش مغایرت */
+function reconEnqueueMissing(target){
+  const d=reconLast||{};
+  const n=d.missing_total||((d.missing||[]).length)||0;
+  if(!n){showToast('موردی برای صف نیست',1);return;}
+  if(!confirm('«'+n+'» محصولِ در مقصد نیست به صف ارسال '+reconLabel(target)+' اضافه شود؟\n\nاین کار فقط صف می‌سازد؛ ارسال توسط ورکر/کران انجام می‌شود.'))return;
+  const st=$('reconEnqueueStatus');
+  if(st) st.textContent='⏳ در حال صف‌کردن...';
+  const fd=new FormData();
+  if(d.missing&&d.missing.length){
+    fd.append('missing', JSON.stringify(d.missing));
+  }
+  fd.append('max','2000');
+  fetch('?recon_enqueue=1&target='+encodeURIComponent(target),{method:'POST',body:fd})
+    .then(r=>r.json()).then(function(res){
+      if(!res||!res.ok){
+        const err=(res&&(res.error||res.msg))||'ناموفق';
+        if(st) st.innerHTML='<span style="color:#fca5a5">✗ '+esc(err)+'</span>';
+        showToast(err,1);
+        return;
+      }
+      const msg=(res.msg||('صف شد: '+(res.products||0)+' محصول'));
+      if(st) st.innerHTML='<span style="color:#4ade80">✓ '+esc(msg)+'</span>';
+      showToast('✓ '+msg);
+      if(reconLast){ reconLast.enqueued_done=true; reconLast.enqueue=res; }
+      // refresh report strip
+      const box=$('reconR');
+      if(box&&reconLast){
+        const tip=document.createElement('div');
+        tip.style.cssText='margin-top:6px;padding:8px;background:#052e16;border:1px solid #16a34a;border-radius:8px;font-size:11px;color:#86efac';
+        tip.textContent='✓ ' + msg + ' — از تب ارسال، صف را دنبال کنید.';
+        box.appendChild(tip);
+      }
+    }).catch(function(e){
+      if(st) st.innerHTML='<span style="color:#f87171">✗ شبکه</span>';
+      showToast('خطای شبکه',1);
+    });
 }
 
 /* =====================================================================

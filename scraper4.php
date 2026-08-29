@@ -295,7 +295,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.109';
+const APP_VERSION = '10.110';
 const APP_VERSION_DATE = '1405/06/09';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -26931,7 +26931,15 @@ if (isset($_GET['selftest'])) {
       && strpos($selfSrc, 'function catfixAutoTick') !== false
       && strpos($selfSrc, "missing_total") !== false);
 
-    $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
+    
+    $add('10.110', 'نسخهٔ ۱۰.۱۱۰',
+         version_compare(APP_VERSION, '10.110', '>=')
+      && strpos($selfSrc, "{v:'10.110',") !== false);
+    $add('10.110', 'گزارش تغییرات همبرگر سرنسخه دارد',
+         strpos($selfSrc, "گزارش تغییرات · نسخهٔ فعلی") !== false
+      && strpos($selfSrc, "CHANGELOG.length") !== false);
+
+$add('10.109', 'نسخهٔ ۱۰.۱۰۹',
          version_compare(APP_VERSION, '10.109', '>=')
       && strpos($selfSrc, "{v:'10.109',") !== false);
     $add('10.109', 'استخراج و فوروارد چندرسانه‌ای چت باسلام',
@@ -50359,7 +50367,7 @@ html[data-skin="gloss"] .progress-bar{
 <div style="font-size:10.5px;color:#64748b;margin-bottom:8px;line-height:1.7">
 آنچه در هر نسخه تغییر کرده است. نسخهٔ فعلی با رنگ روشن مشخص شده.
 </div>
-<div id="changelogBox" style="max-height:340px;overflow-y:auto"></div>
+<div id="changelogBox" style="max-height:min(70vh,520px);overflow-y:auto;padding:4px 2px 8px"></div>
 </div>
 </div>
 
@@ -58330,20 +58338,41 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.110', t:'🧱 جداسازی برگهٔ پشتیبان native از ویترین اصلی + ادامهٔ گزارش تغییرات', items:[
+    'برگهٔ «نام‌فروشگاه — پشتیبان» دیگر جای ویترین React را نمی‌گیرد (حتی با رفرش)',
+    'enable_native فقط پشتیبان است؛ takeover فقط با قالب native-wp صریح native می‌شود',
+    'جداسازی خودکار فروشگاه ووکامرس از برگهٔ پشتیبان وقتی React روشن است',
+    'ادامهٔ ثبت متنی نسخه‌ها در منوی همبرگر (همین فهرست)',
+  ]},
   {v:'10.109', t:'📎 فوروارد چندرسانه‌ای چت باسلام به پیام‌رسان‌ها', items:[
     'استخراج URL از attachment/content پیام مشتری باسلام (عکس/ویدیو/گیف/فایل/لینک)',
     'ارسال sendPhoto / sendVideo / sendAnimation / sendDocument به تلگرام و بله',
     'روبیکا: لینک رسانه در متن پیام',
     'notifSend با پارامتر media + پیش‌نمایش لینک در متن',
+    'چت پشتیبانی ویترین: آپلود پیوست + فوروارد لینک/فایل به پیام‌رسان',
   ]},
   {v:'10.108', t:'📤 صف خودکار «در مقصد نیست» — پر کردن حفرهٔ سینک غرفه/ووکامرس', items:[
     'بعد از مغایرت‌گیری، محصولات مبدأ که در مقصد نیستند به صف ارسال می‌روند',
     'در مغایرت دوره‌ای: تیک «صف خودکار در مقصد نیست» برای کران',
     'گروه‌بندی بر اساس پروفایل + fan-out غرفه‌ها',
+    'اندپوینت ?recon_enqueue=1 برای صف دستی از آخرین گزارش',
   ]},
   {v:'10.107', t:'مغایرت‌گیری چندغرفه + در مقصد نیست + دوره‌ای', items:[
     'مغایرت چندغرفه و گزارش missing_total',
     'کران دوره‌ای recon + catfix',
+    'پروفایل‌های چندمبدأ و fan-out غرفه',
+  ]},
+  {v:'10.106', t:'🖋 فونت سراسری سرور برای همهٔ بازدیدکننده‌ها', items:[
+    'اولویت فونت سرور روی همهٔ دستگاه‌ها یکسان است',
+    'تزریق CSS/link فونت در boot ویترین و اسکرپر',
+  ]},
+  {v:'10.105', t:'🧹 پاک‌سازی HTML توضیح AI + تنوع کوتاه', items:[
+    'جلوگیری از نمایش خام &lt;p&gt; و entity در توضیح محصول',
+    'تنوع فقط چند کلمه/عدد — متن بلند AI روی variation اعمال نشود',
+  ]},
+  {v:'10.104', t:'▶ ادامهٔ صف از چک‌پوینت واقعی (نه از اول)', items:[
+    'وِرکر باسلام/ووکامرس از resume_from ادامه می‌دهد',
+    'نقص‌یاب گیرکردن چک‌پوینت واقعی را گزارش می‌دهد',
   ]},
   {v:'10.103', t:'ادامهٔ ۳‌بارهٔ صف گیرکرده + ریست در بیکاری', items:[
     '▶ صف گیرکرده مثل دکمهٔ ادامهٔ مدیر وظیفه از چک‌پوینت ادامه می‌یابد',
@@ -65547,15 +65576,21 @@ function renderChangelog(){
   const box=$('changelogBox');
   if(!box)return;
   const cur='<?=APP_VERSION?>';
-  box.innerHTML=CHANGELOG.map(c=>{
+  const date='<?=APP_VERSION_DATE?>';
+  const head='<div style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#0f172a;border:1px solid #334155">'
+    +'<div style="font-size:13px;font-weight:800;color:#e2e8f0">📋 گزارش تغییرات · نسخهٔ فعلی <span style="color:#4ade80;font-family:ui-monospace,monospace">v'+esc(cur)+'</span></div>'
+    +'<div style="font-size:10.5px;color:#94a3b8;margin-top:4px">تاریخ نسخه: '+esc(date)+' · '+CHANGELOG.length+' ورودی ثبت‌شده · جدیدترین بالا</div>'
+    +'</div>';
+  box.style.maxHeight='min(70vh,520px)';
+  box.innerHTML=head+CHANGELOG.map(c=>{
     const isCur=c.v===cur;
-    return '<div style="border-right:2px solid '+(isCur?'#4ade80':'#334155')+';padding:0 9px 10px;margin-bottom:8px">'
-      +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
-      +'<b style="color:'+(isCur?'#4ade80':'#94a3b8')+';font-size:12px;font-family:ui-monospace,monospace">v'+esc(c.v)+'</b>'
-      +(isCur?'<span style="font-size:9px;color:#4ade80;background:#14532d;padding:1px 6px;border-radius:4px">فعلی</span>':'')
-      +'<span style="font-size:11px;color:#e2e8f0">'+esc(c.t)+'</span></div>'
-      +'<ul style="margin:0;padding-right:16px;color:#94a3b8;font-size:10.5px;line-height:1.8">'
-      +c.items.map(i=>'<li>'+esc(i)+'</li>').join('')+'</ul></div>';
+    return '<div style="border-right:3px solid '+(isCur?'#4ade80':'#334155')+';padding:0 10px 12px;margin-bottom:10px;background:'+(isCur?'rgba(74,222,128,.06)':'transparent')+';border-radius:0 8px 8px 0">'
+      +'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px">'
+      +'<b style="color:'+(isCur?'#4ade80':'#94a3b8')+';font-size:12.5px;font-family:ui-monospace,monospace">v'+esc(c.v)+'</b>'
+      +(isCur?'<span style="font-size:9px;color:#4ade80;background:#14532d;padding:2px 7px;border-radius:4px;font-weight:800">فعلی</span>':'')
+      +'<span style="font-size:11.5px;color:#e2e8f0;font-weight:700">'+esc(c.t)+'</span></div>'
+      +'<ul style="margin:0;padding-right:16px;color:#94a3b8;font-size:11px;line-height:1.85">'
+      +(c.items||[]).map(i=>'<li>'+esc(i)+'</li>').join('')+'</ul></div>';
   }).join('');
 }
 

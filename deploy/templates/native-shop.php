@@ -6,7 +6,7 @@
  *              مناسب به‌عنوان برگه پشتیبان وقتی ویترین اصلی خاموش، خراب یا با خطای ۴۰۴ است.
  *
  * @package AMPHP
- * @version 13.3.19
+ * @version 13.3.20
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -215,7 +215,7 @@ $currency_label = ! empty( $settings['currency_symbol'] ) ? (string) $settings['
       <?php if ( $subtitle ) : ?>
         <p><?php echo esc_html( $subtitle ); ?></p>
       <?php else : ?>
-        <p>خرید آسان، نمایش با قالب سایت شما — سبک و پایدار.</p>
+        <p>برگهٔ پشتیبان فروشگاه — سبک و پایدار با قالب وردپرس. ویترین اصلی React جداست.</p>
       <?php endif; ?>
       <div class="amphp-native-actions">
         <?php if ( $shop_url ) : ?>

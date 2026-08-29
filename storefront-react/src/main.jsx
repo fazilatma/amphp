@@ -2011,6 +2011,9 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [ctx, setCtx] = useState(null);
+  const [file, setFile] = useState(null);
+  const [filePreview, setFilePreview] = useState('');
+  const fileRef = useRef(null);
   const [msgs, setMsgs] = useState(() => ([
     { id: 'w1', role: 'bot', text: settings.chat_welcome_message || 'سلام! خوش آمدید 👋 سوال خود را بنویسید.' },
   ]));
@@ -2036,19 +2039,52 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   if (!enabled) return null;
 
+  const onPickFile = (e) => {
+    const f = e?.target?.files?.[0] || null;
+    setFile(f);
+    if (filePreview) {
+      try { URL.revokeObjectURL(filePreview); } catch (_) { /* ignore */ }
+    }
+    if (f && f.type && f.type.startsWith('image/')) {
+      try { setFilePreview(URL.createObjectURL(f)); } catch (_) { setFilePreview(''); }
+    } else {
+      setFilePreview('');
+    }
+  };
+  const clearFile = () => {
+    setFile(null);
+    if (filePreview) {
+      try { URL.revokeObjectURL(filePreview); } catch (_) { /* ignore */ }
+    }
+    setFilePreview('');
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
   const send = async () => {
     const msg = text.trim();
-    if (!msg || busy) return;
+    if ((!msg && !file) || busy) return;
     setText('');
-    const display = ctx?.title ? `${msg}` : msg;
-    setMsgs((m) => [...m, { id: `u${Date.now()}`, role: 'user', text: display }]);
+    const displayBits = [];
+    if (msg) displayBits.push(msg);
+    if (file) displayBits.push(`📎 ${file.name || 'پیوست'}`);
+    const display = displayBits.join('\n') || '📎 پیوست';
+    setMsgs((m) => [...m, {
+      id: `u${Date.now()}`,
+      role: 'user',
+      text: display,
+      mediaPreview: filePreview || '',
+      mediaName: file?.name || '',
+    }]);
+    const fileToSend = file;
+    clearFile();
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append('action', 'scraper_submit_support_chat');
       const nonce = (ajax && (ajax.chatNonce || ajax.nonce || ajax.chat_nonce)) || '';
       if (nonce) fd.append('nonce', nonce);
-      fd.append('message', msg);
+      fd.append('message', msg || (fileToSend ? '📎 پیوست چندرسانه‌ای' : ''));
+      if (fileToSend) fd.append('chat_file', fileToSend, fileToSend.name || 'upload.bin');
       try {
         const sid = sessionStorage.getItem('amphp_chat_sid') || '';
         if (sid) fd.append('session_id', sid);
@@ -2142,7 +2178,7 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
 
   return (
     <>
-      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.12" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className={`sf-chat-fab ${pos}`} data-amphp-sf="13.3.19" onClick={() => setOpen((v) => !v)}>
         <span>💬</span>
         <span className="lbl">{settings.chat_window_title || 'پشتیبانی'}</span>
       </button>
@@ -2164,21 +2200,51 @@ function SupportChat({ settings, ajax, productCtx, onClearProduct, openSignal })
           ) : null}
           <div className="sf-chat-msgs" ref={boxRef}>
             {msgs.map((m) => (
-              <MdBubble key={m.id} role={m.role} text={m.text} />
+              <div key={m.id} className={`sf-bubble-wrap ${m.role}`}>
+                {m.mediaPreview ? (
+                  <div className="sf-chat-media">
+                    <img src={m.mediaPreview} alt="" />
+                  </div>
+                ) : null}
+                {m.mediaName && !m.mediaPreview ? (
+                  <div className="sf-chat-filechip">📎 {m.mediaName}</div>
+                ) : null}
+                <MdBubble role={m.role} text={m.text} />
+              </div>
             ))}
             {busy ? <div className="sf-bubble bot sf-bubble-typing">در حال نوشتن…</div> : null}
           </div>
+          {file ? (
+            <div className="sf-chat-attach-bar">
+              {filePreview ? <img src={filePreview} alt="" /> : <span className="sf-chat-filechip">📎 {file.name}</span>}
+              <button type="button" className="sf-close" onClick={clearFile} title="حذف پیوست">✕</button>
+            </div>
+          ) : null}
           <div className="sf-chat-input">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*,video/*,audio/*,.pdf,.zip,.doc,.docx,.gif,.webp"
+              style={{ display: 'none' }}
+              onChange={onPickFile}
+            />
+            <button
+              type="button"
+              className="sf-chat-attach"
+              title="ارسال عکس، فیلم، گیف یا فایل"
+              onClick={() => fileRef.current && fileRef.current.click()}
+              disabled={busy}
+            >📎</button>
             <textarea
               value={text}
-              placeholder={ctx ? `سوال درباره «${ctx.title}»…` : 'پیام خود را بنویسید...'}
+              placeholder={ctx ? `سوال درباره «${ctx.title}»…` : 'پیام، لینک یا پیوست…'}
               rows={1}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
               }}
             />
-            <button type="button" className="sf-chat-send" onClick={send} disabled={busy}>➤</button>
+            <button type="button" className="sf-chat-send" onClick={send} disabled={busy || (!text.trim() && !file)}>➤</button>
           </div>
         </div>
       ) : null}

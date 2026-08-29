@@ -295,7 +295,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.108';
+const APP_VERSION = '10.109';
 const APP_VERSION_DATE = '1405/06/09';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -26924,18 +26924,24 @@ if (isset($_GET['selftest'])) {
       && strpos($selfSrc, "{v:'10.103',") !== false);
     $add('10.107', 'نسخهٔ ۱۰.۱۰۷',
          version_compare(APP_VERSION, '10.107', '>=')
-      && strpos($selfSrc, "  {v:'10.108', t:'📤 صف خودکار «در مقصد نیست» — پر کردن حفرهٔ سینک غرفه/ووکامرس', items:[
-    'بعد از مغایرت‌گیری، محصولات مبدأ که در مقصد نیستند با یک کلیک به <b>صف ارسال</b> می‌روند',
-    'در مغایرت دوره‌ای: تیک «صف خودکار در مقصد نیست» برای کران',
-    'گروه‌بندی بر اساس پروفایل + fan-out غرفه‌ها (در صورت چندغرفه)',
-    'اندپوینت ?recon_enqueue=1 برای صف دستی از آخرین گزارش'
-  ]},
-{v:'10.107',") !== false);
+      && strpos($selfSrc, "{v:'10.107',") !== false);
     $add('10.107', 'مغایرت‌گیری چندغرفه + در مقصد نیست + دوره‌ای',
          strpos($selfSrc, 'function reconRunOne') !== false
       && strpos($selfSrc, 'function reconAutoTick') !== false
       && strpos($selfSrc, 'function catfixAutoTick') !== false
       && strpos($selfSrc, "missing_total") !== false);
+
+    $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
+         version_compare(APP_VERSION, '10.109', '>=')
+      && strpos($selfSrc, "{v:'10.109',") !== false);
+    $add('10.109', 'استخراج و فوروارد چندرسانه‌ای چت باسلام',
+         function_exists('bslMsgExtractMedia') && function_exists('bslSendMediaToMessenger')
+         && function_exists('bslChatCollectMedia') && function_exists('bslMediaToMsgrItems')
+         && strpos($selfSrc, 'array $media = []') !== false
+         && strpos($selfSrc, 'bslSendMediaToMessenger') !== false
+         && strpos($selfSrc, 'sendPhoto') !== false
+         && strpos($selfSrc, '$_media109') !== false
+         && version_compare(APP_VERSION, '10.109', '>='));
 
     $add('10.108', 'نسخهٔ ۱۰.۱۰۸',
          version_compare(APP_VERSION, '10.108', '>=')
@@ -32298,14 +32304,38 @@ function webpushSend(string $title, string $body, ?string $kind = null, ?array $
     }
     return ['sent' => $sent, 'failed' => $failed, 'total' => count($subs), 'detail' => $detail];
 }
-function notifSend(array $cn, string $msg, ?string $feed = null): array {
+function notifSend(array $cn, string $msg, ?string $feed = null, array $media = []): array {
     $out = [];
     $bt = $cn['baleh']['token'] ?? '';  $bc = $cn['baleh']['chat_id'] ?? '';
     $rt = $cn['rubika']['token'] ?? ''; $rc = $cn['rubika']['chat_id'] ?? '';
     $tt = $cn['telegram']['token'] ?? ''; $tc = $cn['telegram']['chat_id'] ?? '';   // v10.78 (92): تلگرام
-    if ($bt !== '' && $bc !== '')  { $rb = bslSendToBaleh($bt, $bc, $msg); $out['baleh'] = $rb['ok'] ? 'sent' : 'fail'; if (!$rb['ok'] && $rb['error'] !== '') $out['baleh_err'] = $rb['error']; if ($rb['ok'] && ($rb['message_id'] ?? '') !== '') { $out['baleh_msg_id'] = $rb['message_id']; msgrSaveMsg('bale', $rb['message_id'], 0, 0); } }   // v10.79 (93)
+    /* v10.109: لینک‌های داخل متن — پیش‌نمایش وب برای تلگرام/بله */
+    $wantPreview = $media !== [] || (bool)preg_match('~https?://\S+~u', $msg);
+    if ($bt !== '' && $bc !== '')  { $rb = bslSendToBaleh($bt, $bc, $msg, $wantPreview); $out['baleh'] = $rb['ok'] ? 'sent' : 'fail'; if (!$rb['ok'] && $rb['error'] !== '') $out['baleh_err'] = $rb['error']; if ($rb['ok'] && ($rb['message_id'] ?? '') !== '') { $out['baleh_msg_id'] = $rb['message_id']; msgrSaveMsg('bale', $rb['message_id'], 0, 0); } }   // v10.79 (93)
     if ($rt !== '' && $rc !== '')  { $rr = bslSendToRubika($rt, $rc, $msg); $out['rubika'] = $rr['ok'] ? 'sent' : 'fail'; if (!$rr['ok'] && $rr['error'] !== '') $out['rubika_err'] = $rr['error']; if ($rr['ok'] && ($rr['message_id'] ?? '') !== '') { $out['rubika_msg_id'] = $rr['message_id']; msgrSaveMsg('rubika', $rr['message_id'], 0, 0); } }
-    if ($tt !== '' && $tc !== '')  { $tr = bslSendToTelegram($tt, $tc, $msg); $out['telegram'] = $tr['ok'] ? 'sent' : 'fail'; if (!$tr['ok'] && $tr['error'] !== '') $out['telegram_err'] = $tr['error']; if ($tr['ok'] && ($tr['message_id'] ?? '') !== '') { $out['telegram_msg_id'] = $tr['message_id']; msgrSaveMsg('telegram', $tr['message_id'], 0, 0); } }
+    if ($tt !== '' && $tc !== '')  { $tr = bslSendToTelegram($tt, $tc, $msg, $wantPreview); $out['telegram'] = $tr['ok'] ? 'sent' : 'fail'; if (!$tr['ok'] && $tr['error'] !== '') $out['telegram_err'] = $tr['error']; if ($tr['ok'] && ($tr['message_id'] ?? '') !== '') { $out['telegram_msg_id'] = $tr['message_id']; msgrSaveMsg('telegram', $tr['message_id'], 0, 0); } }
+    /* v10.109: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک) بعد از متن */
+    if ($media) {
+        $mediaSent = 0; $mediaFail = 0;
+        foreach (array_slice($media, 0, 8) as $it) {
+            if (!is_array($it) || trim((string)($it['url'] ?? '')) === '') continue;
+            if ($bt !== '' && $bc !== '') {
+                $r = bslSendMediaToMessenger('baleh', $bt, $bc, $it);
+                if (!empty($r['ok'])) $mediaSent++; else $mediaFail++;
+            }
+            if ($tt !== '' && $tc !== '') {
+                $r = bslSendMediaToMessenger('telegram', $tt, $tc, $it);
+                if (!empty($r['ok'])) $mediaSent++; else $mediaFail++;
+            }
+            if ($rt !== '' && $rc !== '') {
+                // روبیکا: API عمومی sendPhoto ندارد — لینک را متنی می‌فرستیم
+                $r = bslSendMediaToMessenger('rubika', $rt, $rc, $it);
+                if (!empty($r['ok'])) $mediaSent++; else $mediaFail++;
+            }
+        }
+        if ($mediaSent > 0) $out['media_sent'] = $mediaSent;
+        if ($mediaFail > 0) $out['media_fail'] = $mediaFail;
+    }
     if (!$out) $out['none'] = 'no_messenger';
     if ($feed !== null) liveFeedPush($feed, $msg);   /* v10.66 (۸۰) */
     /* v10.72 (86): Web Push — در کنارِ پیام‌رسان، به دستگاهِ کاربر.
@@ -32618,6 +32648,169 @@ function bslNormalizeParcel(array $o): array {
  * طبق مستندات، متن پیام زیر last_message.content.text است نه
  * last_message.text — نسخهٔ ۸.۳۱ اشتباه می‌خواند و همیشه «...» می‌فرستاد.
  */
+
+/**
+ * v10.109: استخراج آدرس‌های چندرسانه‌ای از یک پیام باسلام.
+ * شکل‌های ممکن attachment/content (همان الگوی اتاق چت v10.57) + لینک در متن.
+ * @return array{type:string,url:string,name:string,urls:string[],links:string[],label:string}
+ */
+function bslMsgExtractMedia(array $m): array {
+    $mt = strtolower(trim((string)($m['message_type'] ?? '')));
+    $urls = [];
+    $name = '';
+    $cands = [
+        $m['attachment']['files'] ?? null,
+        $m['content']['files'] ?? null,
+        $m['files'] ?? null,
+        $m['attachment']['file'] ?? null,
+    ];
+    foreach ($cands as $files) {
+        if (!is_array($files)) continue;
+        // single file object
+        if (isset($files['url']) || isset($files['id'])) $files = [$files];
+        foreach ($files as $f) {
+            if (!is_array($f)) continue;
+            foreach (['url', 'primary', 'download_url', 'src', 'link', 'path'] as $uk) {
+                $u = $f[$uk] ?? null;
+                if (is_string($u) && strncmp($u, 'http', 4) === 0) { $urls[] = $u; break; }
+                if (is_array($u) && is_string($u['primary'] ?? null) && strncmp($u['primary'], 'http', 4) === 0) {
+                    $urls[] = $u['primary']; break;
+                }
+            }
+            if ($name === '' && trim((string)($f['name'] ?? $f['file_name'] ?? $f['filename'] ?? '')) !== '') {
+                $name = trim((string)($f['name'] ?? $f['file_name'] ?? $f['filename'] ?? ''));
+            }
+        }
+    }
+    foreach ([
+        $m['content']['url'] ?? null,
+        $m['content']['image'] ?? null,
+        $m['content']['video'] ?? null,
+        $m['content']['file'] ?? null,
+        $m['url'] ?? null,
+        $m['image'] ?? null,
+        $m['video'] ?? null,
+        $m['file_url'] ?? null,
+        $m['attachment']['url'] ?? null,
+        $m['attachment']['image'] ?? null,
+        is_array($m['content']['urls'] ?? null) ? ($m['content']['urls']['primary'] ?? null) : null,
+    ] as $u) {
+        if (is_string($u) && strncmp($u, 'http', 4) === 0) $urls[] = $u;
+    }
+    $urls = array_values(array_unique(array_filter($urls, fn($u) => is_string($u) && strncmp($u, 'http', 4) === 0)));
+
+    $text = '';
+    foreach ([$m['content']['text'] ?? null, $m['text'] ?? null, $m['content'] ?? null] as $cand) {
+        if (is_string($cand) && trim($cand) !== '') { $text = trim($cand); break; }
+    }
+    $links = [];
+    if ($text !== '' && preg_match_all('~https?://[^\s<>"\']+~u', $text, $mm)) {
+        foreach ($mm[0] as $lnk) {
+            $lnk = rtrim($lnk, '.,);]');
+            if (strncmp($lnk, 'http', 4) === 0) $links[] = $lnk;
+        }
+    }
+    $links = array_values(array_unique($links));
+    // لینک‌هایی که خود فایل رسانه‌اند را به urls هم اضافه کن
+    foreach ($links as $lnk) {
+        if (preg_match('~\.(jpe?g|png|gif|webp|bmp|mp4|webm|mov|m4v|avi|mkv|mp3|ogg|wav|pdf|zip|rar|7z)(\?|$)~i', $lnk)) {
+            if (!in_array($lnk, $urls, true)) $urls[] = $lnk;
+        }
+    }
+
+    $primary = $urls[0] ?? '';
+    $kind = 'text';
+    if ($mt !== '' && $mt !== 'text') $kind = $mt;
+    if ($primary !== '') {
+        $extKind = bslMediaKindFromUrl($primary, $mt);
+        if ($kind === 'text' || $kind === '') $kind = $extKind;
+        elseif (in_array($kind, ['picture', 'image', 'photo'], true)) $kind = 'picture';
+        elseif (in_array($kind, ['video', 'clip'], true)) $kind = 'video';
+        elseif (in_array($kind, ['gif', 'animation', 'sticker'], true)) $kind = 'animation';
+        elseif (in_array($kind, ['voice', 'audio', 'sound'], true)) $kind = 'audio';
+        elseif (in_array($kind, ['file', 'document', 'pdf'], true)) $kind = 'file';
+    } elseif ($links) {
+        $kind = 'link';
+        $primary = $links[0];
+    }
+    $labels = [
+        'picture' => '🖼 تصویر', 'image' => '🖼 تصویر', 'photo' => '🖼 تصویر',
+        'video' => '🎬 ویدیو', 'animation' => '🎞 گیف', 'gif' => '🎞 گیف',
+        'file' => '📎 فایل', 'document' => '📎 فایل', 'audio' => '🎧 صوت', 'voice' => '🎤 پیام صوتی',
+        'link' => '🔗 لینک', 'location' => '📍 موقعیت', 'product' => '🛍 محصول',
+    ];
+    $label = $labels[$kind] ?? ($kind !== '' && $kind !== 'text' ? ('[' . $kind . ']') : '');
+    return [
+        'type'  => $kind,
+        'url'   => $primary,
+        'name'  => $name,
+        'urls'  => $urls,
+        'links' => $links,
+        'label' => $label,
+        'text'  => $text,
+    ];
+}
+
+/** v10.109: نوع رسانه برای API پیام‌رسان از روی URL / نوع باسلام */
+function bslMediaKindFromUrl(string $url, string $hint = ''): string {
+    $h = strtolower(trim($hint));
+    if (in_array($h, ['picture', 'image', 'photo'], true)) return 'picture';
+    if (in_array($h, ['video', 'clip'], true)) return 'video';
+    if (in_array($h, ['gif', 'animation', 'sticker'], true)) return 'animation';
+    if (in_array($h, ['voice', 'audio', 'sound'], true)) return 'audio';
+    if (in_array($h, ['file', 'document', 'pdf'], true)) return 'file';
+    $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+    if (preg_match('~\.(gif)(\?|$)~', $path) || str_contains($path, '.gif')) return 'animation';
+    if (preg_match('~\.(jpe?g|png|webp|bmp)(\?|$)~', $path)) return 'picture';
+    if (preg_match('~\.(mp4|webm|mov|m4v|avi|mkv)(\?|$)~', $path)) return 'video';
+    if (preg_match('~\.(mp3|ogg|wav|m4a|aac)(\?|$)~', $path)) return 'audio';
+    if ($url !== '') return 'file';
+    return 'link';
+}
+
+/**
+ * v10.109: تبدیل رسانهٔ باسلام به آیتم‌های قابل ارسال به بله/تلگرام/روبیکا.
+ * @return list<array{kind:string,url:string,caption:string,name:string}>
+ */
+function bslMediaToMsgrItems(array $media, string $caption = ''): array {
+    $items = [];
+    $seen = [];
+    $urls = $media['urls'] ?? [];
+    if (!$urls && !empty($media['url'])) $urls = [(string)$media['url']];
+    $type = (string)($media['type'] ?? '');
+    $name = (string)($media['name'] ?? '');
+    $capOnce = $caption;
+    foreach ($urls as $u) {
+        $u = trim((string)$u);
+        if ($u === '' || isset($seen[$u])) continue;
+        $seen[$u] = true;
+        $k = bslMediaKindFromUrl($u, $type);
+        // map to messenger kind
+        $mk = match ($k) {
+            'picture', 'image', 'photo' => 'photo',
+            'video' => 'video',
+            'animation', 'gif' => 'animation',
+            'audio', 'voice' => 'audio',
+            'file', 'document' => 'document',
+            default => 'document',
+        };
+        $items[] = ['kind' => $mk, 'url' => $u, 'caption' => $capOnce, 'name' => $name];
+        $capOnce = ''; // فقط اولی caption کامل
+    }
+    foreach (($media['links'] ?? []) as $lnk) {
+        $lnk = trim((string)$lnk);
+        if ($lnk === '' || isset($seen[$lnk])) continue;
+        // اگر قبلاً به‌عنوان فایل آمده رد کن
+        $seen[$lnk] = true;
+        // لینک عمومی — به‌صورت پیام متنی با پیش‌نمایش
+        if (!preg_match('~\.(jpe?g|png|gif|webp|mp4|webm|mov|pdf|zip)(\?|$)~i', $lnk)) {
+            $items[] = ['kind' => 'link', 'url' => $lnk, 'caption' => $capOnce !== '' ? $capOnce : ('🔗 ' . $lnk), 'name' => ''];
+            $capOnce = '';
+        }
+    }
+    return $items;
+}
+
 function bslNormalizeChat(array $c): array {
     $lm = is_array($c['last_message'] ?? null) ? $c['last_message'] : [];
     $txt = '';
@@ -32635,7 +32828,13 @@ function bslNormalizeChat(array $c): array {
     if ($who === '') $who = trim((string)($lm['sender']['name'] ?? ''));
     if ($who === '') $who = 'مشتری';
     $type = (string)($lm['message_type'] ?? '');
-    if ($txt === '') $txt = $type !== '' && $type !== 'text' ? '[' . $type . ']' : '—';
+    /* v10.109: رسانهٔ آخرین پیام (عکس/ویدیو/فایل/لینک) */
+    $media = bslMsgExtractMedia(is_array($lm) ? $lm : []);
+    if ($txt === '') {
+        if ($media['label'] !== '') $txt = $media['label'] . ($media['url'] !== '' ? ' ' . $media['url'] : '');
+        elseif ($type !== '' && $type !== 'text') $txt = '[' . $type . ']';
+        else $txt = '—';
+    }
     return [
         'chat_id'    => (int)($c['id'] ?? 0),
         'who'        => $who,
@@ -32644,6 +32843,10 @@ function bslNormalizeChat(array $c): array {
         'updated_at' => (string)($c['updated_at'] ?? ($c['created_at'] ?? '')),
         'chat_type'  => (string)($c['chat_type'] ?? ''),
         'sender'     => trim((string)($lm['sender']['name'] ?? '')),
+        'media_url'  => (string)($media['url'] ?? ''),
+        'media_type' => (string)($media['type'] ?? ''),
+        'media_urls' => $media['urls'] ?? [],
+        'media_links'=> $media['links'] ?? [],
     ];
 }
 
@@ -32694,15 +32897,32 @@ function bslFetchChatMessages(string $tk, int $chatId, int $limit = 10, int $myU
         if (!is_array($m)) continue;
         $sid = (int)($m['sender']['id'] ?? 0);
         if ($myUserId > 0 && $sid === $myUserId) continue;   // پیام‌های خودمان را نشان نده
+        $media = bslMsgExtractMedia($m);
         $txt = $m['content']['text'] ?? null;
         if (!is_string($txt) || trim($txt) === '') {
-            $mt = (string)($m['message_type'] ?? '');
-            $txt = $mt !== '' && $mt !== 'text' ? '[' . $mt . ']' : '';
+            $mt = (string)($m['message_type'] ?? ($media['type'] ?? ''));
+            if ($media['label'] !== '') {
+                $txt = $media['label'];
+                if ($media['url'] !== '') $txt .= ' ' . $media['url'];
+            } else {
+                $txt = $mt !== '' && $mt !== 'text' ? '[' . $mt . ']' : '';
+            }
         }
         $txt = trim((string)$txt);
-        if ($txt === '') continue;
-        $out[] = ['text' => $txt, 'at' => (string)($m['created_at'] ?? ''),
-                  'sender' => trim((string)($m['sender']['name'] ?? ''))];
+        // v10.109: پیام فقط‌رسانه را هم نگه دار (قبلاً اگر متن خالی بود drop می‌شد)
+        if ($txt === '' && empty($media['urls']) && empty($media['links'])) continue;
+        if ($txt === '' && $media['label'] !== '') $txt = $media['label'];
+        $out[] = [
+            'text'   => $txt,
+            'at'     => (string)($m['created_at'] ?? ''),
+            'sender' => trim((string)($m['sender']['name'] ?? '')),
+            'type'   => (string)($media['type'] ?? ($m['message_type'] ?? 'text')),
+            'url'    => (string)($media['url'] ?? ''),
+            'urls'   => $media['urls'] ?? [],
+            'links'  => $media['links'] ?? [],
+            'name'   => (string)($media['name'] ?? ''),
+            'label'  => (string)($media['label'] ?? ''),
+        ];
     }
     return array_reverse($out);   // قدیمی‌ترین اول، مثل خود گفتگو
 }
@@ -32718,14 +32938,68 @@ function bslChatMsg(array $n, string $head = '💬 پیام مشتری باسل�
         $s .= "\n━━━━━━━━━━";
         $budget = 3000;   // سقف امن برای بله/روبیکا
         foreach ($msgs as $m) {
-            $line = "\n▸ " . mb_substr($m['text'], 0, 700);
+            $t = trim((string)($m['text'] ?? ''));
+            $u = trim((string)($m['url'] ?? ''));
+            $lab = trim((string)($m['label'] ?? ''));
+            if ($t === '' && $lab !== '') $t = $lab;
+            if ($u !== '' && $t !== '' && mb_strpos($t, $u) === false) $t .= "\n" . $u;
+            elseif ($t === '' && $u !== '') $t = ($lab !== '' ? $lab . ' ' : '') . $u;
+            foreach (($m['links'] ?? []) as $lnk) {
+                $lnk = trim((string)$lnk);
+                if ($lnk !== '' && mb_strpos($t, $lnk) === false) $t .= "\n🔗 " . $lnk;
+            }
+            $line = "\n▸ " . mb_substr($t, 0, 700);
             if (mb_strlen($line) > $budget) { $s .= "\n… (بقیه در باسلام)"; break; }
             $s .= $line; $budget -= mb_strlen($line);
         }
         return $s;
     }
-    return $s . "\nپیام: " . mb_substr($n['text'], 0, 700);
+    $body = mb_substr((string)($n['text'] ?? ''), 0, 700);
+    $mu = trim((string)($n['media_url'] ?? ''));
+    if ($mu !== '' && mb_strpos($body, $mu) === false) $body .= ($body !== '' ? "\n" : '') . $mu;
+    return $s . "\nپیام: " . $body;
 }
+
+/**
+ * v10.109: جمع‌آوری آیتم‌های رسانه از لیست پیام‌های fetch‌شده + نرمال‌گفتگو.
+ * @return list<array{kind:string,url:string,caption:string,name:string}>
+ */
+function bslChatCollectMedia(array $n, array $msgs = []): array {
+    $items = [];
+    $seen = [];
+    $add = function (array $media, string $cap = '') use (&$items, &$seen) {
+        foreach (bslMediaToMsgrItems($media, $cap) as $it) {
+            $u = (string)($it['url'] ?? '');
+            if ($u === '' || isset($seen[$u])) continue;
+            $seen[$u] = true;
+            $items[] = $it;
+        }
+    };
+    if ($msgs) {
+        foreach ($msgs as $m) {
+            if (!is_array($m)) continue;
+            $add([
+                'type'  => (string)($m['type'] ?? ''),
+                'url'   => (string)($m['url'] ?? ''),
+                'urls'  => $m['urls'] ?? [],
+                'links' => $m['links'] ?? [],
+                'name'  => (string)($m['name'] ?? ''),
+                'label' => (string)($m['label'] ?? ''),
+            ], mb_substr((string)($m['text'] ?? ''), 0, 200));
+        }
+    } else {
+        $add([
+            'type'  => (string)($n['media_type'] ?? ''),
+            'url'   => (string)($n['media_url'] ?? ''),
+            'urls'  => $n['media_urls'] ?? [],
+            'links' => $n['media_links'] ?? [],
+            'name'  => '',
+            'label' => '',
+        ], mb_substr((string)($n['text'] ?? ''), 0, 200));
+    }
+    return $items;
+}
+
 
 /* =====================================================================
  *  v8.64: پاسخ خودکار به پیام مشتریان باسلام
@@ -33593,7 +33867,8 @@ function notifCheckChats(array $cn, bool $test = false, bool $send = true): arra
             $samples[] = $msg;
             if ($why === 'remind') { $shopRemind++; $reminded++; } else { $shopFound++; $found++; }
             if ($send) {
-                $sentTo = notifSend($cn, $msg);
+                $_media109 = bslChatCollectMedia($f['nc'], $body);
+                $sentTo = notifSend($cn, $msg, null, $_media109);
                 /* v10.85 (99): message_id با context چت برای webhook */
                 $_ncCh85 = (int)($f['nc']['chat_id'] ?? 0); $_ncSh85 = (int)($f['nc']['shop'] ?? 1); $_ncWh85 = (string)($f['nc']['who'] ?? '');
                 foreach (['bale_msg_id' => 'bale', 'rubika_msg_id' => 'rubika', 'telegram_msg_id' => 'telegram'] as $_kM85 => $_mM85) {
@@ -38166,6 +38441,11 @@ if (isset($_GET['bsl_notify_selected'])) {
                 // v8.33: متن کامل پیام‌های مشتری، نه فقط آخرین پیام
                 $body = bslFetchChatMessages($tk, $n['chat_id'], max(1, min(10, $n['unseen'] ?: 1)));
                 $msg = bslChatMsg($n, '💬 پیام خوانده‌نشده', $body);
+                $_mediaSel = bslChatCollectMedia($n, $body);
+                $delivery = notifSend($cn, $msg, 'remind', $_mediaSel);
+                $sent++;
+                if ($sent >= 20) break;
+                continue;
             }
             $delivery = notifSend($cn, $msg, 'remind');
             $sent++;
@@ -38335,16 +38615,75 @@ function msgrSend(string $url, string $postJson): array {
         return ['ok' => false, 'code' => 0, 'error' => 'خطای داخلی: ' . $__msge->getMessage(), 'via' => ''];
     }
 }
-function bslSendToBaleh(string $token, string $chatId, string $text): array {
-return msgrSend('https://tapi.bale.ai/bot' . $token . '/sendMessage', json_encode(['chat_id' => $chatId, 'text' => $text], JSON_UNESCAPED_UNICODE));
+function bslSendToBaleh(string $token, string $chatId, string $text, bool $preview = false): array {
+return msgrSend('https://tapi.bale.ai/bot' . $token . '/sendMessage', json_encode(['chat_id' => $chatId, 'text' => $text, 'disable_web_page_preview' => !$preview], JSON_UNESCAPED_UNICODE));
 }
 function bslSendToRubika(string $token, string $chatId, string $text): array {
 return msgrSend('https://api.rubika.ir/v1/bot' . $token . '/sendMessage', json_encode(['chat_id' => $chatId, 'text' => $text], JSON_UNESCAPED_UNICODE));
 }
 
-function bslSendToTelegram(string $token, string $chatId, string $text): array {
-return msgrSend('https://api.telegram.org/bot' . $token . '/sendMessage', json_encode(['chat_id' => $chatId, 'text' => $text, 'disable_web_page_preview' => true], JSON_UNESCAPED_UNICODE));
+function bslSendToTelegram(string $token, string $chatId, string $text, bool $preview = false): array {
+return msgrSend('https://api.telegram.org/bot' . $token . '/sendMessage', json_encode(['chat_id' => $chatId, 'text' => $text, 'disable_web_page_preview' => !$preview], JSON_UNESCAPED_UNICODE));
 }
+
+/**
+ * v10.109: ارسال رسانه به پیام‌رسان (عکس/ویدیو/گیف/فایل/لینک) با URL عمومی.
+ * $item = ['kind'=>photo|video|animation|audio|document|link, 'url'=>, 'caption'=>, 'name'=>]
+ */
+function bslSendMediaToMessenger(string $msgr, string $token, string $chatId, array $item): array {
+    $kind = strtolower(trim((string)($item['kind'] ?? 'document')));
+    $url  = trim((string)($item['url'] ?? ''));
+    $cap  = trim((string)($item['caption'] ?? ''));
+    $name = trim((string)($item['name'] ?? ''));
+    if ($url === '') return ['ok' => false, 'error' => 'empty url'];
+    if ($kind === 'link') {
+        $txt = $cap !== '' ? $cap : ('🔗 ' . $url);
+        if (mb_strpos($txt, $url) === false) $txt .= "\n" . $url;
+        return match ($msgr) {
+            'baleh', 'bale' => bslSendToBaleh($token, $chatId, $txt, true),
+            'telegram' => bslSendToTelegram($token, $chatId, $txt, true),
+            default => bslSendToRubika($token, $chatId, $txt),
+        };
+    }
+    // روبیکا: فقط متن با لینک فایل
+    if ($msgr === 'rubika') {
+        $label = match ($kind) {
+            'photo' => '🖼 تصویر',
+            'video' => '🎬 ویدیو',
+            'animation' => '🎞 گیف',
+            'audio' => '🎧 صوت',
+            default => '📎 فایل',
+        };
+        $txt = $label . ($name !== '' ? ' (' . $name . ')' : '') . "\n" . $url;
+        if ($cap !== '') $txt = mb_substr($cap, 0, 200) . "\n" . $txt;
+        return bslSendToRubika($token, $chatId, $txt);
+    }
+    $base = ($msgr === 'telegram')
+        ? ('https://api.telegram.org/bot' . $token . '/')
+        : ('https://tapi.bale.ai/bot' . $token . '/');
+    $method = 'sendDocument';
+    $field  = 'document';
+    if ($kind === 'photo') { $method = 'sendPhoto'; $field = 'photo'; }
+    elseif ($kind === 'video') { $method = 'sendVideo'; $field = 'video'; }
+    elseif ($kind === 'animation') { $method = 'sendAnimation'; $field = 'animation'; }
+    elseif ($kind === 'audio') { $method = 'sendAudio'; $field = 'audio'; }
+    $body = ['chat_id' => $chatId, $field => $url];
+    if ($cap !== '') $body['caption'] = mb_substr($cap, 0, 1000);
+    if ($kind === 'document' && $name !== '') $body['file_name'] = $name;
+    $r = msgrSend($base . $method, json_encode($body, JSON_UNESCAPED_UNICODE));
+    // اگر sendPhoto/Video با URL شکست خورد، لینک را متنی بفرست
+    if (empty($r['ok'])) {
+        $label = match ($kind) {
+            'photo' => '🖼 تصویر', 'video' => '🎬 ویدیو', 'animation' => '🎞 گیف',
+            'audio' => '🎧 صوت', default => '📎 فایل',
+        };
+        $txt = $label . "\n" . $url . ($cap !== '' ? ("\n" . mb_substr($cap, 0, 300)) : '');
+        if ($msgr === 'telegram') return bslSendToTelegram($token, $chatId, $txt, true);
+        return bslSendToBaleh($token, $chatId, $txt, true);
+    }
+    return $r;
+}
+
 /* v10.85 (99): registry message_id for webhook reply */
 function msgrMsgRegistry(): string { return __DIR__ . '/msgr_msg_registry.json'; }
 function msgrSaveMsg(string $msgr, string $msgId, int $chatId, int $shop, string $who = ''): void {
@@ -57991,6 +58330,21 @@ let VC = null, vcSaveTimer = null, VC_BRANCHES = [], VC_FILES = [], VC_PENDING =
  *  v8.28: تاریخچهٔ تغییرات — تازه‌ترین نسخه بالای فهرست
  * ================================================================== */
 const CHANGELOG = [
+  {v:'10.109', t:'📎 فوروارد چندرسانه‌ای چت باسلام به پیام‌رسان‌ها', items:[
+    'استخراج URL از attachment/content پیام مشتری باسلام (عکس/ویدیو/گیف/فایل/لینک)',
+    'ارسال sendPhoto / sendVideo / sendAnimation / sendDocument به تلگرام و بله',
+    'روبیکا: لینک رسانه در متن پیام',
+    'notifSend با پارامتر media + پیش‌نمایش لینک در متن',
+  ]},
+  {v:'10.108', t:'📤 صف خودکار «در مقصد نیست» — پر کردن حفرهٔ سینک غرفه/ووکامرس', items:[
+    'بعد از مغایرت‌گیری، محصولات مبدأ که در مقصد نیستند به صف ارسال می‌روند',
+    'در مغایرت دوره‌ای: تیک «صف خودکار در مقصد نیست» برای کران',
+    'گروه‌بندی بر اساس پروفایل + fan-out غرفه‌ها',
+  ]},
+  {v:'10.107', t:'مغایرت‌گیری چندغرفه + در مقصد نیست + دوره‌ای', items:[
+    'مغایرت چندغرفه و گزارش missing_total',
+    'کران دوره‌ای recon + catfix',
+  ]},
   {v:'10.103', t:'ادامهٔ ۳‌بارهٔ صف گیرکرده + ریست در بیکاری', items:[
     '▶ صف گیرکرده مثل دکمهٔ ادامهٔ مدیر وظیفه از چک‌پوینت ادامه می‌یابد',
     '3️⃣ بعد از سه تلاش ناموفق، وظیفه failed می‌شود (نه قطع خاموش)',

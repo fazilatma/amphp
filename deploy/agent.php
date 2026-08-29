@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.17
+ * Version: 13.3.18
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -37,7 +37,7 @@ class Scraper_Auto_Shop_Plugin {
 			'catalog_source'              => 'scraper', // scraper | woocommerce | merge
 			'catalog_merge_prefer'        => 'scraper', // scraper | woocommerce | keep_both
 			'takeover_front_page'         => false, // جایگزینی اختیاری صفحه نخست با ویترین
-			'enable_native_wp_template'   => true, // قالب نیتیو وردپرس (theme header/footer)
+			'enable_native_wp_template'   => true, // قالب بومی وردپرس (سربرگ و پاصفحهٔ پوسته)
 			'native_fallback_page_id'     => 0, // برگه پشتیبان فروشگاه
 			'enable_404_shop_redirect'    => true, // ریدایرکت 404 به صفحه پشتیبان
 			'set_wc_shop_to_fallback'     => true, // تنظیم صفحه فروشگاه ووکامرس روی پشتیبان در صورت خالی بودن
@@ -8305,7 +8305,7 @@ class Scraper_Auto_Shop_Plugin {
 	 * @return array
 	 */
 	public static function register_native_page_templates( $templates ) {
-		$templates['templates/native-shop.php'] = 'فروشگاه نیتیو وردپرس (AMPHP)';
+		$templates['templates/native-shop.php'] = 'فروشگاه بومی وردپرس';
 		return $templates;
 	}
 
@@ -8423,7 +8423,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( $page_id <= 0 && $auto ) {
 			// WC-native shortcode so the page still lists products if plugin is off
 			$content = "<!-- wp:shortcode -->\n[products limit=\"24\" columns=\"4\" orderby=\"date\"]\n<!-- /wp:shortcode -->\n\n"
-				. "<!-- AMPHP native fallback shop. Template: فروشگاه نیتیو وردپرس. -->\n";
+				. "<!-- برگهٔ پشتیبان فروشگاه بومی وردپرس -->\n";
 			$page_id = wp_insert_post( array(
 				'post_title'   => $fallback_title,
 				'post_name'    => 'amphp-shop-fallback',
@@ -8703,7 +8703,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.17' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.18' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -8919,7 +8919,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.17',
+				'version'     => '13.3.18',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -8945,7 +8945,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- AMPHP Storefront v13.3.17 -->
+		<!-- ویترین فروشگاه v13.3.18 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -9099,7 +9099,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.17' );
+		$parts = array( '13.3.18' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -10062,14 +10062,14 @@ public static function get_embedded_storefront_assets() {
 									</div>
 									<span style="font-size:0.78rem; color:#9d174d; line-height:1.5;">ظاهر فشن‌مگزین: تصاویر بزرگ، فونت ظریف، هدر باریک و شیک.</span>
 								</label>
-								<!-- Native WordPress -->
+								<!-- فروشگاه بومی وردپرس -->
 								<label style="border:2px solid <?php echo ( $opts['store_template'] ?? '' ) === 'native-wp' ? '#2563eb' : '#e2e8f0'; ?>; border-radius:12px; padding:14px; background:#eff6ff; cursor:pointer; display:flex; flex-direction:column; gap:8px;">
 									<div style="display:flex; justify-content:space-between; align-items:center;">
-										<span style="font-weight:900; color:#1e3a8a;">🧱 نیتیو وردپرس</span>
+										<span style="font-weight:900; color:#1e3a8a;">🧱 فروشگاه بومی وردپرس</span>
 										<input type="radio" name="store_template" value="native-wp" <?php checked( ( $opts['store_template'] ?? '' ), 'native-wp' ); ?>>
 									</div>
-									<div style="font-size:0.8rem; color:#334155; line-height:1.55;">
-										ویترین داخل <strong>قالب فعال وردپرس</strong> (هدر/فوتر تم). مناسب صفحه پشتیبان و سازگاری با ووکامرس کلاسیک.
+									<div style="font-size:0.8rem; color:#334155; line-height:1.7;">
+										ویترین داخل <strong>قالب فعال وردپرس</strong> (سربرگ و پاصفحهٔ پوسته). مناسب برگهٔ پشتیبان و سازگاری با ووکامرس کلاسیک — تمام متن‌ها فارسی.
 									</div>
 								</label>
 							</div>
@@ -10293,38 +10293,38 @@ public static function get_embedded_storefront_assets() {
 					</div>
 
 						
-						<!-- v13.3.17 Native WP template + fallback shop page -->
+						<!-- v13.3.18 قالب بومی وردپرس + برگه پشتیبان -->
 						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f8fafc,#eff6ff); border:1px solid #93c5fd; border-radius:14px; padding:20px;">
-							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب نیتیو وردپرس + صفحه پشتیبان فروشگاه</h4>
-							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.7;">
-								یک <strong>برگه استاندارد وردپرس</strong> با قالب «فروشگاه نیتیو» (هدر/فوتر قالب فعال) ساخته می‌شود تا
-								اگر ویترین React خراب/حذف/۴۰۴ شد، یا افزونه خاموش بود، بازدیدکننده به فروشگاه پایدار هدایت شود.
-								می‌توانید همین برگه را به‌عنوان صفحه فروشگاه ووکامرس هم تنظیم کنید.
+							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب بومی وردپرس + برگهٔ پشتیبان فروشگاه</h4>
+							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.85;">
+								یک <strong>برگهٔ استاندارد وردپرس</strong> با قالب «فروشگاه بومی» (سربرگ و پاصفحهٔ قالب فعال سایت) ساخته می‌شود تا
+								اگر ویترین اصلی خراب، حذف یا با خطای چهارصدوچهار شود، یا افزونه خاموش باشد، بازدیدکننده به فروشگاه پایدار هدایت شود.
+								می‌توانید همین برگه را به‌عنوان صفحهٔ فروشگاه ووکامرس هم تنظیم کنید.
 							</p>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; color:#0f172a;">
 								<input type="checkbox" name="enable_native_wp_template" value="1" <?php checked( ! isset( $opts['enable_native_wp_template'] ) || ! empty( $opts['enable_native_wp_template'] ) ); ?> style="width:18px;height:18px;accent-color:#2563eb;">
-								فعال‌سازی قالب نیتیو وردپرس (theme header/footer)
+								فعال‌سازی قالب بومی وردپرس (سربرگ و پاصفحهٔ پوسته)
 							</label>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:700; color:#334155;">
 								<input type="checkbox" name="auto_create_fallback_page" value="1" <?php checked( ! isset( $opts['auto_create_fallback_page'] ) || ! empty( $opts['auto_create_fallback_page'] ) ); ?>>
-								ساخت خودکار برگه پشتیبان فروشگاه
+								ساخت خودکار برگهٔ پشتیبان فروشگاه
 							</label>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:700; color:#334155;">
 								<input type="checkbox" name="enable_404_shop_redirect" value="1" <?php checked( ! isset( $opts['enable_404_shop_redirect'] ) || ! empty( $opts['enable_404_shop_redirect'] ) ); ?>>
-								ریدایرکت خطای ۴۰۴ به صفحه پشتیبان فروشگاه
+								هدایت خطای چهارصدوچهار به برگهٔ پشتیبان فروشگاه
 							</label>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:12px; font-weight:700; color:#334155;">
 								<input type="checkbox" name="set_wc_shop_to_fallback" value="1" <?php checked( ! empty( $opts['set_wc_shop_to_fallback'] ) ); ?>>
-								اگر صفحه فروشگاه ووکامرس خالی/حذف شده، همین برگه را به‌عنوان Shop ووکامرس تنظیم کن
+								اگر صفحهٔ فروشگاه ووکامرس خالی یا حذف شده، همین برگه را به‌عنوان فروشگاه ووکامرس تنظیم کن
 							</label>
 							<?php
 							$fb_id  = intval( $opts['native_fallback_page_id'] ?? get_option( 'scraper_native_fallback_page_id', 0 ) );
 							$fb_url = $fb_id ? get_permalink( $fb_id ) : '';
 							$pages  = get_pages( array( 'sort_column' => 'post_title', 'post_status' => 'publish' ) );
 							?>
-							<label style="font-weight:800; font-size:0.85rem; display:block; margin-bottom:4px;">برگه پشتیبان فروشگاه</label>
+							<label style="font-weight:800; font-size:0.85rem; display:block; margin-bottom:4px;">برگهٔ پشتیبان فروشگاه</label>
 							<select name="native_fallback_page_id" style="width:100%; max-width:480px; margin-bottom:10px;">
-								<option value="0">— ساخت / انتخاب خودکار —</option>
+								<option value="0">— ساخت یا انتخاب خودکار —</option>
 								<?php foreach ( (array) $pages as $pg ) : ?>
 									<option value="<?php echo esc_attr( $pg->ID ); ?>" <?php selected( $fb_id, (int) $pg->ID ); ?>>
 										<?php echo esc_html( $pg->post_title . ' (#' . $pg->ID . ')' ); ?>
@@ -10335,12 +10335,12 @@ public static function get_embedded_storefront_assets() {
 								<p style="margin:0 0 10px; font-size:0.84rem; color:#0f172a;">
 									🔗 آدرس فعلی:
 									<a href="<?php echo esc_url( $fb_url ); ?>" target="_blank" rel="noopener" style="font-weight:800;"><?php echo esc_html( $fb_url ); ?></a>
-									· قالب: <code>فروشگاه نیتیو وردپرس (AMPHP)</code>
+									· قالب: <code>فروشگاه بومی وردپرس</code>
 								</p>
 							<?php else : ?>
-								<p style="margin:0 0 10px; font-size:0.84rem; color:#b45309; font-weight:700;">هنوز برگه پشتیبان تنظیم نشده — با دکمه زیر بسازید یا تنظیمات را ذخیره کنید.</p>
+								<p style="margin:0 0 10px; font-size:0.84rem; color:#b45309; font-weight:700;">هنوز برگهٔ پشتیبان تنظیم نشده — با دکمهٔ زیر بسازید یا تنظیمات را ذخیره کنید.</p>
 							<?php endif; ?>
-							<button type="button" class="button button-primary" id="amphpEnsureFallbackBtn">🛠 ساخت / تعمیر برگه پشتیبان الان</button>
+							<button type="button" class="button button-primary" id="amphpEnsureFallbackBtn">🛠 ساخت یا تعمیر برگهٔ پشتیبان الان</button>
 							<span id="amphpEnsureFallbackStatus" style="margin-right:10px;font-weight:700;color:#1e40af;"></span>
 							<script>
 							(function(){
@@ -10364,7 +10364,7 @@ public static function get_embedded_storefront_assets() {
 							      } else {
 							        st.textContent = (d && d.data) ? d.data : 'خطا';
 							      }
-							    }).catch(function(){ btn.disabled=false; st.textContent='خطای ارتباط'; });
+							    }).catch(function(){ btn.disabled=false; st.textContent='خطا در ارتباط با سرور'; });
 							  });
 							})();
 							</script>
@@ -11360,7 +11360,7 @@ public static function get_embedded_storefront_assets() {
 							    fetch(ajaxurl,{method:'POST',body:fd,credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
 							      btn.disabled=false;
 							      st.textContent = (d && d.success) ? (d.data && d.data.message ? d.data.message : 'انجام شد') : (d && d.data ? d.data : 'خطا');
-							    }).catch(function(){ btn.disabled=false; st.textContent='خطای ارتباط'; });
+							    }).catch(function(){ btn.disabled=false; st.textContent='خطا در ارتباط با سرور'; });
 							  });
 							})();
 							</script>

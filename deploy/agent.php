@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.35
+ * Version: 13.3.36
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -2896,7 +2896,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.35 / v10.117: شروع اصلاح مغایرت از جدول مقایسه.
+	 * v13.3.36 / v10.118: مغایرت کامل (قیمت+ارسال+حذف+گزارش) از جدول مقایسه.
 	 */
 	public static function ajax_sync_matrix_fix_start() {
 		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {
@@ -13870,7 +13870,7 @@ public static function get_embedded_storefront_assets() {
 					<div style="padding:16px 18px;">
 						<p style="margin:0 0 12px;color:#c4b5fd;font-size:0.86rem;line-height:1.75;">
 							ساخت <b>کاملاً سرورساید</b> است — مناسب کاتالوگ بزرگ.
-							وقتی اتصال مستقیم ووکامرس فعال باشد، محصولات WC از <b>دیتابیس محلی</b> خوانده می‌شوند (خیلی سریع‌تر از REST API). از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> می‌آید. «🔧 اصلاح مغایرت‌ها» قیمت‌های ناهماهنگ را <b>سرورساید</b> طبق انتظار اصلاح می‌کند و جدول زنده به‌روز می‌شود.
+							وقتی اتصال مستقیم ووکامرس فعال باشد، محصولات WC از <b>دیتابیس محلی</b> خوانده می‌شوند (خیلی سریع‌تر از REST API). از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> می‌آید. «🔧 اصلاح مغایرت‌ها»: قیمت + ارسال missing + حذف/بایگانی extra — سرورساید؛ دو ردیف گزارش به انتهای جدول.
 							نتیجه در فایل سرور ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند.
 						</p>
 						<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
@@ -15179,15 +15179,16 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 				}
 				var stopBtn = document.getElementById('amphpSmFixStop');
 				if(stopBtn){
-					var fixing = !!(p.running && (p.job==='fix' || p.phase==='woo_fix' || p.phase==='bsl_fix' || p.ok_n!=null || p.phase==='queued'));
+					var fixing = !!(p.running && (p.job==='fix' || p.ok_n!=null || String(p.phase||'').match(/fix|send|del|queued|start/)));
 					stopBtn.style.display = fixing ? '' : 'none';
 				}
 				var ban = document.getElementById('amphpSmFixBanner');
-				if(ban && (p.ok_n!=null || p.job==='fix' || p.phase==='woo_fix' || p.phase==='bsl_fix')){
+				if(ban && (p.ok_n!=null || p.job==='fix' || String(p.phase||'').match(/fix|send|del|queued|start/))){
 					ban.style.display = 'block';
-					ban.innerHTML = (p.running?'⏳ در حال اصلاح… ':'')
+					ban.innerHTML = (p.running?'⏳ در حال مغایرت‌گیری… ':'')
 						+'✅ '+amphpSmFa(p.ok_n||0)+' · ❌ '+amphpSmFa(p.fail_n||0)
-						+' · '+amphpSmFa(p.cur||0)+'/'+amphpSmFa(p.total||0);
+						+' · '+amphpSmFa(p.cur||0)+'/'+amphpSmFa(p.total||0)
+						+' · 💰'+amphpSmFa(p.price_n||0)+' · 📤'+amphpSmFa(p.sent_n||0)+' · 🗑'+amphpSmFa(p.del_n||0);
 				}
 			}
 			function amphpSmAjax(action, extra, cb){
@@ -15265,7 +15266,7 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 			}
 			function amphpSmFixStart(scope){
 				scope = scope || 'all';
-				if(!confirm('اصلاح قیمت ردیف‌های ناهماهنگ طبق انتظار جدول؟\nمحدوده: '+(scope==='woo'?'فقط ووکامرس':(scope==='bsl'?'فقط غرفه‌ها':'همه')))) return;
+				if(!confirm('مغایرت‌گیری کامل از جدول؟\n• قیمت + ارسال missing + حذف extra\nمحدوده: '+(scope==='woo'?'فقط ووکامرس':(scope==='bsl'?'فقط غرفه‌ها':'همه'))+'\nدو ردیف گزارش به جدول اضافه می‌شود.')) return;
 				amphpSmShowJob(true);
 				var elL=document.getElementById('amphpSmJobLabel');
 				if(elL) elL.textContent='🔧 شروع اصلاح…';
@@ -15357,7 +15358,19 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 					} else if(body){
 						var start = ((d.page||1)-1)*(d.per_page||50);
 						body.innerHTML = rows.map(function(r,i){
-							var stMap = {ok:['✅ یکسان','ok'],mismatch:['❌ مغایرت','bad'],missing:['📤 ناقص','missing_dst'],only_profile:['📘 فقط مبدأ','missing_dst'],only_dest:['📦 فقط مقصد','extra'],partial:['➖ ناقص','warn']};
+							if(r && (r.is_report || String(r.bare||'').indexOf('__report_')===0)){
+								var lines=(r.report_lines||[]).map(function(x){return '<div style="padding:2px 0;border-bottom:1px solid #33415544">'+amphpEsc(String(x))+'</div>';}).join('');
+								var bg = (r.report_type==='work') ? '#1e3a5f' : '#14532d';
+								var tr='<tr style="background:'+bg+'">';
+								tr += amphpSmCell(amphpSmFa(start+i+1),'na');
+								tr += '<td colspan="'+(6+(shops.length||0)+1)+'" style="padding:10px 12px;border-bottom:1px solid #334155;color:#e2e8f0;vertical-align:top">';
+								tr += '<div style="font-weight:900;font-size:12px;margin-bottom:6px;color:#fde68a">'+amphpEsc(r.title||'گزارش')+'</div>';
+								tr += '<div style="font-size:11px;color:#bbf7d0;margin-bottom:6px">'+amphpEsc(r.report_text||'')+'</div>';
+								tr += '<div style="font-size:10.5px;line-height:1.7;max-height:160px;overflow:auto">'+lines+'</div>';
+								tr += '</td></tr>';
+								return tr;
+							}
+							var stMap = {ok:['✅ یکسان','ok'],mismatch:['❌ مغایرت','bad'],missing:['📤 ناقص','missing_dst'],only_profile:['📘 فقط مبدأ','missing_dst'],only_dest:['📦 فقط مقصد','extra'],partial:['➖ ناقص','warn'],removed:['🗑 حذف‌شد','extra'],report:['📋 گزارش','na']};
 							var st = stMap[r.status] || ['?','na'];
 							var flags = '';
 							(r.flags||[]).forEach(function(f){

@@ -298,7 +298,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.115';
+const APP_VERSION = '10.116';
 const APP_VERSION_DATE = '1405/06/13';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -9978,7 +9978,7 @@ var FIELDS=[
   ['price','قیمت'],
   ['shortDesc','توضیح کوتاه'],['longDesc','توضیح بلند'],['sku','SKU'],
   ['category','دسته‌بندی'],['tags','برچسب‌ها'],['weight','وزن'],
-  ['stock','موجودی'],['brand','برند'],['variations','تنوع‌ها'],
+  ['stock','موجودی'],['brand','برند'],['variations','تنوع‌ها (گالری عکس)'],
   ['galleryBox','باکس گالری'],['galleryOne','تک‌عکس گالری'],['image','عکس اصلی']
 ];
 function fieldLabel(k){
@@ -10213,16 +10213,22 @@ function getPreview(el, mode){
   }
   // v8.68: تنوع‌ها — گزینه‌ها را جدا نشان بده، نه متن به‌هم‌چسبیده
   if(mode==='variations'){
-    /* v8.85: پیش‌نمایش باید همان چیزی را نشان دهد که در نهایت ذخیره و به
-       مقصد فرستاده می‌شود، نه یک حدسِ سرانگشتی. منطق زیر همان مراحل
-       variationsInside/variationValueOf سمت PHP است، تا آنچه اینجا
-       می‌بینید دقیقاً همان خروجی واقعی باشد. */
+    /* v8.85 + v10.116: گزینه‌ها + شمارش تصاویر سواچ (گالری) */
     var vv=__varValues(el);
+    var ni=0;
+    try{
+      var imgs=el.querySelectorAll('img');
+      ni=imgs?imgs.length:0;
+      if(!ni){
+        var st=el.querySelectorAll('[style*="background"],[data-image],[data-img],[data-src]');
+        ni=st?st.length:0;
+      }
+    }catch(e){}
     if(!vv.length){
       var t=(el.textContent||'').replace(/\s+/g,' ').trim();
-      return t?('چیزی پیدا نشد — متن ظرف: '+t.substring(0,60)):'(خالی)';
+      return t?('چیزی پیدا نشد — متن ظرف: '+t.substring(0,60)):(ni?('🖼 '+ni+' تصویر سواچ'):'(خالی)');
     }
-    return vv.length+' گزینه ← '+vv.join(' · ');
+    return vv.length+' گزینه'+(ni?(' · 🖼 '+ni+' عکس → گالری'):'')+' ← '+vv.join(' · ');
   }
   /* v10.15: پیش‌نمایشِ قیمت دقیقاً از همان extractPrice می‌آید که سمتِ سرور
      هم استفاده می‌شود، تا آنچه اینجا می‌بینید همان چیزی باشد که ذخیره می‌شود. */
@@ -10554,6 +10560,14 @@ function __setMode(m){
 }
 
 function __report(){
+  /* v10.116: شمارش تصاویر سواچ در حالت تنوع برای پنل بیرونی */
+  var _varImgs=0;
+  if(MODE==='variations'&&picked){
+    try{
+      _varImgs=(picked.querySelectorAll('img')||[]).length;
+      if(!_varImgs) _varImgs=(picked.querySelectorAll('[style*="background"],[data-image],[data-img],[data-src]')||[]).length;
+    }catch(e){}
+  }
   __post('picker_state',{
     mode:MODE, sel:S[MODE]||'', gal:GAL.slice(),
     tag:picked?picked.tagName.toLowerCase():'',
@@ -10561,7 +10575,8 @@ function __report(){
          down:!!(picked&&picked.firstElementChild),
          prev:!!(picked&&picked.previousElementSibling),
          next:!!(picked&&picked.nextElementSibling)},
-    imgs:MODE==='galleryBox'?countImgs(picked):(MODE==='galleryOne'?countGalImgs(GAL):0),
+    imgs:MODE==='galleryBox'?countImgs(picked):(MODE==='galleryOne'?countGalImgs(GAL):(MODE==='variations'?_varImgs:0)),
+    varImgs:_varImgs,
     matches:countMatch(S[MODE]||''),
     preview:picked?String(getPreview(picked,MODE)||'').substring(0,150):'',
     // v8.85: فهرست کاملِ تنوع‌ها، جدا از متن کوتاه‌شدهٔ پیش‌نمایش، تا پنل
@@ -12223,6 +12238,58 @@ function variationValueOf(?DOMNode $n): string {
 }
 
 /**
+ * v10.116: آدرس تصویر یک گزینهٔ تنوع (سواچ رنگی / بندانگشتی).
+ * ترتیب: data-zoom / large / data-src / src روی خود گره یا img داخلش.
+ */
+function variationImageOf(?DOMNode $n, string $baseUrl = ''): string {
+    if (!$n instanceof DOMElement) return '';
+    $tryNode = function ($el) use ($baseUrl): string {
+        if (!$el instanceof DOMElement) return '';
+        /* reuse gallery quality order when available */
+        if (function_exists('galleryImgFromNode')) {
+            $u = galleryImgFromNode($el, $baseUrl !== '' ? $baseUrl : 'https://example.invalid/');
+            if ($u !== '' && function_exists('url_is_image') && url_is_image($u)) return $u;
+            if ($u !== '' && preg_match('~\.(png|jpe?g|gif|webp|svg|avif)(\?|$)~i', $u)) return $u;
+        }
+        foreach (['data-zoom-image', 'data-large_image', 'data-large-image', 'data-full',
+                  'data-original', 'data-image', 'data-img', 'data-src', 'data-lazy-src',
+                  'src', 'href'] as $a) {
+            $v = trim((string)$el->getAttribute($a));
+            if ($v === '') continue;
+            if (strpos($v, 'data:') === 0) continue;
+            if (!preg_match('~\.(png|jpe?g|gif|webp|svg|avif)(\?|$)~i', $v)
+                && stripos($v, '/image') === false
+                && stripos($v, 'cdn') === false
+                && !preg_match('~^https?://~i', $v)) continue;
+            $abs = $baseUrl !== '' && function_exists('make_absolute_url')
+                ? make_absolute_url($v, $baseUrl) : $v;
+            if ($abs !== '') return $abs;
+        }
+        return '';
+    };
+    $u = $tryNode($n);
+    if ($u !== '') return $u;
+    if (strtolower($n->tagName) === 'img') return '';
+    $q = @(new DOMXPath($n->ownerDocument))->query('.//img', $n);
+    if ($q) {
+        foreach ($q as $img) {
+            $u = $tryNode($img);
+            if ($u !== '') return $u;
+        }
+    }
+    /* background-image: url(...) */
+    $style = trim((string)$n->getAttribute('style'));
+    if ($style !== '' && preg_match('~url\([\'"]?([^\'")]+)[\'"]?\)~i', $style, $m)) {
+        $v = trim($m[1]);
+        if ($v !== '' && strpos($v, 'data:') !== 0) {
+            return $baseUrl !== '' && function_exists('make_absolute_url')
+                ? make_absolute_url($v, $baseUrl) : $v;
+        }
+    }
+    return '';
+}
+
+/**
  * v8.81: قیمتِ مخصوصِ یک گزینهٔ تنوع.
  *
  * در خیلی از فروشگاه‌ها با کلیک روی سایز یا رنگ، قیمت عوض می‌شود. آن قیمت
@@ -12376,8 +12443,45 @@ function variationsInside(DOMXPath $xp, DOMNode $box): array {
  * تنوع‌ها را با سلکتور داده‌شده از صفحه بیرون می‌کشد.
  * سلکتور می‌تواند چندتایی باشد (هر خط یک گروه، مثل رنگ و سایز جدا).
  */
-function variationsExtract(DOMXPath $xp, ?DOMNode $ctx, string $selStr): array {
-    $groups = []; $flat = []; $seen = [];
+/**
+ * v10.116: تصاویر گزینه‌های تنوع داخل یک ظرف (سواچ/بندانگشتی).
+ * @return list<string>
+ */
+function variationsImagesInside(DOMXPath $xp, DOMNode $box, string $baseUrl = ''): array {
+    $imgs = []; $seen = [];
+    $push = function ($u) use (&$imgs, &$seen) {
+        $u = trim((string)$u);
+        if ($u === '' || strpos($u, 'data:') === 0) return;
+        $norm = preg_replace('~-\d{2,4}x\d{2,4}(?=\.[a-z]{3,4}(\?|$))~i', '', $u);
+        $norm = preg_replace('~[?#].*$~', '', $norm);
+        if (isset($seen[$norm])) return;
+        $seen[$norm] = true;
+        $imgs[] = $u;
+    };
+    $candidates = [];
+    foreach (['.//li', './/label', './/button', './/a', './/span',
+              './/*[contains(@class,"swatch")]', './/*[contains(@class,"variation")]',
+              './/*[contains(@class,"color")]', './/*[contains(@class,"colour")]',
+              './/img', './/*[@data-image]', './/*[@data-img]'] as $q) {
+        $ns = @$xp->query($q, $box);
+        if ($ns) foreach ($ns as $n) $candidates[] = $n;
+    }
+    /* فرزندان مستقیم ظرف هم */
+    if ($box instanceof DOMElement) {
+        foreach ($box->childNodes as $c) {
+            if ($c instanceof DOMElement) $candidates[] = $c;
+        }
+    }
+    $candidates[] = $box;
+    foreach ($candidates as $n) {
+        $u = variationImageOf($n, $baseUrl);
+        if ($u !== '') $push($u);
+    }
+    return $imgs;
+}
+
+function variationsExtract(DOMXPath $xp, ?DOMNode $ctx, string $selStr, string $baseUrl = ''): array {
+    $groups = []; $flat = []; $seen = []; $images = []; $imgSeen = [];
     foreach (preg_split('~[\r\n|]+~u', $selStr) as $one) {
         $one = trim((string)$one);
         if ($one === '') continue;
@@ -12389,6 +12493,12 @@ function variationsExtract(DOMXPath $xp, ?DOMNode $ctx, string $selStr): array {
         if (!$boxes || !$boxes->length) continue;
         foreach ($boxes as $b) {
             $vals = variationsInside($xp, $b);
+            /* v10.116: تصاویر سواچ/بندانگشتی تنوع → گالری */
+            foreach (variationsImagesInside($xp, $b, $baseUrl) as $iu) {
+                $norm = preg_replace('~[?#].*$~', '', $iu);
+                if (!isset($imgSeen[$norm])) { $imgSeen[$norm] = true; $images[] = $iu; }
+            }
+            if (!$vals && !$images) continue;
             if (!$vals) continue;
             // نام گروه: از label یا صفت name اگر باشد
             $name = '';
@@ -12422,7 +12532,36 @@ function variationsExtract(DOMXPath $xp, ?DOMNode $ctx, string $selStr): array {
             if (!isset($allPrices[$lbl])) $allPrices[$lbl] = $pv;
         }
     }
-    $res = ['groups' => $groups, 'values' => $flat, 'count' => count($flat)];
+    /* WooCommerce variation image from data-product_variations JSON */
+    $forms = @$xp->query('//*[@data-product_variations]');
+    if ($forms) foreach ($forms as $f) {
+        if (!$f instanceof DOMElement) continue;
+        $raw = $f->getAttribute('data-product_variations');
+        if ($raw === '' || $raw === 'false') continue;
+        $rows = json_decode(html_entity_decode($raw, ENT_QUOTES, 'UTF-8'), true);
+        if (!is_array($rows)) continue;
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $img = $row['image'] ?? null;
+            $src = '';
+            if (is_array($img)) {
+                $src = (string)($img['full_src'] ?? ($img['url'] ?? ($img['src'] ?? '')));
+            } elseif (is_string($img)) {
+                $src = $img;
+            }
+            if ($src === '' && !empty($row['image_id'])) {
+                /* no URL without more API — skip */
+            }
+            $src = trim($src);
+            if ($src === '') continue;
+            $abs = $baseUrl !== '' && function_exists('make_absolute_url')
+                ? make_absolute_url($src, $baseUrl) : $src;
+            $norm = preg_replace('~[?#].*$~', '', $abs);
+            if (!isset($imgSeen[$norm])) { $imgSeen[$norm] = true; $images[] = $abs; }
+        }
+    }
+    $res = ['groups' => $groups, 'values' => $flat, 'count' => count($flat),
+            'images' => $images, 'images_count' => count($images)];
     if ($allPrices) {
         $pv = array_values($allPrices);
         $res['prices'] = $allPrices;
@@ -13013,7 +13152,8 @@ if (isset($extracted[$field]) && $extracted[$field] !== '') continue;
 
 // v8.68: تنوع‌ها فهرست‌اند، مسیر جدا
 if ($field === 'variations') {
-$vr = variationsExtract($xp, null, (string)$config['selector']);
+/* v10.116: تنوع + تصاویر سواچ → گالری */
+$vr = variationsExtract($xp, null, (string)$config['selector'], (string)($res['url'] ?? $productUrl));
 if (!empty($vr['values'])) {
 $extracted['variations'] = $vr['values'];
 $extracted['variation_groups'] = $vr['groups'];
@@ -13024,6 +13164,20 @@ $extracted['variation_prices'] = $vr['prices'];
 $extracted['price_min'] = $vr['price_min'];
 $extracted['price_max'] = $vr['price_max'];
 $extracted['price_varies'] = !empty($vr['price_varies']);
+}
+}
+if (!empty($vr['images']) && is_array($vr['images'])) {
+$extracted['variation_images'] = $vr['images'];
+$extracted['variation_images_count'] = count($vr['images']);
+/* ادغام در images برای گالری مقصد */
+$main = trim((string)($extracted['image'] ?? ''));
+$all = function_exists('galleryDedupe')
+    ? galleryDedupe(array_merge($main !== '' ? [$main] : [], $vr['images']))
+    : array_values(array_unique(array_merge($main !== '' ? [$main] : [], $vr['images'])));
+if ($all) {
+    $extracted['image'] = $all[0];
+    $extracted['images'] = $all;
+    $extracted['images_count'] = count($all);
 }
 }
 continue;
@@ -13950,7 +14104,8 @@ function extractProductDetailInline(array &$allProducts, string $key, array $det
     foreach ($detailSelectors as $field => $selStr) {
         if (empty($selStr)) continue;
         if ($field === 'variations') {
-            $vr = variationsExtract($xp2, null, $selStr);
+            /* v10.116: baseUrl برای مطلق‌کردن تصاویر سواچ */
+            $vr = variationsExtract($xp2, null, $selStr, (string)($dr['url'] ?? ''));
             if (!empty($vr['values'])) {
                 $p['variations'] = $vr['values'];
                 $p['variation_groups'] = $vr['groups'];
@@ -13962,6 +14117,13 @@ function extractProductDetailInline(array &$allProducts, string $key, array $det
                     $p['price_max'] = $vr['price_max'];
                     $p['price_varies'] = !empty($vr['price_varies']);
                 }
+            }
+            /* تصاویر تنوع → گالری محصول */
+            if (!empty($vr['images']) && is_array($vr['images'])) {
+                $ni = galleryApplyToProduct($p, $vr['images'], $forceAll);
+                if ($ni > $imgs) $imgs = $ni;
+                $p['variation_images'] = $vr['images'];
+                $p['variation_images_count'] = count($vr['images']);
             }
             continue;
         }
@@ -14562,7 +14724,8 @@ foreach($detailSelectors as $field=>$selStr){
 if(empty($selStr))continue;
 // v8.68: تنوع‌ها فهرست‌اند نه یک متن، پس مسیر جداگانه دارند
 if($field==='variations'){
-$vr=variationsExtract($xp2,null,$selStr);
+/* v10.116: تنوع + تصاویر سواچ به‌عنوان گالری */
+$vr=variationsExtract($xp2,null,$selStr,(string)($dr['url']??''));
 if(!empty($vr['values'])){
 $allProducts[$key]['variations']=$vr['values'];
 $allProducts[$key]['variation_groups']=$vr['groups'];
@@ -14575,6 +14738,13 @@ $allProducts[$key]['price_min']=$vr['price_min'];
 $allProducts[$key]['price_max']=$vr['price_max'];
 $allProducts[$key]['price_varies']=!empty($vr['price_varies']);
 }
+}
+if(!empty($vr['images'])&&is_array($vr['images'])){
+$nImg=galleryApplyToProduct($allProducts[$key],$vr['images'],$_forceAll);
+if($nImg>1){$galleryFound++;$galleryImgsTotal+=$nImg;if($nImg>$_gotImgs)$_gotImgs=$nImg;}
+elseif($nImg>$_gotImgs)$_gotImgs=$nImg;
+$allProducts[$key]['variation_images']=$vr['images'];
+$allProducts[$key]['variation_images_count']=count($vr['images']);
 }
 continue;
 }
@@ -22351,10 +22521,11 @@ function matrixBuild(array $opts = []): array {
         matrixProgress([
             'phase' => 'bsl_fetch', 'pct' => 50 + (int)round(30 * $sN / $sTot),
             'cur' => $sN, 'cur_total' => $sTot,
-            'log_add' => ['🏪 دریافت غرفه ' . $sN . '/' . $sTot . ' — ' . $sname],
+            'log_add' => ['🏪 دریافت غرفه ' . $sN . '/' . $sTot . ' — ' . $sname . ' (فقط فعال)'],
         ]);
         try {
-            $remote = reconFetchBsl($tok, $vid);
+            /* v10.116: فقط محصولات فعال قابل‌مشاهدهٔ مشتری (2976) */
+            $remote = reconFetchBsl($tok, $vid, 0, true);
         } catch (Throwable $e) {
             $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
             $remote = [];
@@ -38033,12 +38204,22 @@ function reconFetchWoo(array $w, int $maxPages = 0): array {
 }
 
 /** همهٔ محصولات فعال باسلام. قیمت باسلام به ریال است. */
-function reconFetchBsl(string $tk, int $vid, int $maxPages = 0): array {
+/**
+ * واکشی محصولات باسلام برای مغایرت‌گیری/ماتریس.
+ * $customerVisibleOnly=true ⇒ فقط وضعیت 2976 (فعال و قابل مشاهده برای مشتری)
+ *                           — نه غیرفعال/در انتظار/بایگانی.
+ * پیش‌فرض false برای سازگاری recon قدیمی (فعال+غیرفعال).
+ */
+function reconFetchBsl(string $tk, int $vid, int $maxPages = 0, bool $customerVisibleOnly = false): array {
     if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
+    /* v10.116: ماتریس فقط محصولات فعال مشتری‌نما */
+    $stQ = $customerVisibleOnly
+        ? '&statuses=2976'
+        : '&statuses=2976&statuses=3790';
     for ($page = 1; $page <= $maxPages; $page++) {
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
-             . '&per_page=100&statuses=2976&statuses=3790');
+             . '&per_page=100' . $stQ);
         if (empty($r['ok'])) break;
         $batch = $r['body']['data'] ?? [];
         if (!$batch) break;
@@ -38047,15 +38228,22 @@ function reconFetchBsl(string $tk, int $vid, int $maxPages = 0): array {
             $rev  = $pr['revision']['data'] ?? [];
             $name = trim((string)($pr['title'] ?? ($pr['name'] ?? ($rev['title'] ?? ''))));
             if ($name === '') continue;
+            $st = (int)(is_array($pr['status'] ?? null)
+                        ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
+            if ($customerVisibleOnly && $st !== 2976 && $st !== 0) {
+                /* اگر API status را جدا نداد، 0 می‌ماند — نگه می‌داریم */
+                if ($st > 0) continue;
+            }
             $rial = (int)($rev['primary_price'] ?? ($pr['primary_price'] ?? 0));
             $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
                        'price' => $rial, 'price_toman' => (int)round($rial / 10),
-                       'status' => (int)(is_array($pr['status'] ?? null)
-                                   ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0))];
+                       'status' => $st];
         }
-        $fLog = ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')'];
+        $fLog = ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول'
+            . ($customerVisibleOnly ? ' (فقط فعال 2976)' : '')
+            . ' (مجموع ' . count($rows) . ')'];
         if ($page === 1) {
-            foreach (array_slice($rows, 0, 3) as $s) $fLog[] = '  • ' . mb_substr($s['title'], 0, 50);
+            foreach (array_slice($rows, 0, 3) as $srow) $fLog[] = '  • ' . mb_substr($srow['title'], 0, 50);
         }
         reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
             'log_add' => $fLog]);
@@ -53016,7 +53204,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 </div>
 <div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
 ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). اگر اسکرپر داخل وردپرس باشد، WC از <b>دیتابیس مستقیم</b> خوانده می‌شود (سریع‌تر از API). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند. همین جدول در <b>افزونه → تب فروشگاه</b> هم هست.
-پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول».
+پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول». از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> (وضعیت ۲۹۷۶) می‌آید.
 رنگ‌ها: <span style="background:#14532d;color:#bbf7d0;padding:1px 6px;border-radius:4px">یکسان</span>
 <span style="background:#713f12;color:#fde68a;padding:1px 6px;border-radius:4px">نزدیک/هشدار</span>
 <span style="background:#7f1d1d;color:#fecaca;padding:1px 6px;border-radius:4px">مغایرت</span>
@@ -54343,7 +54531,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
                 <option value="weight">⚖️ وزن</option>
                 <option value="stock">📦 موجودی</option>
                 <option value="brand">🏭 برند</option>
-                <option value="variations">🎨 تنوع‌ها (رنگ/سایز)</option>
+                <option value="variations">🎨 تنوع‌ها (گالری عکس رنگ/سایز)</option>
                 <option value="galleryBox">🖼 باکس گالری (همهٔ عکس‌ها)</option>
                 <option value="galleryOne">➕ افزودن تک‌عکس به گالری</option>
                 <option value="image">🌆 عکس اصلی</option>
@@ -54867,7 +55055,7 @@ const DETAIL_FIELDS = [
     // v8.68: تنوع‌ها (variations) — مثل رنگ و سایز. یک سلکتور به ظرفی
     // می‌دهید که گزینه‌ها داخلش هستند (select، رادیو، یا فهرست دکمه‌ای)
     // و همهٔ مقادیر برداشته می‌شوند.
-    {key:'variations',label:'تنوع‌ها (رنگ/سایز)', icon:'🎨', multi:true},
+    {key:'variations',label:'تنوع‌ها (گالری عکس رنگ/سایز)', icon:'🎨', multi:true, asGallery:true},
 ];
 let detailSel = {};
 DETAIL_FIELDS.forEach(f => detailSel[f.key] = {enabled:false, selector:''});
@@ -56532,9 +56720,11 @@ function pkApplyState(st){
   const c=$('pkPrev2');
   if(st.mode==='variations'&&Array.isArray(st.vars)){
     if(st.vars.length){
+      const ni=parseInt(st.varImgs||st.imgs||0,10)||0;
       let vh='<div style="color:#c4b5fd;font-size:10px;margin-bottom:3px">'
         +'✅ خروجی نهایی — '+toFa(st.vars.length)+' گزینه'
-        +' <span style="color:#64748b">(همین‌ها ذخیره و ارسال می‌شوند)</span></div>'
+        +(ni?(' · 🖼 '+toFa(ni)+' عکس → گالری'):'')
+        +' <span style="color:#64748b">(مقادیر + تصاویر سواچ ذخیره می‌شوند)</span></div>'
         +'<div style="display:flex;gap:3px;flex-wrap:wrap">';
       st.vars.forEach(v=>{
         vh+='<span style="background:#1e1b4b;border:1px solid #6d28d9;color:#e9d5ff;'
@@ -56547,13 +56737,14 @@ function pkApplyState(st){
       c.textContent='⚠ هیچ گزینه‌ای پیدا نشد — ظرف دیگری را امتحان کنید (⬆ والد)';
       c.style.color='#fbbf24';
     }
-  }else{
+  }}else{
     set('pkPrev2', st.preview||'(خالی)');
     if(c)c.style.color=st.preview?'#86efac':'#fbbf24';
   }
   let cnt='';
   if(st.mode==='galleryBox')      cnt='🖼 '+toFa(st.imgs||0)+' عکس'+((st.matches||0)>1?(' · '+toFa(st.matches)+' ظرف'):'');
   else if(st.mode==='galleryOne') cnt='➕ '+toFa(st.imgs||0)+' عکس · '+toFa((st.gal||[]).length)+' سلکتور';
+  else if(st.mode==='variations') cnt=(st.vars&&st.vars.length? (toFa(st.vars.length)+' گزینه') :'')+((st.varImgs||st.imgs)?(' · 🖼 '+toFa(st.varImgs||st.imgs)+' → گالری'):'');
   else if((st.matches||0)>1)      cnt='⚠ '+toFa(st.matches)+' تطبیق';
   set('pkCnt', cnt);
   const nav=st.nav||{};
@@ -61660,6 +61851,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.116', t:'📊 ماتریس فقط BSL فعال + تنوع‌ها به‌صورت گالری عکس', items:[
+    'جدول مقایسه نظیر‌به‌نظیر فقط محصولات فعال قابل‌مشاهده مشتری باسلام (وضعیت ۲۹۷۶) را می‌آورد.',
+    'سلکتور «تنوع‌ها» تصاویر سواچ/بندانگشتی را هم به‌عنوان گالری استخراج و به images محصول می‌افزاید.',
+    'data-product_variations ووکامرس هم برای عکس هر variation خوانده می‌شود.',
+  ]},
   {v:'10.115', t:'📊 جدول مقایسه در افزونه + WC مستقیم (سریع)', items:[
     'جدول نظیر‌به‌نظیر در تب «فروشگاه» افزونه وردپرس هم آمده (ساخت/خواندن سرورساید).',
     'واکشی ووکامرس وقتی داخل WP باشد از دیتابیس مستقیم است — بدون REST API کند.',

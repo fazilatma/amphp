@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.33
+ * Version: 13.3.34
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -13719,7 +13719,7 @@ public static function get_embedded_storefront_assets() {
 					<div style="padding:16px 18px;">
 						<p style="margin:0 0 12px;color:#c4b5fd;font-size:0.86rem;line-height:1.75;">
 							ساخت <b>کاملاً سرورساید</b> است — مناسب کاتالوگ بزرگ.
-							وقتی اتصال مستقیم ووکامرس فعال باشد، محصولات WC از <b>دیتابیس محلی</b> خوانده می‌شوند (خیلی سریع‌تر از REST API).
+							وقتی اتصال مستقیم ووکامرس فعال باشد، محصولات WC از <b>دیتابیس محلی</b> خوانده می‌شوند (خیلی سریع‌تر از REST API). از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> می‌آید.
 							نتیجه در فایل سرور ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند.
 						</p>
 						<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">

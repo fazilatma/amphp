@@ -68,6 +68,9 @@ const CATTRIED_FILE = __DIR__ . '/category_attempts.json';
 const CATTRIED_MAX_PRODUCTS = 2000;   // سقفِ حجم؛ قدیمی‌ترها هرس می‌شوند
 const RECON_PROGRESS_FILE = __DIR__ . '/recon_progress.json'; // v8.49
 const RECON_AUTO_STATE_FILE = __DIR__ . '/recon_auto_state.json'; // v10.107
+const SYNC_MATRIX_PROGRESS_FILE = __DIR__ . '/sync_matrix_progress.json'; // v10.113
+const SYNC_MATRIX_RESULT_FILE   = __DIR__ . '/sync_matrix_result.json';   // v10.113
+const SYNC_MATRIX_LOCK_FILE     = __DIR__ . '/sync_matrix.lock';          // v10.113
 const CATFIX_AUTO_STATE_FILE = __DIR__ . '/catfix_auto_state.json'; // v10.107
 const RECON_FETCH_MAX_PAGES = 400; // v10.107: غرفه‌های بزرگ
 const SUFFIX_PROGRESS_FILE = __DIR__ . '/suffix_progress.json'; // v8.53
@@ -295,8 +298,8 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.112';
-const APP_VERSION_DATE = '1405/06/11';
+const APP_VERSION = '10.113';
+const APP_VERSION_DATE = '1405/06/12';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -13450,6 +13453,8 @@ if (isset($_POST['recon_auto'])) {
         'interval_h' => $iv,
         'notify' => !isset($ra['notify']) || !empty($ra['notify']),
         'enqueue_missing' => !empty($ra['enqueue_missing']),
+        /* v10.113: بعد از مغایرت دوره‌ای، جدول مقایسه را سمت سرور بساز */
+        'build_matrix' => !isset($ra['build_matrix']) || !empty($ra['build_matrix']),
     ];
 }
 if (isset($_POST['catfix_auto'])) {
@@ -22119,10 +22124,13 @@ if (isset($_GET['sec_check'])) {
 }
 
 
+
 /* =====================================================================
- *  v10.112: ماتریس مقایسهٔ نظیر‌به‌نظیر پروفایل × ووکامرس × غرفه‌های باسلام
- *  ?sync_matrix=1&page=1&per_page=50&profile=all&q=
- *  تطبیق عنوان بدون پسوند پروفایل و بدون «(کد: …)»
+ *  v10.113: ماتریس مقایسه — کاملاً سرورساید + جاب پس‌زمینه + دوره‌ای
+ *  ساخت: ?sync_matrix_start=1  (یا POST action=sync_matrix_start)
+ *  وضعیت: ?sync_matrix_status=1
+ *  خواندن صفحه‌بندی‌شده از نتیجهٔ ذخیره‌شده: ?sync_matrix=1&page=&per_page=
+ *  اجرا داخل cron همراه reconAutoTick وقتی build_matrix روشن است
  * ===================================================================== */
 function matrixCollectSuffixes(): array {
     $sfx = [];
@@ -22134,16 +22142,16 @@ function matrixCollectSuffixes(): array {
 }
 function matrixBareTitle(string $title, array $suffixes = []): string {
     $t = trim($title);
-    // پسوندهای پروفایل را از انتها بِکَن (بلندتر اول)
     usort($suffixes, function ($a, $b) {
-        return mb_strlen($b) <=> mb_strlen($a);
+        return mb_strlen((string)$b) <=> mb_strlen((string)$a);
     });
     foreach ($suffixes as $s) {
         $s = trim((string)$s);
         if ($s === '') continue;
-        if (function_exists('mb_substr') && mb_substr($t, -mb_strlen($s)) === $s) {
+        if (function_exists('mb_substr') && mb_strlen($t) >= mb_strlen($s)
+            && mb_substr($t, -mb_strlen($s)) === $s) {
             $t = trim(mb_substr($t, 0, mb_strlen($t) - mb_strlen($s)));
-        } elseif (substr($t, -strlen($s)) === $s) {
+        } elseif (strlen($t) >= strlen($s) && substr($t, -strlen($s)) === $s) {
             $t = trim(substr($t, 0, -strlen($s)));
         }
     }
@@ -22159,25 +22167,80 @@ function matrixPriceTone(int $src, int $dst): string {
     if ($diff <= 0.05) return 'warn';
     return 'bad';
 }
+function matrixProgress(array $patch): void {
+    $cur = [];
+    if (is_file(SYNC_MATRIX_PROGRESS_FILE)) {
+        $d = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
+        if (is_array($d)) $cur = $d;
+    }
+    $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
+    if (isset($patch['log_add'])) {
+        foreach ((array)$patch['log_add'] as $l) {
+            $log[] = ['t' => time(), 'm' => (string)$l];
+        }
+        if (count($log) > 120) $log = array_slice($log, -120);
+        unset($patch['log_add']);
+    }
+    $cur = array_merge($cur, $patch);
+    $cur['log'] = $log;
+    $cur['ts'] = time();
+    @file_put_contents(SYNC_MATRIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+function matrixProgressRead(): array {
+    if (!is_file(SYNC_MATRIX_PROGRESS_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
+    return is_array($d) ? $d : [];
+}
+function matrixResultLoad(): array {
+    if (!is_file(SYNC_MATRIX_RESULT_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(SYNC_MATRIX_RESULT_FILE), true);
+    return is_array($d) ? $d : [];
+}
+function matrixResultSave(array $data): bool {
+    $data['generated_at'] = $data['generated_at'] ?? time();
+    $data['version'] = APP_VERSION;
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+    if ($json === false) return false;
+    // فایل می‌تواند بزرگ باشد
+    return false !== @file_put_contents(SYNC_MATRIX_RESULT_FILE, $json, LOCK_EX);
+}
+
+/**
+ * ساخت کامل ماتریس روی سرور با گزارش پیشرفت.
+ * $opts: profile, source (manual|recon_auto|cron)
+ */
 function matrixBuild(array $opts = []): array {
-    @set_time_limit(300);
+    @set_time_limit(0);
+    @ignore_user_abort(true);
     $cn = loadConnections();
     $suffixes = matrixCollectSuffixes();
     $profileFilter = trim((string)($opts['profile'] ?? 'all'));
-    $q = matrixBareTitle((string)($opts['q'] ?? ''), []);
-    $onlyDup = !empty($opts['only_dup']);
-    $onlyMismatch = !empty($opts['only_mismatch']);
-    $onlyMissing = !empty($opts['only_missing']);
+    $source = (string)($opts['source'] ?? 'manual');
+
+    matrixProgress([
+        'running' => true, 'done' => false, 'error' => '',
+        'phase' => 'profiles', 'pct' => 2, 'source' => $source,
+        'started_at' => time(),
+        'log_add' => ['🚀 شروع ساخت جدول مقایسه (سرورساید) — منبع: ' . $source],
+    ]);
 
     $wooCfg = destPriceCfg($cn, 'woocommerce');
     $bslCfg = destPriceCfg($cn, 'basalam');
 
-    // --- پروفایل‌ها ---
-    $rowsByKey = []; // bare_title => row
-    $dupProf = [];
-    foreach (loadProfiles() as $pk => $profile) {
+    $rowsByKey = [];
+    $profiles = loadProfiles();
+    $pN = 0; $pTot = max(1, count($profiles));
+    foreach ($profiles as $pk => $profile) {
+        $pN++;
         if ($profileFilter !== '' && $profileFilter !== 'all' && $profileFilter !== $pk) continue;
         $pname = (string)($profile['name'] ?? $pk);
+        if ($pN % 3 === 0 || $pN === $pTot) {
+            matrixProgress([
+                'phase' => 'profiles', 'pct' => 5 + (int)round(20 * $pN / $pTot),
+                'cur' => $pN, 'cur_total' => $pTot,
+                'log_add' => ['📁 پروفایل ' . $pN . '/' . $pTot . ' — ' . $pname],
+            ]);
+        }
         foreach (profileOrderedProducts($profile, null, true) as $p) {
             $title = (string)($p['title'] ?? '');
             $bare = matrixBareTitle($title, $suffixes);
@@ -22192,23 +22255,14 @@ function matrixBuild(array $opts = []): array {
                 ? destAdjustPrice($profP, $bslCfg) : $profP;
             if (!isset($rowsByKey[$bare])) {
                 $rowsByKey[$bare] = [
-                    'bare' => $bare,
-                    'title' => $title,
-                    'key' => (string)($p['key'] ?? ''),
-                    'profile' => $pname,
-                    'profile_key' => (string)$pk,
-                    'src_price' => $raw,
-                    'profile_price' => $profP,
-                    'woo_expect' => $wooExpect,
-                    'bsl_expect' => $bslExpect,
-                    'profile_hits' => 1,
-                    'woo' => null,
-                    'shops' => [],
+                    'bare' => $bare, 'title' => $title, 'key' => (string)($p['key'] ?? ''),
+                    'profile' => $pname, 'profile_key' => (string)$pk,
+                    'src_price' => $raw, 'profile_price' => $profP,
+                    'woo_expect' => $wooExpect, 'bsl_expect' => $bslExpect,
+                    'profile_hits' => 1, 'woo' => null, 'shops' => [],
                 ];
             } else {
                 $rowsByKey[$bare]['profile_hits']++;
-                $dupProf[$bare] = ($dupProf[$bare] ?? 1) + 1;
-                // نگه داشتن اولین قیمت غیرصفر
                 if ($rowsByKey[$bare]['profile_price'] <= 0 && $profP > 0) {
                     $rowsByKey[$bare]['profile_price'] = $profP;
                     $rowsByKey[$bare]['woo_expect'] = $wooExpect;
@@ -22218,21 +22272,30 @@ function matrixBuild(array $opts = []): array {
             }
         }
     }
+    matrixProgress([
+        'phase' => 'profiles_done', 'pct' => 28,
+        'log_add' => ['✅ ' . count($rowsByKey) . ' عنوان یکتا از پروفایل‌ها'],
+    ]);
 
-    // --- ووکامرس ---
+    // Woo
     $wooErr = '';
     $wooRows = [];
     $w = $cn['woocommerce'] ?? [];
-    if (!empty($w['store_url']) || (function_exists('wc_get_products'))) {
-        try {
+    matrixProgress(['phase' => 'woo_fetch', 'pct' => 32, 'log_add' => ['📥 دریافت محصولات ووکامرس...']]);
+    try {
+        if (!empty($w['store_url']) || function_exists('wc_get_products')) {
+            // progress via reconProgress is separate; also tick matrix
             $wooRows = reconFetchWoo(is_array($w) ? $w : []);
-        } catch (Throwable $e) {
-            $wooErr = $e->getMessage();
+        } else {
+            $wooErr = 'تنظیمات ووکامرس ناقص';
         }
-    } else {
-        $wooErr = 'تنظیمات ووکامرس ناقص';
+    } catch (Throwable $e) {
+        $wooErr = $e->getMessage();
     }
-    $wooDup = [];
+    matrixProgress([
+        'phase' => 'woo_map', 'pct' => 48,
+        'log_add' => ['✅ ووکامرس: ' . count($wooRows) . ' محصول' . ($wooErr !== '' ? (' — ' . $wooErr) : '')],
+    ]);
     foreach ($wooRows as $wr) {
         $bare = matrixBareTitle((string)($wr['title'] ?? ''), $suffixes);
         if ($bare === '') continue;
@@ -22251,7 +22314,6 @@ function matrixBuild(array $opts = []): array {
             ];
         }
         if ($rowsByKey[$bare]['woo'] !== null) {
-            $wooDup[$bare] = ($wooDup[$bare] ?? 1) + 1;
             $rowsByKey[$bare]['woo_dup'] = true;
             if (!isset($rowsByKey[$bare]['woo_extra'])) $rowsByKey[$bare]['woo_extra'] = [];
             $rowsByKey[$bare]['woo_extra'][] = $cell;
@@ -22260,39 +22322,25 @@ function matrixBuild(array $opts = []): array {
         }
     }
 
-    // --- باسلام همهٔ غرفه‌ها ---
+    // Basalam shops
     $shopsMeta = [];
     $bslErr = '';
-    if (function_exists('bslAllShops')) {
-        $shopList = bslAllShops($cn);
-    } else {
-        $shopList = [];
-        $b = $cn['basalam'] ?? [];
-        if (!empty($b['token']) && (int)($b['vendor_id'] ?? 0) > 0) {
-            $shopList[] = [
-                'vendor_id' => (int)$b['vendor_id'],
-                'token' => (string)$b['token'],
-                'shop_name' => (string)($b['shop_name'] ?? 'پیش‌فرض'),
-                'is_default' => true,
-                'price_mode' => (string)($b['price_mode'] ?? 'none'),
-                'price_val' => (float)($b['price_val'] ?? 0),
-            ];
-        }
-        foreach ((array)($b['vendors'] ?? []) as $v) {
-            if (!is_array($v)) continue;
-            $vid = (int)($v['vendor_id'] ?? 0);
-            $tok = trim((string)($v['token'] ?? ''));
-            if ($vid <= 0 || $tok === '') continue;
-            $shopList[] = array_merge($v, ['vendor_id' => $vid, 'token' => $tok, 'is_default' => false]);
-        }
-    }
+    $shopList = function_exists('bslAllShops') ? bslAllShops($cn) : [];
+    $sTot = max(1, count($shopList));
+    $sN = 0;
     foreach ($shopList as $sh) {
         if (!is_array($sh)) continue;
         $vid = (int)($sh['vendor_id'] ?? 0);
         $tok = trim((string)($sh['token'] ?? ($cn['basalam']['token'] ?? '')));
         $sname = trim((string)($sh['shop_name'] ?? ($sh['name'] ?? ('غرفه ' . $vid))));
         if ($vid <= 0 || $tok === '') continue;
+        $sN++;
         $shopsMeta[] = ['vendor_id' => $vid, 'name' => $sname, 'is_default' => !empty($sh['is_default'])];
+        matrixProgress([
+            'phase' => 'bsl_fetch', 'pct' => 50 + (int)round(30 * $sN / $sTot),
+            'cur' => $sN, 'cur_total' => $sTot,
+            'log_add' => ['🏪 دریافت غرفه ' . $sN . '/' . $sTot . ' — ' . $sname],
+        ]);
         try {
             $remote = reconFetchBsl($tok, $vid);
         } catch (Throwable $e) {
@@ -22321,12 +22369,10 @@ function matrixBuild(array $opts = []): array {
                 $rowsByKey[$bare]['shops'][$vid]['dup'] = true;
             }
             $seen[$bare] = true;
-            // انتظار غرفه: dest basalam روی پروفایل، سپس تعدیل غرفه
             $baseExpect = (int)($rowsByKey[$bare]['bsl_expect'] ?? 0);
             $shopExpect = $baseExpect;
             $profP = (int)($rowsByKey[$bare]['profile_price'] ?? 0);
             if ($profP > 0 && function_exists('bslShopPriceFor')) {
-                // اول dest basalam روی قیمت پروفایل
                 $afterDest = $baseExpect > 0 ? $baseExpect : $profP;
                 $adj = bslShopPriceFor($afterDest, $sh, (int)($bslCfg['round'] ?? 0));
                 if (!empty($adj['price'])) $shopExpect = (int)$adj['price'];
@@ -22337,9 +22383,13 @@ function matrixBuild(array $opts = []): array {
                 'tone' => matrixPriceTone($shopExpect, (int)$cell['price']),
             ]);
         }
+        matrixProgress([
+            'log_add' => ['  ✓ ' . $sname . ': ' . count($remote) . ' محصول'],
+        ]);
     }
 
-    // --- وضعیت هر ردیف ---
+    matrixProgress(['phase' => 'compare', 'pct' => 85, 'log_add' => ['⚖️ محاسبه وضعیت‌ها...']]);
+
     $rows = [];
     $sum = [
         'total' => 0, 'ok' => 0, 'price_mismatch' => 0, 'missing_woo' => 0,
@@ -22348,7 +22398,6 @@ function matrixBuild(array $opts = []): array {
         'in_all' => 0, 'only_profile' => 0,
     ];
     foreach ($rowsByKey as $bare => $r) {
-        if ($q !== '' && mb_strpos($bare, $q) === false) continue;
         $hasProf = ($r['profile_hits'] ?? 0) > 0;
         $hasWoo = !empty($r['woo']);
         $shopCount = 0; $shopOk = 0; $shopBad = 0; $shopMiss = 0;
@@ -22382,8 +22431,8 @@ function matrixBuild(array $opts = []): array {
         if ($wooTone === 'bad' || $wooTone === 'warn') { $flags[] = 'price_mismatch'; }
         if ($shopMiss > 0 && $hasProf) { $flags[] = 'missing_bsl'; $sum['missing_bsl']++; }
         if ($shopBad > 0) { $flags[] = 'price_mismatch'; }
+        $flags = array_values(array_unique($flags));
         if (in_array('price_mismatch', $flags, true)) { $sum['price_mismatch']++; }
-        if (!$hasProf && $shopCount > 0) { $flags[] = 'extra_bsl'; $sum['extra_bsl']++; }
 
         $status = 'partial';
         if ($hasProf && $hasWoo && $shopMiss === 0 && $wooTone === 'ok' && $shopBad === 0) {
@@ -22398,13 +22447,9 @@ function matrixBuild(array $opts = []): array {
             $status = 'missing';
         }
 
-        if ($onlyDup && !preg_grep('/^dup_/', $flags)) continue;
-        if ($onlyMismatch && $status !== 'mismatch' && !in_array('price_mismatch', $flags, true)) continue;
-        if ($onlyMissing && $status !== 'missing' && $status !== 'only_profile') continue;
-
         $r['woo_tone'] = $wooTone;
         $r['status'] = $status;
-        $r['flags'] = array_values(array_unique($flags));
+        $r['flags'] = $flags;
         $r['shop_ok'] = $shopOk;
         $r['shop_bad'] = $shopBad;
         $r['shop_miss'] = $shopMiss;
@@ -22412,18 +22457,18 @@ function matrixBuild(array $opts = []): array {
         $sum['total']++;
     }
 
-    // sort: mismatches first, then missing, then ok
     $order = ['mismatch' => 0, 'missing' => 1, 'only_profile' => 2, 'only_dest' => 3, 'partial' => 4, 'ok' => 5];
     usort($rows, function ($a, $b) use ($order) {
         $oa = $order[$a['status']] ?? 9;
         $ob = $order[$b['status']] ?? 9;
         if ($oa !== $ob) return $oa <=> $ob;
-        return strcmp($a['bare'], $b['bare']);
+        return strcmp((string)$a['bare'], (string)$b['bare']);
     });
 
-    return [
+    $out = [
         'ok' => true,
         'generated_at' => time(),
+        'source' => $source,
         'suffixes' => $suffixes,
         'shops' => $shopsMeta,
         'woo_cfg' => $wooCfg,
@@ -22433,49 +22478,111 @@ function matrixBuild(array $opts = []): array {
         'woo_error' => $wooErr,
         'bsl_error' => $bslErr,
         'woo_count' => count($wooRows),
-        'profile_count' => count(loadProfiles()),
+        'profile_count' => count($profiles),
+        'row_count' => count($rows),
     ];
+    matrixProgress([
+        'phase' => 'save', 'pct' => 95,
+        'log_add' => ['💾 ذخیره ' . count($rows) . ' ردیف روی سرور...'],
+    ]);
+    if (!matrixResultSave($out)) {
+        $out['ok'] = false;
+        $out['error'] = 'نوشتن فایل نتیجه ناموفق بود (فضا/مجوز؟)';
+        matrixProgress(['running' => false, 'done' => true, 'error' => $out['error'], 'pct' => 100,
+            'log_add' => ['❌ ' . $out['error']]]);
+        return $out;
+    }
+    matrixProgress([
+        'running' => false, 'done' => true, 'error' => '', 'pct' => 100,
+        'phase' => 'done', 'summary' => $sum, 'row_count' => count($rows),
+        'finished_at' => time(),
+        'log_add' => [
+            '✅ جدول آماده: ' . count($rows) . ' ردیف',
+            '📊 یکسان ' . (int)$sum['ok'] . ' · مغایرت ' . (int)$sum['price_mismatch']
+                . ' · نیست در WC ' . (int)$sum['missing_woo'],
+        ],
+    ]);
+    return $out;
 }
 
-if (isset($_GET['sync_matrix']) || (($_POST['action'] ?? '') === 'sync_matrix')) {
-    header('Content-Type: application/json; charset=UTF-8');
-    @set_time_limit(300);
-    $page = max(1, (int)($_GET['page'] ?? $_POST['page'] ?? 1));
-    $per = (int)($_GET['per_page'] ?? $_POST['per_page'] ?? 50);
-    if ($per < 10) $per = 10;
-    if ($per > 200) $per = 200;
-    $opts = [
-        'profile' => (string)($_GET['profile'] ?? $_POST['profile'] ?? 'all'),
-        'q' => (string)($_GET['q'] ?? $_POST['q'] ?? ''),
-        'only_dup' => !empty($_GET['only_dup']) || !empty($_POST['only_dup']),
-        'only_mismatch' => !empty($_GET['only_mismatch']) || !empty($_POST['only_mismatch']),
-        'only_missing' => !empty($_GET['only_missing']) || !empty($_POST['only_missing']),
-        'refresh' => !empty($_GET['refresh']) || !empty($_POST['refresh']),
-    ];
-    $cacheFile = __DIR__ . '/sync_matrix_cache.json';
-    $useCache = empty($opts['refresh']) && is_file($cacheFile) && (time() - filemtime($cacheFile) < 180);
-    // cache key ignores page
-    $cacheKey = md5(json_encode([$opts['profile'], $opts['q'], $opts['only_dup'], $opts['only_mismatch'], $opts['only_missing']]));
-    $data = null;
-    if ($useCache) {
-        $raw = @file_get_contents($cacheFile);
-        $c = json_decode((string)$raw, true);
-        if (is_array($c) && ($c['_key'] ?? '') === $cacheKey && !empty($c['rows'])) {
-            $data = $c;
+/**
+ * اجرای جاب ساخت ماتریس با قفل فایل.
+ * background=true → پاسخ زود و ادامه در همان درخواست پس از flush (مثل recon)
+ */
+function matrixJobRun(array $opts = []): array {
+    $bg = !empty($opts['background']);
+    $lockFile = SYNC_MATRIX_LOCK_FILE;
+    $fp = @fopen($lockFile, 'c');
+    if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) {
+        if ($fp) @fclose($fp);
+        return ['ok' => false, 'error' => 'یک ساخت جدول در حال اجراست', 'running' => true];
+    }
+    $release = function () use ($fp, $lockFile) {
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+        @unlink($lockFile);
+    };
+    if ($bg) {
+        // caller already sent early response
+    }
+    try {
+        $res = matrixBuild($opts);
+    } catch (Throwable $e) {
+        matrixProgress([
+            'running' => false, 'done' => true, 'error' => $e->getMessage(), 'pct' => 100,
+            'log_add' => ['❌ ' . $e->getMessage()],
+        ]);
+        $release();
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
+    $release();
+    return $res;
+}
+
+/** فیلتر + صفحه‌بندی روی نتیجهٔ ذخیره‌شده (بدون rebuild) */
+function matrixQueryPage(array $opts = []): array {
+    $data = matrixResultLoad();
+    if (!$data || empty($data['rows'])) {
+        $prog = matrixProgressRead();
+        return [
+            'ok' => false,
+            'error' => 'هنوز جدولی ساخته نشده',
+            'need_build' => true,
+            'running' => !empty($prog['running']),
+            'progress' => $prog,
+        ];
+    }
+    $q = matrixBareTitle((string)($opts['q'] ?? ''), []);
+    $onlyDup = !empty($opts['only_dup']);
+    $onlyMismatch = !empty($opts['only_mismatch']);
+    $onlyMissing = !empty($opts['only_missing']);
+    $all = [];
+    foreach ((array)$data['rows'] as $r) {
+        if (!is_array($r)) continue;
+        if ($q !== '' && mb_strpos((string)($r['bare'] ?? ''), $q) === false
+            && mb_strpos(matrixBareTitle((string)($r['title'] ?? ''), []), $q) === false) {
+            continue;
         }
+        $flags = (array)($r['flags'] ?? []);
+        $st = (string)($r['status'] ?? '');
+        if ($onlyDup && !preg_grep('/^dup_/', $flags) && empty($r['woo_dup']) && (int)($r['profile_hits'] ?? 0) < 2) continue;
+        if ($onlyMismatch && $st !== 'mismatch' && !in_array('price_mismatch', $flags, true)) continue;
+        if ($onlyMissing && $st !== 'missing' && $st !== 'only_profile' && !in_array('missing_woo', $flags, true) && !in_array('missing_bsl', $flags, true)) continue;
+        $all[] = $r;
     }
-    if ($data === null) {
-        $data = matrixBuild($opts);
-        $data['_key'] = $cacheKey;
-        @file_put_contents($cacheFile, json_encode($data, JSON_UNESCAPED_UNICODE), LOCK_EX);
-    }
-    $all = $data['rows'] ?? [];
+    $page = max(1, (int)($opts['page'] ?? 1));
+    $per = (int)($opts['per_page'] ?? 50);
+    if ($per < 10) $per = 10;
+    if ($per > 500) $per = 500;
     $total = count($all);
-    $pages = max(1, (int)ceil($total / $per));
+    $pages = max(1, (int)ceil($total / max(1, $per)));
     if ($page > $pages) $page = $pages;
     $slice = array_slice($all, ($page - 1) * $per, $per);
-    echo json_encode([
+    $prog = matrixProgressRead();
+    return [
         'ok' => true,
+        'from_file' => true,
+        'server_side' => true,
         'page' => $page,
         'per_page' => $per,
         'pages' => $pages,
@@ -22488,10 +22595,103 @@ if (isset($_GET['sync_matrix']) || (($_POST['action'] ?? '') === 'sync_matrix'))
         'woo_error' => $data['woo_error'] ?? '',
         'bsl_error' => $data['bsl_error'] ?? '',
         'woo_count' => $data['woo_count'] ?? 0,
-        'cached' => $useCache && isset($c),
-        'generated_at' => $data['generated_at'] ?? time(),
-        'note' => 'تطبیق بدون پسوند پروفایل و کد محصول · قیمت انتظاری WC = پروفایل + destAdjust',
+        'generated_at' => $data['generated_at'] ?? 0,
+        'source' => $data['source'] ?? '',
+        'row_count_all' => (int)($data['row_count'] ?? count($data['rows'] ?? [])),
+        'running' => !empty($prog['running']),
+        'progress' => $prog,
+        'note' => 'خواندن از فایل سرور · بدون rebuild · صفحه‌بندی سمت سرور',
+    ];
+}
+
+// --- endpoints ---
+if (isset($_GET['sync_matrix_status']) || (($_POST['action'] ?? '') === 'sync_matrix_status')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $prog = matrixProgressRead();
+    $has = is_file(SYNC_MATRIX_RESULT_FILE);
+    $age = $has ? (time() - (int)@filemtime(SYNC_MATRIX_RESULT_FILE)) : -1;
+    echo json_encode([
+        'ok' => true,
+        'running' => !empty($prog['running']),
+        'done' => !empty($prog['done']),
+        'progress' => $prog,
+        'has_result' => $has,
+        'result_age_sec' => $age,
+        'result_rows' => $has ? (int)((matrixResultLoad()['row_count'] ?? 0)) : 0,
     ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_matrix_start')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+    $opts = [
+        'profile' => (string)($_GET['profile'] ?? $_POST['profile'] ?? 'all'),
+        'source' => (string)($_GET['source'] ?? $_POST['source'] ?? 'manual'),
+        'background' => true,
+    ];
+    // قفل زود
+    $lockFile = SYNC_MATRIX_LOCK_FILE;
+    $fp = @fopen($lockFile, 'c');
+    if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) {
+        if ($fp) @fclose($fp);
+        echo json_encode(['ok' => false, 'error' => 'یک ساخت جدول در حال اجراست', 'running' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    matrixProgress([
+        'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
+        'phase' => 'start', 'started_at' => time(), 'source' => $opts['source'],
+        'log_add' => ['🚀 جاب ساخت جدول در صف سرور...'],
+    ]);
+    $early = json_encode(['ok' => true, 'started' => true, 'message' => 'ساخت روی سرور شروع شد'], JSON_UNESCAPED_UNICODE);
+    header('Connection: close');
+    header('Content-Length: ' . strlen($early));
+    echo $early;
+    @ob_end_flush();
+    @ob_flush();
+    @flush();
+    if (function_exists('fastcgi_finish_request')) {
+        @fastcgi_finish_request();
+    }
+    register_shutdown_function(function () use ($fp, $lockFile) {
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+        @unlink($lockFile);
+    });
+    try {
+        matrixBuild($opts);
+    } catch (Throwable $e) {
+        matrixProgress([
+            'running' => false, 'done' => true, 'error' => $e->getMessage(), 'pct' => 100,
+            'log_add' => ['❌ ' . $e->getMessage()],
+        ]);
+    }
+    exit;
+}
+
+if (isset($_GET['sync_matrix']) || (($_POST['action'] ?? '') === 'sync_matrix')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $opts = [
+        'page' => (int)($_GET['page'] ?? $_POST['page'] ?? 1),
+        'per_page' => (int)($_GET['per_page'] ?? $_POST['per_page'] ?? 50),
+        'q' => (string)($_GET['q'] ?? $_POST['q'] ?? ''),
+        'only_dup' => !empty($_GET['only_dup']) || !empty($_POST['only_dup']),
+        'only_mismatch' => !empty($_GET['only_mismatch']) || !empty($_POST['only_mismatch']),
+        'only_missing' => !empty($_GET['only_missing']) || !empty($_POST['only_missing']),
+    ];
+    // refresh=1 فقط وضعیت/شروع را پیشنهاد می‌کند — دیگر در همان درخواست rebuild نمی‌کند
+    if (!empty($_GET['refresh']) || !empty($_POST['refresh'])) {
+        echo json_encode([
+            'ok' => true,
+            'need_start' => true,
+            'message' => 'برای ساخت مجدد sync_matrix_start را صدا بزنید',
+            'progress' => matrixProgressRead(),
+            'has_result' => is_file(SYNC_MATRIX_RESULT_FILE),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo json_encode(matrixQueryPage($opts), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -37353,6 +37553,7 @@ function reconAutoCfg(?array $cn = null): array {
         'interval_h'    => $iv,
         'notify'        => !isset($r['notify']) || !empty($r['notify']),
         'enqueue_missing' => !empty($r['enqueue_missing']), // صف‌کردن محصولاتِ «در مقصد نیست»
+        'build_matrix'  => !isset($r['build_matrix']) || !empty($r['build_matrix']), // v10.113
     ];
 }
 
@@ -38144,6 +38345,25 @@ function reconAutoTick(array $cn, int $now = 0): array {
     $st['last_results'] = $results;
     reconAutoStateSave($st);
 
+    /* v10.113: جدول مقایسهٔ سرورساید — همزمان با مغایرت دوره‌ای */
+    if (!empty($cfg['build_matrix']) && function_exists('matrixJobRun')) {
+        try {
+            $mx = matrixJobRun(['source' => 'recon_auto', 'background' => false]);
+            $out['matrix'] = [
+                'ok' => !empty($mx['ok']),
+                'total' => (int)($mx['summary']['total'] ?? 0),
+                'mismatch' => (int)($mx['summary']['price_mismatch'] ?? 0),
+                'missing_woo' => (int)($mx['summary']['missing_woo'] ?? 0),
+                'error' => (string)($mx['error'] ?? ''),
+            ];
+            $st['last_matrix'] = $out['matrix'];
+            $st['last_matrix_at'] = time();
+            reconAutoStateSave($st);
+        } catch (\Throwable $e) {
+            $out['matrix'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
+        }
+    }
+
     if (!empty($cfg['notify']) && function_exists('notifSend')) {
         $lines = ['⚖ مغایرت‌گیری دوره‌ای v' . APP_VERSION];
         foreach ($results as $t => $r) {
@@ -38160,6 +38380,15 @@ function reconAutoTick(array $cn, int $now = 0): array {
             if (!empty($r['enqueue_products']) || !empty($r['enqueued'])) {
                 $lines[] = '  📤 صف سینک: ' . (int)($r['enqueue_products'] ?? 0)
                     . ' محصول · ' . (int)($r['enqueued'] ?? 0) . ' ردیف';
+            }
+        }
+        if (!empty($out['matrix'])) {
+            $mx = $out['matrix'];
+            if (!empty($mx['ok'])) {
+                $lines[] = '📊 جدول مقایسه: ' . (int)($mx['total'] ?? 0) . ' ردیف · مغایرت قیمت '
+                    . (int)($mx['mismatch'] ?? 0) . ' · نیست در WC ' . (int)($mx['missing_woo'] ?? 0);
+            } else {
+                $lines[] = '📊 جدول مقایسه: خطا — ' . (string)($mx['error'] ?? '');
             }
         }
         $lines[] = '🕐 ' . date('Y/m/d H:i');
@@ -52229,10 +52458,23 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div id="syncMatrixBox" style="margin-top:12px;padding:12px;background:linear-gradient(135deg,#0f172a,#1e1b4b);border:1px solid #6d28d9;border-radius:12px">
 <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px">
 <div style="font-size:13px;font-weight:900;color:#e9d5ff">📊 جدول مقایسهٔ نظیر‌به‌نظیر</div>
-<button class="btn btn-purple" onclick="syncMatrixLoad(1,true)" style="font-size:11px;padding:6px 12px">🔄 ساخت / تازه‌سازی</button>
+<div style="display:flex;gap:6px;flex-wrap:wrap">
+<button class="btn btn-purple" onclick="syncMatrixStart()" style="font-size:11px;padding:6px 12px">🚀 ساخت روی سرور</button>
+<button class="btn btn-cyan" onclick="syncMatrixLoad(1)" style="font-size:11px;padding:6px 12px">📖 خواندن نتیجه</button>
+</div>
+</div>
+<div id="smJobBar" style="display:none;margin-bottom:8px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:8px">
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#e2e8f0;margin-bottom:4px">
+<span id="smJobLabel">در حال ساخت…</span><span id="smJobPct">0٪</span>
+</div>
+<div style="height:8px;background:#1e293b;border-radius:99px;overflow:hidden">
+<div id="smJobFill" style="height:100%;width:0%;background:linear-gradient(90deg,#7c3aed,#2563eb);transition:width .3s"></div>
+</div>
+<div id="smJobLog" style="margin-top:6px;max-height:90px;overflow:auto;font-size:10px;color:#94a3b8;line-height:1.6"></div>
 </div>
 <div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
-پروفایل (مبدأ) × ووکامرس × همهٔ غرفه‌های باسلام — تطبیق عنوان <b>بدون پسوند</b> و بدون «کد محصول».
+ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند.
+پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول».
 رنگ‌ها: <span style="background:#14532d;color:#bbf7d0;padding:1px 6px;border-radius:4px">یکسان</span>
 <span style="background:#713f12;color:#fde68a;padding:1px 6px;border-radius:4px">نزدیک/هشدار</span>
 <span style="background:#7f1d1d;color:#fecaca;padding:1px 6px;border-radius:4px">مغایرت</span>
@@ -52302,6 +52544,9 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <label style="display:flex;align-items:flex-start;gap:6px;font-size:11px;color:#67e8f9;margin:8px 0 4px;cursor:pointer;line-height:1.6">
 <input type="checkbox" id="reconAutoEnqueue" onchange="reconAutoSave()" style="width:14px;height:14px;margin-top:2px">
 <span><b>صف خودکار «در مقصد نیست»</b> — محصولاتی که در مبدأ هستند ولی در غرفه/ووکامرس نیستند، بعد از مغایرت دوره‌ای به صف ارسال می‌روند تا سینک پر شود</span></label>
+<label style="display:flex;align-items:flex-start;gap:6px;font-size:11px;color:#e9d5ff;margin:8px 0 4px;cursor:pointer;line-height:1.6">
+<input type="checkbox" id="reconAutoMatrix" checked onchange="reconAutoSave()" style="width:14px;height:14px;margin-top:2px">
+<span><b>📊 ساخت جدول مقایسه روی سرور</b> — بعد از هر مغایرت‌گیری دوره‌ای، ماتریس پروفایل×WC×غرفه‌ها در پس‌زمینه ساخته و ذخیره می‌شود (مناسب کاتالوگ بزرگ)</span></label>
 <div id="reconAutoStatus" style="font-size:10.5px;color:#67e8f9;margin-top:6px"></div>
 </div>
 <!-- v8.65: دفترچهٔ شناسه‌ها -->
@@ -60871,6 +61116,12 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.113', t:'📊 جدول مقایسه کاملاً سرورساید + جاب پس‌زمینه + دوره‌ای', items:[
+    'ساخت جدول دیگر در درخواست AJAX مرورگر timeout نمی‌شود؛ جاب روی سرور با',
+    'progress زنده (sync_matrix_start / status) و نتیجه در sync_matrix_result.json.',
+    'خواندن فقط صفحه‌بندی/فیلتر از فایل ذخیره‌شده است — مناسب کاتالوگ خیلی بزرگ.',
+    'همراه مغایرت‌گیری دوره‌ای (کران) با تیک «ساخت جدول مقایسه روی سرور» اجرا می‌شود.',
+  ]},
   {v:'10.112', t:'💰 مسیر قیمت WC + جدول مقایسهٔ نظیر‌به‌نظیر', items:[
     'مسیر قیمت: پروفایل (priceMode) → destAdjust ووکامرس/باسلام → (باسلام) غرفه.',
     'تعدیل WC داخل همبرگر «ووکامرس» هم آمده (همگام با تب تنظیمات).',
@@ -62618,7 +62869,8 @@ function reconAutoCollect(){
     extra_mode: (($('reconAutoMode')||{}).value||'off'),
     interval_h: parseInt(($('reconAutoIv')||{}).value||'6')||6,
     notify: !!($('reconAutoNotify')||{}).checked,
-    enqueue_missing: !!($('reconAutoEnqueue')||{}).checked
+    enqueue_missing: !!($('reconAutoEnqueue')||{}).checked,
+    build_matrix: ($('reconAutoMatrix') ? !!$('reconAutoMatrix').checked : true)
   };
 }
 function reconAutoSave(){
@@ -62643,6 +62895,7 @@ function reconAutoApplyCfg(c){
   chk('reconAutoApply', c.apply);
   chk('reconAutoNotify', c.notify!==false);
   chk('reconAutoEnqueue', c.enqueue_missing);
+  chk('reconAutoMatrix', c.build_matrix!==false);
   set('reconAutoIv', c.interval_h||6);
   set('reconAutoMode', c.extra_mode||'off');
   reconAutoBadge();
@@ -66585,8 +66838,10 @@ function destPricePreview(pre){
   paint(out); paint(outHb);
 }
 
-/* v10.112: جدول مقایسهٔ پیشرفته */
+
+/* v10.113: جدول مقایسه — سرورساید + progress + فقط خواندن صفحه */
 window._smPage = 1;
+window._smPoll = null;
 function smFa(n){ try{ return toFa(String(n)); }catch(e){ return String(n); } }
 function smMoney(n){
   n=parseInt(n)||0; if(n<=0) return '—';
@@ -66602,10 +66857,65 @@ function smCell(html, tone){
   const bg=smToneBg(tone), fg=smToneFg(tone);
   return '<td style="padding:7px 8px;border-bottom:1px solid #1e293b;background:'+bg+';color:'+fg+';vertical-align:top;line-height:1.55">'+html+'</td>';
 }
-function syncMatrixLoad(page, refresh){
+function smShowJob(on){
+  const bar=$('smJobBar'); if(bar) bar.style.display=on?'block':'none';
+}
+function smPaintProgress(p){
+  p=p||{};
+  smShowJob(true);
+  const pct=Math.max(0,Math.min(100,parseInt(p.pct)||0));
+  if($('smJobPct')) $('smJobPct').textContent=smFa(pct)+'٪';
+  if($('smJobFill')) $('smJobFill').style.width=pct+'%';
+  if($('smJobLabel')){
+    const ph=p.phase||'';
+    $('smJobLabel').textContent = p.running ? ('⏳ '+(ph||'در حال ساخت')+'…') : (p.done ? (p.error?'❌ خطا':'✅ تمام') : '—');
+  }
+  if($('smJobLog') && Array.isArray(p.log)){
+    const lines=p.log.slice(-8).map(x=> (x&&x.m)?x.m:String(x));
+    $('smJobLog').innerHTML=lines.map(l=>'<div>'+esc(l)+'</div>').join('');
+  }
+}
+function syncMatrixStart(){
+  smShowJob(true);
+  if($('smJobLabel')) $('smJobLabel').textContent='🚀 ارسال جاب به سرور…';
+  if($('smBody')) $('smBody').innerHTML='<tr><td style="padding:16px;text-align:center;color:#a5b4fc">ساخت روی سرور شروع شد — می‌توانید این صفحه را باز بگذارید</td></tr>';
+  const fd=new FormData();
+  fd.append('action','sync_matrix_start');
+  fd.append('source','manual');
+  fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+    if(!d||!d.ok){
+      showToast((d&&d.error)||'شروع ناموفق',1);
+      if(d&&d.running) syncMatrixPoll();
+      return;
+    }
+    showToast('ساخت روی سرور آغاز شد');
+    syncMatrixPoll();
+  }).catch(e=>showToast('خطا: '+e,1));
+}
+function syncMatrixPoll(){
+  if(window._smPoll) clearInterval(window._smPoll);
+  const tick=()=>{
+    const fd=new FormData(); fd.append('action','sync_matrix_status');
+    fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+      if(!d||!d.ok)return;
+      smPaintProgress(d.progress||{});
+      if(d.running){
+        /* continue */
+      } else {
+        if(window._smPoll){ clearInterval(window._smPoll); window._smPoll=null; }
+        if(d.has_result){
+          setTimeout(()=>syncMatrixLoad(1), 400);
+        }
+      }
+    }).catch(()=>{});
+  };
+  tick();
+  window._smPoll=setInterval(tick, 2000);
+}
+function syncMatrixLoad(page){
   page = page || 1; window._smPage = page;
   const body = $('smBody'), sum=$('smSummary'), meta=$('smMeta'), pager=$('smPager'), head=$('smHead');
-  if(body) body.innerHTML='<tr><td style="padding:20px;text-align:center;color:#67e8f9">⏳ در حال مقایسه پروفایل / ووکامرس / غرفه‌ها…</td></tr>';
+  if(body) body.innerHTML='<tr><td style="padding:16px;text-align:center;color:#67e8f9">📖 خواندن صفحه از فایل سرور…</td></tr>';
   const fd = new FormData();
   fd.append('action','sync_matrix');
   fd.append('page', String(page));
@@ -66614,11 +66924,21 @@ function syncMatrixLoad(page, refresh){
   if(($('smOnlyMis')||{}).checked) fd.append('only_mismatch','1');
   if(($('smOnlyMiss')||{}).checked) fd.append('only_missing','1');
   if(($('smOnlyDup')||{}).checked) fd.append('only_dup','1');
-  if(refresh) fd.append('refresh','1');
   fetch('', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{
-    if(!d || !d.ok){ if(body) body.innerHTML='<tr><td style="padding:12px;color:#f87171">خطا: '+(d&&d.error?d.error:'ناموفق')+'</td></tr>'; return; }
+    if(d && d.progress) smPaintProgress(d.progress);
+    if(d && d.running){ syncMatrixPoll(); }
+    if(!d || !d.ok){
+      if(d && d.need_build){
+        if(body) body.innerHTML='<tr><td style="padding:16px;text-align:center;color:#fbbf24">هنوز جدولی روی سرور نیست. «🚀 ساخت روی سرور» را بزنید'
+          +(d.running?' (در حال ساخت…)':'')+'</td></tr>';
+        if(d.running) syncMatrixPoll();
+        return;
+      }
+      if(body) body.innerHTML='<tr><td style="padding:12px;color:#f87171">خطا: '+(d&&d.error?d.error:'ناموفق')+'</td></tr>';
+      return;
+    }
+    if(d.done || (d.progress&&d.progress.done)) smShowJob(!!(d.progress&&d.progress.running));
     const shops = d.shops||[];
-    // header
     let h = '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">#</th>'
       +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">عنوان (بدون پسوند)</th>'
       +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">پروفایل</th>'
@@ -66635,23 +66955,23 @@ function syncMatrixLoad(page, refresh){
     const s = d.summary||{};
     if(sum){
       const chip=(lab,val,bg)=>'<span style="background:'+bg+';color:#fff;padding:4px 8px;border-radius:8px;font-weight:800">'+lab+': '+smFa(val||0)+'</span>';
-      sum.innerHTML = chip('کل',s.total,'#4c1d95')+chip('یکسان',s.ok,'#166534')+chip('مغایرت',s.price_mismatch,'#b91c1c')
+      sum.innerHTML = chip('کل فایل',d.row_count_all||s.total,'#4c1d95')+chip('این فیلتر',d.total,'#5b21b6')+chip('یکسان',s.ok,'#166534')+chip('مغایرت',s.price_mismatch,'#b91c1c')
         +chip('نیست در WC',s.missing_woo,'#1d4ed8')+chip('نیست در غرفه',s.missing_bsl,'#0369a1')
-        +chip('اضافی WC',s.extra_woo,'#475569')+chip('تکراری پروفایل',s.dup_profile,'#7c3aed');
+        +chip('تکراری پروفایل',s.dup_profile,'#7c3aed');
     }
     const wc = d.woo_cfg||{}, bc=d.bsl_cfg||{};
+    const when = d.generated_at ? new Date(d.generated_at*1000).toLocaleString('fa-IR') : '—';
     if(meta){
-      meta.innerHTML = 'صفحه '+smFa(d.page)+'/'+smFa(d.pages)+' · '+smFa(d.total)+' ردیف'
-        +' · WC products: '+smFa(d.woo_count||0)
-        +(d.cached?' · از کش':' · تازه')
+      meta.innerHTML = '📖 از فایل سرور · '+when+' · منبع '+(d.source||'—')
+        +' · صفحه '+smFa(d.page)+'/'+smFa(d.pages)+' · نمایش '+smFa(d.total)+' ردیف فیلترشده'
+        +' · WC: '+smFa(d.woo_count||0)
         +' · dest WC: '+(wc.mode||'none')+(wc.mode&&wc.mode!=='none'?(' '+wc.val):'')
-        +' · dest BSL: '+(bc.mode||'none')+(bc.mode&&bc.mode!=='none'?(' '+bc.val):'')
         +(d.woo_error?(' · ⚠️ WC: '+d.woo_error):'')
         +(d.bsl_error?(' · ⚠️ BSL: '+d.bsl_error):'');
     }
     const rows = d.rows||[];
     if(!rows.length){
-      if(body) body.innerHTML='<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی نیست — فیلتر را عوض کنید یا تازه‌سازی کنید</td></tr>';
+      if(body) body.innerHTML='<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی در این فیلتر/صفحه نیست</td></tr>';
     } else if(body){
       const start = ((d.page||1)-1)*(d.per_page||50);
       body.innerHTML = rows.map((r,i)=>{
@@ -66659,7 +66979,7 @@ function syncMatrixLoad(page, refresh){
         const st=stMap[r.status]||['?','na'];
         let flags='';
         (r.flags||[]).forEach(f=>{
-          if(f.indexOf('dup')===0) flags+=' <span style="background:#6d28d9;color:#fff;border-radius:4px;padding:0 5px;font-size:10px">تکراری</span>';
+          if(String(f).indexOf('dup')===0) flags+=' <span style="background:#6d28d9;color:#fff;border-radius:4px;padding:0 5px;font-size:10px">تکراری</span>';
         });
         if((r.profile_hits||0)>1) flags+=' <span style="color:#e9d5ff;font-size:10px">×'+smFa(r.profile_hits)+' پروفایل</span>';
         let tr = '<tr>';
@@ -66701,6 +67021,17 @@ function syncMatrixLoad(page, refresh){
     if(body) body.innerHTML='<tr><td style="padding:12px;color:#f87171">خطای شبکه: '+esc(String(e))+'</td></tr>';
   });
 }
+/* هنگام باز شدن صفحه، اگر نتیجهٔ سرور هست یک‌بار بخوان؛ اگر جاب running است poll کن */
+document.addEventListener('DOMContentLoaded', function(){
+  try{
+    const fd=new FormData(); fd.append('action','sync_matrix_status');
+    fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+      if(!d||!d.ok)return;
+      if(d.running){ smPaintProgress(d.progress||{}); syncMatrixPoll(); }
+      else if(d.has_result){ /* silent */ }
+    }).catch(()=>{});
+  }catch(e){}
+});
 
 function saveConn(){const fd=new FormData();fd.append('action','save_connections');fd.append('woocommerce',JSON.stringify({enabled:1,store_url:$('wcUrl').value.trim(),consumer_key:$('wcCK').value.trim(),consumer_secret:$('wcCS').value.trim(),default_status:$('wcSt').value,default_category:parseInt($('wcCat').value)||0,manage_stock:$('wcMS').checked,stock_quantity:parseInt($('wcSQ').value)||10,price_mode:($('wcPMode')||{}).value||'none',price_val:parseFloat(($('wcPVal')||{}).value)||0,price_round:parseInt(($('wcPRound')||{}).value)||0,sync_mode:(($('wcModeDirect')&&$('wcModeDirect').checked)?'direct':'api'),sync_fallback:(($('wcSyncFallback')||{}).value||'api_then_direct')}));bslFlushVendors(); /* v10.87: flush price fields before saving */
 fd.append('basalam',JSON.stringify({enabled:1,token:$('bsTk').value.trim(),vendor_id:parseInt($('bsVid').value)||0,preparation_days:parseInt($('bsPD').value)||3,weight:parseInt($('bsW').value)||500,package_weight:parseInt($('bsPW')?.value)||0,stock:parseInt($('bsSt').value)||10,net_indirect:$('bsIndirect')?.checked||false,category_id:parseInt($('bsCat').value)||0,auto_category:$('bsAutoCat')?.checked||false,send_all_shops:$('bsSendAllShops')?.checked||false,delay_ms:parseInt($('bsDelayMs')?.value)||500,retry_delay_ms:parseInt($('bsRetryDelayMs')?.value)||1000,fallback_cat_ids:getBslFallbackCatIds(),vendors:bslExtraVendors,price_mode:($('bsPMode')||{}).value||'none',price_val:parseFloat(($('bsPVal')||{}).value)||0,price_round:parseInt(($('bsPRound')||{}).value)||0}));

@@ -301,7 +301,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.121';
+const APP_VERSION = '10.122';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -13914,9 +13914,27 @@ foreach($queue['entries'] as &$qe){
     $idle=(int)$_iw['idle'];
     if($idle>$exIdleMax){
         $qe['status']='failed';
-        $qe['error']='پردازش نیمه‌کاره رها شد ('.$idle.' ثانیه بی‌حرکت — وقفهٔ سرور؟)';
+        $_rpQ = max(1, (int)($qe['resume_page'] ?? $qe['current'] ?? $progress['page'] ?? 1));
+        if ($_rpQ > 1) $_rpQ = max(1, $_rpQ - 1);
+        $qe['error']='نیمه‌کاره رها شد ('.$idle.'ث) — ادامه از صفحه '.$_rpQ;
+        $qe['resumable']=true;
+        $qe['resume_page']=$_rpQ;
         $qe['done_at']=$now;
         $dirty=true;
+        $_pkQ=(string)($qe['profile_key']??'');
+        if($_pkQ!==''){
+            try{
+                $_psQ=loadProfiles();
+                if(isset($_psQ[$_pkQ])&&is_array($_psQ[$_pkQ])){
+                    $_psQ[$_pkQ]['_extract_list_incomplete']=true;
+                    $_psQ[$_pkQ]['_extract_resume_from']=$_rpQ;
+                    $_psQ[$_pkQ]['_extract_list_page_try']=(int)($qe['current']??$_rpQ+1);
+                    $_psQ[$_pkQ]['_extract_list_page_ok']=max(0,$_rpQ);
+                    $_psQ[$_pkQ]['_extract_stage_at']=time();
+                    saveProfiles($_psQ);
+                }
+            }catch(Throwable $e){}
+        }
     }
 }
 unset($qe);
@@ -14002,6 +14020,92 @@ if($stopped)extractWriteQueue($queue);
 echo json_encode(['ok'=>true,'stopped'=>$stopped],JSON_UNESCAPED_UNICODE);exit;
 }
 
+
+/* v10.122: ادامهٔ استخراج از یک صفحه قبل از محل گیر — نه از صفر */
+if (isset($_GET['extract_resume']) || (($_POST['action'] ?? '') === 'extract_resume')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+    $pk = trim((string)($_GET['profile_key'] ?? $_POST['profile_key'] ?? ''));
+    $qid = trim((string)($_GET['queue_id'] ?? $_POST['queue_id'] ?? ''));
+    if ($pk === '' && $qid !== '') {
+        $q = extractReadQueue();
+        foreach ((array)($q['entries'] ?? []) as $e) {
+            if ((string)($e['id'] ?? '') === $qid) {
+                $pk = (string)($e['profile_key'] ?? '');
+                break;
+            }
+        }
+    }
+    if ($pk === '') {
+        echo json_encode(['ok' => false, 'error' => 'profile_key لازم است'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $profiles = loadProfiles();
+    if (!isset($profiles[$pk]) || !is_array($profiles[$pk])) {
+        echo json_encode(['ok' => false, 'error' => 'پروفایل یافت نشد'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $pr = $profiles[$pk];
+    $meta = extractListResumeMeta($pr);
+    $stage = (string)($pr['_extract_stage'] ?? '');
+    /* اگر وسط جزئیات مانده → phase=detail؛ وگرنه all با start_page */
+    $phase = ($stage === 'detail') ? 'detail' : 'all';
+    try {
+        extractClearStaleBlockers($pk, [
+            'max_idle' => 60,
+            'clear_waiting' => true,
+            'reason' => 'پاک‌سازی پیش از ادامهٔ استخراج',
+        ]);
+    } catch (Throwable $e) {}
+    /* ردیف failed/paused قبلی را ببند تا duplicate گیر ندهد */
+    $q = extractReadQueue();
+    $dirty = false;
+    foreach ($q['entries'] as &$e) {
+        if ((string)($e['profile_key'] ?? '') !== $pk) continue;
+        if (!in_array((string)($e['status'] ?? ''), ['failed', 'paused', 'running'], true)) continue;
+        $e['status'] = 'done';
+        $e['done_at'] = time();
+        $e['error'] = 'جایگزین با ادامه از صفحه ' . (int)$meta['start_page'];
+        $e['superseded_by_resume'] = true;
+        $dirty = true;
+    }
+    unset($e);
+    if ($dirty) extractWriteQueue($q);
+
+    /* پرچم resume روی پروفایل */
+    $profiles = loadProfiles();
+    if (isset($profiles[$pk]) && is_array($profiles[$pk])) {
+        $profiles[$pk]['_extract_resume_req'] = time();
+        $profiles[$pk]['_extract_resume_from'] = (int)$meta['start_page'];
+        saveProfiles($profiles);
+    }
+
+    $early = json_encode([
+        'ok' => true, 'started' => true, 'resuming' => true,
+        'profile_key' => $pk, 'phase' => $phase,
+        'start_page' => (int)$meta['start_page'],
+        'page_ok' => (int)$meta['page_ok'],
+        'page_try' => (int)$meta['page_try'],
+        'message' => 'ادامه از صفحه ' . (int)$meta['start_page'] . ' (یک صفحه قبل از گیر)',
+    ], JSON_UNESCAPED_UNICODE);
+    header('Connection: close');
+    header('Content-Length: ' . strlen($early));
+    echo $early;
+    @ob_end_flush(); @ob_flush(); @flush();
+    if (function_exists('fastcgi_finish_request')) @fastcgi_finish_request();
+
+    try {
+        runBackendExtract($pk, 'manual_resume', false, $phase, false);
+    } catch (Throwable $e) {
+        writeProgress(EXTRACT_PROGRESS_FILE, [
+            'running' => false, 'done' => true, 'error' => $e->getMessage(),
+            'recent_log' => ['❌ ادامه ناموفق: ' . $e->getMessage()],
+        ]);
+    }
+    exit;
+}
+
 if(isset($_GET['poll_extract'])){
 header('Content-Type: application/json; charset=UTF-8');
 clearstatcache(true,EXTRACT_PROGRESS_FILE);
@@ -14029,18 +14133,40 @@ if(!empty($p['running'])&&empty($p['done'])){
     if($_pIdle>$_pMax){
         $p['running']=false;$p['done']=true;$p['stalled']=true;
         $p['error']='استخراج '.$_pIdle.' ثانیه بی‌حرکت ماند — پردازه توسط سرور بسته شده';
+        $_rp = max(1, (int)($p['page'] ?? $p['resume_page'] ?? 1));
+        if ($_rp > 1) $_rp = max(1, $_rp - 1); // یک صفحه قبل
+        $p['resumable']=true;
+        $p['resume_page']=$_rp;
         $p['recent_log']=array_merge((array)($p['recent_log']??[]),
             ['⛔ پردازش نیمه‌کاره رها شد ('.$_pIdle.' ثانیه بی‌حرکت)',
              '   • کارِ انجام‌شده تا این لحظه ذخیره شده — از دست نرفته',
-             '   • دوباره استخراج بزنید تا از همان‌جا ادامه دهد']);
+             '   • ▶ ادامه از صفحه '.$_rp.' (یک صفحه قبل از محل گیر)']);
         writeProgress(EXTRACT_PROGRESS_FILE,$p);
+        /* resume meta روی پروفایل */
+        $_pkSave = (string)($p['profile_key'] ?? '');
+        if ($_pkSave !== '') {
+            try {
+                $_ps = loadProfiles();
+                if (isset($_ps[$_pkSave]) && is_array($_ps[$_pkSave])) {
+                    $_ps[$_pkSave]['_extract_list_incomplete'] = true;
+                    $_ps[$_pkSave]['_extract_list_page_try'] = (int)($p['page'] ?? $_rp + 1);
+                    $_ps[$_pkSave]['_extract_list_page_ok'] = max(0, $_rp);
+                    $_ps[$_pkSave]['_extract_resume_from'] = $_rp;
+                    $_ps[$_pkSave]['_extract_stage'] = (string)($p['phase'] ?? 'list');
+                    $_ps[$_pkSave]['_extract_stage_at'] = time();
+                    saveProfiles($_ps);
+                }
+            } catch (Throwable $e) {}
+        }
         // ردیف صف هم بسته شود، وگرنه «در حال اجرا» می‌ماند
         $_q=extractReadQueue();$_qd=false;
         foreach($_q['entries'] as &$_qe){
             if(($_qe['status']??'')!=='running')continue;
             if(((string)($p['queue_id']??''))!==''&&((string)($_qe['id']??''))!==((string)$p['queue_id']))continue;
             $_qe['status']='failed';
-            $_qe['error']='بی‌حرکت ماند ('.$_pIdle.' ثانیه) — نگهبان بست';
+            $_qe['error']='بی‌حرکت ماند ('.$_pIdle.'ث) — ادامه از صفحه '.$_rp;
+            $_qe['resumable']=true;
+            $_qe['resume_page']=$_rp;
             $_qe['done_at']=time();$_qd=true;
         }
         unset($_qe);
@@ -14084,6 +14210,29 @@ function extractCheckpoint(string $pkFinal, array $allProducts, array $extra = [
     foreach ($extra as $k => $v) $profilesNow[$pkFinal][$k] = $v;
     saveProfiles($profilesNow);
 }
+
+/** v10.122: صفحهٔ شروعِ ادامه — یک صفحه قبل از جایی که گیر کرده */
+function extractResumeStartPage(array $profile): int {
+    $try = (int)($profile['_extract_list_page_try'] ?? 0);
+    $ok  = (int)($profile['_extract_list_page_ok'] ?? 0);
+    $base = $try > 0 ? $try : ($ok > 0 ? $ok + 1 : 0);
+    if ($base <= 1) return 1;
+    return max(1, $base - 1); // یک صفحه قبل از گیر
+}
+
+function extractListResumeMeta(array $profile): array {
+    return [
+        'start_page' => extractResumeStartPage($profile),
+        'page_ok'    => (int)($profile['_extract_list_page_ok'] ?? 0),
+        'page_try'   => (int)($profile['_extract_list_page_try'] ?? 0),
+        'next_url'   => (string)($profile['_extract_list_next_url'] ?? ''),
+        'last_url'   => (string)($profile['_extract_list_last_url'] ?? ''),
+        'incomplete' => !empty($profile['_extract_list_incomplete']),
+        'max_pages'  => (int)($profile['pages'] ?? 0),
+    ];
+}
+
+
 
 /**
  * v9.01: استخراج در مراحل جدا.
@@ -14338,10 +14487,48 @@ foreach($prevProducts as $entry){if(is_array($entry)&&count($entry)>=2)$prevByKe
 }
 
 $allProducts=[];$seenKeys=[];$nextUrl=null;$totalPages=0;$fetchFail='';
+/* v10.122: ادامه از صفحه — اگر استخراج قبلی وسط فهرست مرده باشد */
+$_listResume=false;
+$_startPage=1;
+$_resumeFrom=0;
+$_listBudget=0;$_listDeadline=0;$_listRanOut=false;
+if($phase!=='detail'){
+    $_inc=!empty($profile['_extract_list_incomplete'])
+        || in_array((string)($profile['_extract_stage']??''),['list','list_done'],true)
+        || !empty($profile['_extract_resume_req']);
+    $_hasPrev=count($prevByKey)>0;
+    $_resumeReq=!empty($profile['_extract_resume_req'])
+        || in_array((string)$trigger,['manual_resume','watchdog_resume','auto_resume'],true);
+    if($_inc && $_hasPrev && ($phase==='all'||$phase==='list')){
+        $_startPage=extractResumeStartPage($profile);
+        if(!empty($profile['_extract_resume_from'])){
+            $_rf=(int)$profile['_extract_resume_from'];
+            if($_rf>0) $_startPage=max(1,$_rf);
+        }
+        if($_startPage>1 || $_resumeReq){
+            $_listResume=true;
+            $_resumeFrom=$_startPage;
+            /* محصولات ذخیره‌شده را پایه بگیر — از صفر شروع نکن */
+            $allProducts=$prevByKey;
+            foreach($allProducts as $_k=>$_v)$seenKeys[$_k]=1;
+            $nextUrl=trim((string)($profile['_extract_list_next_url']??''));
+            if($nextUrl==='')$nextUrl=null;
+        }
+    }
+    /* بودجهٔ زمانی فاز فهرست — مثل جزئیات، تمیز بایست و بعد ادامه بده */
+    $cnList=loadConnections();
+    $_listBudget=(int)($cnList['list_budget_sec']??0);
+    if($_listBudget<=0){
+        $_ini=(int)@ini_get('max_execution_time');
+        $_listBudget=$_ini>0?max(45,(int)($_ini*0.65)):120;
+    }
+    $_listBudget=max(40,min(3600,$_listBudget));
+    $_listDeadline=time()+$_listBudget;
+}
 /* v9.01: در حالت «فقط جزئیات» صفحهٔ فهرست اصلاً باز نمی‌شود؛ محصولات
    همان‌هایی هستند که اجرای قبلی روی دیسک گذاشته. اینطور مرحلهٔ جزئیات
    یک گام مستقل است و یک بار دیگر کل فهرست را نمی‌گیرد. */
-if($phase==='detail'){
+if($phase==='detail'){if($phase==='detail'){
     $allProducts=$prevByKey;
     foreach($allProducts as $_k=>$_v)$seenKeys[$_k]=1;
     $totalPages=0;
@@ -14368,7 +14555,14 @@ $_wantKeys=[];
 foreach($detailSelectors as $_f=>$_sv){ if(!empty($_sv))$_wantKeys[]=$_f; }
 $_inlineDetailDone=0;   // شمارندهٔ جزئیاتِ درجایِ همین اجرا (برای چک‌پوینت)
 $pkFinal=$profileKey!==''?$profileKey:profileKey($url);
-for($page=1;$phase!=='detail'&&$page<=$maxPages;$page++){
+if($_listResume && $_startPage>1){
+    writeProgress(EXTRACT_PROGRESS_FILE,['running'=>true,'done'=>false,'total'=>$maxPages,'current'=>$_startPage,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>[
+        '▶️ ادامهٔ استخراج از صفحه '.$_startPage.' (یک صفحه قبل از محل گیر)',
+        '   • محصولات حفظ‌شده: '.count($allProducts),
+        '   • سقف زمانی این نوبت فهرست: '.$_listBudget.' ثانیه',
+    ],'total_log_count'=>3,'extracted'=>count($allProducts),'page'=>$_startPage,'resuming'=>true,'resume_from'=>$_startPage]);
+}
+for($page=$_startPage;$phase!=='detail'&&$page<=$maxPages;$page++){
 /* v10.121 FAIL-SAFE: if بدون {} فقط unlink بود و cancel همیشه اجرا می‌شد */
 if(file_exists(EXTRACT_STOP_FILE)){
 @unlink(EXTRACT_STOP_FILE);
@@ -14383,10 +14577,59 @@ extractWriteQueue($queue);
 if($phase!=='detail')extractLockRelease($queueId);
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'partial'=>true];
 }
+/* v10.122: بودجهٔ فهرست — تمیز بایست تا نوبت بعد از صفحهٔ قبلی ادامه دهد */
+if($_listDeadline>0 && $page>$_startPage && time()>=$_listDeadline && count($allProducts)>0){
+    $_listRanOut=true;
+    extractCheckpoint($pkFinal,$allProducts,[
+        '_extract_stage'=>'list','_extract_stage_at'=>time(),
+        '_extract_list_incomplete'=>true,
+        '_extract_list_page_ok'=>max(0,$page-1),
+        '_extract_list_page_try'=>$page,
+        '_extract_list_next_url'=>$nextUrl?:'',
+        '_extract_list_last_url'=>'',
+        '_extract_resume_from'=>max(1,$page-1),
+    ]);
+    writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'ran_out'=>true,'resumable'=>true,
+        'resume_page'=>max(1,$page-1),'total'=>$maxPages,'current'=>$page,'started_at'=>$startedAt,
+        'last_progress_ts'=>time(),'queue_id'=>$queueId,'extracted'=>count($allProducts),
+        'recent_log'=>['⏸ سقف زمانی فهرست — ادامه از صفحه '.max(1,$page-1),
+            '   • '.count($allProducts).' محصول تا اینجا ذخیره شد',
+            '   • دکمهٔ «ادامه» یا نوبت بعد از همین‌جا پیش می‌رود'],
+        'total_log_count'=>3,'page'=>$page,'profile_key'=>$pkFinal]);
+    $queue=extractReadQueue();
+    foreach($queue['entries'] as &$qe){
+        if(($qe['id']??'')===$queueId){
+            $qe['status']='paused';$qe['done_at']=time();
+            $qe['resumable']=true;$qe['resume_page']=max(1,$page-1);
+            $qe['products_count']=count($allProducts);
+            $qe['error']='سقف زمانی — ادامه از صفحه '.max(1,$page-1);
+            break;
+        }
+    }unset($qe);
+    extractWriteQueue($queue);
+    if($phase!=='detail')extractLockRelease($queueId);
+    return ['__early_sent'=>$emitEarlyResponse,'ok'=>true,'extracted'=>count($allProducts),
+        'ran_out'=>true,'resume_needed'=>true,'resume_page'=>max(1,$page-1),'partial'=>true,
+        'products_saved'=>true,'profile_key'=>$pkFinal];
+}
+/* ثبت صفحه‌ای که الان تلاش می‌شود — برای resume = try-1 */
+if($pkFinal!==''){
+    extractCheckpoint($pkFinal,$allProducts,[
+        '_extract_stage'=>'list','_extract_stage_at'=>time(),
+        '_extract_list_incomplete'=>true,
+        '_extract_list_page_try'=>$page,
+        '_extract_list_page_ok'=>(int)($profile['_extract_list_page_ok']??0),
+    ]);
+}
 if($page===1){$pageUrl=$url;}
 elseif($pagType==='next_selector'&&$nextUrl){$pageUrl=$nextUrl;}
 elseif($pagType==='next_selector'&&!$nextUrl){break;}
 else{$pageUrl=build_page_url_custom($url,$url,$page,$pagType,$pagVal);}
+/* روی resume با next_selector: اگر last_url ذخیره شده و page==start، از آن شروع کن */
+if($_listResume && $page===$_startPage && $pagType==='next_selector'){
+    $_lu=trim((string)($profile['_extract_list_last_url']??''));
+    if($_lu!=='')$pageUrl=$_lu;
+}
 
 $res=fetch_html($pageUrl,20);
 $totalPages=$page;
@@ -14396,11 +14639,41 @@ $logs[]='❌ خطا: '.mb_substr($res['error']??'HTTP error',0,80);
 // v8.91: علت شکست صفحهٔ اول را نگه دار تا محافظِ پایین بداند
 // «صفر محصول» به‌خاطر قطعی بوده، نه به‌خاطر خالی شدن فروشگاه.
 if($page===1)$fetchFail='صفحهٔ اول باز نشد: '.mb_substr($res['error']??('HTTP '.(int)($res['code']??0)),0,60);
-extractLockTouch($queueId);   // v10.32 (۴۵ب): ضربان، تا قفلِ اجرای سالم کهنه نشود
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>true,'done'=>false,'total'=>0,'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>$logs,'total_log_count'=>$page,'extracted'=>count($allProducts),'page'=>$page,'page_ok'=>false]);
-if($page===1)break;
-else continue;
+extractLockTouch($queueId);
+if($page>1 && count($allProducts)>0){
+    $_rpF=max(1,$page-1);
+    extractCheckpoint($pkFinal,$allProducts,[
+        '_extract_stage'=>'list','_extract_stage_at'=>time(),
+        '_extract_list_incomplete'=>true,
+        '_extract_list_page_try'=>$page,
+        '_extract_list_page_ok'=>$_rpF,
+        '_extract_resume_from'=>$_rpF,
+        '_extract_list_last_url'=>$pageUrl,
+    ]);
 }
+if(!isset($_pageFailStreak))$_pageFailStreak=0;
+$_pageFailStreak++;
+writeProgress(EXTRACT_PROGRESS_FILE,['running'=>true,'done'=>false,'total'=>$maxPages,'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>$logs,'total_log_count'=>$page,'extracted'=>count($allProducts),'page'=>$page,'page_ok'=>false,'resumable'=>$page>1,'resume_page'=>max(1,$page-1)]);
+if($page===1)break;
+if($_pageFailStreak>=2 && count($allProducts)>0){
+    $_rpF=max(1,$page-1);
+    writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>'صفحات متوالی باز نشد','resumable'=>true,'resume_page'=>$_rpF,'extracted'=>count($allProducts),'page'=>$page,'queue_id'=>$queueId,'started_at'=>$startedAt,'last_progress_ts'=>time(),'recent_log'=>array_merge($logs,['⏸ دو صفحه پشت‌سرهم شکست — ادامه از صفحه '.$_rpF]),'total_log_count'=>$page+1,'profile_key'=>$pkFinal]);
+    $queue=extractReadQueue();
+    foreach($queue['entries'] as &$qe){
+        if(($qe['id']??'')===$queueId){
+            $qe['status']='failed';$qe['done_at']=time();$qe['resumable']=true;$qe['resume_page']=$_rpF;
+            $qe['products_count']=count($allProducts);
+            $qe['error']='صفحه باز نشد — ادامه از '.$_rpF;break;
+        }
+    }unset($qe);
+    extractWriteQueue($queue);
+    if($phase!=='detail')extractLockRelease($queueId);
+    return ['__early_sent'=>$emitEarlyResponse,'ok'=>true,'extracted'=>count($allProducts),'partial'=>true,'resume_needed'=>true,'resume_page'=>$_rpF,'products_saved'=>true,'profile_key'=>$pkFinal];
+}
+continue;
+}
+$_pageFailStreak=0;
+
 
 $pageProducts=parse_with_selectors($res['html'],$res['url'],$selectors);
 
@@ -14479,8 +14752,7 @@ $logs[]='✓ +'.($newCount).' محصول (کل: '.count($allProducts).')';
 // v8.22: مقایسهٔ زنده — شمارنده‌ها و لیست‌ها همان لحظه محاسبه می‌شوند
 $liveCmp=extractLiveCompare($allProducts,$livePrevMap);
 msAlive('صفحه ' . $page . ' — ' . count($allProducts) . ' محصول');   /* v10.61 (۷۵) */
-writeProgress(EXTRACT_PROGRESS_FILE,array_merge(['running'=>true,'done'=>false,'total'=>$maxPages,'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>$logs,'total_log_count'=>$page,'extracted'=>count($allProducts),'page'=>$page,'page_ok'=>true,'page_new'=>$newCount,'page_total'=>count($allProducts)],$liveCmp));
-
+writeProgress(EXTRACT_PROGRESS_FILE,array_merge(['running'=>true,'done'=>false,'total'=>$maxPages,'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>$logs,'total_log_count'=>$page,'extracted'=>count($allProducts),'page'=>$page,'page_ok'=>true,'page_new'=>$newCount,'page_total'=>count($allProducts),'resumable'=>true,'resume_page'=>max(1,$page)],$liveCmp));
 if($pagType==='next_selector'&&!empty($pagVal)){
 [$dom,$xp]=load_dom($res['html']);
 $xpath=cssToXpath($pagVal);
@@ -14492,6 +14764,27 @@ $nextUrl=make_absolute_url($href,$res['url']);
 }else{$nextUrl=null;}
 }else{$nextUrl=null;}
 }
+/* v10.122: چک‌پوینت بعد از nextUrl — برای ادامه از همین/صفحه قبل */
+extractLockTouch($queueId);
+extractCheckpoint($pkFinal,$allProducts,[
+    '_extract_stage'=>'list','_extract_stage_at'=>time(),
+    '_extract_list_incomplete'=>true,
+    '_extract_list_page_ok'=>$page,
+    '_extract_list_page_try'=>$page,
+    '_extract_list_next_url'=>is_string($nextUrl)?(string)$nextUrl:((string)($nextUrl??'')),
+    '_extract_list_last_url'=>$pageUrl,
+    '_extract_resume_from'=>$page,
+    '_extract_resume_req'=>0,
+]);
+$_qLive=extractReadQueue();
+foreach($_qLive['entries'] as &$_qeL){
+    if(($_qeL['id']??'')===$queueId){
+        $_qeL['resume_page']=$page;$_qeL['resumable']=true;
+        $_qeL['products_count']=count($allProducts);$_qeL['current']=$page;$_qeL['total']=$maxPages;
+        break;
+    }
+}unset($_qeL);
+extractWriteQueue($_qLive);
 if($page>1&&$newCount===0)break;
 usleep(500000);
 }
@@ -14598,7 +14891,14 @@ if($_prevN>=8 && $_newN>0 && $_newN < (int)max(3, floor($_prevN * 0.45))){
    پردازه کشته می‌شود. تا ۸.۹۳ در آن حالت هیچ‌چیز ذخیره نشده بود — حتی
    خودِ محصولاتی که از صفحهٔ فهرست به دست آمده بودند. */
 $pkFinal=$profileKey!==''?$profileKey:profileKey($url);
-extractCheckpoint($pkFinal,$allProducts,['_extract_stage'=>'list_done','_extract_stage_at'=>time()]);
+extractCheckpoint($pkFinal,$allProducts,[
+    '_extract_stage'=>'list_done','_extract_stage_at'=>time(),
+    '_extract_list_incomplete'=>false,
+    '_extract_list_page_ok'=>$totalPages,
+    '_extract_list_page_try'=>$totalPages,
+    '_extract_resume_req'=>0,
+    '_extract_resume_from'=>0,
+]);
 
 // v8.64: اگر گالری روشن است، صفحهٔ همهٔ محصولات باید باز شود — نه فقط
 // آن‌هایی که عکس یا قیمت ندارند. وگرنه محصولی که یک عکس دارد هرگز
@@ -15021,7 +15321,16 @@ $profileOnDisk['updatedAt']=time();
 /* v9.01: اجرای «فقط فهرست» تمام‌شده حساب نمی‌شود — هنوز مرحلهٔ جزئیات
    مانده. با نشانهٔ list_done، هم دروازهٔ ارسال بسته می‌ماند و هم اجرای
    بعدی می‌داند باید جزئیات را بگیرد. */
-$profileOnDisk['_extract_stage']=($phase==='list')?'list_done':((!empty($_ranOut))?'detail':'complete');
+$profileOnDisk['_extract_stage']=($phase==='list')?'list_done':((!empty($_ranOut)||!empty($_listRanOut))?'detail':'complete');
+if(empty($_ranOut)&&empty($_listRanOut)&&$phase!=='list'){
+    $profileOnDisk['_extract_list_incomplete']=false;
+    $profileOnDisk['_extract_resume_req']=0;
+    $profileOnDisk['_extract_resume_from']=0;
+}
+if(!empty($_listRanOut)){
+    $profileOnDisk['_extract_stage']='list';
+    $profileOnDisk['_extract_list_incomplete']=true;
+}
 $profileOnDisk['_extract_stage_at']=time();
 $profileOnDisk['_extract_detail_done']=$detailDone;
 $profileOnDisk['_extract_detail_total']=$detailTotal;
@@ -18070,10 +18379,16 @@ if (!empty($wdEarly['extract_resume'])) {
             $_psaR = time() - (int)($_prR['_extract_stage_at'] ?? 0);
             $_staleR = max(120, (int)($cn['stall_after'] ?? 300));
             if ($_psR === 'detail' && $_psaR <= $_staleR) $_phR = 'detail';
+            /* v10.122: پرچم resume تا از صفحهٔ قبلی ادامه دهد نه از اول */
+            $_prR['_extract_resume_req'] = time();
+            if (empty($_prR['_extract_resume_from'])) {
+                $_prR['_extract_resume_from'] = extractResumeStartPage($_prR);
+            }
+            $_prR['_extract_list_incomplete'] = true;
+            $profiles[$_rk] = $_prR;
+            saveProfiles($profiles);
+            $profiles = loadProfiles();
         }
-        /* v9.92: نوبت همین حالا مصرف شد — پیش از شروعِ کارِ طولانی ثبتش کن.
-           اگر هاست وسطِ کار بکشدمان، lastRun روی دیسک نشسته و تیکِ بعدی
-           دوباره از صفر شروع نمی‌کند. */
         cronMarkRun($_rk, 'extract_resume');
         $syncState = loadSyncState();
         $_rr = runBackendExtract($_rk, 'watchdog_resume', false, $_phR);
@@ -60224,10 +60539,11 @@ function renderExtractQueue(entries, progress){
             }
         }else if(st==='paused'){
             progPercent=total>0?Math.round(current/total*100):0;
-            // v8.91: ردیفی که کاربر متوقف کرده با ردیف گیرکرده فرق دارد
             progText=(total>0?(toFa(current)+'/'+toFa(total)+' — '):'')
                     +(e.stopped_by_user?'با دکمهٔ توقف متوقف شد':'متوقف');
             if(products>0)progText+=' | '+toFa(products)+' محصول تا این لحظه';
+            if(e.resume_page) progText+=' · ▶️ ادامه از ص '+toFa(e.resume_page);
+            e.resumable = true;
         }else if(st==='done'){
             progPercent=100;
             progText='✓ '+toFa(products)+' محصول | '+toFa(newC)+' جدید | '+toFa(chgC)+' تغییر قیمت | '
@@ -60239,6 +60555,9 @@ function renderExtractQueue(entries, progress){
             progText=total>0?(toFa(total)+' محصول — منتظر شروع'):'منتظر شروع';
         }else if(st==='failed'){
             progText=e.error?esc(e.error):'استخراج ناتمام ماند';
+            if(e.resumable||e.resume_page){
+                progText+=' · ▶️ قابل ادامه'+(e.resume_page?(' از ص '+toFa(e.resume_page)):'');
+            }
         }
         /* v9.11: ردیف گزارشیِ استخراج دوره‌ای — متن خودش را دارد و
            شمارنده‌های محصول برایش بی‌معناست. */
@@ -60278,6 +60597,10 @@ function renderExtractQueue(entries, progress){
         if(st==='running'){
             html+='<button class="btn" style="font-size:10px;padding:3px 8px;background:#f97316;color:#fff;border:none;border-radius:4px" onclick="event.stopPropagation();stopExtractQueue(\''+esc(e.id)+'\')">⏹ توقف</button>';
         }else{
+            if((st==='failed'||st==='paused') && e.profile_key){
+                const rp=e.resume_page||0;
+                html+='<button class="btn" style="font-size:10px;padding:3px 8px;background:#059669;color:#fff;border:none;border-radius:4px" onclick="event.stopPropagation();resumeExtractQueue(\''+esc(e.profile_key)+'\',\''+esc(e.id)+'\','+(rp||0)+')" title="ادامه از یک صفحه قبل از محل گیر">▶ ادامه'+(rp?(' از '+toFa(rp)):'')+'</button>';
+            }
             html+='<button class="btn" style="font-size:10px;padding:3px 8px;background:'+(st==='done'?'#334155':'#dc2626')+';color:'+(st==='done'?'#94a3b8':'#fff')+';border:none;border-radius:4px" onclick="event.stopPropagation();deleteExtractQueue(\''+esc(e.id)+'\')">🗑️ حذف</button>';
         }
         html+='</div></div>';
@@ -60336,6 +60659,35 @@ function clearExtractQueueDone(){
     }).catch(()=>showToast('خطا شبکه',1));
 }
 
+function resumeExtractQueue(profileKey, qid, resumePage){
+    resumePage = resumePage||0;
+    const msg = resumePage>0
+      ? ('ادامهٔ استخراج از صفحه '+resumePage+'؟\n(یک صفحه قبل از جایی که گیر کرده — از اول شروع نمی‌شود)')
+      : 'ادامهٔ استخراج این پروفایل از آخرین نقطه؟';
+    if(!confirm(msg))return;
+    showToast('▶️ در حال ادامه از '+(resumePage?('صفحه '+resumePage):'نقطهٔ ذخیره')+'…');
+    const fd=new FormData();
+    fd.append('action','extract_resume');
+    fd.append('profile_key', profileKey||'');
+    if(qid) fd.append('queue_id', qid);
+    fetch('?extract_resume=1&profile_key='+encodeURIComponent(profileKey||'')
+        +'&queue_id='+encodeURIComponent(qid||''), {method:'POST', body:fd})
+      .then(r=>r.json()).then(d=>{
+        if(!d||!d.ok){ showToast((d&&d.error)||'ادامه ناموفق',1); return; }
+        showToast('▶️ ادامه از صفحه '+(d.start_page||resumePage||'?')+' شروع شد');
+        try{
+          if($('extractProgress'))$('extractProgress').classList.remove('hidden');
+          if($('extractStatusText'))$('extractStatusText').textContent='▶️ ادامه از صفحه '+(d.start_page||'…');
+        }catch(e){}
+        if(typeof extractPollTimer!=='undefined' && extractPollTimer) clearInterval(extractPollTimer);
+        if(typeof pollExtractProgress==='function'){
+          extractPollTimer=setInterval(pollExtractProgress,1500);
+          pollExtractProgress();
+        }
+        refreshExtractQueue();
+        setTimeout(refreshExtractQueue,2000);
+      }).catch(e=>showToast('خطا: '+e,1));
+}
 function stopExtractQueue(qid){
     if(!confirm('استخراج در حال اجرا متوقف شود؟'))return;
     /* v8.91: شناسهٔ ردیف هم فرستاده می‌شود تا سرور بتواند دقیقاً همان را
@@ -63152,6 +63504,9 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.122', t:'▶️ ادامه استخراج از صفحهٔ قبل از گیر (نه از اول)', items:[
+    'چک‌پوینت هر صفحه؛ دکمه ادامه در صف؛ بودجه فهرست؛ resume_page در نگهبان.',
+  ]},
   {v:'10.121', t:'🛡 استخراج fail-safe + مغایرت دوره‌ای از جدول', items:[
     'باگ stop بدون {}: استخراج از صفحهٔ اول cancel می‌شد — رفع شد.',
     'گارد soft-collapse + retire فقط بعد از extract کامل.',

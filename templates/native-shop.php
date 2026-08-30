@@ -6,7 +6,7 @@
  *              مناسب به‌عنوان برگه پشتیبان وقتی ویترین اصلی خاموش، خراب یا با خطای ۴۰۴ است.
  *
  * @package AMPHP
- * @version 13.3.24
+ * @version 13.3.25
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -316,7 +316,7 @@ $currency_label = ! empty( $settings['currency_symbol'] ) ? (string) $settings['
   </div>
 </main>
 <?php
-/* v13.3.24: چت پشتیبانی هوشمند روی قالب بومی — قبل از فوتر هم force می‌شود */
+/* v13.3.25: چت پشتیبانی هوشمند روی قالب بومی — قبل از فوتر هم force می‌شود */
 $GLOBALS['amphp_force_native_chat'] = true;
 if ( class_exists( 'Scraper_Auto_Shop_Plugin' ) && is_callable( array( 'Scraper_Auto_Shop_Plugin', 'print_native_support_chat_widget' ) ) ) {
 	Scraper_Auto_Shop_Plugin::print_native_support_chat_widget();

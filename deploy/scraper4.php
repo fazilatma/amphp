@@ -295,8 +295,8 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.111';
-const APP_VERSION_DATE = '1405/06/10';
+const APP_VERSION = '10.112';
+const APP_VERSION_DATE = '1405/06/11';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -22118,6 +22118,384 @@ if (isset($_GET['sec_check'])) {
     exit;
 }
 
+
+/* =====================================================================
+ *  v10.112: ماتریس مقایسهٔ نظیر‌به‌نظیر پروفایل × ووکامرس × غرفه‌های باسلام
+ *  ?sync_matrix=1&page=1&per_page=50&profile=all&q=
+ *  تطبیق عنوان بدون پسوند پروفایل و بدون «(کد: …)»
+ * ===================================================================== */
+function matrixCollectSuffixes(): array {
+    $sfx = [];
+    foreach (loadProfiles() as $p) {
+        $s = trim((string)($p['titleSuffix'] ?? ''));
+        if ($s !== '') $sfx[$s] = true;
+    }
+    return array_keys($sfx);
+}
+function matrixBareTitle(string $title, array $suffixes = []): string {
+    $t = trim($title);
+    // پسوندهای پروفایل را از انتها بِکَن (بلندتر اول)
+    usort($suffixes, function ($a, $b) {
+        return mb_strlen($b) <=> mb_strlen($a);
+    });
+    foreach ($suffixes as $s) {
+        $s = trim((string)$s);
+        if ($s === '') continue;
+        if (function_exists('mb_substr') && mb_substr($t, -mb_strlen($s)) === $s) {
+            $t = trim(mb_substr($t, 0, mb_strlen($t) - mb_strlen($s)));
+        } elseif (substr($t, -strlen($s)) === $s) {
+            $t = trim(substr($t, 0, -strlen($s)));
+        }
+    }
+    return reconNormTitle($t);
+}
+function matrixPriceTone(int $src, int $dst): string {
+    if ($src <= 0 && $dst <= 0) return 'na';
+    if ($src <= 0) return 'no_src';
+    if ($dst <= 0) return 'missing_dst';
+    if ($src === $dst) return 'ok';
+    $diff = abs($src - $dst) / max($src, 1);
+    if ($diff <= 0.01) return 'ok';
+    if ($diff <= 0.05) return 'warn';
+    return 'bad';
+}
+function matrixBuild(array $opts = []): array {
+    @set_time_limit(300);
+    $cn = loadConnections();
+    $suffixes = matrixCollectSuffixes();
+    $profileFilter = trim((string)($opts['profile'] ?? 'all'));
+    $q = matrixBareTitle((string)($opts['q'] ?? ''), []);
+    $onlyDup = !empty($opts['only_dup']);
+    $onlyMismatch = !empty($opts['only_mismatch']);
+    $onlyMissing = !empty($opts['only_missing']);
+
+    $wooCfg = destPriceCfg($cn, 'woocommerce');
+    $bslCfg = destPriceCfg($cn, 'basalam');
+
+    // --- پروفایل‌ها ---
+    $rowsByKey = []; // bare_title => row
+    $dupProf = [];
+    foreach (loadProfiles() as $pk => $profile) {
+        if ($profileFilter !== '' && $profileFilter !== 'all' && $profileFilter !== $pk) continue;
+        $pname = (string)($profile['name'] ?? $pk);
+        foreach (profileOrderedProducts($profile, null, true) as $p) {
+            $title = (string)($p['title'] ?? '');
+            $bare = matrixBareTitle($title, $suffixes);
+            if ($bare === '') continue;
+            $raw = (int)extractPriceNum((string)($p['price'] ?? $p['orig_price'] ?? '0'));
+            if ($raw <= 0) $raw = (int)preg_replace('/\D/', '', (string)($p['orig_price'] ?? '0'));
+            $profP = (int)($p['final_price'] ?? 0);
+            if ($profP <= 0) $profP = profileFinalPrice($profile, (string)($p['price'] ?? ''));
+            $wooExpect = $profP > 0 && ($wooCfg['mode'] ?? 'none') !== 'none'
+                ? destAdjustPrice($profP, $wooCfg) : $profP;
+            $bslExpect = $profP > 0 && ($bslCfg['mode'] ?? 'none') !== 'none'
+                ? destAdjustPrice($profP, $bslCfg) : $profP;
+            if (!isset($rowsByKey[$bare])) {
+                $rowsByKey[$bare] = [
+                    'bare' => $bare,
+                    'title' => $title,
+                    'key' => (string)($p['key'] ?? ''),
+                    'profile' => $pname,
+                    'profile_key' => (string)$pk,
+                    'src_price' => $raw,
+                    'profile_price' => $profP,
+                    'woo_expect' => $wooExpect,
+                    'bsl_expect' => $bslExpect,
+                    'profile_hits' => 1,
+                    'woo' => null,
+                    'shops' => [],
+                ];
+            } else {
+                $rowsByKey[$bare]['profile_hits']++;
+                $dupProf[$bare] = ($dupProf[$bare] ?? 1) + 1;
+                // نگه داشتن اولین قیمت غیرصفر
+                if ($rowsByKey[$bare]['profile_price'] <= 0 && $profP > 0) {
+                    $rowsByKey[$bare]['profile_price'] = $profP;
+                    $rowsByKey[$bare]['woo_expect'] = $wooExpect;
+                    $rowsByKey[$bare]['bsl_expect'] = $bslExpect;
+                    $rowsByKey[$bare]['src_price'] = $raw;
+                }
+            }
+        }
+    }
+
+    // --- ووکامرس ---
+    $wooErr = '';
+    $wooRows = [];
+    $w = $cn['woocommerce'] ?? [];
+    if (!empty($w['store_url']) || (function_exists('wc_get_products'))) {
+        try {
+            $wooRows = reconFetchWoo(is_array($w) ? $w : []);
+        } catch (Throwable $e) {
+            $wooErr = $e->getMessage();
+        }
+    } else {
+        $wooErr = 'تنظیمات ووکامرس ناقص';
+    }
+    $wooDup = [];
+    foreach ($wooRows as $wr) {
+        $bare = matrixBareTitle((string)($wr['title'] ?? ''), $suffixes);
+        if ($bare === '') continue;
+        $cell = [
+            'id' => (int)($wr['id'] ?? 0),
+            'title' => (string)($wr['title'] ?? ''),
+            'price' => (int)($wr['price'] ?? 0),
+            'status' => (string)($wr['status'] ?? ''),
+        ];
+        if (!isset($rowsByKey[$bare])) {
+            $rowsByKey[$bare] = [
+                'bare' => $bare, 'title' => $cell['title'], 'key' => '',
+                'profile' => '', 'profile_key' => '', 'src_price' => 0,
+                'profile_price' => 0, 'woo_expect' => 0, 'bsl_expect' => 0,
+                'profile_hits' => 0, 'woo' => null, 'shops' => [],
+            ];
+        }
+        if ($rowsByKey[$bare]['woo'] !== null) {
+            $wooDup[$bare] = ($wooDup[$bare] ?? 1) + 1;
+            $rowsByKey[$bare]['woo_dup'] = true;
+            if (!isset($rowsByKey[$bare]['woo_extra'])) $rowsByKey[$bare]['woo_extra'] = [];
+            $rowsByKey[$bare]['woo_extra'][] = $cell;
+        } else {
+            $rowsByKey[$bare]['woo'] = $cell;
+        }
+    }
+
+    // --- باسلام همهٔ غرفه‌ها ---
+    $shopsMeta = [];
+    $bslErr = '';
+    if (function_exists('bslAllShops')) {
+        $shopList = bslAllShops($cn);
+    } else {
+        $shopList = [];
+        $b = $cn['basalam'] ?? [];
+        if (!empty($b['token']) && (int)($b['vendor_id'] ?? 0) > 0) {
+            $shopList[] = [
+                'vendor_id' => (int)$b['vendor_id'],
+                'token' => (string)$b['token'],
+                'shop_name' => (string)($b['shop_name'] ?? 'پیش‌فرض'),
+                'is_default' => true,
+                'price_mode' => (string)($b['price_mode'] ?? 'none'),
+                'price_val' => (float)($b['price_val'] ?? 0),
+            ];
+        }
+        foreach ((array)($b['vendors'] ?? []) as $v) {
+            if (!is_array($v)) continue;
+            $vid = (int)($v['vendor_id'] ?? 0);
+            $tok = trim((string)($v['token'] ?? ''));
+            if ($vid <= 0 || $tok === '') continue;
+            $shopList[] = array_merge($v, ['vendor_id' => $vid, 'token' => $tok, 'is_default' => false]);
+        }
+    }
+    foreach ($shopList as $sh) {
+        if (!is_array($sh)) continue;
+        $vid = (int)($sh['vendor_id'] ?? 0);
+        $tok = trim((string)($sh['token'] ?? ($cn['basalam']['token'] ?? '')));
+        $sname = trim((string)($sh['shop_name'] ?? ($sh['name'] ?? ('غرفه ' . $vid))));
+        if ($vid <= 0 || $tok === '') continue;
+        $shopsMeta[] = ['vendor_id' => $vid, 'name' => $sname, 'is_default' => !empty($sh['is_default'])];
+        try {
+            $remote = reconFetchBsl($tok, $vid);
+        } catch (Throwable $e) {
+            $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
+            $remote = [];
+        }
+        $seen = [];
+        foreach ($remote as $br) {
+            $bare = matrixBareTitle((string)($br['title'] ?? ''), $suffixes);
+            if ($bare === '') continue;
+            $cell = [
+                'id' => (int)($br['id'] ?? 0),
+                'title' => (string)($br['title'] ?? ''),
+                'price' => (int)($br['price_toman'] ?? 0),
+                'price_rial' => (int)($br['price'] ?? 0),
+            ];
+            if (!isset($rowsByKey[$bare])) {
+                $rowsByKey[$bare] = [
+                    'bare' => $bare, 'title' => $cell['title'], 'key' => '',
+                    'profile' => '', 'profile_key' => '', 'src_price' => 0,
+                    'profile_price' => 0, 'woo_expect' => 0, 'bsl_expect' => 0,
+                    'profile_hits' => 0, 'woo' => null, 'shops' => [],
+                ];
+            }
+            if (isset($seen[$bare])) {
+                $rowsByKey[$bare]['shops'][$vid]['dup'] = true;
+            }
+            $seen[$bare] = true;
+            // انتظار غرفه: dest basalam روی پروفایل، سپس تعدیل غرفه
+            $baseExpect = (int)($rowsByKey[$bare]['bsl_expect'] ?? 0);
+            $shopExpect = $baseExpect;
+            $profP = (int)($rowsByKey[$bare]['profile_price'] ?? 0);
+            if ($profP > 0 && function_exists('bslShopPriceFor')) {
+                // اول dest basalam روی قیمت پروفایل
+                $afterDest = $baseExpect > 0 ? $baseExpect : $profP;
+                $adj = bslShopPriceFor($afterDest, $sh, (int)($bslCfg['round'] ?? 0));
+                if (!empty($adj['price'])) $shopExpect = (int)$adj['price'];
+            }
+            $rowsByKey[$bare]['shops'][$vid] = array_merge($cell, [
+                'shop_name' => $sname,
+                'expect' => $shopExpect,
+                'tone' => matrixPriceTone($shopExpect, (int)$cell['price']),
+            ]);
+        }
+    }
+
+    // --- وضعیت هر ردیف ---
+    $rows = [];
+    $sum = [
+        'total' => 0, 'ok' => 0, 'price_mismatch' => 0, 'missing_woo' => 0,
+        'missing_bsl' => 0, 'extra_woo' => 0, 'extra_bsl' => 0,
+        'dup_profile' => 0, 'dup_woo' => 0, 'dup_bsl' => 0,
+        'in_all' => 0, 'only_profile' => 0,
+    ];
+    foreach ($rowsByKey as $bare => $r) {
+        if ($q !== '' && mb_strpos($bare, $q) === false) continue;
+        $hasProf = ($r['profile_hits'] ?? 0) > 0;
+        $hasWoo = !empty($r['woo']);
+        $shopCount = 0; $shopOk = 0; $shopBad = 0; $shopMiss = 0;
+        foreach ($shopsMeta as $sm) {
+            $vid = (int)$sm['vendor_id'];
+            if (!empty($r['shops'][$vid])) {
+                $shopCount++;
+                $t = $r['shops'][$vid]['tone'] ?? 'na';
+                if ($t === 'ok') $shopOk++;
+                elseif ($t === 'bad' || $t === 'warn') $shopBad++;
+            } elseif ($hasProf) {
+                $shopMiss++;
+            }
+        }
+        $wooTone = 'na';
+        if ($hasProf && $hasWoo) {
+            $wooTone = matrixPriceTone((int)$r['woo_expect'], (int)($r['woo']['price'] ?? 0));
+        } elseif ($hasProf && !$hasWoo) {
+            $wooTone = 'missing_dst';
+        } elseif (!$hasProf && $hasWoo) {
+            $wooTone = 'extra';
+        }
+        $flags = [];
+        if (($r['profile_hits'] ?? 0) > 1) { $flags[] = 'dup_profile'; $sum['dup_profile']++; }
+        if (!empty($r['woo_dup'])) { $flags[] = 'dup_woo'; $sum['dup_woo']++; }
+        foreach ($r['shops'] as $sc) {
+            if (!empty($sc['dup'])) { $flags[] = 'dup_bsl'; $sum['dup_bsl']++; break; }
+        }
+        if ($wooTone === 'missing_dst') { $flags[] = 'missing_woo'; $sum['missing_woo']++; }
+        if ($wooTone === 'extra') { $flags[] = 'extra_woo'; $sum['extra_woo']++; }
+        if ($wooTone === 'bad' || $wooTone === 'warn') { $flags[] = 'price_mismatch'; }
+        if ($shopMiss > 0 && $hasProf) { $flags[] = 'missing_bsl'; $sum['missing_bsl']++; }
+        if ($shopBad > 0) { $flags[] = 'price_mismatch'; }
+        if (in_array('price_mismatch', $flags, true)) { $sum['price_mismatch']++; }
+        if (!$hasProf && $shopCount > 0) { $flags[] = 'extra_bsl'; $sum['extra_bsl']++; }
+
+        $status = 'partial';
+        if ($hasProf && $hasWoo && $shopMiss === 0 && $wooTone === 'ok' && $shopBad === 0) {
+            $status = 'ok'; $sum['ok']++; $sum['in_all']++;
+        } elseif ($hasProf && !$hasWoo && $shopCount === 0) {
+            $status = 'only_profile'; $sum['only_profile']++;
+        } elseif (!$hasProf) {
+            $status = 'only_dest';
+        } elseif ($wooTone === 'bad' || $shopBad > 0) {
+            $status = 'mismatch';
+        } elseif ($wooTone === 'missing_dst' || $shopMiss > 0) {
+            $status = 'missing';
+        }
+
+        if ($onlyDup && !preg_grep('/^dup_/', $flags)) continue;
+        if ($onlyMismatch && $status !== 'mismatch' && !in_array('price_mismatch', $flags, true)) continue;
+        if ($onlyMissing && $status !== 'missing' && $status !== 'only_profile') continue;
+
+        $r['woo_tone'] = $wooTone;
+        $r['status'] = $status;
+        $r['flags'] = array_values(array_unique($flags));
+        $r['shop_ok'] = $shopOk;
+        $r['shop_bad'] = $shopBad;
+        $r['shop_miss'] = $shopMiss;
+        $rows[] = $r;
+        $sum['total']++;
+    }
+
+    // sort: mismatches first, then missing, then ok
+    $order = ['mismatch' => 0, 'missing' => 1, 'only_profile' => 2, 'only_dest' => 3, 'partial' => 4, 'ok' => 5];
+    usort($rows, function ($a, $b) use ($order) {
+        $oa = $order[$a['status']] ?? 9;
+        $ob = $order[$b['status']] ?? 9;
+        if ($oa !== $ob) return $oa <=> $ob;
+        return strcmp($a['bare'], $b['bare']);
+    });
+
+    return [
+        'ok' => true,
+        'generated_at' => time(),
+        'suffixes' => $suffixes,
+        'shops' => $shopsMeta,
+        'woo_cfg' => $wooCfg,
+        'bsl_cfg' => $bslCfg,
+        'summary' => $sum,
+        'rows' => $rows,
+        'woo_error' => $wooErr,
+        'bsl_error' => $bslErr,
+        'woo_count' => count($wooRows),
+        'profile_count' => count(loadProfiles()),
+    ];
+}
+
+if (isset($_GET['sync_matrix']) || (($_POST['action'] ?? '') === 'sync_matrix')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(300);
+    $page = max(1, (int)($_GET['page'] ?? $_POST['page'] ?? 1));
+    $per = (int)($_GET['per_page'] ?? $_POST['per_page'] ?? 50);
+    if ($per < 10) $per = 10;
+    if ($per > 200) $per = 200;
+    $opts = [
+        'profile' => (string)($_GET['profile'] ?? $_POST['profile'] ?? 'all'),
+        'q' => (string)($_GET['q'] ?? $_POST['q'] ?? ''),
+        'only_dup' => !empty($_GET['only_dup']) || !empty($_POST['only_dup']),
+        'only_mismatch' => !empty($_GET['only_mismatch']) || !empty($_POST['only_mismatch']),
+        'only_missing' => !empty($_GET['only_missing']) || !empty($_POST['only_missing']),
+        'refresh' => !empty($_GET['refresh']) || !empty($_POST['refresh']),
+    ];
+    $cacheFile = __DIR__ . '/sync_matrix_cache.json';
+    $useCache = empty($opts['refresh']) && is_file($cacheFile) && (time() - filemtime($cacheFile) < 180);
+    // cache key ignores page
+    $cacheKey = md5(json_encode([$opts['profile'], $opts['q'], $opts['only_dup'], $opts['only_mismatch'], $opts['only_missing']]));
+    $data = null;
+    if ($useCache) {
+        $raw = @file_get_contents($cacheFile);
+        $c = json_decode((string)$raw, true);
+        if (is_array($c) && ($c['_key'] ?? '') === $cacheKey && !empty($c['rows'])) {
+            $data = $c;
+        }
+    }
+    if ($data === null) {
+        $data = matrixBuild($opts);
+        $data['_key'] = $cacheKey;
+        @file_put_contents($cacheFile, json_encode($data, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    }
+    $all = $data['rows'] ?? [];
+    $total = count($all);
+    $pages = max(1, (int)ceil($total / $per));
+    if ($page > $pages) $page = $pages;
+    $slice = array_slice($all, ($page - 1) * $per, $per);
+    echo json_encode([
+        'ok' => true,
+        'page' => $page,
+        'per_page' => $per,
+        'pages' => $pages,
+        'total' => $total,
+        'summary' => $data['summary'] ?? [],
+        'shops' => $data['shops'] ?? [],
+        'woo_cfg' => $data['woo_cfg'] ?? [],
+        'bsl_cfg' => $data['bsl_cfg'] ?? [],
+        'rows' => $slice,
+        'woo_error' => $data['woo_error'] ?? '',
+        'bsl_error' => $data['bsl_error'] ?? '',
+        'woo_count' => $data['woo_count'] ?? 0,
+        'cached' => $useCache && isset($c),
+        'generated_at' => $data['generated_at'] ?? time(),
+        'note' => 'تطبیق بدون پسوند پروفایل و کد محصول · قیمت انتظاری WC = پروفایل + destAdjust',
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+
 if (isset($_GET['remote_map'])) {
     ob_clean();
     header('Content-Type: application/json; charset=UTF-8');
@@ -36840,23 +37218,39 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
             if (!$targetOk)  { $stats['skipped']++; $stats['profiles'][] = ['name' => $name, 'n' => 0, 'why' => 'مقصدش این نیست']; continue; }
         }
         $n = 0; $noPrice = 0;
+        /* v10.112: قیمت انتظاری مقصد = final_price پروفایل + destAdjust مقصد
+           (قبلاً فقط پروفایل بود → احساس «قیمت مبدأ بدون تغییر به WC می‌رود»
+           وقتی فقط dest adjust تنظیم شده بود در recon دیده نمی‌شد) */
+        static $__destCfgCache = [];
+        $__destKey = ($target === 'woo') ? 'woocommerce' : 'basalam';
+        if (!isset($__destCfgCache[$__destKey])) {
+            $__destCfgCache[$__destKey] = function_exists('destPriceCfg')
+                ? destPriceCfg(loadConnections(), $__destKey)
+                : ['mode' => 'none', 'val' => 0, 'round' => 0];
+        }
+        $__dcfg = $__destCfgCache[$__destKey];
         foreach (profileOrderedProducts($profile) as $p) {
             // v8.65: همان رکورد، این بار با کلید محصول — برای تطبیق با شناسهٔ مقصد
             $pk = trim((string)($p['key'] ?? ''));
+            $price = (int)($p['final_price'] ?? 0);
+            if ($price > 0 && ($__dcfg['mode'] ?? 'none') !== 'none' && function_exists('destAdjustPrice')) {
+                $price = destAdjustPrice($price, $__dcfg);
+            }
             if ($pk !== '' && !isset($stats['by_key'][$pk])) {
-                $stats['by_key'][$pk] = ['price' => (int)($p['final_price'] ?? 0),
+                $stats['by_key'][$pk] = ['price' => $price,
                                          'profile' => $name, 'profile_key' => (string)$key,
-                                         'key' => $pk];
+                                         'key' => $pk,
+                                         'profile_price' => (int)($p['final_price'] ?? 0)];
             }
             $title = reconNormTitle((string)($p['title'] ?? ''));
             if ($title === '') continue;
-            $price = (int)($p['final_price'] ?? 0);
             if ($price <= 0) $noPrice++;
             $n++;
             if (isset($out[$title]) && (int)$out[$title]['price'] > 0) continue;
             $out[$title] = ['price' => $price, 'profile' => $name,
                             'profile_key' => (string)$key,
-                            'key' => (string)($p['key'] ?? '')];
+                            'key' => (string)($p['key'] ?? ''),
+                            'profile_price' => (int)($p['final_price'] ?? 0)];
         }
         if ($n === 0) { $stats['no_products']++; $stats['profiles'][] = ['name' => $name, 'n' => 0, 'why' => 'محصولی ندارد']; continue; }
         $stats['used']++;
@@ -50577,6 +50971,34 @@ html[data-skin="gloss"] .progress-bar{
 <div class="crow"><label style="font-size:11px">شناسه دستی:</label><input type="number" id="wcCatManual" min="0" step="1" placeholder="مثلاً ۱۲۳" dir="ltr" style="max-width:140px" oninput="applyWcCatManual()"><button class="btn btn-cyan" onclick="applyWcCatManual(1)" style="flex:0;padding:8px;font-size:11px">✓ اعمال</button></div>
 <div style="font-size:10px;color:#64748b;margin:-4px 0 6px">💡 شناسهٔ عددی دسته را می‌توانید مستقیم بنویسید — در وردپرس: محصولات ← دسته‌ها</div>
 <div class="crow"><label><input type="checkbox" id="wcMS"> موجودی</label><input type="number" id="wcSQ" value="10" style="max-width:100px"></div>
+<!-- v10.112: تعدیل قیمت ووکامرس داخل همبرگر اتصال (قبلاً فقط تب تنظیمات) -->
+<div style="margin:10px 0;padding:10px;background:#1e1b4b;border:1px solid #6d28d9;border-radius:10px">
+<div style="font-size:12px;color:#c4b5fd;font-weight:800;margin-bottom:4px">💰 تعدیل قیمت مخصوص ووکامرس</div>
+<div style="font-size:10.5px;color:#94a3b8;line-height:1.7;margin-bottom:8px">
+روی <b>قیمت نهایی پروفایل</b> اعمال می‌شود (لایهٔ دوم). اگر «بدون تغییر» باشد همان قیمت پروفایل به WC می‌رود.
+این فیلدها با تب «تنظیمات → مدیریت قیمت» همگام‌اند (idهای مشترک wcPMode/wcPVal/wcPRound).
+</div>
+<div class="crow" style="align-items:center"><label style="min-width:52px">روش:</label>
+<select id="wcPModeHb" onchange="syncWcPriceUi('hb');destPricePreview('wc')" style="flex:1">
+<option value="none">بدون تغییر (قیمت پروفایل)</option>
+<option value="percent">درصد (+۲۰ یا −۱۰)</option>
+<option value="multiplier">ضریب (۱٫۵)</option>
+</select>
+<input type="number" id="wcPValHb" value="0" step="0.01" oninput="syncWcPriceUi('hb');destPricePreview('wc')" style="max-width:100px">
+</div>
+<div class="crow" style="align-items:center;margin-top:6px"><label style="min-width:52px">گرد:</label>
+<select id="wcPRoundHb" onchange="syncWcPriceUi('hb');destPricePreview('wc')" style="flex:1">
+<option value="0">بدون</option>
+<option value="1000">۱٬۰۰۰</option>
+<option value="5000">۵٬۰۰۰</option>
+<option value="10000">۱۰٬۰۰۰</option>
+<option value="50000">۵۰٬۰۰۰</option>
+<option value="100000">۱۰۰٬۰۰۰</option>
+</select>
+</div>
+<div id="wcPPrevHb" style="font-size:11px;color:#94a3b8;margin-top:6px">بدون تغییر</div>
+<div style="font-size:10px;color:#a78bfa;margin-top:6px;line-height:1.6">نمونه: پروفایل ۲۲۵٬۰۰۰ + dest% → همان عددی که در regular_price ووکامرس نوشته می‌شود.</div>
+</div>
 <div class="cact" style="flex-wrap:wrap;gap:6px">
 <button class="btn btn-purple" onclick="testWoo('both')" title="تست API و مستقیم با جزئیات">🔗 تست کامل</button>
 <button class="btn btn-blue" onclick="testWoo('api')" title="فقط REST API">🔌 تست API</button>
@@ -51803,6 +52225,48 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 </div>
 <button class="btn btn-teal" onclick="reconScanAll()" style="width:100%;margin-top:6px;font-size:11px">⚖ بررسی کامل: ووکامرس + همهٔ غرفه‌ها</button>
 
+<!-- v10.112: جدول مقایسهٔ پیشرفته -->
+<div id="syncMatrixBox" style="margin-top:12px;padding:12px;background:linear-gradient(135deg,#0f172a,#1e1b4b);border:1px solid #6d28d9;border-radius:12px">
+<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px">
+<div style="font-size:13px;font-weight:900;color:#e9d5ff">📊 جدول مقایسهٔ نظیر‌به‌نظیر</div>
+<button class="btn btn-purple" onclick="syncMatrixLoad(1,true)" style="font-size:11px;padding:6px 12px">🔄 ساخت / تازه‌سازی</button>
+</div>
+<div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
+پروفایل (مبدأ) × ووکامرس × همهٔ غرفه‌های باسلام — تطبیق عنوان <b>بدون پسوند</b> و بدون «کد محصول».
+رنگ‌ها: <span style="background:#14532d;color:#bbf7d0;padding:1px 6px;border-radius:4px">یکسان</span>
+<span style="background:#713f12;color:#fde68a;padding:1px 6px;border-radius:4px">نزدیک/هشدار</span>
+<span style="background:#7f1d1d;color:#fecaca;padding:1px 6px;border-radius:4px">مغایرت</span>
+<span style="background:#1e3a8a;color:#bfdbfe;padding:1px 6px;border-radius:4px">فقط مبدأ</span>
+<span style="background:#334155;color:#e2e8f0;padding:1px 6px;border-radius:4px">فقط مقصد</span>
+<span style="background:#4c1d95;color:#e9d5ff;padding:1px 6px;border-radius:4px">تکراری</span>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center">
+<input type="search" id="smQ" placeholder="جستجوی عنوان…" style="flex:1;min-width:140px;font-size:12px" onkeydown="if(event.key==='Enter')syncMatrixLoad(1)">
+<select id="smPer" style="max-width:110px;font-size:12px" onchange="syncMatrixLoad(1)">
+<option value="25">۲۵ / صفحه</option>
+<option value="50" selected>۵۰ / صفحه</option>
+<option value="100">۱۰۰ / صفحه</option>
+<option value="200">۲۰۰ / صفحه</option>
+</select>
+<label style="font-size:11px;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" id="smOnlyMis"> فقط مغایرت قیمت</label>
+<label style="font-size:11px;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" id="smOnlyMiss"> فقط ناقص</label>
+<label style="font-size:11px;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" id="smOnlyDup"> فقط تکراری</label>
+<button class="btn btn-cyan" onclick="syncMatrixLoad(1)" style="font-size:11px">اعمال فیلتر</button>
+</div>
+<div id="smSummary" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:11px"></div>
+<div id="smMeta" style="font-size:10.5px;color:#94a3b8;margin-bottom:6px"></div>
+<div style="overflow:auto;max-height:min(70vh,640px);border:1px solid #334155;border-radius:8px">
+<table id="smTable" style="width:100%;border-collapse:collapse;font-size:11px;min-width:720px">
+<thead style="position:sticky;top:0;background:#1e293b;z-index:2">
+<tr id="smHead"></tr>
+</thead>
+<tbody id="smBody"><tr><td style="padding:16px;color:#64748b;text-align:center">برای شروع «ساخت / تازه‌سازی» را بزنید</td></tr></tbody>
+</table>
+</div>
+<div id="smPager" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:10px"></div>
+</div>
+
+
 <!-- v10.107: مغایرت‌گیری دوره‌ای -->
 <div style="margin-top:10px;padding:10px;background:linear-gradient(135deg,#0f172a,#1e3a5f);border:1px solid #334155;border-radius:10px">
 <div style="font-size:12px;color:#93c5fd;font-weight:800;margin-bottom:6px">⏰ مغایرت‌گیری دوره‌ای (کران)</div>
@@ -52558,11 +53022,14 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
             </div>
         </details>
 
-        <!-- v8.88: تعدیل جداگانه برای هر مقصد — همان‌جایی که بقیهٔ تنظیمات
-             قیمت هست، نه در منوی همبرگری. -->
+        <!-- v8.88 + v10.112: تعدیل جداگانه برای هر مقصد -->
         <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #475569">
             <div style="font-weight:700;font-size:12px;color:#fbbf24;margin-bottom:4px">
-                🎯 تعدیل جداگانه برای هر مقصد
+                🎯 تعدیل جداگانه برای هر مقصد (ووکامرس / باسلام)
+            </div>
+            <div style="font-size:10.5px;color:#86efac;background:#14532d33;border:1px solid #166534;border-radius:8px;padding:8px;margin-bottom:8px;line-height:1.7">
+              ✅ مسیر واقعی ارسال به WC: <b>قیمت خام مبدأ → تعدیل پروفایل (بالا) → تعدیل ووکامرس (زیر) → regular_price</b><br>
+              اگر هر دو «بدون تغییر» باشند، همان قیمت مبدأ می‌رود. این بخش را ذخیره کنید و یک‌بار «ارسال مجدد با قیمت جدید» بزنید.
             </div>
             <div style="font-size:10.5px;color:#94a3b8;line-height:1.9;margin-bottom:10px">
                 تنظیم بالا برای همهٔ مقصدها یکسان است. اگر حاشیهٔ سود ووکامرس و باسلام فرق دارد
@@ -52575,16 +53042,16 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
                 <div style="font-weight:700;font-size:11.5px;color:#c4b5fd;margin-bottom:6px">🛒 ووکامرس</div>
                 <div class="row" style="align-items:center">
                     <label style="min-width:62px">روش:</label>
-                    <select id="wcPMode" onchange="destPricePreview('wc')" style="flex:1">
+                    <select id="wcPMode" onchange="syncWcPriceUi('main');destPricePreview('wc')" style="flex:1">
                         <option value="none">بدون تغییر</option>
                         <option value="percent">درصد (مثلاً ۲۰ یا ۲۰-)</option>
                         <option value="multiplier">ضریب (مثلاً ۱٫۵)</option>
                     </select>
-                    <input type="number" id="wcPVal" value="0" step="0.01" oninput="destPricePreview('wc')" style="max-width:110px">
+                    <input type="number" id="wcPVal" value="0" step="0.01" oninput="syncWcPriceUi('main');destPricePreview('wc')" style="max-width:110px">
                 </div>
                 <div class="row" style="align-items:center;margin-top:6px">
                     <label style="min-width:62px">گرد کردن:</label>
-                    <select id="wcPRound" onchange="destPricePreview('wc')" style="flex:1">
+                    <select id="wcPRound" onchange="syncWcPriceUi('main');destPricePreview('wc')" style="flex:1">
                         <option value="0">بدون گرد کردن</option>
                         <option value="1000">هزار (1,000)</option>
                         <option value="5000">۵ هزار (5,000)</option>
@@ -60404,6 +60871,13 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.112', t:'💰 مسیر قیمت WC + جدول مقایسهٔ نظیر‌به‌نظیر', items:[
+    'مسیر قیمت: پروفایل (priceMode) → destAdjust ووکامرس/باسلام → (باسلام) غرفه.',
+    'تعدیل WC داخل همبرگر «ووکامرس» هم آمده (همگام با تب تنظیمات).',
+    'reconExpected حالا destAdjust را در قیمت انتظاری حساب می‌کند.',
+    'جدول مقایسهٔ پیشرفته: پروفایل×WC×همهٔ غرفه‌ها، رنگ‌بندی، صفحه‌بندی قابل تنظیم،',
+    'تطبیق بدون پسوند و کد محصول، تشخیص تکراری و مغایرت قیمت.',
+  ]},
   {v:'10.111', t:'⛶ تمام‌عرض + همبرگر: باز و بستهٔ واقعی (نه گیر کردن)', items:[
     'گزارش شما: وقتی تمام‌عرض روشن بود، با زدن همبرگر منو بسته نمی‌شد و در حالت',
     'تمام‌عرض گیر می‌کرد.',
@@ -66034,7 +66508,7 @@ function loadConn(){fetch('',{method:'POST',body:new URLSearchParams('action=loa
 function applyCn(){const w=cn.woocommerce||{},b=cn.basalam||{};
 try{if(typeof reconAutoApplyCfg==='function') reconAutoApplyCfg(cn.recon_auto||{});}catch(e){}
 try{if(typeof catfixAutoApplyCfg==='function') catfixAutoApplyCfg(cn.catfix_auto||{});}catch(e){}
-if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;try{const sm=w.sync_mode||'api';if($('wcModeApi'))$('wcModeApi').checked=(sm!=='direct');if($('wcModeDirect'))$('wcModeDirect').checked=(sm==='direct');if($('wcSyncFallback'))$('wcSyncFallback').value=w.sync_fallback||'api_then_direct';}catch(e){}if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
+if(w.store_url&&$('wcUrl'))$('wcUrl').value=w.store_url;if(w.consumer_key&&$('wcCK'))$('wcCK').value=w.consumer_key;if(w.consumer_secret&&$('wcCS'))$('wcCS').value=w.consumer_secret;try{const sm=w.sync_mode||'api';if($('wcModeApi'))$('wcModeApi').checked=(sm!=='direct');if($('wcModeDirect'))$('wcModeDirect').checked=(sm==='direct');if($('wcSyncFallback'))$('wcSyncFallback').value=w.sync_fallback||'api_then_direct';}catch(e){}if(w.default_status&&$('wcSt'))$('wcSt').value=w.default_status;if(w.default_category&&$('wcCat'))$('wcCat').value=w.default_category;if($('wcMS'))$('wcMS').checked=!!w.manage_stock;if(w.stock_quantity&&$('wcSQ'))$('wcSQ').value=w.stock_quantity;if($('wcPMode'))$('wcPMode').value=w.price_mode||'none';if($('wcPVal'))$('wcPVal').value=(w.price_val!==undefined?w.price_val:0);if($('wcPRound'))$('wcPRound').value=String(w.price_round||0);try{syncWcPriceUi('main');}catch(e){}if($('bsPMode'))$('bsPMode').value=b.price_mode||'none';if($('bsPVal'))$('bsPVal').value=(b.price_val!==undefined?b.price_val:0);if($('bsPRound'))$('bsPRound').value=String(b.price_round||0);try{destPricePreview('wc');destPricePreview('bs');}catch(e){}if(b.token&&$('bsTk'))$('bsTk').value=b.token;if(b.vendor_id&&$('bsVid'))$('bsVid').value=b.vendor_id;if(b.preparation_days&&$('bsPD'))$('bsPD').value=b.preparation_days;if(b.weight&&$('bsW'))$('bsW').value=b.weight;if($('bsPW')&&b.package_weight)$('bsPW').value=b.package_weight;if(b.stock&&$('bsSt'))$('bsSt').value=b.stock;// v9.80: سوییچ «اتصال غیرمستقیم» باسلام
 if($('bsIndirect'))$('bsIndirect').checked=!!b.net_indirect;// v7.48: Restore category in searchable dropdown
 if(b.category_id){$('bsCat').value=String(b.category_id);bslSelectedCatId=b.category_id;if(bslAllCats.length>0){renderBslCatDropdown(bslAllCats,b.category_id);}else{loadBslCats();}}else{$('bsCat').value='0';bslSelectedCatId=0;if($('bsCatSearch'))$('bsCatSearch').value='';}
 if($('bsAutoCat'))$('bsAutoCat').checked=!!b.auto_category;if($('bsSendAllShops')){$('bsSendAllShops').checked=!!b.send_all_shops;try{bslRenderShopsHint();}catch(e){}}if($('bsDelayMs')&&b.delay_ms)$('bsDelayMs').value=b.delay_ms;if($('bsRetryDelayMs')&&b.retry_delay_ms)$('bsRetryDelayMs').value=b.retry_delay_ms;
@@ -66077,20 +66551,157 @@ function destAdjustPreviewNum(base,mode,val,round){
   if(round>0)out=Math.round(out/round)*round;
   return out>0?out:base;
 }
-function destPricePreview(pre){
-  const mEl=$(pre+'PMode'),vEl=$(pre+'PVal'),rEl=$(pre+'PRound'),out=$(pre+'PPrev');
-  if(!mEl||!out)return;
-  const mode=mEl.value,val=parseFloat(vEl&&vEl.value)||0,round=parseInt(rEl&&rEl.value)||0;
-  if(mode==='none'){out.textContent='بدون تغییر';out.style.color='#94a3b8';return;}
-  const sample=250000;
-  const res=destAdjustPreviewNum(sample,mode,val,round);
-  const diff=res-sample;
-  const pct=sample>0?Math.round(diff/sample*1000)/10:0;
-  out.style.color=diff>0?'#4ade80':(diff<0?'#fbbf24':'#94a3b8');
-  out.textContent='نمونه: '+toFa(sample.toLocaleString('en-US'))+' → '
-    +toFa(res.toLocaleString('en-US'))
-    +'  ('+(diff>=0?'+':'')+toFa(pct)+'٪)';
+function syncWcPriceUi(from){
+  /* v10.112: همگام فیلدهای تعدیل WC در همبرگر و تب تنظیمات */
+  const pairs=[['wcPMode','wcPModeHb'],['wcPVal','wcPValHb'],['wcPRound','wcPRoundHb']];
+  pairs.forEach(function(pr){
+    const a=$(pr[0]), b=$(pr[1]);
+    if(!a||!b)return;
+    if(from==='hb'){ a.value=b.value; }
+    else { b.value=a.value; }
+  });
 }
+function destPricePreview(pre){
+  if(pre==='wc'){
+    /* اگر از همبرگر پر شده، اول همگام کن */
+    try{ if($('wcPModeHb')&&$('wcPMode')) syncWcPriceUi(document.activeElement&&(document.activeElement.id||'').indexOf('Hb')>=0?'hb':'main'); }catch(e){}
+  }
+  const mEl=$(pre+'PMode'),vEl=$(pre+'PVal'),rEl=$(pre+'PRound'),out=$(pre+'PPrev');
+  const outHb = pre==='wc' ? $('wcPPrevHb') : null;
+  if(!mEl)return;
+  const mode=mEl.value,val=parseFloat(vEl&&vEl.value)||0,round=parseInt(rEl&&rEl.value)||0;
+  function paint(el){
+    if(!el)return;
+    if(mode==='none'){el.textContent='بدون تغییر — همان قیمت پروفایل به مقصد می‌رود';el.style.color='#94a3b8';return;}
+    const sample=250000;
+    const res=destAdjustPreviewNum(sample,mode,val,round);
+    const diff=res-sample;
+    const pct=sample>0?Math.round(diff/sample*1000)/10:0;
+    el.style.color=diff>0?'#4ade80':(diff<0?'#fbbf24':'#94a3b8');
+    el.textContent='نمونه پروفایل: '+toFa(sample.toLocaleString('en-US'))+' → مقصد: '
+      +toFa(res.toLocaleString('en-US'))
+      +'  ('+(diff>=0?'+':'')+toFa(pct)+'٪)';
+  }
+  paint(out); paint(outHb);
+}
+
+/* v10.112: جدول مقایسهٔ پیشرفته */
+window._smPage = 1;
+function smFa(n){ try{ return toFa(String(n)); }catch(e){ return String(n); } }
+function smMoney(n){
+  n=parseInt(n)||0; if(n<=0) return '—';
+  try{ return toFa(n.toLocaleString('en-US')); }catch(e){ return String(n); }
+}
+function smToneBg(t){
+  return ({ok:'#14532d',warn:'#713f12',bad:'#7f1d1d',missing_dst:'#1e3a8a',extra:'#334155',no_src:'#3f3f46',na:'#0f172a'})[t]||'#0f172a';
+}
+function smToneFg(t){
+  return ({ok:'#bbf7d0',warn:'#fde68a',bad:'#fecaca',missing_dst:'#bfdbfe',extra:'#e2e8f0',no_src:'#d4d4d8',na:'#64748b'})[t]||'#94a3b8';
+}
+function smCell(html, tone){
+  const bg=smToneBg(tone), fg=smToneFg(tone);
+  return '<td style="padding:7px 8px;border-bottom:1px solid #1e293b;background:'+bg+';color:'+fg+';vertical-align:top;line-height:1.55">'+html+'</td>';
+}
+function syncMatrixLoad(page, refresh){
+  page = page || 1; window._smPage = page;
+  const body = $('smBody'), sum=$('smSummary'), meta=$('smMeta'), pager=$('smPager'), head=$('smHead');
+  if(body) body.innerHTML='<tr><td style="padding:20px;text-align:center;color:#67e8f9">⏳ در حال مقایسه پروفایل / ووکامرس / غرفه‌ها…</td></tr>';
+  const fd = new FormData();
+  fd.append('action','sync_matrix');
+  fd.append('page', String(page));
+  fd.append('per_page', String(($('smPer')||{}).value||50));
+  fd.append('q', ($('smQ')||{}).value||'');
+  if(($('smOnlyMis')||{}).checked) fd.append('only_mismatch','1');
+  if(($('smOnlyMiss')||{}).checked) fd.append('only_missing','1');
+  if(($('smOnlyDup')||{}).checked) fd.append('only_dup','1');
+  if(refresh) fd.append('refresh','1');
+  fetch('', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{
+    if(!d || !d.ok){ if(body) body.innerHTML='<tr><td style="padding:12px;color:#f87171">خطا: '+(d&&d.error?d.error:'ناموفق')+'</td></tr>'; return; }
+    const shops = d.shops||[];
+    // header
+    let h = '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">#</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">عنوان (بدون پسوند)</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">پروفایل</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">مبدأ</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">قیمت پروفایل</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">WC انتظار</th>'
+      +'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">WC واقعی</th>';
+    shops.forEach(s=>{
+      h += '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">🏪 '+(s.name||('#'+s.vendor_id))+'</th>';
+    });
+    h += '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">وضعیت</th>';
+    if(head) head.innerHTML = h;
+
+    const s = d.summary||{};
+    if(sum){
+      const chip=(lab,val,bg)=>'<span style="background:'+bg+';color:#fff;padding:4px 8px;border-radius:8px;font-weight:800">'+lab+': '+smFa(val||0)+'</span>';
+      sum.innerHTML = chip('کل',s.total,'#4c1d95')+chip('یکسان',s.ok,'#166534')+chip('مغایرت',s.price_mismatch,'#b91c1c')
+        +chip('نیست در WC',s.missing_woo,'#1d4ed8')+chip('نیست در غرفه',s.missing_bsl,'#0369a1')
+        +chip('اضافی WC',s.extra_woo,'#475569')+chip('تکراری پروفایل',s.dup_profile,'#7c3aed');
+    }
+    const wc = d.woo_cfg||{}, bc=d.bsl_cfg||{};
+    if(meta){
+      meta.innerHTML = 'صفحه '+smFa(d.page)+'/'+smFa(d.pages)+' · '+smFa(d.total)+' ردیف'
+        +' · WC products: '+smFa(d.woo_count||0)
+        +(d.cached?' · از کش':' · تازه')
+        +' · dest WC: '+(wc.mode||'none')+(wc.mode&&wc.mode!=='none'?(' '+wc.val):'')
+        +' · dest BSL: '+(bc.mode||'none')+(bc.mode&&bc.mode!=='none'?(' '+bc.val):'')
+        +(d.woo_error?(' · ⚠️ WC: '+d.woo_error):'')
+        +(d.bsl_error?(' · ⚠️ BSL: '+d.bsl_error):'');
+    }
+    const rows = d.rows||[];
+    if(!rows.length){
+      if(body) body.innerHTML='<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی نیست — فیلتر را عوض کنید یا تازه‌سازی کنید</td></tr>';
+    } else if(body){
+      const start = ((d.page||1)-1)*(d.per_page||50);
+      body.innerHTML = rows.map((r,i)=>{
+        const stMap={ok:['✅ یکسان','ok'],mismatch:['❌ مغایرت','bad'],missing:['📤 ناقص','missing_dst'],only_profile:['📘 فقط مبدأ','missing_dst'],only_dest:['📦 فقط مقصد','extra'],partial:['➖ ناقص','warn']};
+        const st=stMap[r.status]||['?','na'];
+        let flags='';
+        (r.flags||[]).forEach(f=>{
+          if(f.indexOf('dup')===0) flags+=' <span style="background:#6d28d9;color:#fff;border-radius:4px;padding:0 5px;font-size:10px">تکراری</span>';
+        });
+        if((r.profile_hits||0)>1) flags+=' <span style="color:#e9d5ff;font-size:10px">×'+smFa(r.profile_hits)+' پروفایل</span>';
+        let tr = '<tr>';
+        tr += smCell(smFa(start+i+1),'na');
+        tr += smCell('<div style="font-weight:700;max-width:220px">'+esc(r.title||r.bare||'')+'</div><div style="font-size:9px;opacity:.7;direction:ltr">'+esc(r.bare||'')+'</div>','na');
+        tr += smCell(esc(r.profile||'—')+(r.profile_key?' <span style="opacity:.6">('+esc(r.profile_key)+')</span>':''),'na');
+        tr += smCell(smMoney(r.src_price), r.src_price>0?'na':'no_src');
+        tr += smCell(smMoney(r.profile_price), r.profile_price>0?'na':'no_src');
+        tr += smCell(smMoney(r.woo_expect), r.woo_expect>0?'na':'no_src');
+        if(r.woo){
+          tr += smCell(smMoney(r.woo.price)+'<div style="font-size:9px;opacity:.75">#'+smFa(r.woo.id)+' · '+esc(r.woo.status||'')+'</div>', r.woo_tone||'na');
+        } else {
+          tr += smCell(r.profile_hits?'نیست':'—', r.profile_hits?'missing_dst':'na');
+        }
+        shops.forEach(s=>{
+          const cell = (r.shops&&r.shops[s.vendor_id]) ? r.shops[s.vendor_id] : null;
+          if(cell){
+            const exp = cell.expect||r.bsl_expect||0;
+            tr += smCell(smMoney(cell.price)+'<div style="font-size:9px;opacity:.75">انتظار '+smMoney(exp)+' · #'+smFa(cell.id)+'</div>'+(cell.dup?' <b>تکراری</b>':''), cell.tone||'na');
+          } else {
+            tr += smCell(r.profile_hits?'نیست':'—', r.profile_hits?'missing_dst':'na');
+          }
+        });
+        tr += smCell(st[0]+flags, st[1]);
+        tr += '</tr>';
+        return tr;
+      }).join('');
+    }
+    if(pager){
+      let pg='';
+      const mk=(lab,p,dis)=>'<button class="btn '+(p===d.page?'btn-purple':'btn-gray')+'" '+(dis?'disabled':'')+' onclick="syncMatrixLoad('+p+')" style="font-size:11px;padding:5px 10px">'+lab+'</button>';
+      pg += mk('«', Math.max(1,d.page-1), d.page<=1);
+      const a=Math.max(1,d.page-2), b=Math.min(d.pages,d.page+2);
+      for(let p=a;p<=b;p++) pg += mk(smFa(p), p, false);
+      pg += mk('»', Math.min(d.pages,d.page+1), d.page>=d.pages);
+      pager.innerHTML = pg;
+    }
+  }).catch(e=>{
+    if(body) body.innerHTML='<tr><td style="padding:12px;color:#f87171">خطای شبکه: '+esc(String(e))+'</td></tr>';
+  });
+}
+
 function saveConn(){const fd=new FormData();fd.append('action','save_connections');fd.append('woocommerce',JSON.stringify({enabled:1,store_url:$('wcUrl').value.trim(),consumer_key:$('wcCK').value.trim(),consumer_secret:$('wcCS').value.trim(),default_status:$('wcSt').value,default_category:parseInt($('wcCat').value)||0,manage_stock:$('wcMS').checked,stock_quantity:parseInt($('wcSQ').value)||10,price_mode:($('wcPMode')||{}).value||'none',price_val:parseFloat(($('wcPVal')||{}).value)||0,price_round:parseInt(($('wcPRound')||{}).value)||0,sync_mode:(($('wcModeDirect')&&$('wcModeDirect').checked)?'direct':'api'),sync_fallback:(($('wcSyncFallback')||{}).value||'api_then_direct')}));bslFlushVendors(); /* v10.87: flush price fields before saving */
 fd.append('basalam',JSON.stringify({enabled:1,token:$('bsTk').value.trim(),vendor_id:parseInt($('bsVid').value)||0,preparation_days:parseInt($('bsPD').value)||3,weight:parseInt($('bsW').value)||500,package_weight:parseInt($('bsPW')?.value)||0,stock:parseInt($('bsSt').value)||10,net_indirect:$('bsIndirect')?.checked||false,category_id:parseInt($('bsCat').value)||0,auto_category:$('bsAutoCat')?.checked||false,send_all_shops:$('bsSendAllShops')?.checked||false,delay_ms:parseInt($('bsDelayMs')?.value)||500,retry_delay_ms:parseInt($('bsRetryDelayMs')?.value)||1000,fallback_cat_ids:getBslFallbackCatIds(),vendors:bslExtraVendors,price_mode:($('bsPMode')||{}).value||'none',price_val:parseFloat(($('bsPVal')||{}).value)||0,price_round:parseInt(($('bsPRound')||{}).value)||0}));
 // v8.06: Save AI settings

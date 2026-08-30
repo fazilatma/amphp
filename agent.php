@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.26
+ * Version: 13.3.27
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -36,11 +36,11 @@ class Scraper_Auto_Shop_Plugin {
 			'enable_scraped_products'     => true, // سازگاری عقب‌رو (true = اسکرپر یا ادغام)
 			'catalog_source'              => 'scraper', // scraper | woocommerce | merge
 			'catalog_merge_prefer'        => 'scraper', // scraper | woocommerce | keep_both
-			'takeover_front_page'         => true, // v13.3.26: صفحه نخست هم ویترین React
+			'takeover_front_page'         => true, // v13.3.27: صفحه نخست هم ویترین React
 			'enable_native_wp_template'   => true, // قالب بومی فقط برای برگهٔ پشتیبان (نه ویترین اصلی React)
 			'native_fallback_page_id'     => 0, // برگه پشتیبان فروشگاه (جدا از فروشگاه اصلی)
 			'enable_404_shop_redirect'    => true, // ریدایرکت 404 به صفحه پشتیبان
-			'set_wc_shop_to_fallback'     => false, // v13.3.26: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
+			'set_wc_shop_to_fallback'     => false, // v13.3.27: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
 			'auto_create_fallback_page'   => true, // ساخت خودکار برگه پشتیبان
 			'replace_site_header'         => true, // حذف کامل هدر و منوی قالب وردپرس
 			'show_top_bar'                => true,
@@ -205,7 +205,7 @@ class Scraper_Auto_Shop_Plugin {
 			// ignore
 		}
 
-		/* v13.3.26: ویترین React روی دامنهٔ اصلی (صفحهٔ خانه) — نه فقط /shop یا ?amphp_shop=1 */
+		/* v13.3.27: ویترین React روی دامنهٔ اصلی (صفحهٔ خانه) — نه فقط /shop یا ?amphp_shop=1 */
 		if ( ! empty( $opts['enable_shop_takeover'] ) ) {
 			$opts['takeover_front_page'] = true;
 		}
@@ -2839,7 +2839,7 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			}
 
-			// v13.3.26: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
+			// v13.3.27: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
 			if ( ! empty( $media ) && is_array( $media ) ) {
 				foreach ( array_slice( $media, 0, 8 ) as $it ) {
 					if ( ! is_array( $it ) ) {
@@ -2865,7 +2865,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: ارسال یک آیتم رسانه به یک پیام‌رسان.
+	 * v13.3.27: ارسال یک آیتم رسانه به یک پیام‌رسان.
 	 * $item = [ kind => photo|video|animation|audio|document|link, url, caption, name ]
 	 */
 	public static function send_media_to_messenger( $key, $m, $item ) {
@@ -2949,7 +2949,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: تشخیص نوع رسانه از URL یا MIME.
+	 * v13.3.27: تشخیص نوع رسانه از URL یا MIME.
 	 */
 	public static function media_kind_from_meta( $url, $mime = '', $name = '' ) {
 		$mime = strtolower( (string) $mime );
@@ -2973,7 +2973,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
+	 * v13.3.27: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
 	 * @return array{ok:bool,item?:array,error?:string,path?:string,url?:string}
 	 */
 	public static function handle_support_chat_upload() {
@@ -3051,7 +3051,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
+	 * v13.3.27: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
 	 */
 	public static function extract_links_as_media( $text ) {
 		$items = array();
@@ -6445,7 +6445,7 @@ class Scraper_Auto_Shop_Plugin {
 		$email   = sanitize_email( $_POST['email'] ?? '' );
 		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
-		$media_items = array(); // v13.3.26
+		$media_items = array(); // v13.3.27
 		$product_id    = sanitize_text_field( $_POST['product_id'] ?? '' );
 		$product_title = sanitize_text_field( $_POST['product_title'] ?? '' );
 		$product_ctx   = sanitize_textarea_field( $_POST['product_context'] ?? '' );
@@ -8603,7 +8603,7 @@ class Scraper_Auto_Shop_Plugin {
 		if ( is_admin() || ! is_singular( 'page' ) ) {
 			return $template;
 		}
-		/* v13.3.26: صفحهٔ خانه همیشه React — قالب native را اینجا بارگذاری نکن */
+		/* v13.3.27: صفحهٔ خانه همیشه React — قالب native را اینجا بارگذاری نکن */
 		$settings = self::get_settings();
 		if ( ! empty( $settings['enable_shop_takeover'] ) && self::is_site_home_request() ) {
 			return $template;
@@ -8746,11 +8746,11 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			self::sync_native_template_to_theme();
 			update_option( 'scraper_native_fallback_page_id', $page_id, false );
-			// v13.3.26: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
+			// v13.3.27: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
 			$settings['native_fallback_page_id'] = $page_id;
 			update_option( self::OPTION_NAME, $settings );
 
-			/* v13.3.26: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
+			/* v13.3.27: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
 			   فروشگاه ووکامرس را روی پشتیبان بگذار — وگرنه ویترین React می‌میرد. */
 			$react_takeover = ! empty( $settings['enable_shop_takeover'] );
 			$tpl_now = (string) ( $settings['store_template'] ?? 'digikala' );
@@ -8808,7 +8808,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	
 	/**
-	 * v13.3.26: ذخیرهٔ خودکار تنظیمات ادمین (AJAX) بدون رفرش صفحه.
+	 * v13.3.27: ذخیرهٔ خودکار تنظیمات ادمین (AJAX) بدون رفرش صفحه.
 	 */
 	public static function ajax_autosave_settings() {
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -8847,7 +8847,7 @@ class Scraper_Auto_Shop_Plugin {
 				array(
 					'message'   => 'ذخیره شد',
 					'saved_at'  => current_time( 'H:i:s' ),
-					'version'   => '13.3.26',
+					'version'   => '13.3.27',
 					'takeover'  => ! empty( $new_settings['enable_shop_takeover'] ),
 					'template'  => (string) ( $new_settings['store_template'] ?? '' ),
 					'wc_fb'     => ! empty( $new_settings['set_wc_shop_to_fallback'] ),
@@ -8859,7 +8859,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: استخراج آرایهٔ تنظیمات از درخواست POST (ذخیره دستی و خودکار مشترک).
+	 * v13.3.27: استخراج آرایهٔ تنظیمات از درخواست POST (ذخیره دستی و خودکار مشترک).
 	 *
 	 * @return array
 	 */
@@ -8940,7 +8940,7 @@ class Scraper_Auto_Shop_Plugin {
 
 		$merged = array_merge( is_array( $cur ) ? $cur : array(), $posted );
 
-		/* v13.3.26: خانهٔ سایت همیشه React وقتی takeover روشن است */
+		/* v13.3.27: خانهٔ سایت همیشه React وقتی takeover روشن است */
 		if ( ! empty( $merged['enable_shop_takeover'] ) ) {
 			$merged['takeover_front_page'] = true;
 		}
@@ -9024,7 +9024,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.26: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
+	 * v13.3.27: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
 	 * ویترین React فعال است، ارتباط را قطع کن تا رفرش دوباره native نیاید.
 	 */
 	public static function maybe_detach_fallback_from_primary_shop() {
@@ -9068,7 +9068,7 @@ class Scraper_Auto_Shop_Plugin {
 						'at'          => time(),
 						'fallback_id' => $fb_id,
 						'primary_id'  => $primary_id,
-						'reason'      => 'v13.3.26_react_primary',
+						'reason'      => 'v13.3.27_react_primary',
 					),
 					false
 				);
@@ -9103,7 +9103,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.26: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
+	 * v13.3.27: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
 	 *
 	 * @param array $settings
 	 * @param int   $fallback_id
@@ -9185,67 +9185,254 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.26: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
+	 * v13.3.27: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
 	 */
 	
 	/**
-	 * v13.3.26: نوار سیاه بالای پیشخوان وردپرس (#wpadminbar) و منوی کناری/همبرگر (#adminmenuwrap)
-	 * در تمام صفحات wp-admin چسبان بمانند — مربوط به خود وردپرس، نه هدر افزونه.
+	 * v13.3.27: نوار/منوی خود پیشخوان وردپرس — فقط دسکتاپ sticky؛ موبایل دست‌نخورده
+	 * (position:fixed روی #adminmenuwrap در موبایل باعث پرت شدن همبرگر به چپ می‌شد).
 	 */
 	public static function amphp_admin_sticky_assets() {
 		if ( ! is_admin() ) {
 			return;
 		}
-		// همهٔ صفحات پیشخوان (نه فقط صفحهٔ افزونه)
+		$page = isset( $_GET['page'] ) ? sanitize_key( (string) $_GET['page'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$ours = ( $page === 'scraper-auto-shop' || $page === 'scraper-full-dashboard' );
+		// CSS سراسری پیشخوان: فقط sticky امن دسکتاپ — بدون دستکاری موبایل
 		echo '<style id="amphp-wp-admin-chrome-sticky">
-/* —— خود پیشخوان وردپرس —— */
-html.wp-toolbar{padding-top:32px!important}
-@media screen and (max-width:782px){
-  html.wp-toolbar{padding-top:46px!important}
+/* دسکتاپ: نوار بالا و منوی کناری چسبان */
+@media screen and (min-width: 783px) {
+  #wpadminbar{
+    position:fixed!important;
+    top:0!important;left:0!important;right:0!important;
+    width:100%!important;z-index:99999!important;
+  }
+  #adminmenuback,#adminmenuwrap{
+    position:fixed!important;
+    top:32px!important;
+    bottom:0!important;
+    z-index:9990!important;
+    height:auto!important;
+    overflow-y:auto!important;
+    overflow-x:hidden!important;
+  }
+  #adminmenuback{z-index:9989!important}
+  #adminmenu{margin-top:0!important}
 }
-#wpadminbar{
-  position:fixed!important;
-  top:0!important;left:0!important;right:0!important;
-  width:100%!important;
-  z-index:99999!important;
+/* موبایل: منو/همبرگر وردپرس دست‌نخورده — فقط نوار بالا و جلوگیری از اسکرول افقی */
+@media screen and (max-width: 782px) {
+  #wpadminbar{
+    position:fixed!important;
+    top:0!important;left:0!important;right:0!important;
+    width:100%!important;max-width:100vw!important;
+    z-index:99999!important;
+  }
+  /* عمداً #adminmenuwrap و #adminmenuback را override نمی‌کنیم */
+  body.wp-admin #wpwrap{overflow-x:hidden;max-width:100vw}
 }
-/* منوی کناری دسکتاپ + همبرگر موبایل */
-#adminmenuback,
-#adminmenuwrap{
-  position:fixed!important;
-  top:32px!important;
-  bottom:0!important;
-  z-index:9990!important;
-  height:auto!important;
-  max-height:none!important;
-  overflow-y:auto!important;
+</style>';
+		if ( $ours ) {
+			echo '<style id="amphp-admin-panel-v27">
+/* ——— پنل افزونه v13.3.27: فشرده، بدون اسکرول افقی، موبایل‌دوست ——— */
+html.wp-toolbar{overflow-x:hidden!important}
+body.wp-admin{overflow-x:hidden!important;max-width:100vw!important}
+#wpbody-content{overflow-x:hidden!important;padding-bottom:40px}
+.wrap.scraper-admin-dashboard{
+  direction:rtl!important;text-align:right!important;
+  box-sizing:border-box!important;
+  max-width:100%!important;width:100%!important;
+  margin:12px 0 24px!important;padding:0 4px!important;
+  font-family:Tahoma,Tahoma,ui-sans-serif,system-ui,-apple-system,sans-serif!important;
+  font-size:13px!important;line-height:1.55!important;color:#1e293b!important;
   overflow-x:hidden!important;
 }
-#adminmenuback{z-index:9989!important}
-#adminmenuwrap{overflow-y:auto!important}
-#adminmenu{margin-top:0!important;position:relative}
-/* همبرگر موبایل در نوار بالا */
-#wpadminbar #wp-admin-bar-menu-toggle{display:block}
-#wpadminbar #wp-admin-bar-menu-toggle .ab-icon:before{color:#f0f0f1}
-@media screen and (max-width:782px){
-  #adminmenuback,
-  #adminmenuwrap{
-    top:46px!important;
-  }
-  /* وقتی منو با همبرگر باز است، روی محتوا بماند */
-  .auto-fold #adminmenuwrap,
-  .auto-fold #adminmenuback{
-    position:fixed!important;
-  }
+.wrap.scraper-admin-dashboard *,
+.wrap.scraper-admin-dashboard *::before,
+.wrap.scraper-admin-dashboard *::after{box-sizing:border-box!important}
+.wrap.scraper-admin-dashboard img,
+.wrap.scraper-admin-dashboard svg,
+.wrap.scraper-admin-dashboard table,
+.wrap.scraper-admin-dashboard pre{max-width:100%!important}
+.wrap.scraper-admin-dashboard h1{font-size:1.25rem!important;font-weight:800!important;line-height:1.35!important;margin:0 0 6px!important}
+.wrap.scraper-admin-dashboard h2{font-size:1.1rem!important;font-weight:800!important}
+.wrap.scraper-admin-dashboard h3{font-size:1rem!important;font-weight:800!important;margin:0!important}
+.wrap.scraper-admin-dashboard h4{font-size:0.95rem!important;font-weight:800!important}
+.wrap.scraper-admin-dashboard p{font-size:0.84rem!important;line-height:1.65!important}
+.wrap.scraper-admin-dashboard .form-table th{
+  font-size:0.84rem!important;font-weight:700!important;color:#334155!important;
+  padding:10px 0 6px!important;width:auto!important;
 }
-/* محتوا زیر نوار ثابت جا نشود (وردپرس خودش padding دارد؛ تقویت) */
-#wpcontent, #wpbody{position:relative}
+.wrap.scraper-admin-dashboard .form-table td{padding:6px 0 12px!important;font-size:0.84rem!important}
+.wrap.scraper-admin-dashboard input[type=text],
+.wrap.scraper-admin-dashboard input[type=password],
+.wrap.scraper-admin-dashboard input[type=number],
+.wrap.scraper-admin-dashboard input[type=url],
+.wrap.scraper-admin-dashboard input[type=email],
+.wrap.scraper-admin-dashboard select,
+.wrap.scraper-admin-dashboard textarea{
+  font-size:13px!important;max-width:100%!important;
+  border-radius:8px!important;
+}
+.wrap.scraper-admin-dashboard .button,
+.wrap.scraper-admin-dashboard .button-primary,
+.wrap.scraper-admin-dashboard .button-secondary{
+  font-size:12.5px!important;font-weight:700!important;
+  border-radius:8px!important;padding:6px 12px!important;height:auto!important;line-height:1.4!important;
+}
+.wrap.scraper-admin-dashboard .admin-card{
+  background:#fff!important;border:1px solid #e2e8f0!important;
+  border-radius:12px!important;padding:14px 14px!important;margin-bottom:14px!important;
+  box-shadow:0 1px 3px rgba(15,23,42,.04)!important;
+  overflow:hidden!important;max-width:100%!important;
+}
+.wrap.scraper-admin-dashboard .admin-card-header{
+  display:flex!important;justify-content:space-between!important;align-items:center!important;
+  flex-wrap:wrap!important;gap:8px!important;
+  margin-bottom:12px!important;padding-bottom:10px!important;border-bottom:1px solid #f1f5f9!important;
+}
+.wrap.scraper-admin-dashboard .field-badge{
+  font-size:0.72rem!important;font-weight:700!important;padding:3px 8px!important;border-radius:999px!important;
+}
+.amphp-admin-hero{
+  background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1d4ed8 140%)!important;
+  color:#fff!important;border-radius:14px!important;
+  padding:14px 16px!important;margin-bottom:14px!important;
+  display:flex!important;justify-content:space-between!important;align-items:flex-start!important;
+  flex-wrap:wrap!important;gap:12px!important;
+  box-shadow:0 8px 24px rgba(15,23,42,.18)!important;
+  max-width:100%!important;overflow:hidden!important;
+}
+.amphp-admin-hero h1{color:#fff!important;font-size:1.15rem!important;margin:0 0 4px!important}
+.amphp-admin-hero p{color:#cbd5e1!important;margin:0!important;font-size:0.8rem!important;max-width:560px!important}
+.amphp-admin-hero .amphp-hero-badge{
+  display:inline-flex!important;align-items:center!important;gap:4px!important;
+  background:rgba(37,99,235,.95)!important;color:#fff!important;
+  font-size:0.72rem!important;font-weight:800!important;
+  padding:3px 10px!important;border-radius:999px!important;margin-bottom:8px!important;
+}
+.amphp-admin-hero .scraper-admin-topbar{
+  display:flex!important;flex-wrap:wrap!important;gap:8px!important;align-items:center!important;
+}
+.amphp-admin-hero .scraper-admin-topbar .button{margin:0!important;white-space:nowrap!important}
+.scraper-tab-nav-row{
+  display:flex!important;justify-content:space-between!important;align-items:center!important;
+  flex-wrap:wrap!important;gap:8px!important;
+  border-bottom:1px solid #e2e8f0!important;margin-bottom:12px!important;padding-bottom:10px!important;
+  max-width:100%!important;
+}
+.scraper-tab-nav{
+  display:flex!important;flex-wrap:wrap!important;gap:6px!important;flex:1 1 auto!important;
+  max-width:100%!important;
+}
+.scraper-tab-link{
+  display:inline-flex!important;align-items:center!important;justify-content:center!important;
+  gap:4px!important;padding:7px 10px!important;
+  font-size:0.78rem!important;font-weight:700!important;color:#475569!important;
+  text-decoration:none!important;border-radius:8px!important;
+  border:1px solid #e2e8f0!important;background:#f8fafc!important;
+  cursor:pointer!important;line-height:1.3!important;white-space:nowrap!important;
+}
+.scraper-tab-link:hover{background:#e2e8f0!important;color:#0f172a!important}
+.scraper-tab-link.active{
+  color:#fff!important;background:#2563eb!important;border-color:#2563eb!important;
+  box-shadow:0 2px 8px rgba(37,99,235,.25)!important;
+}
+.scraper-top-save-btn{
+  background:#2563eb!important;border-color:#2563eb!important;color:#fff!important;
+  font-weight:800!important;padding:7px 14px!important;border-radius:8px!important;
+  font-size:0.8rem!important;cursor:pointer!important;white-space:nowrap!important;flex-shrink:0!important;
+}
+.scraper-tab-panel{display:none}
+.scraper-tab-panel.active{display:block}
+.scraper-mobile-tab-bar{display:none;margin-bottom:10px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px}
+.scraper-mobile-tab-bar label{display:block;font-size:0.78rem;font-weight:800;color:#0f172a;margin-bottom:4px}
+.scraper-mobile-tab-bar select{
+  width:100%!important;max-width:100%!important;padding:8px 10px!important;
+  font-size:14px!important;font-weight:700!important;border:1.5px solid #2563eb!important;border-radius:8px!important;
+}
+/* جلوگیری از اسکرول افقی داخل ویترین */
+.wrap.scraper-admin-dashboard [style*="grid-template-columns"],
+.wrap.scraper-admin-dashboard [style*="display:grid"],
+.wrap.scraper-admin-dashboard [style*="display:flex"]{
+  max-width:100%!important;
+}
+.wrap.scraper-admin-dashboard .amphp-fluid-grid{
+  display:grid!important;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))!important;
+  gap:10px!important;margin-bottom:12px!important;width:100%!important;
+}
+#amphpAutosavePill{font-size:0.75rem!important;padding:4px 10px!important;border-radius:8px!important}
+.scraper-save-bar{max-width:100%!important;box-sizing:border-box!important}
+
+@media screen and (max-width: 782px) {
+  .wrap.scraper-admin-dashboard{
+    margin:6px 0 20px!important;padding:0!important;font-size:12.5px!important;
+  }
+  .amphp-admin-hero{padding:12px!important;border-radius:12px!important;margin-bottom:10px!important}
+  .amphp-admin-hero h1{font-size:1rem!important}
+  .amphp-admin-hero p{font-size:0.75rem!important}
+  .amphp-admin-hero .scraper-admin-topbar{width:100%!important}
+  .amphp-admin-hero .scraper-admin-topbar .button{
+    flex:1 1 auto!important;text-align:center!important;font-size:11.5px!important;padding:8px 10px!important;
+  }
+  .scraper-mobile-tab-bar{display:block!important}
+  .scraper-tab-nav-row{flex-direction:column!important;align-items:stretch!important;gap:8px!important}
+  .scraper-tab-nav{
+    display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    gap:6px!important;width:100%!important;
+  }
+  .scraper-tab-link{
+    width:100%!important;padding:8px 4px!important;font-size:0.72rem!important;
+    white-space:normal!important;text-align:center!important;line-height:1.25!important;
+  }
+  .scraper-top-save-btn{width:100%!important;text-align:center!important;padding:10px!important}
+  .wrap.scraper-admin-dashboard .admin-card{padding:12px!important;border-radius:10px!important;margin-bottom:10px!important}
+  .wrap.scraper-admin-dashboard .form-table,
+  .wrap.scraper-admin-dashboard .form-table tbody,
+  .wrap.scraper-admin-dashboard .form-table tr,
+  .wrap.scraper-admin-dashboard .form-table th,
+  .wrap.scraper-admin-dashboard .form-table td{
+    display:block!important;width:100%!important;max-width:100%!important;
+  }
+  .wrap.scraper-admin-dashboard .form-table th{padding:8px 0 2px!important}
+  .wrap.scraper-admin-dashboard .form-table td{padding:2px 0 10px!important}
+  .wrap.scraper-admin-dashboard input[type=text],
+  .wrap.scraper-admin-dashboard input[type=password],
+  .wrap.scraper-admin-dashboard input[type=number],
+  .wrap.scraper-admin-dashboard select,
+  .wrap.scraper-admin-dashboard textarea{
+    width:100%!important;max-width:100%!important;font-size:16px!important; /* iOS zoom avoid */
+    min-height:40px!important;
+  }
+  .wrap.scraper-admin-dashboard .wp-list-table{
+    display:block!important;width:100%!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
+  }
+  .scraper-support-desk{flex-direction:column!important;height:auto!important}
+  .desk-threads-col{width:100%!important;height:260px!important;border-left:none!important;border-bottom:1px solid #e2e8f0!important}
+  .desk-threads-col.mobile-hide{display:none!important}
+  .desk-view-col{width:100%!important;height:400px!important}
+  #btnDeskBackToList{display:inline-block!important}
+  .scraper-save-bar{
+    position:static!important;width:100%!important;flex-direction:column!important;
+    gap:8px!important;text-align:center!important;padding:12px!important;
+  }
+  .scraper-save-btn{width:100%!important;display:block!important;padding:11px!important;font-size:0.9rem!important}
+  /* کارت‌های عریض تب ویترین */
+  .wrap.scraper-admin-dashboard div[style*="minmax(280px"]{grid-template-columns:1fr!important}
+  #amphp-wc-shop-fallback-card button{flex:1 1 140px!important;min-width:0!important;height:42px!important;font-size:0.85rem!important}
+}
+@media screen and (max-width: 480px) {
+  .scraper-tab-nav{grid-template-columns:1fr 1fr!important}
+  .amphp-admin-hero .amphp-hero-badge{font-size:0.68rem!important}
+}
 </style>';
+		}
 	}
 
 
+
 	/**
-	 * v13.3.26: آیا درخواست فعلی صفحهٔ اصلی دامنه است؟ (/, front page، posts home)
+	 * v13.3.27: آیا درخواست فعلی صفحهٔ اصلی دامنه است؟ (/, front page، posts home)
 	 * حتی اگر show_on_front=page و page_on_front برگهٔ دیگری باشد.
 	 *
 	 * @return bool
@@ -9304,7 +9491,7 @@ html.wp-toolbar{padding-top:32px!important}
 		if ( isset( $_GET['amphp_shop'] ) && (string) $_GET['amphp_shop'] !== '' && (string) $_GET['amphp_shop'] !== '0' ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			return true;
 		}
-		// v13.3.26: صفحهٔ اصلی دامنه (/, front page, blog home) → React bare
+		// v13.3.27: صفحهٔ اصلی دامنه (/, front page, blog home) → React bare
 		if ( self::is_site_home_request() ) {
 			return true;
 		}
@@ -9315,7 +9502,7 @@ html.wp-toolbar{padding-top:32px!important}
 			return true;
 		}
 		$fb_id = intval( $settings['native_fallback_page_id'] ?? get_option( 'scraper_native_fallback_page_id', 0 ) );
-		/* اگر صفحهٔ اصلی همان برگهٔ پشتیبان باشد، React روی خانه اولویت دارد (v13.3.26) */
+		/* اگر صفحهٔ اصلی همان برگهٔ پشتیبان باشد، React روی خانه اولویت دارد (v13.3.27) */
 		$__home_react = self::is_site_home_request();
 		if ( is_singular( 'page' ) ) {
 			$pid = (int) get_queried_object_id();
@@ -9474,7 +9661,7 @@ html.wp-toolbar{padding-top:32px!important}
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.26' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.27' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -9690,7 +9877,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.26',
+				'version'     => '13.3.27',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -9716,7 +9903,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- ویترین فروشگاه v13.3.26 -->
+		<!-- ویترین فروشگاه v13.3.27 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -9870,7 +10057,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.26' );
+		$parts = array( '13.3.27' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -9897,7 +10084,7 @@ public static function get_embedded_storefront_assets() {
 				return $cache;
 			}
 		}
-		// Inline fallback baked at build time (v13.3.26) — single-file deploy.
+		// Inline fallback baked at build time (v13.3.27) — single-file deploy.
 		$cache = array(
 			'storefront.js'  => array(
 				'mime' => 'application/javascript; charset=UTF-8',
@@ -10031,7 +10218,7 @@ public static function get_embedded_storefront_assets() {
 	 */
 	
 	/**
-	 * v13.3.26: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
+	 * v13.3.27: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
 	 *
 	 * @return array
 	 */
@@ -10064,7 +10251,7 @@ public static function get_embedded_storefront_assets() {
 				'nonce'     => wp_create_nonce( 'scraper_support_chat_nonce' ),
 			),
 			'meta'      => array(
-				'version'   => '13.3.26',
+				'version'   => '13.3.27',
 				'asset_ver' => self::storefront_assets_ver(),
 				'mode'      => 'chat-only',
 			),
@@ -10076,7 +10263,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.26: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
+	 * v13.3.27: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
 	 * فقط FAB + پنجرهٔ چت (بدون کل ویترین).
 	 */
 	public static function print_native_support_chat_widget() {
@@ -10121,7 +10308,7 @@ public static function get_embedded_storefront_assets() {
 		$css_url = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url  = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Minimal CSS isolation so theme chrome stays; chat FAB is fixed
-		echo "\n<!-- AMPHP support chat (native) v13.3.26 -->\n";
+		echo "\n<!-- AMPHP support chat (native) v13.3.27 -->\n";
 		echo '<link rel="stylesheet" href="' . esc_url( $css_url ) . '" id="amphp-storefront-css-chat" />' . "\n";
 		echo '<div id="amphp-support-chat-root" class="amphp-support-chat-root" data-engine="react-chat" dir="rtl" style="position:relative;z-index:99999;"></div>' . "\n";
 		echo '<script id="amphp-storefront-boot">window.AMPHP_STOREFRONT = ' . $boot_json . ';</script>' . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -10129,7 +10316,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.26: wp_footer hook — چت روی قالب بومی.
+	 * v13.3.27: wp_footer hook — چت روی قالب بومی.
 	 */
 	public static function maybe_print_native_support_chat() {
 		self::print_native_support_chat_widget();
@@ -10332,13 +10519,13 @@ public static function get_embedded_storefront_assets() {
 					$fb_res = self::ensure_fallback_shop_page( ! empty( $new_settings['set_wc_shop_to_fallback'] ) );
 					if ( ! empty( $fb_res['id'] ) ) {
 						$new_settings['native_fallback_page_id'] = intval( $fb_res['id'] );
-						// v13.3.26: shop_page_id را با پشتیبان یکی نکن
+						// v13.3.27: shop_page_id را با پشتیبان یکی نکن
 						update_option( self::OPTION_NAME, $new_settings );
 					}
 					self::maybe_detach_fallback_from_primary_shop();
 				} catch ( \Throwable $e ) { /* ignore */ }
 			}
-			// v13.3.26: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
+			// v13.3.27: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
 			if ( ! empty( $new_settings['enable_shop_takeover'] ) ) {
 				try {
 					$_tpl_s = (string) ( $new_settings['store_template'] ?? 'digikala' );
@@ -10389,26 +10576,19 @@ public static function get_embedded_storefront_assets() {
 		$woo_direct_ready = $woo_has_wc && $woo_enabled && in_array( $woo_sync_mode, array( 'direct', 'auto' ), true );
 		$scraper_direct_url = plugins_url( 'scraper4.php', __FILE__ );
 		?>
-		<div class="wrap scraper-admin-dashboard" style="direction:rtl; text-align:right; font-family:system-ui, -apple-system, sans-serif; max-width:1240px; margin-top:20px;">
+		<div class="wrap scraper-admin-dashboard">
 			
-			<!-- Header Title Area -->
-			<div style="background:linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); color:#fff; border-radius:18px; padding:24px 30px; margin-bottom:22px; box-shadow:0 12px 30px rgba(15,23,42,0.18); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:20px;">
-				<div>
-					<div style="display:inline-flex; align-items:center; gap:6px; background:#2563eb; color:#fff; font-size:0.82rem; font-weight:800; padding:4px 12px; border-radius:20px; margin-bottom:10px;">
-						⚡ پنل جامع مدیریت فروشگاه مدرن و اسکرپر هوشمند (نسخه ۱۲.۰)
-					</div>
-					<h1 style="color:#fff; margin:0 0 6px; font-size:1.6rem; font-weight:900;">تنظیمات یکپارچه فروشگاه، چت آنلاین و هوش مصنوعی</h1>
-					<p style="color:#cbd5e1; margin:0; font-size:0.92rem; line-height:1.6; max-width:720px;">
-						مدیریت کامل ظاهر ویترین، هماهنگی هوش مصنوعی با ادمین، فیلدهای چت پشتیبانی، اعلان‌های پیام‌رسان‌ها، قیمت‌گذاری و همگام‌سازی مستقیم با ووکامرس.
-					</p>
+			<!-- Header Title Area v13.3.27 -->
+			<div class="amphp-admin-hero">
+				<div style="min-width:0;flex:1 1 220px;">
+					<div class="amphp-hero-badge">⚡ پنل فروشگاه · v13.3.27</div>
+					<h1>تنظیمات ویترین، چت و هوش مصنوعی</h1>
+					<p>ظاهر فروشگاه، قیمت‌گذاری، پشتیبانی، پیام‌رسان‌ها و همگام‌سازی ووکامرس — فشرده و مناسب موبایل.</p>
 				</div>
-				<div class="scraper-admin-topbar" style="display:flex; gap:10px; flex-wrap:wrap;">
-					<a href="<?php echo esc_url( home_url( '/shop/' ) ); ?>" target="_blank" class="button button-secondary" style="font-weight:800; padding:8px 18px; border-radius:10px; font-size:0.92rem;">
-						مشاهده ویترین فروشگاه ↗
-					</a> <a href="#amphp-wc-shop-fallback-card" class="button" style="margin-right:8px;background:#ea580c;border-color:#c2410c;color:#fff;font-weight:800;">🟧 تیک ووکامرس = پشتیبان</a>
-					<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-primary" style="background:#2563eb; border:none; font-weight:800; padding:8px 20px; border-radius:10px; font-size:0.92rem;">
-						ورود به پنل اسکرپر ⚡
-					</a>
+				<div class="scraper-admin-topbar">
+					<a href="<?php echo esc_url( home_url( '/' ) ); ?>" target="_blank" class="button button-secondary">خانه / ویترین ↗</a>
+					<a href="#amphp-wc-shop-fallback-card" class="button" style="background:#ea580c;border-color:#c2410c;color:#fff;">ووکامرس=پشتیبان</a>
+					<a href="<?php echo esc_url( $scraper_embed_url ); ?>" class="button button-primary" style="background:#2563eb;border:none;">پنل اسکرپر</a>
 				</div>
 			</div>
 
@@ -10418,310 +10598,25 @@ public static function get_embedded_storefront_assets() {
 				</div>
 			<?php endif; ?>
 
-			<style>
-				.scraper-admin-dashboard {
-					box-sizing: border-box;
-					max-width: 100%;
-				}
-				/* Mobile Tab Switcher Dropdown */
-				.scraper-mobile-tab-bar {
-					display: none;
-					margin-bottom: 14px;
-					background: #ffffff;
-					border: 1px solid #cbd5e1;
-					border-radius: 12px;
-					padding: 12px;
-					box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-				}
-				.scraper-mobile-tab-bar label {
-					display: block;
-					font-size: 0.88rem;
-					font-weight: 800;
-					color: #0f172a;
-					margin-bottom: 6px;
-				}
-				.scraper-mobile-tab-bar select {
-					width: 100% !important;
-					max-width: 100% !important;
-					padding: 10px 14px !important;
-					font-size: 1rem !important;
-					font-weight: 700 !important;
-					border: 2px solid #2563eb !important;
-					border-radius: 10px !important;
-					color: #0f172a !important;
-					background: #f8fafc !important;
-				}
-
-				/* Navigation Tabs (Always Visible & Wrapping) */
-				.scraper-tab-nav-row {
-					display: flex;
-					justify-content: space-between;
-					align-items: center;
-					flex-wrap: wrap;
-					gap: 12px;
-					border-bottom: 2px solid #e2e8f0;
-					margin-bottom: 20px;
-					padding-bottom: 12px;
-				}
-				.scraper-tab-nav {
-					display: flex;
-					gap: 8px;
-					flex-wrap: wrap;
-					flex: 1;
-				}
-				.scraper-tab-link {
-					display: inline-flex;
-					align-items: center;
-					justify-content: center;
-					gap: 6px;
-					padding: 9px 15px;
-					font-size: 0.9rem;
-					font-weight: 800;
-					color: #475569;
-					text-decoration: none;
-					border-radius: 10px;
-					border: 1px solid #cbd5e1;
-					background: #f8fafc;
-					transition: all 0.2s ease;
-					cursor: pointer;
-				}
-				.scraper-tab-link:hover {
-					color: #0f172a;
-					background: #e2e8f0;
-					border-color: #94a3b8;
-				}
-				.scraper-tab-link.active {
-					color: #ffffff !important;
-					background: #2563eb !important;
-					border-color: #2563eb !important;
-					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28) !important;
-				}
-				.scraper-top-save-btn {
-					background: #2563eb !important;
-					border-color: #2563eb !important;
-					color: #ffffff !important;
-					font-weight: 800 !important;
-					padding: 8px 20px !important;
-					border-radius: 10px !important;
-					font-size: 0.92rem !important;
-					cursor: pointer;
-					white-space: nowrap;
-					flex-shrink: 0;
-				}
-				.scraper-top-save-btn:hover {
-					background: #1d4ed8 !important;
-				}
-				.scraper-tab-panel {
-					display: none;
-				}
-				.scraper-tab-panel.active {
-					display: block;
-					animation: fadeInTab 0.25s ease;
-				}
-				@keyframes fadeInTab {
-					from { opacity: 0; transform: translateY(6px); }
-					to { opacity: 1; transform: translateY(0); }
-				}
-				.admin-card {
-					background: #ffffff;
-					border: 1px solid #e2e8f0;
-					border-radius: 16px;
-					padding: 24px;
-					margin-bottom: 24px;
-					box-shadow: 0 4px 20px rgba(0,0,0,0.03);
-				}
-				.admin-card-header {
-					display: flex;
-					justify-content: space-between;
-					align-items: center;
-					margin-bottom: 20px;
-					border-bottom: 1px solid #f1f5f9;
-					padding-bottom: 14px;
-				}
-				.admin-card-header h3 {
-					margin: 0;
-					font-size: 1.15rem;
-					font-weight: 800;
-					color: #0f172a;
-					display: flex;
-					align-items: center;
-					gap: 8px;
-				}
-				.field-badge {
-					font-size: 0.8rem;
-					font-weight: 700;
-					padding: 4px 10px;
-					border-radius: 12px;
-				}
-				.field-badge-blue { background: #eff6ff; color: #2563eb; }
-				.field-badge-green { background: #ecfdf5; color: #059669; }
-				.field-badge-purple { background: #faf5ff; color: #7c3aed; }
-
-				/* Support Desk Styling (Clean & Organized) */
-				.scraper-support-desk {
-					box-sizing: border-box;
-					max-width: 100%;
-				}
-				.desk-thread-item:hover {
-					background: #f1f5f9;
-				}
-				.desk-thread-item.active {
-					background: #eff6ff !important;
-					border-right: 4px solid #2563eb !important;
-				}
+			<style id="amphp-admin-inline-extras">
+				/* extras that stay next to markup (desk / theme menu) */
+				.desk-thread-item:hover { background: #f1f5f9; }
+				.desk-thread-item.active { background: #eff6ff !important; border-right: 4px solid #2563eb !important; }
 				.desk-canned-chip {
-					background: #f1f5f9;
-					border: 1px solid #cbd5e1;
-					border-radius: 16px;
-					padding: 3px 10px;
-					font-family: inherit;
-					font-size: 0.75rem;
-					font-weight: 700;
-					color: #334155;
-					cursor: pointer;
-					transition: all 0.15s ease;
+					background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 14px;
+					padding: 2px 8px; font-size: 0.72rem; font-weight: 700; color: #334155; cursor: pointer;
 				}
-				.desk-canned-chip:hover {
-					background: #e2e8f0;
-					color: #0f172a;
-					border-color: #94a3b8;
-				}
-				.desk-bubble {
-					max-width: 82%;
-					padding: 8px 12px;
-					border-radius: 12px;
-					font-size: 0.85rem;
-					line-height: 1.45;
-					word-break: break-word;
-				}
-				.desk-bubble.customer {
-					align-self: flex-start;
-					background: #ffffff;
-					border: 1px solid #cbd5e1;
-					color: #0f172a;
-					border-bottom-right-radius: 2px;
-				}
-				.desk-bubble.ai {
-					align-self: flex-start;
-					background: #faf5ff;
-					border: 1px solid #e9d5ff;
-					color: #581c87;
-					border-bottom-right-radius: 2px;
-				}
-				.desk-bubble.admin {
-					align-self: flex-end;
-					background: #2563eb;
-					color: #ffffff;
-					border-bottom-left-radius: 2px;
-					box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
-				}
-
-				/* Card Dropdown Menu Styling */
-				.theme-menu-card-item:hover {
-					background: #f1f5f9 !important;
-				}
-				.theme-menu-card-item.active {
-					background: #eff6ff !important;
-					border-right: 3px solid #2563eb !important;
-				}
-				#themeCardDropdownMenu::-webkit-scrollbar {
-					width: 6px;
-				}
-				#themeCardDropdownMenu::-webkit-scrollbar-thumb {
-					background: #cbd5e1;
-					border-radius: 4px;
-				}
-
-				/* Mobile Admin Optimizations */
-				@media (max-width: 782px) {
-					.wrap.scraper-admin-dashboard {
-						padding: 8px !important;
-						margin-top: 10px !important;
-					}
-					.scraper-support-desk {
-						flex-direction: column !important;
-						height: auto !important;
-					}
-					.desk-threads-col {
-						width: 100% !important;
-						height: 300px !important;
-						border-left: none !important;
-						border-bottom: 1px solid #e2e8f0 !important;
-					}
-					.desk-threads-col.mobile-hide {
-						display: none !important;
-					}
-					.desk-view-col {
-						width: 100% !important;
-						height: 440px !important;
-					}
-					#btnDeskBackToList {
-						display: inline-block !important;
-					}
-					.form-table th,
-					.form-table td {
-						display: block !important;
-						width: 100% !important;
-						padding: 8px 0 !important;
-					}
-					.form-table input[type="text"],
-					.form-table input[type="password"],
-					.form-table select,
-					.form-table textarea {
-						width: 100% !important;
-						max-width: 100% !important;
-						font-size: 16px !important;
-						min-height: 44px !important;
-					}
-					.scraper-mobile-tab-bar {
-						display: block !important;
-					}
-					.scraper-tab-nav-row {
-						flex-direction: column !important;
-						align-items: stretch !important;
-						gap: 10px !important;
-					}
-					.scraper-tab-nav {
-						display: grid !important;
-						grid-template-columns: repeat(2, 1fr) !important;
-						gap: 6px !important;
-						width: 100% !important;
-					}
-					.scraper-tab-link {
-						padding: 9px 4px !important;
-						font-size: 0.8rem !important;
-						width: 100% !important;
-						box-sizing: border-box !important;
-					}
-					.scraper-top-save-btn {
-						width: 100% !important;
-						text-align: center !important;
-						padding: 11px !important;
-					}
-					.scraper-save-bar {
-						position: static !important;
-						width: 100% !important;
-						box-sizing: border-box !important;
-						padding: 14px 12px !important;
-						flex-direction: column !important;
-						gap: 10px !important;
-						text-align: center !important;
-					}
-					.scraper-save-btn {
-						width: 100% !important;
-						display: block !important;
-						box-sizing: border-box !important;
-						padding: 12px !important;
-						font-size: 1rem !important;
-					}
-					.wp-list-table {
-						display: block !important;
-						width: 100% !important;
-						overflow-x: auto !important;
-						-webkit-overflow-scrolling: touch !important;
-					}
-				}
-				</style>
+				.desk-canned-chip:hover { background: #e2e8f0; color: #0f172a; }
+				.desk-bubble { max-width: 82%; padding: 7px 10px; border-radius: 10px; font-size: 0.8rem; line-height: 1.45; word-break: break-word; }
+				.desk-bubble.customer { align-self: flex-start; background: #fff; border: 1px solid #cbd5e1; color: #0f172a; border-bottom-right-radius: 2px; }
+				.desk-bubble.ai { align-self: flex-start; background: #faf5ff; border: 1px solid #e9d5ff; color: #581c87; border-bottom-right-radius: 2px; }
+				.desk-bubble.admin { align-self: flex-end; background: #2563eb; color: #fff; border-bottom-left-radius: 2px; }
+				.theme-menu-card-item:hover { background: #f1f5f9 !important; }
+				.theme-menu-card-item.active { background: #eff6ff !important; border-right: 3px solid #2563eb !important; }
+				.scraper-tab-panel { display: none; }
+				.scraper-tab-panel.active { display: block; animation: amphpFadeTab .2s ease; }
+				@keyframes amphpFadeTab { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+			</style>
 
 			<form method="post" action="" id="scraperAdminForm">
 				<?php wp_nonce_field( 'scraper_shop_settings_action', 'scraper_shop_settings_nonce' ); ?>
@@ -10778,7 +10673,7 @@ public static function get_embedded_storefront_assets() {
 						}
 						?>
 						<!-- v13.3.8: کنترل قالب + منبع کاتالوگ (اسکرپر / ووکامرس / ادغام) -->
-						<div style="margin-bottom:24px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:2px solid #3b82f6; border-radius:16px; padding:22px; box-shadow:0 4px 15px rgba(37,99,235,0.08);">
+						<div style="margin-bottom:14px; background:linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%); border:1.5px solid #3b82f6; border-radius:12px; padding:14px; box-shadow:0 2px 10px rgba(37,99,235,0.06); max-width:100%; overflow:hidden;">
 							<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
 								<h4 style="margin:0; font-size:1.15rem; color:#1e3a8a; font-weight:900; display:flex; align-items:center; gap:8px;">
 									<span>🎛️</span> کنترل قالب و منبع محصولات ویترین
@@ -10788,7 +10683,7 @@ public static function get_embedded_storefront_assets() {
 							<p style="margin:0 0 16px; font-size:0.88rem; color:#334155; line-height:1.7;">
 								ظاهر ویترین را با تیک زیر، و <strong>منبع کالاهای نمایش‌داده‌شده</strong> را با سه حالت اسکرپر / ووکامرس / <strong>ادغام هر دو</strong> تنظیم کنید.
 							</p>
-							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-bottom:16px;">
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:10px; margin-bottom:12px; width:100%;">
 								<label style="background:#ffffff; border:2px solid #2563eb; border-radius:14px; padding:16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; box-shadow:0 4px 14px rgba(37,99,235,.12);" id="labelStoreTakeover">
 									<div style="display:flex; align-items:center; gap:10px;">
 										<input type="checkbox" name="enable_shop_takeover" id="chkStoreTakeover" value="1" <?php checked( ! empty( $opts['enable_shop_takeover'] ) ); ?> style="width:22px; height:22px; accent-color:#2563eb;">
@@ -10832,7 +10727,7 @@ public static function get_embedded_storefront_assets() {
 
 
 						<?php
-						// v13.3.26: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
+						// v13.3.27: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
 						$_sf_take = ! empty( $opts['enable_shop_takeover'] );
 						$_sf_tpl  = (string) ( $opts['store_template'] ?? 'digikala' );
 						$_sf_wc_fb = ! empty( $opts['set_wc_shop_to_fallback'] );
@@ -10841,7 +10736,7 @@ public static function get_embedded_storefront_assets() {
 						$_sf_bound = ( $_sf_fb_id > 0 && $_sf_wc_shop > 0 && $_sf_fb_id === $_sf_wc_shop );
 						$_sf_react_ok = $_sf_take && $_sf_tpl !== 'native-wp' && $_sf_tpl !== 'native' && ! $_sf_bound;
 						$_sf_primary = intval( $opts['shop_page_id'] ?? get_option( 'scraper_shop_page_id', 0 ) );
-						/* v13.3.26: لینک اصلی ویترین = دامنهٔ خانه */
+						/* v13.3.27: لینک اصلی ویترین = دامنهٔ خانه */
 						$_sf_react_url = home_url( '/' );
 						$_sf_shop_url = '';
 						if ( $_sf_primary > 0 ) {
@@ -10851,7 +10746,7 @@ public static function get_embedded_storefront_assets() {
 							$_sf_shop_url = wc_get_page_permalink( 'shop' );
 						}
 						?>
-						<div style="margin:0 0 20px; padding:16px 18px; border-radius:14px; border:2px solid <?php echo $_sf_react_ok ? '#10b981' : '#f59e0b'; ?>; background:<?php echo $_sf_react_ok ? 'linear-gradient(135deg,#ecfdf5,#f0fdf4)' : 'linear-gradient(135deg,#fffbeb,#fef3c7)'; ?>;">
+						<div style="margin:0 0 12px; padding:12px 14px; border-radius:12px; max-width:100%; overflow:hidden; border:1.5px solid <?php echo $_sf_react_ok ? '#10b981' : '#f59e0b'; ?>; background:<?php echo $_sf_react_ok ? 'linear-gradient(135deg,#ecfdf5,#f0fdf4)' : 'linear-gradient(135deg,#fffbeb,#fef3c7)'; ?>;">
 							<div style="font-weight:900; font-size:1.05rem; color:<?php echo $_sf_react_ok ? '#065f46' : '#92400e'; ?>; margin-bottom:8px;">
 								<?php echo $_sf_react_ok ? '✅ ویترین React آماده است' : '⚠️ ویترین React هنوز کامل فعال نیست'; ?>
 							</div>
@@ -10871,8 +10766,8 @@ public static function get_embedded_storefront_assets() {
 						</div>
 
 						
-						<!-- v13.3.26: کلید روشن/خاموش ووکامرس=پشتیبان — بدون اتکا به ظاهر چک‌باکس وردپرس -->
-						<div id="amphp-wc-shop-fallback-card" style="margin:0 0 22px;padding:20px;background:linear-gradient(135deg,#fff7ed,#ffedd5);border:3px solid #ea580c;border-radius:16px;box-shadow:0 8px 28px rgba(234,88,12,.2);">
+						<!-- v13.3.27: کلید روشن/خاموش ووکامرس=پشتیبان — بدون اتکا به ظاهر چک‌باکس وردپرس -->
+						<div id="amphp-wc-shop-fallback-card" style="margin:0 0 14px;padding:14px;background:linear-gradient(135deg,#fff7ed,#ffedd5);border:2px solid #ea580c;border-radius:12px;box-shadow:0 4px 14px rgba(234,88,12,.12);max-width:100%;overflow:hidden;">
 							<div style="font-weight:900;font-size:1.15rem;color:#9a3412;margin-bottom:6px;">🟧 فروشگاه ووکامرس = برگهٔ پشتیبان؟</div>
 							<p style="margin:0 0 14px;font-size:0.88rem;font-weight:700;color:#7c2d12;line-height:1.7;">
 								اگر فقط کادر نارنجی می‌بینید و تیک نیست، از دکمه‌های زیر استفاده کنید (ظاهر چک‌باکس وردپرس گاهی مخفی می‌شود).
@@ -11314,7 +11209,7 @@ public static function get_embedded_storefront_assets() {
 									<div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#ecfdf5;border:2px solid #10b981;border-radius:12px;font-weight:800;">
 										<span style="font-size:1.4rem;line-height:1;">🏠</span>
 										<span>صفحهٔ <strong>اصلی دامنه (Home / /)</strong> = ویترین React اختصاصی<br>
-										<span style="font-size:0.82rem;font-weight:700;color:#047857;">از v13.3.26 با روشن بودن «ویترین React» صفحهٔ خانه خودکار React است — نه آدرس فرعی.</span></span>
+										<span style="font-size:0.82rem;font-weight:700;color:#047857;">از v13.3.27 با روشن بودن «ویترین React» صفحهٔ خانه خودکار React است — نه آدرس فرعی.</span></span>
 										<input type="hidden" name="takeover_front_page" value="1">
 									</div>
 								</td>
@@ -11323,7 +11218,7 @@ public static function get_embedded_storefront_assets() {
 					</div>
 
 						
-						<!-- v13.3.26 قالب بومی وردپرس + برگه پشتیبان -->
+						<!-- v13.3.27 قالب بومی وردپرس + برگه پشتیبان -->
 						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f8fafc,#eff6ff); border:1px solid #93c5fd; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب بومی وردپرس + برگهٔ پشتیبان فروشگاه</h4>
 							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.85;">
@@ -11332,7 +11227,7 @@ public static function get_embedded_storefront_assets() {
 								عنوان «نام‌فروشگاه — پشتیبان» طبیعی است و <em>نباید</em> جای ویترین اصلی را بگیرد.
 							</p>
 							<p style="margin:0 0 14px; padding:10px 12px; background:#fef3c7; border:1px solid #f59e0b; border-radius:10px; color:#92400e; font-size:0.82rem; font-weight:700; line-height:1.7;">
-								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.26 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
+								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.27 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
 							</p>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; color:#0f172a;">
 								<input type="checkbox" name="enable_native_wp_template" value="1" <?php checked( ! isset( $opts['enable_native_wp_template'] ) || ! empty( $opts['enable_native_wp_template'] ) ); ?> style="width:18px;height:18px;accent-color:#2563eb;">
@@ -12266,7 +12161,7 @@ public static function get_embedded_storefront_assets() {
 							<div style="font-weight:800; font-size:0.95rem; color:#7c3aed; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
 								<span>⚖️</span> پاسخ همزمان همه کاندیدها (بهترین را برگزینید تا به عنوان رأی ثبت شود):
 							</div>
-							<div id="compareCandidatesCardsGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px;"></div>
+							<div id="compareCandidatesCardsGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:14px;"></div>
 						</div>
 					</div>
 
@@ -12663,7 +12558,7 @@ public static function get_embedded_storefront_assets() {
 								<span class="field-badge" style="background:#6366f1;color:#fff;">تنظیمات جدید</span>
 							</div>
 
-							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:16px;">
 								<div>
 									<label style="display:block; font-weight:800; color:#312e81; margin-bottom:8px; font-size:0.92rem;">
 										📊 منبع نمایش آمار فروشگاه
@@ -13300,7 +13195,7 @@ public static function get_embedded_storefront_assets() {
 								با فعال‌سازی هر یک از گزینه‌های زیر، به محض وقوع رویداد توسط مشتری در ویترین فروشگاه، یک پیام فوری همراه با جزئیات کامل به پیام‌رسان‌های متصل شما (بله، تلگرام یا روبیکا) ارسال خواهد شد:
 							</p>
 
-							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; margin-bottom:14px;">
+							<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:14px; margin-bottom:14px;">
 								<!-- 1. Site Visit -->
 								<label style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:12px; padding:14px; cursor:pointer; display:flex; align-items:flex-start; gap:10px;">
 									<input type="checkbox" name="notif_event_site_visit" value="1" <?php checked( ! empty( $opts['notif_event_site_visit'] ) ); ?> style="width:18px; height:18px; accent-color:#2563eb; margin-top:2px;">
@@ -13359,7 +13254,7 @@ public static function get_embedded_storefront_assets() {
 						</div>
 
 						<!-- 5. Live Events Log & Top Products -->
-						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:20px;">
+						<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:20px;">
 							<!-- Live Recent Events Table -->
 							<div class="admin-card" style="margin-bottom:0;">
 								<div class="admin-card-header">
@@ -13640,7 +13535,7 @@ public static function get_embedded_storefront_assets() {
 
 			<script>
 			(function(){
-			  // v13.3.26: ذخیرهٔ خودکار تنظیمات + وضعیت
+			  // v13.3.27: ذخیرهٔ خودکار تنظیمات + وضعیت
 			  var form = document.getElementById('scraperAdminForm');
 			  var pill = document.getElementById('amphpAutosavePill');
 			  if (!form) return;

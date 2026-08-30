@@ -301,7 +301,20 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.119';
+const APP_VERSION = '10.120';
+if (!function_exists('str_starts_with')) {
+    function str_starts_with($haystack, $needle) {
+        $haystack = (string)$haystack; $needle = (string)$needle;
+        if ($needle === '') return true;
+        return substr($haystack, 0, strlen($needle)) === $needle;
+    }
+}
+if (!function_exists('str_contains')) {
+    function str_contains($haystack, $needle) {
+        return $needle === '' || strpos((string)$haystack, (string)$needle) !== false;
+    }
+}
+
 const APP_VERSION_DATE = '1405/06/13';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -22857,48 +22870,91 @@ function matrixFixBslPrice(string $tk, int $vid, int $pid, int $priceToman): arr
 function matrixFixCollectJobs(array $data, string $scope = 'all'): array {
     $jobs = [];
     $shops = is_array($data['shops'] ?? null) ? $data['shops'] : [];
+    /* اگر meta غرفه خالی است، از خود ردیف‌ها vendor_id را دربیاور */
+    if (!$shops) {
+        $seen = [];
+        foreach ((array)($data['rows'] ?? []) as $r) {
+            if (!is_array($r) || empty($r['shops']) || !is_array($r['shops'])) continue;
+            foreach ($r['shops'] as $vk => $cell) {
+                $vid = (int)$vk;
+                if ($vid <= 0 && is_array($cell)) $vid = (int)($cell['vendor_id'] ?? 0);
+                if ($vid <= 0 || isset($seen[$vid])) continue;
+                $seen[$vid] = true;
+                $shops[] = [
+                    'vendor_id' => $vid,
+                    'name' => (string)(is_array($cell) ? ($cell['shop_name'] ?? ('#' . $vid)) : ('#' . $vid)),
+                ];
+            }
+        }
+    }
+    /* اگر هنوز خالی و scope bsl/all، از connections */
+    if (!$shops && ($scope === 'all' || $scope === 'bsl') && function_exists('bslAllShops') && function_exists('loadConnections')) {
+        try {
+            foreach (bslAllShops(loadConnections()) as $sh) {
+                if (!is_array($sh)) continue;
+                $vid = (int)($sh['vendor_id'] ?? 0);
+                if ($vid <= 0) continue;
+                $shops[] = ['vendor_id' => $vid, 'name' => (string)($sh['shop_name'] ?? $sh['name'] ?? ('#' . $vid))];
+            }
+        } catch (Throwable $e) { /* ignore */ }
+    }
     foreach ((array)($data['rows'] ?? []) as $ri => $r) {
         if (!is_array($r)) continue;
-        /* ردیف‌های گزارش را دوباره کار نکن */
-        if (!empty($r['is_report']) || str_starts_with((string)($r['bare'] ?? ''), '__report_')) continue;
         $bare = (string)($r['bare'] ?? '');
+        if ($bare === '' || str_starts_with($bare, '__report_') || !empty($r['is_report'])) continue;
         $title = (string)($r['title'] ?? $bare);
-        if ($bare === '') continue;
-        $hasProf = ((int)($r['profile_hits'] ?? 0) > 0)
-            || ((int)($r['profile_price'] ?? 0) > 0)
-            || trim((string)($r['profile_key'] ?? '')) !== ''
-            || trim((string)($r['profile'] ?? '')) !== '';
-        $pkey = (string)($r['profile_key'] ?? '');
-        $prodKey = (string)($r['key'] ?? '');
+        $flags = array_map('strval', (array)($r['flags'] ?? []));
+        $status = (string)($r['status'] ?? '');
+        $hits = (int)($r['profile_hits'] ?? 0);
+        $pkey = trim((string)($r['profile_key'] ?? ''));
+        $prodKey = trim((string)($r['key'] ?? ''));
+        $profName = trim((string)($r['profile'] ?? ''));
+        $profPrice = (int)($r['profile_price'] ?? 0);
+        $hasProf = $hits > 0 || $profPrice > 0 || $pkey !== '' || $profName !== '';
+        /* اگر status صریحاً only_dest است، مبدأ نیست */
+        if ($status === 'only_dest') $hasProf = false;
+        if (in_array($status, ['only_profile', 'missing'], true)) $hasProf = true;
 
         /* ---- Woo ---- */
         if ($scope === 'all' || $scope === 'woo') {
-            $woo = is_array($r['woo'] ?? null) ? $r['woo'] : null;
+            $wooRaw = $r['woo'] ?? null;
+            $woo = (is_array($wooRaw) && ((int)($wooRaw['id'] ?? 0) > 0 || (int)($wooRaw['price'] ?? 0) > 0 || trim((string)($wooRaw['title'] ?? '')) !== ''))
+                ? $wooRaw : null;
             $wooTone = (string)($r['woo_tone'] ?? '');
             $expect = (int)($r['woo_expect'] ?? 0);
+            if ($expect <= 0 && $profPrice > 0) $expect = $profPrice;
             $wid = $woo ? (int)($woo['id'] ?? 0) : 0;
             $got = $woo ? (int)($woo['price'] ?? 0) : 0;
+            $flagMissWoo = in_array('missing_woo', $flags, true) || $wooTone === 'missing_dst'
+                || in_array($status, ['missing', 'only_profile'], true);
+            $flagExtraWoo = in_array('extra_woo', $flags, true) || $wooTone === 'extra' || ($status === 'only_dest' && $woo);
+            $flagPrice = in_array('price_mismatch', $flags, true)
+                || in_array($wooTone, ['bad', 'warn'], true)
+                || $status === 'mismatch';
 
             if ($hasProf && !$woo) {
                 $jobs[] = [
                     'kind' => 'send_woo', 'bare' => $bare, 'title' => $title,
                     'row_i' => $ri, 'profile_key' => $pkey, 'product_key' => $prodKey,
-                    'expect' => $expect,
+                    'expect' => $expect, 'why' => 'missing_woo',
                 ];
-            } elseif ($hasProf && $woo && $wid > 0 && $expect > 0) {
-                $need = in_array($wooTone, ['bad', 'warn'], true)
-                    || ($got > 0 && abs($got - $expect) / max($expect, 1) > 0.01);
-                if ($need && $got !== $expect) {
+            } elseif ($hasProf && $woo && $wid > 0 && $expect > 0 && $got !== $expect) {
+                $need = $flagPrice || ($got > 0 && abs($got - $expect) / max($expect, 1) > 0.01)
+                    || ($got <= 0 && $expect > 0);
+                if ($need) {
                     $jobs[] = [
                         'kind' => 'price_woo', 'bare' => $bare, 'title' => $title,
                         'row_i' => $ri, 'id' => $wid, 'from' => $got, 'to' => $expect,
+                        'why' => 'price_woo',
                     ];
                 }
             } elseif (!$hasProf && $woo && $wid > 0) {
                 $jobs[] = [
                     'kind' => 'del_woo', 'bare' => $bare, 'title' => $title,
-                    'row_i' => $ri, 'id' => $wid,
+                    'row_i' => $ri, 'id' => $wid, 'why' => 'extra_woo',
                 ];
+            } elseif ($hasProf && $flagMissWoo && !$woo) {
+                /* already covered */
             }
         }
 
@@ -22909,44 +22965,58 @@ function matrixFixCollectJobs(array $data, string $scope = 'all'): array {
                 if (!is_array($sm)) continue;
                 $vid = (int)($sm['vendor_id'] ?? 0);
                 if ($vid <= 0) continue;
-                $sname = (string)($sm['name'] ?? ('#' . $vid));
-                $cell = is_array($rowShops[$vid] ?? null) ? $rowShops[$vid] : null;
+                $sname = (string)($sm['name'] ?? $sm['shop_name'] ?? ('#' . $vid));
+                $cell = null;
+                if (isset($rowShops[$vid]) && is_array($rowShops[$vid])) $cell = $rowShops[$vid];
+                elseif (isset($rowShops[(string)$vid]) && is_array($rowShops[(string)$vid])) $cell = $rowShops[(string)$vid];
+                /* بعضی JSONها کلید را به‌صورت لیست نگه می‌دارند */
+                if ($cell === null) {
+                    foreach ($rowShops as $k => $c) {
+                        if (!is_array($c)) continue;
+                        if ((int)$k === $vid || (int)($c['vendor_id'] ?? 0) === $vid) { $cell = $c; break; }
+                    }
+                }
+                $hasCell = is_array($cell) && ((int)($cell['id'] ?? 0) > 0 || (int)($cell['price'] ?? 0) > 0);
 
-                if ($hasProf && !$cell) {
+                if ($hasProf && !$hasCell) {
                     $jobs[] = [
                         'kind' => 'send_bsl', 'bare' => $bare, 'title' => $title,
                         'row_i' => $ri, 'vendor_id' => $vid, 'shop_name' => $sname,
                         'profile_key' => $pkey, 'product_key' => $prodKey,
-                        'expect' => (int)($r['bsl_expect'] ?? 0),
+                        'expect' => (int)($r['bsl_expect'] ?? $profPrice),
+                        'why' => 'missing_bsl',
                     ];
-                } elseif ($hasProf && $cell) {
+                } elseif ($hasProf && $hasCell) {
                     $expect = (int)($cell['expect'] ?? ($r['bsl_expect'] ?? 0));
+                    if ($expect <= 0) $expect = (int)($r['bsl_expect'] ?? $profPrice);
                     $got = (int)($cell['price'] ?? 0);
                     $bid = (int)($cell['id'] ?? 0);
                     $tone = (string)($cell['tone'] ?? '');
                     $need = in_array($tone, ['bad', 'warn'], true)
-                        || ($got > 0 && $expect > 0 && abs($got - $expect) / max($expect, 1) > 0.01);
+                        || in_array('price_mismatch', $flags, true)
+                        || ($got > 0 && $expect > 0 && abs($got - $expect) / max($expect, 1) > 0.01)
+                        || ($got <= 0 && $expect > 0 && $bid > 0);
                     if ($need && $bid > 0 && $expect > 0 && $got !== $expect) {
                         $jobs[] = [
                             'kind' => 'price_bsl', 'bare' => $bare, 'title' => $title,
                             'row_i' => $ri, 'id' => $bid, 'vendor_id' => $vid,
                             'shop_name' => $sname, 'from' => $got, 'to' => $expect,
+                            'why' => 'price_bsl',
                         ];
                     }
-                } elseif (!$hasProf && $cell) {
+                } elseif (!$hasProf && $hasCell) {
                     $bid = (int)($cell['id'] ?? 0);
                     if ($bid > 0) {
                         $jobs[] = [
                             'kind' => 'del_bsl', 'bare' => $bare, 'title' => $title,
                             'row_i' => $ri, 'id' => $bid, 'vendor_id' => $vid,
-                            'shop_name' => $sname,
+                            'shop_name' => $sname, 'why' => 'extra_bsl',
                         ];
                     }
                 }
             }
         }
     }
-    /* ترتیب: حذف → اصلاح قیمت → ارسال (حذف اول تا تداخل کمتر) */
     $order = [
         'del_woo' => 0, 'del_bsl' => 1,
         'price_woo' => 2, 'price_bsl' => 3,
@@ -23238,7 +23308,13 @@ function matrixFixAppendReportRows(array $stats): void {
     $data['row_count'] = count($rows);
     $data['fix_stats'] = $stats;
     $data['fix_at'] = time();
-    matrixResultSave($data);
+    $data['reports'] = [$rowWork, $rowResult];
+    $okSave = matrixResultSave($data);
+    if (!$okSave) {
+        matrixFixProgress(['log_add' => ['❌ ذخیرهٔ ردیف گزارش در فایل نتیجه ناموفق بود']]);
+    } else {
+        matrixFixProgress(['log_add' => ['💾 گزارش در فایل نتیجه ذخیره شد (' . count($rows) . ' ردیف)']]);
+    }
 }
 
 /**
@@ -23279,25 +23355,59 @@ function matrixFixRun(array $opts = []): array {
         'total' => $total, 'cur' => 0, 'ok_n' => 0, 'fail_n' => 0, 'skip_n' => 0,
         'sent_n' => 0, 'del_n' => 0, 'price_n' => 0,
         'live' => [],
-        'log_add' => [
+        'log_add' => array_merge([
             '🔧 شروع مغایرت‌گیری کامل از جدول — محدوده: ' . $scope,
             '📋 ' . $total . ' کار: 💰' . $nPrice . ' قیمت · 📤' . $nSend . ' ارسال · 🗑' . $nDel . ' حذف',
-        ],
+        ], array_map(function ($j) {
+            return '  → ' . (string)($j['kind'] ?? '') . ' · ' . mb_substr((string)($j['title'] ?? $j['bare'] ?? ''), 0, 40);
+        }, array_slice($jobs, 0, 8))),
     ]);
 
     if ($total === 0) {
+        $sum = is_array($data['summary'] ?? null) ? $data['summary'] : [];
+        $diag = [
+            'ردیف‌های جدول: ' . count((array)($data['rows'] ?? [])),
+            'مغایرت قیمت (خلاصه): ' . (int)($sum['price_mismatch'] ?? 0),
+            'نیست در WC: ' . (int)($sum['missing_woo'] ?? 0),
+            'نیست در غرفه: ' . (int)($sum['missing_bsl'] ?? 0),
+            'غرفه‌های meta: ' . count($shops = is_array($data['shops'] ?? null) ? $data['shops'] : []),
+            'محدوده: ' . $scope,
+            'نکته: اگر خلاصه مغایرت دارد ولی کار ۰ است، جدول را یک‌بار از نو بسازید.',
+        ];
+        /* نمونهٔ چند ردیف برای دیباگ */
+        $sample = 0;
+        foreach ((array)($data['rows'] ?? []) as $rr) {
+            if (!is_array($rr) || !empty($rr['is_report'])) continue;
+            if ($sample >= 5) break;
+            $st = (string)($rr['status'] ?? '');
+            if (!in_array($st, ['mismatch', 'missing', 'only_profile', 'only_dest', 'partial'], true)
+                && !in_array('price_mismatch', (array)($rr['flags'] ?? []), true)) continue;
+            $diag[] = 'نمونه: ' . mb_substr((string)($rr['title'] ?? $rr['bare'] ?? ''), 0, 40)
+                . ' · st=' . $st
+                . ' · hits=' . (int)($rr['profile_hits'] ?? 0)
+                . ' · woo=' . (is_array($rr['woo'] ?? null) ? ('#' . (int)($rr['woo']['id'] ?? 0) . '@' . (int)($rr['woo']['price'] ?? 0)) : '—')
+                . ' · expectW=' . (int)($rr['woo_expect'] ?? 0)
+                . ' · flags=' . implode(',', (array)($rr['flags'] ?? []));
+            $sample++;
+        }
         $stats = [
             'at' => time(), 'ok' => 0, 'fail' => 0, 'total' => 0,
             'sent' => 0, 'deleted' => 0, 'priced' => 0,
-            'stopped' => false, 'scope' => $scope, 'details' => [],
+            'stopped' => false, 'scope' => $scope,
+            'details' => array_map(function ($x) { return ['ok' => true, 'label' => $x]; }, $diag),
         ];
         matrixFixAppendReportRows($stats);
         matrixFixProgress([
             'running' => false, 'done' => true, 'pct' => 100, 'phase' => 'done',
-            'log_add' => ['✅ موردی برای اصلاح نبود — دو ردیف گزارش به جدول اضافه شد'],
+            'ok_n' => 0, 'fail_n' => 0, 'total' => 0, 'cur' => 0,
+            'sent_n' => 0, 'del_n' => 0, 'price_n' => 0,
+            'log_add' => array_merge(
+                ['⚠️ هیچ کاری برای اجرا پیدا نشد (۰ job) — گزارش تشخیصی ثبت شد'],
+                array_map(function ($x) { return '  · ' . $x; }, $diag)
+            ),
             'finished_at' => time(),
         ]);
-        return ['ok' => true, 'total' => 0, 'ok_n' => 0, 'fail_n' => 0];
+        return ['ok' => true, 'total' => 0, 'ok_n' => 0, 'fail_n' => 0, 'empty' => true];
     }
 
     $cn = loadConnections();
@@ -23720,6 +23830,22 @@ function matrixQueryPage(array $opts = []): array {
         $slice = array_merge($slice, $reports);
     }
     $prog = matrixProgressRead();
+    $fixProg = function_exists('matrixFixProgressRead') ? matrixFixProgressRead() : [];
+    /* گزارش‌ها همیشه جداگانه هم برگردند (نه فقط صفحهٔ آخر) */
+    $allReports = [];
+    if (!empty($data['reports']) && is_array($data['reports'])) {
+        foreach ($data['reports'] as $rr) {
+            if (is_array($rr)) $allReports[] = $rr;
+        }
+    }
+    if (!$allReports) {
+        foreach ((array)($data['rows'] ?? []) as $rr) {
+            if (!is_array($rr)) continue;
+            if (!empty($rr['is_report']) || str_starts_with((string)($rr['bare'] ?? ''), '__report_')) {
+                $allReports[] = $rr;
+            }
+        }
+    }
     return [
         'ok' => true,
         'from_file' => true,
@@ -23733,14 +23859,18 @@ function matrixQueryPage(array $opts = []): array {
         'woo_cfg' => $data['woo_cfg'] ?? [],
         'bsl_cfg' => $data['bsl_cfg'] ?? [],
         'rows' => $slice,
+        'reports' => $allReports,
+        'fix_stats' => is_array($data['fix_stats'] ?? null) ? $data['fix_stats'] : null,
+        'fix_at' => (int)($data['fix_at'] ?? 0),
         'woo_error' => $data['woo_error'] ?? '',
         'bsl_error' => $data['bsl_error'] ?? '',
         'woo_count' => $data['woo_count'] ?? 0,
         'generated_at' => $data['generated_at'] ?? 0,
         'source' => $data['source'] ?? '',
         'row_count_all' => (int)($data['row_count'] ?? count($data['rows'] ?? [])),
-        'running' => !empty($prog['running']),
-        'progress' => $prog,
+        'running' => !empty($prog['running']) || !empty($fixProg['running']),
+        'progress' => !empty($fixProg['running']) || (!empty($fixProg['done']) && empty($prog['running'])) ? $fixProg : $prog,
+        'fix_progress' => $fixProg,
         'note' => 'خواندن از فایل سرور · بدون rebuild · صفحه‌بندی سمت سرور',
     ];
 }
@@ -54263,6 +54393,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div id="smFixLive" style="display:none;margin-top:8px"></div>
 </div>
 <div id="smFixBanner" style="display:none;margin-bottom:8px;padding:8px 10px;background:linear-gradient(90deg,#14532d33,#1e3a8a33);border:1px solid #22c55e55;border-radius:8px;font-size:11px;color:#bbf7d0"></div>
+<div id="smFixReport" style="display:none;margin-bottom:10px;padding:12px 14px;background:linear-gradient(135deg,#0f172a,#14532d44);border:1px solid #34d39966;border-radius:10px;color:#e2e8f0"></div>
 <div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
 ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). اگر اسکرپر داخل وردپرس باشد، WC از <b>دیتابیس مستقیم</b> خوانده می‌شود (سریع‌تر از API). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند. همین جدول در <b>افزونه → تب فروشگاه</b> هم هست.
 پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول». از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> (وضعیت ۲۹۷۶) می‌آید. با «🔧 اصلاح مغایرت‌ها»: <b>اصلاح قیمت</b> + <b>ارسال</b> (در پروفایل هست/در مقصد نیست) + <b>حذف/بایگانی</b> (فقط مقصد) — سرورساید با لاگ زنده؛ دو ردیف گزارش به انتهای جدول اضافه می‌شود.
@@ -62912,6 +63043,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.120', t:'🔧 مغایرت‌گیری: گزارش همیشه پیدا + تشخیص job صفر', items:[
+    'باکس گزارش بالای جدول (نه فقط صفحهٔ آخر) + پرش به صفحهٔ آخر بعد از اتمام.',
+    'جمع‌آوری کارها قوی‌تر (flags/status + کلید غرفه string/int).',
+    'اگر ۰ کار باشد، گزارش تشخیصی با نمونه ردیف‌ها می‌نویسد تا علت معلوم شود.',
+  ]},
   {v:'10.119', t:'🩹 رفع SyntaxError در pkApplyState (else اضافه)', items:[
     'یک }}else اضافه در پنل picker کل JS را می‌شکست → vcFilterFile/vcDirty تعریف نمی‌شدند.',
     'خطاهای Uncaught SyntaxError / vcFilterFile is not defined / vcDirty is not defined برطرف شد.',
@@ -68855,7 +68991,12 @@ function syncMatrixPoll(){
       } else {
         if(window._smPoll){ clearInterval(window._smPoll); window._smPoll=null; }
         if(d.has_result){
-          setTimeout(()=>syncMatrixLoad(1), 400);
+          /* بعد از اصلاح: برو آخرین صفحه تا ردیف گزارش دیده شود + باکس گزارش */
+          setTimeout(()=>{
+            const last = window._smLastPages || 1;
+            const go = (d.job==='fix' || (d.fix_progress&&d.fix_progress.done)) ? last : 1;
+            syncMatrixLoad(go);
+          }, 500);
         }
       }
     }).catch(()=>{});
@@ -68891,6 +69032,47 @@ function syncMatrixFixStop(){
   fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
     showToast(d&&d.ok?'درخواست توقف ثبت شد':'توقف ناموفق', !(d&&d.ok));
   }).catch(()=>{});
+}
+function smPaintReports(d){
+  const box = $('smFixReport');
+  if(!box) return;
+  const reps = (d && d.reports) ? d.reports : [];
+  const st = (d && d.fix_stats) ? d.fix_stats : null;
+  if((!reps || !reps.length) && !st){ box.style.display='none'; box.innerHTML=''; return; }
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<div style="font-weight:900;color:#fde68a;font-size:13px">📋 گزارش آخرین مغایرت‌گیری'
+    +(d.fix_at?(' <span style="font-weight:600;color:#94a3b8;font-size:10px">· '+new Date(d.fix_at*1000).toLocaleString('fa-IR')+'</span>'):'')
+    +'</div>'
+    +'<button type="button" class="btn btn-gray" style="font-size:10px;padding:3px 8px" onclick="$(\'smFixReport\').style.display=\'none\'">بستن</button>'
+    +'</div>';
+  if(st){
+    html += '<div style="font-size:12px;color:#bbf7d0;margin-bottom:8px;font-weight:700">'
+      + (st.stopped?'⏹ متوقف — ':'✅ ')
+      +'موفق '+smFa(st.ok||0)+' · ناموفق '+smFa(st.fail||0)+' از '+smFa(st.total||0)
+      +' · 💰'+smFa(st.priced||0)+' · 📤'+smFa(st.sent||0)+' · 🗑'+smFa(st.deleted||0)
+      +' · محدوده '+(st.scope||'all')
+      +'</div>';
+  }
+  (reps||[]).forEach(r=>{
+    if(!r) return;
+    const bg = r.report_type==='work' ? 'rgba(30,58,95,.55)' : 'rgba(20,83,45,.55)';
+    html += '<div style="background:'+bg+';border:1px solid #334155;border-radius:8px;padding:8px 10px;margin-bottom:6px">';
+    html += '<div style="font-weight:800;color:#fde68a;margin-bottom:4px">'+esc(r.title||'گزارش')+'</div>';
+    if(r.report_text) html += '<div style="font-size:11px;color:#bbf7d0;margin-bottom:4px">'+esc(r.report_text)+'</div>';
+    const lines = r.report_lines||[];
+    if(lines.length){
+      html += '<div style="font-size:10.5px;line-height:1.75;max-height:180px;overflow:auto;direction:rtl">';
+      lines.forEach(x=>{ html += '<div style="border-bottom:1px solid #33415544;padding:2px 0">'+esc(String(x))+'</div>'; });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  if(st && st.total===0){
+    html += '<div style="font-size:11px;color:#fbbf24;margin-top:4px">⚠️ کاری برای اجرا پیدا نشد. اگر جدول مغایرت نشان می‌دهد، یک‌بار «🚀 ساخت روی سرور» بزنید و دوباره اصلاح کنید. جزئیات در باکس بالا.</div>';
+  }
+  box.innerHTML = html;
+  box.style.display = 'block';
+  try{ box.scrollIntoView({behavior:'smooth',block:'nearest'}); }catch(e){}
 }
 function syncMatrixLoad(page, silent){
   page = page || 1; window._smPage = page;
@@ -68942,6 +69124,7 @@ function syncMatrixLoad(page, silent){
     }
     const wc = d.woo_cfg||{}, bc=d.bsl_cfg||{};
     const when = d.generated_at ? new Date(d.generated_at*1000).toLocaleString('fa-IR') : '—';
+    window._smLastPages = d.pages||1;
     if(meta){
       meta.innerHTML = '📖 از فایل سرور · '+when+' · منبع '+(d.source||'—')
         +' · صفحه '+smFa(d.page)+'/'+smFa(d.pages)+' · نمایش '+smFa(d.total)+' ردیف فیلترشده'
@@ -68950,6 +69133,7 @@ function syncMatrixLoad(page, silent){
         +(d.woo_error?(' · ⚠️ WC: '+d.woo_error):'')
         +(d.bsl_error?(' · ⚠️ BSL: '+d.bsl_error):'');
     }
+    try{ smPaintReports(d); }catch(e){}
     const rows = d.rows||[];
     if(!rows.length){
       if(body) body.innerHTML='<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی در این فیلتر/صفحه نیست</td></tr>';

@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.36
+ * Version: 13.3.37
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -2896,7 +2896,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.36 / v10.118: مغایرت کامل (قیمت+ارسال+حذف+گزارش) از جدول مقایسه.
+	 * v13.3.37 / v10.120: مغایرت کامل (قیمت+ارسال+حذف+گزارش) از جدول مقایسه.
 	 */
 	public static function ajax_sync_matrix_fix_start() {
 		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {
@@ -13891,6 +13891,7 @@ public static function get_embedded_storefront_assets() {
 							</div>
 							<div id="amphpSmJobLog" style="margin-top:8px;max-height:240px;overflow:auto;font-size:0.78rem;color:#e2e8f0;line-height:1.7;font-family:ui-monospace,Tahoma,sans-serif;"></div>
 							<div id="amphpSmFixBanner" style="display:none;margin-top:8px;padding:8px 10px;background:#14532d33;border:1px solid #22c55e55;border-radius:8px;font-size:0.8rem;color:#bbf7d0;"></div>
+				<div id="amphpSmFixReport" style="display:none;margin:8px 0;padding:12px 14px;background:linear-gradient(135deg,#0f172a,#14532d44);border:1px solid #34d39966;border-radius:10px;color:#e2e8f0"></div>
 						</div>
 						<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center;">
 							<input type="search" id="amphpSmQ" placeholder="جستجوی عنوان…" style="flex:1;min-width:140px;font-size:13px;padding:6px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
@@ -15257,7 +15258,7 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 							}
 						} else {
 							if(window._amphpSmPoll){ clearInterval(window._amphpSmPoll); window._amphpSmPoll=null; }
-							if(d.has_result){ setTimeout(function(){ amphpSmLoad(1); }, 400); }
+							if(d.has_result){ setTimeout(function(){ amphpSmLoad(window._amphpSmLastPages||1); }, 500); }
 						}
 					});
 				};
@@ -15287,6 +15288,39 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 					var hint=document.getElementById('amphpSmHint');
 					if(hint) hint.textContent = (d && d.ok) ? 'درخواست توقف…' : 'توقف ناموفق';
 				});
+			}
+			function amphpSmPaintReports(d){
+				var box = document.getElementById('amphpSmFixReport');
+				if(!box) return;
+				var reps = (d && d.reports) ? d.reports : [];
+				var st = (d && d.fix_stats) ? d.fix_stats : null;
+				if((!reps || !reps.length) && !st){ box.style.display='none'; box.innerHTML=''; return; }
+				var html = '<div style="font-weight:900;color:#fde68a;font-size:13px;margin-bottom:8px">📋 گزارش آخرین مغایرت‌گیری'
+					+(d.fix_at?(' <span style="font-weight:600;color:#94a3b8;font-size:10px">· '+new Date(d.fix_at*1000).toLocaleString('fa-IR')+'</span>'):'')
+					+'</div>';
+				if(st){
+					html += '<div style="font-size:12px;color:#bbf7d0;margin-bottom:8px;font-weight:700">'
+						+(st.stopped?'⏹ متوقف — ':'✅ ')
+						+'موفق '+amphpSmFa(st.ok||0)+' · ناموفق '+amphpSmFa(st.fail||0)+' از '+amphpSmFa(st.total||0)
+						+' · 💰'+amphpSmFa(st.priced||0)+' · 📤'+amphpSmFa(st.sent||0)+' · 🗑'+amphpSmFa(st.deleted||0)
+						+'</div>';
+				}
+				(reps||[]).forEach(function(r){
+					if(!r) return;
+					var bg = r.report_type==='work' ? 'rgba(30,58,95,.55)' : 'rgba(20,83,45,.55)';
+					html += '<div style="background:'+bg+';border:1px solid #334155;border-radius:8px;padding:8px 10px;margin-bottom:6px">';
+					html += '<div style="font-weight:800;color:#fde68a;margin-bottom:4px">'+amphpEsc(r.title||'گزارش')+'</div>';
+					if(r.report_text) html += '<div style="font-size:11px;color:#bbf7d0;margin-bottom:4px">'+amphpEsc(r.report_text)+'</div>';
+					(r.report_lines||[]).forEach(function(x){
+						html += '<div style="font-size:10.5px;border-bottom:1px solid #33415544;padding:2px 0">'+amphpEsc(String(x))+'</div>';
+					});
+					html += '</div>';
+				});
+				if(st && st.total===0){
+					html += '<div style="font-size:11px;color:#fbbf24">⚠️ کاری پیدا نشد — جدول را از نو بسازید و دوباره اصلاح کنید.</div>';
+				}
+				box.innerHTML = html;
+				box.style.display = 'block';
 			}
 			function amphpSmLoad(page, silent){
 				page = page || 1; window._amphpSmPage = page;
@@ -15352,7 +15386,8 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 					if(badge && typeof d.woo_direct !== 'undefined'){
 						badge.textContent = d.woo_direct ? '⚡ WC مستقیم' : '🌐 WC از API';
 					}
-					var rows = d.rows || [];
+					try{ amphpSmPaintReports(d); }catch(e){}
+				var rows = d.rows || [];
 					if(!rows.length){
 						if(body) body.innerHTML = '<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی در این فیلتر نیست</td></tr>';
 					} else if(body){

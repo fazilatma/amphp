@@ -298,8 +298,8 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.113';
-const APP_VERSION_DATE = '1405/06/12';
+const APP_VERSION = '10.114';
+const APP_VERSION_DATE = '1405/06/13';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -21480,7 +21480,8 @@ if (isset($_GET['selagent_stop'])) {
 if (isset($_GET['suffix_report'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $target = (string)($_GET['target'] ?? '');
-    if ($target !== 'woo' && $target !== 'bsl') {
+    /* v10.114: summary|all = جدول خلاصهٔ پروفایل×محلی×WC×غرفه‌ها */
+    if (!in_array($target, ['woo', 'bsl', 'summary', 'all'], true)) {
         echo json_encode(['ok' => false, 'error' => 'مقصد نامعتبر'], JSON_UNESCAPED_UNICODE); exit;
     }
     $lockFile = __DIR__ . '/suffix.lock';
@@ -21511,7 +21512,11 @@ if (isset($_GET['suffix_report'])) {
     });
 
     try {
-        $rep = suffixReport($cn, $target);
+        if ($target === 'summary' || $target === 'all') {
+            $rep = profileStatsSummary($cn);
+        } else {
+            $rep = suffixReport($cn, $target);
+        }
     } catch (Throwable $e) {
         suffixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
             'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
@@ -21520,7 +21525,9 @@ if (isset($_GET['suffix_report'])) {
     if ($notify && !empty($rep['ok'])) {
         $why = notifPrereq($cn);
         if ($why === null) {
-            $rep['delivery'] = notifSend($cn, suffixReportMsg($rep), 'report');
+            $msg = (!empty($rep['kind']) && $rep['kind'] === 'summary')
+                ? profileStatsSummaryMsg($rep) : suffixReportMsg($rep);
+            $rep['delivery'] = notifSend($cn, $msg, 'report');
             suffixProgress(['log_add' => ['📤 گزارش به پیام‌رسان‌ها فرستاده شد']]);
         } else {
             $rep['notify_error'] = $why;
@@ -22008,7 +22015,7 @@ if (isset($_GET['suffix_notify'])) {
     if (!is_array($rep) || empty($rep['ok'])) {
         echo json_encode(['ok' => false, 'error' => 'اول یک گزارش بگیرید'], JSON_UNESCAPED_UNICODE); exit;
     }
-    echo json_encode(['ok' => true, 'delivery' => notifSend($cn, suffixReportMsg($rep), 'report')],
+    echo json_encode(['ok' => true, 'delivery' => notifSend($cn, ((!empty($rep['kind']) && $rep['kind']==='summary') ? profileStatsSummaryMsg($rep) : suffixReportMsg($rep)), 'report')],
         JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -37361,6 +37368,433 @@ function suffixReportMsg(array $rep): string {
     if ((int)($rep['unmatched'] ?? 0) > 0) {
         $lines[] = '━━━━━━━━━━';
         $lines[] = '❔ بدون پسوند شناخته‌شده: ' . (int)$rep['unmatched'];
+    }
+    return implode("\n", $lines);
+}
+
+
+/**
+ * v10.114: آمار خلاصهٔ هر پروفایل — محلی (استخراج‌شده) × ووکامرس × هر غرفهٔ باسلام
+ * بدون وابستگی اجباری به پسوند عنوان؛ از remote_map + تطبیق عنوان استفاده می‌کند.
+ */
+function profileLocalCount(array $profile): int {
+    $raw = $profile['products'] ?? [];
+    if (!is_array($raw) || !$raw) return 0;
+    $order = $profile['productsOrder'] ?? [];
+    if (is_array($order) && $order) {
+        $map = [];
+        foreach ($raw as $entry) {
+            if (is_array($entry) && count($entry) >= 2 && is_string($entry[0])) {
+                $map[$entry[0]] = true;
+            }
+        }
+        if ($map) {
+            $n = 0;
+            foreach ($order as $k) if (isset($map[$k])) $n++;
+            return $n > 0 ? $n : count($map);
+        }
+    }
+    $n = 0;
+    foreach ($raw as $entry) {
+        if (is_array($entry) && count($entry) >= 2 && is_string($entry[0]) && is_array($entry[1] ?? null)) $n++;
+        elseif (is_array($entry) && (isset($entry['title']) || isset($entry['name']) || isset($entry['price']))) $n++;
+    }
+    return $n;
+}
+
+function profileStatsSummary(array $cn): array {
+    @set_time_limit(0);
+    suffixProgress(['log_add' => ['📊 ساخت جدول خلاصهٔ پروفایل‌ها...'], 'phase' => 'start']);
+
+    $profiles = loadProfiles();
+    if (!$profiles) {
+        return ['ok' => false, 'error' => 'هیچ پروفایلی ذخیره نشده', 'kind' => 'summary'];
+    }
+
+    // --- meta columns ---
+    $shops = function_exists('bslAllShops') ? bslAllShops($cn) : [];
+    $shopMeta = [];
+    foreach ($shops as $sh) {
+        if (!is_array($sh)) continue;
+        $vid = (int)($sh['vendor_id'] ?? 0);
+        if ($vid <= 0) continue;
+        $shopMeta[] = [
+            'vendor_id' => $vid,
+            'name' => (string)($sh['shop_name'] ?? ($sh['name'] ?? ('غرفه ' . $vid))),
+            'is_default' => !empty($sh['is_default']),
+            'token' => (string)($sh['token'] ?? ''),
+        ];
+    }
+
+    // --- local profile rows ---
+    $rows = [];
+    $keyOwner = []; // product key => profile key
+    $titleOwner = []; // bare title => profile key (first wins)
+    $suffixes = [];
+    foreach ($profiles as $pk => $pv) {
+        if (!is_array($pv)) continue;
+        $name = (string)($pv['name'] ?? $pk);
+        $sfx = trim((string)($pv['titleSuffix'] ?? ''));
+        if ($sfx !== '') $suffixes[] = $sfx;
+        $local = profileLocalCount($pv);
+        $sc = $pv['syncConfig'] ?? [];
+        $rows[$pk] = [
+            'key' => (string)$pk,
+            'name' => $name,
+            'suffix' => $sfx,
+            'local' => $local,
+            'sync_on' => !empty($sc['enabled']),
+            'sync_target' => (string)($sc['target'] ?? ''),
+            'woo' => 0,
+            'woo_by_map' => 0,
+            'woo_by_title' => 0,
+            'shops' => [], // vid => count
+            'shops_by_map' => [],
+            'shops_by_title' => [],
+        ];
+        foreach ($shopMeta as $sm) {
+            $vid = (int)$sm['vendor_id'];
+            $rows[$pk]['shops'][$vid] = 0;
+            $rows[$pk]['shops_by_map'][$vid] = 0;
+            $rows[$pk]['shops_by_title'][$vid] = 0;
+        }
+        // index keys + bare titles
+        try {
+            foreach (profileOrderedProducts($pv, null, false) as $pp) {
+                if (!is_array($pp)) continue;
+                $kk = trim((string)($pp['key'] ?? ''));
+                if ($kk !== '' && !isset($keyOwner[$kk])) $keyOwner[$kk] = (string)$pk;
+                $t = (string)($pp['title'] ?? ($pp['name'] ?? ''));
+                if ($t === '' && $sfx !== '') continue;
+                $bare = function_exists('matrixBareTitle')
+                    ? matrixBareTitle($t, $sfx !== '' ? [$sfx] : [])
+                    : reconNormTitle(function_exists('stripProductCode') ? stripProductCode($t) : $t);
+                if ($bare !== '' && !isset($titleOwner[$bare])) $titleOwner[$bare] = (string)$pk;
+            }
+        } catch (Throwable $e) {
+            // fallback: raw products
+            foreach ((array)($pv['products'] ?? []) as $entry) {
+                $prod = null; $kk = '';
+                if (is_array($entry) && count($entry) >= 2 && is_string($entry[0])) {
+                    $kk = $entry[0]; $prod = $entry[1];
+                } elseif (is_array($entry)) {
+                    $prod = $entry; $kk = (string)($entry['key'] ?? '');
+                }
+                if ($kk !== '' && !isset($keyOwner[$kk])) $keyOwner[$kk] = (string)$pk;
+                if (!is_array($prod)) continue;
+                $t = (string)($prod['title'] ?? ($prod['name'] ?? ''));
+                $bare = reconNormTitle(function_exists('stripProductCode') ? stripProductCode($t) : $t);
+                if ($bare !== '' && !isset($titleOwner[$bare])) $titleOwner[$bare] = (string)$pk;
+            }
+        }
+    }
+    suffixProgress(['log_add' => ['✅ ' . count($rows) . ' پروفایل · ' . count($keyOwner) . ' کلید محصول'], 'phase' => 'local']);
+
+    // --- remote_map ownership (woo + bsl default shard) ---
+    $map = function_exists('remoteMapLoad') ? remoteMapLoad() : ['woo' => [], 'bsl' => []];
+    foreach ((array)($map['woo'] ?? []) as $k => $v) {
+        if (!is_array($v)) continue;
+        $owner = trim((string)($v['profile'] ?? ''));
+        if ($owner === '' || !isset($rows[$owner])) {
+            $owner = $keyOwner[(string)$k] ?? '';
+        }
+        if ($owner !== '' && isset($rows[$owner])) {
+            $rows[$owner]['woo']++;
+            $rows[$owner]['woo_by_map']++;
+        }
+    }
+    // basalam map is default shop only in main map - count under default vendor if known
+    $defVid = 0;
+    foreach ($shopMeta as $sm) {
+        if (!empty($sm['is_default'])) { $defVid = (int)$sm['vendor_id']; break; }
+    }
+    if ($defVid <= 0 && $shopMeta) $defVid = (int)$shopMeta[0]['vendor_id'];
+    foreach ((array)($map['bsl'] ?? []) as $k => $v) {
+        if (!is_array($v)) continue;
+        $owner = trim((string)($v['profile'] ?? ''));
+        if ($owner === '' || !isset($rows[$owner])) {
+            $owner = $keyOwner[(string)$k] ?? '';
+        }
+        if ($owner !== '' && isset($rows[$owner]) && $defVid > 0) {
+            $rows[$owner]['shops'][$defVid] = (int)($rows[$owner]['shops'][$defVid] ?? 0) + 1;
+            $rows[$owner]['shops_by_map'][$defVid] = (int)($rows[$owner]['shops_by_map'][$defVid] ?? 0) + 1;
+        }
+    }
+
+    // --- fetch live destinations for title match + fill gaps ---
+    $w = $cn['woocommerce'] ?? [];
+    $wooRows = [];
+    $wooErr = '';
+    suffixProgress(['log_add' => ['📥 دریافت ووکامرس...'], 'phase' => 'woo']);
+    try {
+        if (!empty($w['store_url']) || function_exists('wc_get_products')) {
+            $wooRows = function_exists('suffixFetchWoo') ? suffixFetchWoo($w) : (function_exists('reconFetchWoo') ? reconFetchWoo($w) : []);
+        } else {
+            $wooErr = 'تنظیمات ووکامرس ناقص';
+        }
+    } catch (Throwable $e) {
+        $wooErr = $e->getMessage();
+    }
+    $wooIdMap = function_exists('remoteMapById') ? remoteMapById('woo') : [];
+    $claimedWoo = [];
+    foreach ($wooRows as $wr) {
+        if (!is_array($wr)) continue;
+        $rid = (int)($wr['id'] ?? 0);
+        $owner = '';
+        if ($rid > 0 && isset($wooIdMap[$rid])) {
+            $pk = $wooIdMap[$rid];
+            $owner = $keyOwner[$pk] ?? '';
+            // also try profile field via reverse map entry
+            if ($owner === '' && isset($map['woo'][$pk]['profile'])) {
+                $owner = (string)$map['woo'][$pk]['profile'];
+            }
+        }
+        if ($owner === '') {
+            $bare = function_exists('matrixBareTitle')
+                ? matrixBareTitle((string)($wr['title'] ?? ''), $suffixes)
+                : reconNormTitle((string)($wr['title'] ?? ''));
+            // suffix match first
+            if ($owner === '') {
+                foreach ($rows as $pk => $pr) {
+                    $sfx = (string)($pr['suffix'] ?? '');
+                    if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches((string)($wr['title'] ?? ''), $sfx)) {
+                        $owner = $pk; break;
+                    }
+                }
+            }
+            if ($owner === '' && $bare !== '' && isset($titleOwner[$bare])) {
+                $owner = $titleOwner[$bare];
+            }
+            if ($owner !== '' && isset($rows[$owner])) {
+                // only count title match if not already in map count for this profile?
+                // Use separate title-only bump when not claimed via map id for this remote id
+                if ($rid <= 0 || !isset($claimedWoo[$rid])) {
+                    // if map already counted this profile's products globally, title match
+                    // still useful for products without map — count as title
+                    $rows[$owner]['woo_by_title']++;
+                    // if map count is 0-ish for coverage, also ensure total includes title-only
+                    // Total woo = max(map, map+title_unique). Simpler: total = by_map + title_only_not_in_map
+                    // We don't know if this id was in map; if rid in wooIdMap it was map-path.
+                    if (!($rid > 0 && isset($wooIdMap[$rid]))) {
+                        $rows[$owner]['woo']++;
+                    }
+                }
+            }
+        }
+        // map-path already counted from remote_map dump; if map empty but id maps to key:
+        if ($owner !== '' && isset($rows[$owner]) && $rid > 0 && isset($wooIdMap[$rid])) {
+            // already counted in map dump if entry existed; if map dump missed profile field but keyOwner hit:
+            // ensure at least 1 — avoid double: only add if this rid not yet attributed
+            if (!isset($claimedWoo[$rid])) {
+                // map dump already walked all map entries — if this id is in map, it was counted
+                // when profile was set. If counted via keyOwner in dump, OK.
+                // If dump used profile field empty and keyOwner fixed — dump already used keyOwner.
+                $claimedWoo[$rid] = $owner;
+            }
+        }
+    }
+    suffixProgress(['log_add' => ['✅ ووکامرس: ' . count($wooRows) . ' محصول' . ($wooErr !== '' ? ' — ' . $wooErr : '')]]);
+
+    // Recalculate woo totals more cleanly: recount from live + map
+    foreach ($rows as $pk => $_) {
+        $rows[$pk]['woo'] = 0;
+        $rows[$pk]['woo_by_map'] = 0;
+        $rows[$pk]['woo_by_title'] = 0;
+    }
+    $seenWooIds = [];
+    // 1) map
+    foreach ((array)($map['woo'] ?? []) as $k => $v) {
+        if (!is_array($v)) continue;
+        $owner = trim((string)($v['profile'] ?? ''));
+        if ($owner === '' || !isset($rows[$owner])) $owner = $keyOwner[(string)$k] ?? '';
+        if ($owner === '' || !isset($rows[$owner])) continue;
+        $id = (int)($v['id'] ?? 0);
+        if ($id > 0) {
+            if (isset($seenWooIds[$id])) continue;
+            $seenWooIds[$id] = true;
+        }
+        $rows[$owner]['woo']++;
+        $rows[$owner]['woo_by_map']++;
+    }
+    // 2) live title for unmapped
+    foreach ($wooRows as $wr) {
+        $rid = (int)($wr['id'] ?? 0);
+        if ($rid > 0 && isset($seenWooIds[$rid])) continue;
+        $owner = '';
+        $bare = function_exists('matrixBareTitle')
+            ? matrixBareTitle((string)($wr['title'] ?? ''), $suffixes)
+            : reconNormTitle((string)($wr['title'] ?? ''));
+        foreach ($rows as $pk => $pr) {
+            $sfx = (string)($pr['suffix'] ?? '');
+            if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches((string)($wr['title'] ?? ''), $sfx)) {
+                $owner = $pk; break;
+            }
+        }
+        if ($owner === '' && $bare !== '' && isset($titleOwner[$bare])) $owner = $titleOwner[$bare];
+        if ($owner === '' || !isset($rows[$owner])) continue;
+        if ($rid > 0) $seenWooIds[$rid] = true;
+        $rows[$owner]['woo']++;
+        $rows[$owner]['woo_by_title']++;
+    }
+
+    // --- each basalam shop ---
+    $bslErr = '';
+    $sN = 0; $sTot = max(1, count($shopMeta));
+    foreach ($shopMeta as $sm) {
+        $sN++;
+        $vid = (int)$sm['vendor_id'];
+        $tok = (string)$sm['token'];
+        $sname = (string)$sm['name'];
+        if ($tok === '') {
+            // try default token
+            $tok = (string)($cn['basalam']['token'] ?? '');
+        }
+        suffixProgress([
+            'log_add' => ['🏪 غرفه ' . $sN . '/' . $sTot . ' — ' . $sname],
+            'phase' => 'bsl', 'cur' => $sN, 'cur_total' => $sTot,
+        ]);
+        $remote = [];
+        try {
+            if ($tok !== '' && $vid > 0) {
+                $remote = function_exists('suffixFetchBsl') ? suffixFetchBsl($tok, $vid)
+                    : (function_exists('reconFetchBsl') ? reconFetchBsl($tok, $vid) : []);
+            }
+        } catch (Throwable $e) {
+            $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
+        }
+        $seenIds = [];
+        // map counts for default already applied; for extra shops map is in shards with same 'bsl' keys per shard
+        // recount live for this shop
+        foreach ($rows as $pk => $_) {
+            $rows[$pk]['shops'][$vid] = 0;
+            $rows[$pk]['shops_by_map'][$vid] = 0;
+            $rows[$pk]['shops_by_title'][$vid] = 0;
+        }
+        // from remote map if default shop
+        if (!empty($sm['is_default']) || $vid === $defVid) {
+            foreach ((array)($map['bsl'] ?? []) as $k => $v) {
+                if (!is_array($v)) continue;
+                $owner = trim((string)($v['profile'] ?? ''));
+                if ($owner === '' || !isset($rows[$owner])) $owner = $keyOwner[(string)$k] ?? '';
+                if ($owner === '' || !isset($rows[$owner])) continue;
+                $id = (int)($v['id'] ?? 0);
+                if ($id > 0) {
+                    if (isset($seenIds[$id])) continue;
+                    $seenIds[$id] = true;
+                }
+                $rows[$owner]['shops'][$vid]++;
+                $rows[$owner]['shops_by_map'][$vid]++;
+            }
+        }
+        // live title
+        foreach ($remote as $br) {
+            if (!is_array($br)) continue;
+            $rid = (int)($br['id'] ?? 0);
+            if ($rid > 0 && isset($seenIds[$rid])) continue;
+            $owner = '';
+            $title = (string)($br['title'] ?? '');
+            foreach ($rows as $pk => $pr) {
+                $sfx = (string)($pr['suffix'] ?? '');
+                if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches($title, $sfx)) {
+                    $owner = $pk; break;
+                }
+            }
+            if ($owner === '') {
+                $bare = function_exists('matrixBareTitle')
+                    ? matrixBareTitle($title, $suffixes)
+                    : reconNormTitle($title);
+                if ($bare !== '' && isset($titleOwner[$bare])) $owner = $titleOwner[$bare];
+            }
+            if ($owner === '' || !isset($rows[$owner])) continue;
+            if ($rid > 0) $seenIds[$rid] = true;
+            $rows[$owner]['shops'][$vid]++;
+            $rows[$owner]['shops_by_title'][$vid]++;
+        }
+        suffixProgress(['log_add' => ['  ✓ ' . $sname . ': ' . count($remote) . ' محصول']]);
+    }
+
+    // totals + coverage
+    $list = array_values($rows);
+    usort($list, function ($a, $b) {
+        return ((int)$b['local'] <=> (int)$a['local']) ?: strcmp((string)$a['name'], (string)$b['name']);
+    });
+    $totLocal = 0; $totWoo = 0; $totShops = [];
+    foreach ($shopMeta as $sm) $totShops[(int)$sm['vendor_id']] = 0;
+    foreach ($list as &$r) {
+        $totLocal += (int)$r['local'];
+        $totWoo += (int)$r['woo'];
+        $cov = [];
+        if ((int)$r['local'] > 0) {
+            $cov['woo'] = round(min(100, ((int)$r['woo'] / max(1, (int)$r['local'])) * 100), 1);
+        } else {
+            $cov['woo'] = 0.0;
+        }
+        foreach ($shopMeta as $sm) {
+            $vid = (int)$sm['vendor_id'];
+            $sc = (int)($r['shops'][$vid] ?? 0);
+            $totShops[$vid] = ($totShops[$vid] ?? 0) + $sc;
+            $cov['s' . $vid] = ((int)$r['local'] > 0)
+                ? round(min(100, ($sc / max(1, (int)$r['local'])) * 100), 1) : 0.0;
+        }
+        $r['coverage'] = $cov;
+        // status chip
+        $r['status'] = 'empty';
+        if ((int)$r['local'] <= 0) $r['status'] = 'empty';
+        elseif ((int)$r['woo'] >= (int)$r['local'] * 0.95) {
+            $allShopsOk = true;
+            foreach ($shopMeta as $sm) {
+                $vid = (int)$sm['vendor_id'];
+                if ((int)($r['shops'][$vid] ?? 0) < (int)$r['local'] * 0.9) { $allShopsOk = false; break; }
+            }
+            $r['status'] = $allShopsOk || !$shopMeta ? 'ok' : 'partial';
+        } elseif ((int)$r['woo'] > 0 || array_sum(array_map('intval', $r['shops'] ?? [])) > 0) {
+            $r['status'] = 'partial';
+        } else {
+            $r['status'] = 'local_only';
+        }
+    }
+    unset($r);
+
+    $out = [
+        'ok' => true,
+        'kind' => 'summary',
+        'generated_at' => time(),
+        'profiles' => $list,
+        'shops' => array_map(function ($s) {
+            return ['vendor_id' => $s['vendor_id'], 'name' => $s['name'], 'is_default' => !empty($s['is_default'])];
+        }, $shopMeta),
+        'totals' => [
+            'profiles' => count($list),
+            'local' => $totLocal,
+            'woo' => $totWoo,
+            'shops' => $totShops,
+            'woo_remote' => count($wooRows),
+        ],
+        'woo_error' => $wooErr,
+        'bsl_error' => $bslErr,
+    ];
+    suffixProgress([
+        'log_add' => [
+            '✅ خلاصه آماده: ' . count($list) . ' پروفایل · محلی ' . $totLocal . ' · WC ' . $totWoo,
+        ],
+        'phase' => 'done',
+    ]);
+    return $out;
+}
+
+function profileStatsSummaryMsg(array $rep): string {
+    $lines = ['📊 آمار خلاصهٔ پروفایل‌ها v' . APP_VERSION];
+    $t = $rep['totals'] ?? [];
+    $lines[] = 'پروفایل‌ها: ' . (int)($t['profiles'] ?? 0)
+        . ' · محلی: ' . (int)($t['local'] ?? 0)
+        . ' · ووکامرس: ' . (int)($t['woo'] ?? 0);
+    foreach ((array)($rep['shops'] ?? []) as $s) {
+        $vid = (int)($s['vendor_id'] ?? 0);
+        $lines[] = '🏪 ' . (string)($s['name'] ?? $vid) . ': ' . (int)(($t['shops'][$vid] ?? 0));
+    }
+    foreach (array_slice((array)($rep['profiles'] ?? []), 0, 15) as $p) {
+        $lines[] = '• ' . (string)($p['name'] ?? '') . ' — محلی ' . (int)($p['local'] ?? 0)
+            . ' | WC ' . (int)($p['woo'] ?? 0);
     }
     return implode("\n", $lines);
 }
@@ -52988,18 +53422,20 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="smenu">
 <div class="smenu-hdr" onclick="toggleSmenu(this)"><h3>📊 آمار محصولات هر پروفایل</h3><span class="arrow">▼</span></div>
 <div class="smenu-body">
-<div style="font-size:10.5px;color:#64748b;margin-bottom:8px;line-height:1.7">
-بر اساس پسوند یکتای هر پروفایل، محصولات ثبت‌شده در مقصد تفکیک می‌شوند:
-تأیید شده، تأیید نشده، در انتظار و غیرفعال — با درصد و نمودار.
+<div style="font-size:10.5px;color:#94a3b8;margin-bottom:10px;line-height:1.75">
+جدول خلاصه: تعداد محصولات <b style="color:#e2e8f0">استخراج‌شده در پروفایل</b>،
+در <b style="color:#c4b5fd">ووکامرس</b> و در <b style="color:#67e8f9">هر غرفهٔ باسلام</b> —
+با نوار پوشش و رنگ وضعیت. جزئیات وضعیت مقصد (تأیید/پیش‌نویس) هم جداگانه هست.
 </div>
-<div class="cact">
-<button class="btn btn-purple" onclick="sfxRun('woo')" style="flex:1">🛒 آمار ووکامرس</button>
-<button class="btn btn-cyan" onclick="sfxRun('bsl')" style="flex:1">🏪 آمار باسلام</button>
+<div class="cact" style="flex-wrap:wrap;gap:6px">
+<button class="btn btn-purple" onclick="sfxRun('summary')" style="flex:1;min-width:140px;font-weight:800">📋 جدول خلاصهٔ همه</button>
+<button class="btn btn-blue" onclick="sfxRun('woo')" style="flex:1;min-width:110px">🛒 جزئیات ووکامرس</button>
+<button class="btn btn-cyan" onclick="sfxRun('bsl')" style="flex:1;min-width:110px">🏪 جزئیات باسلام</button>
 </div>
-<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin-top:6px;cursor:pointer">
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin-top:8px;cursor:pointer">
 <input type="checkbox" id="sfxNotify" style="width:14px;height:14px">
 <span>📤 گزارش را به پیام‌رسان‌ها هم بفرست</span></label>
-<div id="sfxR" style="margin-top:8px"></div>
+<div id="sfxR" style="margin-top:10px"></div>
 </div></div>
 
 
@@ -61116,6 +61552,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.114', t:'📋 آمار خلاصهٔ جدولی هر پروفایل (محلی×WC×غرفه‌ها)', items:[
+    'بخش «آمار محصولات هر پروفایل» جدول خلاصهٔ زیبا دارد: تعداد در پروفایل،',
+    'ووکامرس و هر غرفهٔ باسلام + نوار پوشش رنگی و وضعیت همگام/ناقص/فقط محلی.',
+    'دکمهٔ «جدول خلاصهٔ همه» گزارش سرورساید profileStatsSummary را می‌سازد.',
+  ]},
   {v:'10.113', t:'📊 جدول مقایسه کاملاً سرورساید + جاب پس‌زمینه + دوره‌ای', items:[
     'ساخت جدول دیگر در درخواست AJAX مرورگر timeout نمی‌شود؛ جاب روی سرور با',
     'progress زنده (sync_matrix_start / status) و نتیجه در sync_matrix_result.json.',
@@ -65098,8 +65539,109 @@ function sfxPie(counts,total,size){
   return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'">'+out+'</svg>';
 }
 
+
+function sfxBar(pct, color){
+  pct=Math.max(0,Math.min(100,Number(pct)||0));
+  return '<div style="height:6px;background:#1e293b;border-radius:99px;overflow:hidden;margin-top:4px">'
+    +'<div style="height:100%;width:'+pct+'%;background:'+color+';border-radius:99px"></div></div>';
+}
+function sfxStatusChip(st){
+  const m={ok:['✓ همگام','#166534','#bbf7d0'],partial:['◐ ناقص','#854d0e','#fde68a'],
+    local_only:['فقط محلی','#1e3a8a','#bfdbfe'],empty:['خالی','#334155','#cbd5e1']};
+  const x=m[st]||m.empty;
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:800;background:'
+    +x[1]+';color:'+x[2]+'">'+x[0]+'</span>';
+}
+function sfxRenderSummary(rep){
+  const shops=rep.shops||[];
+  const tot=rep.totals||{};
+  let h='<div class="sfx-summary-wrap" style="background:linear-gradient(160deg,#0f172a 0%,#1e1b4b 100%);border:1px solid #6d28d9;border-radius:14px;padding:12px;font-size:11px">';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">';
+  h+='<b style="color:#e9d5ff;font-size:13px">📋 آمار خلاصهٔ پروفایل‌ها</b>';
+  h+='<span style="flex:1"></span>';
+  h+='<button class="btn btn-gray" onclick="sfxSend()" style="font-size:10px;padding:3px 8px">📤 پیام‌رسان</button>';
+  h+='</div>';
+  // KPI cards
+  h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px">';
+  const kpis=[
+    ['پروفایل‌ها', tot.profiles||0, '#7c3aed'],
+    ['محصول محلی', tot.local||0, '#2563eb'],
+    ['ووکامرس', tot.woo||0, '#8b5cf6'],
+  ];
+  shops.forEach(s=>{
+    kpis.push(['🏪 '+(s.name||s.vendor_id), (tot.shops&&tot.shops[s.vendor_id])||0, '#0891b2']);
+  });
+  kpis.forEach(k=>{
+    h+='<div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:10px 8px;text-align:center">';
+    h+='<div style="font-size:18px;font-weight:900;color:'+k[2]+'">'+toFa(k[1])+'</div>';
+    h+='<div style="font-size:10px;color:#94a3b8;margin-top:2px">'+esc(k[0])+'</div></div>';
+  });
+  h+='</div>';
+  if(rep.woo_error) h+='<div style="color:#fca5a5;margin-bottom:6px;font-size:10.5px">⚠️ WC: '+esc(rep.woo_error)+'</div>';
+  if(rep.bsl_error) h+='<div style="color:#fca5a5;margin-bottom:6px;font-size:10.5px">⚠️ BSL: '+esc(rep.bsl_error)+'</div>';
+
+  h+='<div style="overflow:auto;max-height:min(70vh,560px);border-radius:10px;border:1px solid #334155">';
+  h+='<table style="width:100%;border-collapse:collapse;min-width:640px;font-size:11px">';
+  h+='<thead style="position:sticky;top:0;z-index:2"><tr style="background:#1e293b">';
+  h+='<th style="padding:9px 10px;text-align:right;color:#94a3b8;font-weight:700">#</th>';
+  h+='<th style="padding:9px 10px;text-align:right;color:#e2e8f0;font-weight:800">پروفایل</th>';
+  h+='<th style="padding:9px 10px;text-align:center;color:#93c5fd;font-weight:800">📦 محلی</th>';
+  h+='<th style="padding:9px 10px;text-align:center;color:#c4b5fd;font-weight:800">🛒 ووکامرس</th>';
+  shops.forEach(s=>{
+    h+='<th style="padding:9px 10px;text-align:center;color:#67e8f9;font-weight:800">🏪 '+esc(s.name||('#'+s.vendor_id))+'</th>';
+  });
+  h+='<th style="padding:9px 10px;text-align:center;color:#94a3b8">وضعیت</th>';
+  h+='</tr></thead><tbody>';
+
+  (rep.profiles||[]).forEach((p,i)=>{
+    const loc=p.local||0, woo=p.woo||0, cov=p.coverage||{};
+    const bg = i%2 ? '#0b1220' : '#0f172a';
+    h+='<tr style="background:'+bg+';border-top:1px solid #1e293b">';
+    h+='<td style="padding:10px;color:#64748b">'+toFa(i+1)+'</td>';
+    h+='<td style="padding:10px"><div style="font-weight:800;color:#f1f5f9">'+esc(p.name||'')+'</div>';
+    if(p.suffix) h+='<div style="font-size:9.5px;color:#a78bfa;margin-top:2px">پسوند «'+esc(p.suffix)+'»</div>';
+    if(p.sync_on) h+='<div style="font-size:9px;color:#4ade80;margin-top:2px">🔄 سینک · '+(p.sync_target||'')+'</div>';
+    h+='</td>';
+    // local
+    h+='<td style="padding:10px;text-align:center"><div style="font-size:16px;font-weight:900;color:#60a5fa">'+toFa(loc)+'</div></td>';
+    // woo
+    const wPct=cov.woo||0;
+    const wColor = wPct>=95?'#22c55e':(wPct>=50?'#f59e0b':(woo>0?'#f97316':'#64748b'));
+    h+='<td style="padding:10px;text-align:center;min-width:88px">';
+    h+='<div style="font-size:15px;font-weight:900;color:'+wColor+'">'+toFa(woo)+'</div>';
+    if(loc>0) h+='<div style="font-size:9px;color:#94a3b8">'+toFa(wPct)+'٪</div>'+sfxBar(wPct,wColor);
+    h+='</td>';
+    shops.forEach(s=>{
+      const vid=s.vendor_id;
+      const sc=(p.shops&&p.shops[vid])||0;
+      const sp=cov['s'+vid]||0;
+      const col = sp>=95?'#22c55e':(sp>=50?'#f59e0b':(sc>0?'#06b6d4':'#64748b'));
+      h+='<td style="padding:10px;text-align:center;min-width:88px">';
+      h+='<div style="font-size:15px;font-weight:900;color:'+col+'">'+toFa(sc)+'</div>';
+      if(loc>0) h+='<div style="font-size:9px;color:#94a3b8">'+toFa(sp)+'٪</div>'+sfxBar(sp,col);
+      h+='</td>';
+    });
+    h+='<td style="padding:10px;text-align:center">'+sfxStatusChip(p.status||'empty')+'</td>';
+    h+='</tr>';
+  });
+  // totals row
+  h+='<tr style="background:#1e293b;border-top:2px solid #7c3aed">';
+  h+='<td style="padding:10px"></td><td style="padding:10px;font-weight:900;color:#e9d5ff">جمع</td>';
+  h+='<td style="padding:10px;text-align:center;font-weight:900;color:#93c5fd;font-size:15px">'+toFa(tot.local||0)+'</td>';
+  h+='<td style="padding:10px;text-align:center;font-weight:900;color:#c4b5fd;font-size:15px">'+toFa(tot.woo||0)+'</td>';
+  shops.forEach(s=>{
+    h+='<td style="padding:10px;text-align:center;font-weight:900;color:#67e8f9;font-size:15px">'+toFa((tot.shops&&tot.shops[s.vendor_id])||0)+'</td>';
+  });
+  h+='<td></td></tr>';
+  h+='</tbody></table></div>';
+  h+='<div style="margin-top:8px;font-size:10px;color:#64748b;line-height:1.7">تطبیق: remote_map + پسوند عنوان + عنوان بدون پسوند. پوشش ٪ = مقصد ÷ محلی (سقف ۱۰۰).</div>';
+  if(rep.delivery) h+='<div style="color:#4ade80;margin-top:6px">✅ گزارش فرستاده شد</div>';
+  return h+'</div>';
+}
 function sfxRender(rep,target){
+  if(rep && (rep.kind==='summary' || target==='summary' || target==='all')) return sfxRenderSummary(rep);
   const lbl=target==='woo'?'ووکامرس':'باسلام';
+
   let h='<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px;font-size:11px">';
   h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
    +'<b style="color:#e2e8f0">📊 آمار '+esc(lbl)+'</b>'

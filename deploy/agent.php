@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.32
+ * Version: 13.3.33
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -278,6 +278,10 @@ class Scraper_Auto_Shop_Plugin {
 		add_action( 'wp_ajax_scraper_direct_sync_progress', array( __CLASS__, 'ajax_direct_sync_progress' ) );
 		add_action( 'wp_ajax_scraper_test_woo_direct', array( __CLASS__, 'ajax_test_woo_direct' ) );
 		add_action( 'wp_ajax_scraper_enable_woo_direct', array( __CLASS__, 'ajax_enable_woo_direct' ) );
+		/* v13.3.33 / v10.115: جدول مقایسه نظیر‌به‌نظیر در پنل افزونه */
+		add_action( 'wp_ajax_scraper_sync_matrix_start', array( __CLASS__, 'ajax_sync_matrix_start' ) );
+		add_action( 'wp_ajax_scraper_sync_matrix_status', array( __CLASS__, 'ajax_sync_matrix_status' ) );
+		add_action( 'wp_ajax_scraper_sync_matrix', array( __CLASS__, 'ajax_sync_matrix' ) );
 
 		// Support chat AJAX endpoints (Customer & AI thread)
 		add_action( 'wp_ajax_submit_support_chat', array( __CLASS__, 'ajax_submit_support_chat' ) );
@@ -2673,6 +2677,213 @@ class Scraper_Auto_Shop_Plugin {
 	 * @param string $font_key
 	 * @return bool
 	 */
+	/**
+	 * v13.3.33: Ensure scraper4 helpers (matrix*) are loaded without HTML render.
+	 *
+	 * @return bool
+	 */
+	public static function load_scraper_matrix_engine() {
+		static $ok = null;
+		if ( null !== $ok ) {
+			return $ok;
+		}
+		if ( function_exists( 'matrixBuild' ) && function_exists( 'matrixQueryPage' ) ) {
+			$ok = true;
+			return true;
+		}
+		$scraper_file = plugin_dir_path( __FILE__ ) . 'scraper4.php';
+		if ( ! file_exists( $scraper_file ) ) {
+			$ok = false;
+			return false;
+		}
+		if ( ! defined( 'SCRAPER4_NO_RENDER' ) ) {
+			define( 'SCRAPER4_NO_RENDER', true );
+		}
+		$ob = ob_get_level();
+		@ob_start();
+		try {
+			require_once $scraper_file;
+			$ok = function_exists( 'matrixBuild' ) && function_exists( 'matrixQueryPage' );
+		} catch ( \Throwable $e ) {
+			error_log( 'matrix engine load: ' . $e->getMessage() );
+			$ok = false;
+		}
+		while ( ob_get_level() > $ob ) {
+			@ob_end_clean();
+		}
+		return (bool) $ok;
+	}
+
+	/**
+	 * v13.3.33: شروع ساخت جدول مقایسه روی سرور (پس‌زمینه).
+	 */
+	public static function ajax_sync_matrix_start() {
+		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => 'نشست امنیتی منقضی — Ctrl+F5' ), 403 );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'دسترسی غیرمجاز' ), 403 );
+		}
+		if ( ! self::load_scraper_matrix_engine() ) {
+			wp_send_json_error( array( 'message' => 'scraper4.php یا توابع matrix در دسترس نیست' ) );
+		}
+		@set_time_limit( 0 );
+		@ignore_user_abort( true );
+		$opts = array(
+			'profile'    => isset( $_REQUEST['profile'] ) ? sanitize_text_field( wp_unslash( (string) $_REQUEST['profile'] ) ) : 'all',
+			'source'     => 'wp_admin',
+			'background' => false,
+		);
+		$lock = defined( 'SYNC_MATRIX_LOCK_FILE' ) ? SYNC_MATRIX_LOCK_FILE : ( plugin_dir_path( __FILE__ ) . 'sync_matrix.lock' );
+		$fp   = @fopen( $lock, 'c' );
+		if ( ! $fp || ! flock( $fp, LOCK_EX | LOCK_NB ) ) {
+			if ( $fp ) {
+				@fclose( $fp );
+			}
+			wp_send_json_success(
+				array(
+					'ok'      => false,
+					'error'   => 'یک ساخت جدول در حال اجراست',
+					'running' => true,
+				)
+			);
+		}
+		if ( function_exists( 'matrixProgress' ) ) {
+			matrixProgress(
+				array(
+					'running'    => true,
+					'done'       => false,
+					'error'      => '',
+					'pct'        => 1,
+					'phase'      => 'start',
+					'started_at' => time(),
+					'source'     => 'wp_admin',
+					'log_add'    => array( '🚀 ساخت جدول از پنل افزونه وردپرس…' ),
+				)
+			);
+		}
+		/* پاسخ زود، ادامه در shutdown تا مرورگر timeout نکند */
+		$payload = wp_json_encode(
+			array(
+				'success' => true,
+				'data'    => array(
+					'ok'      => true,
+					'started' => true,
+					'message' => 'ساخت روی سرور شروع شد (مسیر WC مستقیم در صورت امکان)',
+					'running' => true,
+				),
+			)
+		);
+		if ( ! headers_sent() ) {
+			header( 'Content-Type: application/json; charset=UTF-8' );
+			header( 'Connection: close' );
+			header( 'Content-Length: ' . strlen( $payload ) );
+		}
+		echo $payload;
+		if ( function_exists( 'fastcgi_finish_request' ) ) {
+			@fastcgi_finish_request();
+		} else {
+			@ob_end_flush();
+			@flush();
+		}
+		register_shutdown_function(
+			function () use ( $fp, $lock, $opts ) {
+				try {
+					if ( function_exists( 'matrixBuild' ) ) {
+						matrixBuild( $opts );
+					}
+				} catch ( \Throwable $e ) {
+					if ( function_exists( 'matrixProgress' ) ) {
+						matrixProgress(
+							array(
+								'running' => false,
+								'done'    => true,
+								'error'   => $e->getMessage(),
+								'pct'     => 100,
+								'log_add' => array( '❌ ' . $e->getMessage() ),
+							)
+						);
+					}
+				}
+				@flock( $fp, LOCK_UN );
+				@fclose( $fp );
+				@unlink( $lock );
+			}
+		);
+		exit;
+	}
+
+	/**
+	 * v13.3.33: وضعیت جاب جدول مقایسه.
+	 */
+	public static function ajax_sync_matrix_status() {
+		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => 'نشست امنیتی منقضی — Ctrl+F5' ), 403 );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'دسترسی غیرمجاز' ), 403 );
+		}
+		if ( ! self::load_scraper_matrix_engine() ) {
+			wp_send_json_error( array( 'message' => 'scraper4 در دسترس نیست' ) );
+		}
+		$prog = function_exists( 'matrixProgressRead' ) ? matrixProgressRead() : array();
+		$has  = defined( 'SYNC_MATRIX_RESULT_FILE' ) && is_file( SYNC_MATRIX_RESULT_FILE );
+		$age  = $has ? ( time() - (int) @filemtime( SYNC_MATRIX_RESULT_FILE ) ) : -1;
+		$rows = 0;
+		if ( $has && function_exists( 'matrixResultLoad' ) ) {
+			$d    = matrixResultLoad();
+			$rows = (int) ( $d['row_count'] ?? 0 );
+		}
+		$direct = function_exists( 'wooDirectAvailable' ) && wooDirectAvailable();
+		wp_send_json_success(
+			array(
+				'ok'             => true,
+				'running'        => ! empty( $prog['running'] ),
+				'done'           => ! empty( $prog['done'] ),
+				'progress'       => $prog,
+				'has_result'     => $has,
+				'result_age_sec' => $age,
+				'result_rows'    => $rows,
+				'woo_direct'     => (bool) $direct,
+			)
+		);
+	}
+
+	/**
+	 * v13.3.33: خواندن صفحه‌بندی‌شدهٔ نتیجهٔ جدول مقایسه.
+	 */
+	public static function ajax_sync_matrix() {
+		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => 'نشست امنیتی منقضی — Ctrl+F5' ), 403 );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'دسترسی غیرمجاز' ), 403 );
+		}
+		if ( ! self::load_scraper_matrix_engine() || ! function_exists( 'matrixQueryPage' ) ) {
+			wp_send_json_error( array( 'message' => 'scraper4 / matrixQueryPage نیست' ) );
+		}
+		$opts = array(
+			'page'          => max( 1, (int) ( $_REQUEST['page'] ?? 1 ) ),
+			'per_page'      => max( 10, min( 200, (int) ( $_REQUEST['per_page'] ?? 50 ) ) ),
+			'q'             => isset( $_REQUEST['q'] ) ? sanitize_text_field( wp_unslash( (string) $_REQUEST['q'] ) ) : '',
+			'only_dup'      => ! empty( $_REQUEST['only_dup'] ),
+			'only_mismatch' => ! empty( $_REQUEST['only_mismatch'] ),
+			'only_missing'  => ! empty( $_REQUEST['only_missing'] ),
+		);
+		$out = matrixQueryPage( $opts );
+		if ( ! is_array( $out ) ) {
+			$out = array( 'ok' => false, 'error' => 'پاسخ نامعتبر' );
+		}
+		/* progress overlay */
+		if ( function_exists( 'matrixProgressRead' ) ) {
+			$out['progress'] = matrixProgressRead();
+			$out['running']  = ! empty( $out['progress']['running'] );
+		}
+		$out['woo_direct'] = function_exists( 'wooDirectAvailable' ) && wooDirectAvailable();
+		wp_send_json_success( $out );
+	}
+
+
 	public static function sync_ui_font_to_connections( $font_key ) {
 		$font_key = sanitize_key( (string) $font_key );
 		if ( $font_key === '' ) {
@@ -13498,7 +13709,65 @@ public static function get_embedded_storefront_assets() {
 						</div>
 						</div>
 					</div>
+				
+<!-- v13.3.33 / v10.115: جدول مقایسه نظیر‌به‌نظیر در پنل افزونه -->
+				<div class="admin-card" id="amphpSyncMatrixCard" style="margin-top:18px;background:linear-gradient(135deg,#0f172a,#1e1b4b);border:2px solid #7c3aed;border-radius:14px;padding:0;overflow:hidden;">
+					<div class="admin-card-header" style="background:transparent;border-bottom:1px solid #4c1d95;padding:14px 18px;">
+						<h3 style="color:#e9d5ff;margin:0;"><span>📊</span> جدول مقایسهٔ نظیر‌به‌نظیر</h3>
+						<span class="field-badge field-badge-blue" id="amphpSmBadge">پروفایل × WC × غرفه‌ها</span>
+					</div>
+					<div style="padding:16px 18px;">
+						<p style="margin:0 0 12px;color:#c4b5fd;font-size:0.86rem;line-height:1.75;">
+							ساخت <b>کاملاً سرورساید</b> است — مناسب کاتالوگ بزرگ.
+							وقتی اتصال مستقیم ووکامرس فعال باشد، محصولات WC از <b>دیتابیس محلی</b> خوانده می‌شوند (خیلی سریع‌تر از REST API).
+							نتیجه در فایل سرور ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند.
+						</p>
+						<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
+							<button type="button" class="button button-primary" id="amphpSmStart" style="font-weight:800;background:#7c3aed;border:none;">🚀 ساخت روی سرور</button>
+							<button type="button" class="button" id="amphpSmLoad" style="font-weight:800;border-color:#06b6d4;color:#0e7490;">📖 خواندن نتیجه</button>
+							<span id="amphpSmHint" style="font-size:0.82rem;font-weight:700;color:#a5b4fc;"></span>
+						</div>
+						<div id="amphpSmJobBar" style="display:none;margin-bottom:12px;padding:10px 12px;background:#0f172a;border:1px solid #334155;border-radius:10px;">
+							<div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#e2e8f0;margin-bottom:6px;">
+								<span id="amphpSmJobLabel">در حال ساخت…</span><span id="amphpSmJobPct">0٪</span>
+							</div>
+							<div style="height:8px;background:#1e293b;border-radius:99px;overflow:hidden;">
+								<div id="amphpSmJobFill" style="height:100%;width:0%;background:linear-gradient(90deg,#7c3aed,#2563eb);transition:width .3s;"></div>
+							</div>
+							<div id="amphpSmJobLog" style="margin-top:8px;max-height:100px;overflow:auto;font-size:0.75rem;color:#94a3b8;line-height:1.65;"></div>
+						</div>
+						<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center;">
+							<input type="search" id="amphpSmQ" placeholder="جستجوی عنوان…" style="flex:1;min-width:140px;font-size:13px;padding:6px 10px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
+							<select id="amphpSmPer" style="max-width:120px;font-size:13px;padding:6px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
+								<option value="25">۲۵ / صفحه</option>
+								<option value="50" selected>۵۰ / صفحه</option>
+								<option value="100">۱۰۰ / صفحه</option>
+								<option value="200">۲۰۰ / صفحه</option>
+							</select>
+							<label style="font-size:0.8rem;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="amphpSmOnlyMis"> فقط مغایرت</label>
+							<label style="font-size:0.8rem;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="amphpSmOnlyMiss"> فقط ناقص</label>
+							<label style="font-size:0.8rem;color:#cbd5e1;display:flex;gap:4px;align-items:center;cursor:pointer;"><input type="checkbox" id="amphpSmOnlyDup"> فقط تکراری</label>
+							<button type="button" class="button" id="amphpSmFilter" style="font-weight:700;">اعمال فیلتر</button>
+						</div>
+						<div id="amphpSmSummary" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:0.8rem;"></div>
+						<div id="amphpSmMeta" style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;"></div>
+						<div style="overflow:auto;max-height:min(70vh,560px);border:1px solid #334155;border-radius:10px;background:#0f172a;">
+							<table id="amphpSmTable" style="width:100%;border-collapse:collapse;font-size:0.78rem;min-width:680px;color:#e2e8f0;">
+								<thead style="position:sticky;top:0;background:#1e293b;z-index:2;">
+									<tr id="amphpSmHead"></tr>
+								</thead>
+								<tbody id="amphpSmBody">
+									<tr><td style="padding:18px;color:#64748b;text-align:center;">برای شروع «ساخت روی سرور» یا «خواندن نتیجه» را بزنید</td></tr>
+								</tbody>
+							</table>
+						</div>
+						<div id="amphpSmPager" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:12px;"></div>
+					</div>
 				</div>
+
+				
+				</div>
+
 
 				<!-- ================= TAB 7: CHAT LOGS & HISTORY ================= -->
 				<div id="tab-logs" class="scraper-tab-panel">
@@ -14703,6 +14972,258 @@ $('#scraperAdminTabs .scraper-tab-link').on('click', function(e){
 			// Sync to WooCommerce Button — product-card live queue (v13.2 / v10.103)
 			var amphpDirectSyncTimer = null;
 			var amphpShopNonce = '<?php echo esc_js( wp_create_nonce( 'scraper_shop_admin_nonce' ) ); ?>';
+
+			/* v13.3.33 / v10.115: جدول مقایسه در پنل افزونه */
+			if (typeof amphpEsc !== 'function') {
+				window.amphpEsc = function(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); };
+			}
+			window._amphpSmPage = 1;
+			window._amphpSmPoll = null;
+			function amphpSmFa(n){
+				try {
+					return String(n).replace(/\d/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[d]; });
+				} catch(e){ return String(n); }
+			}
+			function amphpSmMoney(n){
+				n = parseInt(n,10)||0; if(n<=0) return '—';
+				try { return amphpSmFa(n.toLocaleString('en-US')); } catch(e){ return String(n); }
+			}
+			function amphpSmToneBg(t){
+				return ({ok:'#14532d',warn:'#713f12',bad:'#7f1d1d',missing_dst:'#1e3a8a',extra:'#334155',no_src:'#3f3f46',na:'#0f172a'})[t]||'#0f172a';
+			}
+			function amphpSmToneFg(t){
+				return ({ok:'#bbf7d0',warn:'#fde68a',bad:'#fecaca',missing_dst:'#bfdbfe',extra:'#e2e8f0',no_src:'#d4d4d8',na:'#64748b'})[t]||'#94a3b8';
+			}
+			function amphpSmCell(html, tone){
+				var bg=amphpSmToneBg(tone), fg=amphpSmToneFg(tone);
+				return '<td style="padding:7px 8px;border-bottom:1px solid #1e293b;background:'+bg+';color:'+fg+';vertical-align:top;line-height:1.55">'+html+'</td>';
+			}
+			function amphpSmShowJob(on){
+				var bar=document.getElementById('amphpSmJobBar');
+				if(bar) bar.style.display = on ? 'block' : 'none';
+			}
+			function amphpSmPaintProgress(p){
+				p = p || {};
+				amphpSmShowJob(true);
+				var pct = Math.max(0, Math.min(100, parseInt(p.pct,10)||0));
+				var elP = document.getElementById('amphpSmJobPct');
+				var elF = document.getElementById('amphpSmJobFill');
+				var elL = document.getElementById('amphpSmJobLabel');
+				var elG = document.getElementById('amphpSmJobLog');
+				if(elP) elP.textContent = amphpSmFa(pct)+'٪';
+				if(elF) elF.style.width = pct+'%';
+				if(elL){
+					var ph = p.phase || '';
+					elL.textContent = p.running ? ('⏳ '+(ph||'در حال ساخت')+'…') : (p.done ? (p.error?'❌ خطا':'✅ تمام') : '—');
+				}
+				if(elG && Array.isArray(p.log)){
+					var lines = p.log.slice(-10).map(function(x){ return (x && x.m) ? x.m : String(x); });
+					elG.innerHTML = lines.map(function(l){ return '<div>'+amphpEsc(l)+'</div>'; }).join('');
+				}
+			}
+			function amphpSmAjax(action, extra, cb){
+				var data = $.extend({
+					action: action,
+					nonce: (typeof amphpShopNonce !== 'undefined' ? amphpShopNonce : ''),
+					_ajax_nonce: (typeof amphpShopNonce !== 'undefined' ? amphpShopNonce : '')
+				}, extra || {});
+				if(typeof amphpWooNonce !== 'undefined' && amphpWooNonce){
+					data.nonce = amphpWooNonce;
+					data._ajax_nonce = amphpWooNonce;
+				}
+				$.ajax({
+					url: (typeof ajaxurl !== 'undefined' ? ajaxurl : '<?php echo esc_js( admin_url( "admin-ajax.php" ) ); ?>'),
+					type: 'POST', dataType: 'json', data: data,
+					success: function(res){
+						var d = (res && res.success && res.data) ? res.data : (res && res.data) ? res.data : res;
+						if(cb) cb(d, res);
+					},
+					error: function(xhr){
+						var msg = 'خطای شبکه';
+						try {
+							var b = xhr && xhr.responseText ? String(xhr.responseText) : '';
+							if(b === '-1' || (xhr && xhr.status === 403)) msg = 'نشست امنیتی — Ctrl+F5';
+						} catch(e){}
+						if(cb) cb({ ok:false, error: msg }, null);
+					}
+				});
+			}
+			function amphpSmStart(){
+				amphpSmShowJob(true);
+				var elL = document.getElementById('amphpSmJobLabel');
+				var body = document.getElementById('amphpSmBody');
+				if(elL) elL.textContent = '🚀 ارسال جاب…';
+				if(body) body.innerHTML = '<tr><td style="padding:16px;text-align:center;color:#a5b4fc">ساخت روی سرور شروع شد — می‌توانید این صفحه را باز بگذارید</td></tr>';
+				var hint = document.getElementById('amphpSmHint');
+				if(hint) hint.textContent = 'شروع…';
+				amphpSmAjax('scraper_sync_matrix_start', { source: 'wp_admin' }, function(d){
+					if(!d || (!d.ok && !d.started && !d.running)){
+						if(hint) hint.innerHTML = '<span style="color:#f87171">'+(d && (d.error||d.message) || 'شروع ناموفق')+'</span>';
+						if(d && d.running) amphpSmPoll();
+						return;
+					}
+					if(hint) hint.innerHTML = '<span style="color:#4ade80">✓ جاب روی سرور</span>';
+					amphpSmPoll();
+				});
+			}
+			function amphpSmPoll(){
+				if(window._amphpSmPoll) clearInterval(window._amphpSmPoll);
+				var tick = function(){
+					amphpSmAjax('scraper_sync_matrix_status', {}, function(d){
+						if(!d) return;
+						if(d.progress) amphpSmPaintProgress(d.progress);
+						var badge = document.getElementById('amphpSmBadge');
+						if(badge && typeof d.woo_direct !== 'undefined'){
+							badge.textContent = d.woo_direct ? '⚡ WC مستقیم' : '🌐 WC از API';
+						}
+						if(d.running){ /* continue */ }
+						else {
+							if(window._amphpSmPoll){ clearInterval(window._amphpSmPoll); window._amphpSmPoll=null; }
+							if(d.has_result){ setTimeout(function(){ amphpSmLoad(1); }, 400); }
+						}
+					});
+				};
+				tick();
+				window._amphpSmPoll = setInterval(tick, 2000);
+			}
+			function amphpSmLoad(page){
+				page = page || 1; window._amphpSmPage = page;
+				var body = document.getElementById('amphpSmBody');
+				var sum = document.getElementById('amphpSmSummary');
+				var meta = document.getElementById('amphpSmMeta');
+				var pager = document.getElementById('amphpSmPager');
+				var head = document.getElementById('amphpSmHead');
+				if(body) body.innerHTML = '<tr><td style="padding:16px;text-align:center;color:#67e8f9">📖 خواندن از فایل سرور…</td></tr>';
+				var extra = {
+					page: String(page),
+					per_page: String((document.getElementById('amphpSmPer')||{}).value || 50),
+					q: (document.getElementById('amphpSmQ')||{}).value || ''
+				};
+				if((document.getElementById('amphpSmOnlyMis')||{}).checked) extra.only_mismatch = '1';
+				if((document.getElementById('amphpSmOnlyMiss')||{}).checked) extra.only_missing = '1';
+				if((document.getElementById('amphpSmOnlyDup')||{}).checked) extra.only_dup = '1';
+				amphpSmAjax('scraper_sync_matrix', extra, function(d){
+					if(d && d.progress) amphpSmPaintProgress(d.progress);
+					if(d && d.running) amphpSmPoll();
+					if(!d || d.ok === false){
+						if(d && d.need_build){
+							if(body) body.innerHTML = '<tr><td style="padding:16px;text-align:center;color:#fbbf24">هنوز جدولی نیست. «🚀 ساخت روی سرور» را بزنید'+(d.running?' (در حال ساخت…)':'')+'</td></tr>';
+							if(d.running) amphpSmPoll();
+							return;
+						}
+						/* wp_send_json_success wraps — if message */
+						var err = (d && (d.error || d.message)) ? (d.error || d.message) : 'ناموفق';
+						if(body) body.innerHTML = '<tr><td style="padding:12px;color:#f87171">'+amphpEsc(err)+'</td></tr>';
+						return;
+					}
+					if(d.done || (d.progress && d.progress.done)) amphpSmShowJob(!!(d.progress && d.progress.running));
+					var shops = d.shops || [];
+					var h = '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">#</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">عنوان</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">پروفایل</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">مبدأ</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">پروفایل ﷼</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">WC انتظار</th>'
+						+'<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">WC واقعی</th>';
+					shops.forEach(function(s){
+						h += '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">🏪 '+(s.name||('#'+s.vendor_id))+'</th>';
+					});
+					h += '<th style="padding:8px;text-align:right;border-bottom:1px solid #475569">وضعیت</th>';
+					if(head) head.innerHTML = h;
+					var s = d.summary || {};
+					if(sum){
+						var chip = function(lab,val,bg){ return '<span style="background:'+bg+';color:#fff;padding:4px 8px;border-radius:8px;font-weight:800">'+lab+': '+amphpSmFa(val||0)+'</span>'; };
+						sum.innerHTML = chip('کل', d.row_count_all||s.total,'#4c1d95')+chip('فیلتر',d.total,'#5b21b6')+chip('یکسان',s.ok,'#166534')+chip('مغایرت',s.price_mismatch,'#b91c1c')
+							+chip('نیست WC',s.missing_woo,'#1d4ed8')+chip('نیست غرفه',s.missing_bsl,'#0369a1');
+					}
+					var when = d.generated_at ? new Date(d.generated_at*1000).toLocaleString('fa-IR') : '—';
+					if(meta){
+						meta.innerHTML = '📖 '+when+' · منبع '+(d.source||'—')
+							+' · صفحه '+amphpSmFa(d.page)+'/'+amphpSmFa(d.pages)
+							+' · WC: '+amphpSmFa(d.woo_count||0)
+							+(d.woo_direct ? ' · <b style="color:#4ade80">⚡ مستقیم</b>' : ' · 🌐 API')
+							+(d.woo_error ? (' · ⚠️ '+amphpEsc(d.woo_error)) : '')
+							+(d.bsl_error ? (' · ⚠️ BSL: '+amphpEsc(d.bsl_error)) : '');
+					}
+					var badge = document.getElementById('amphpSmBadge');
+					if(badge && typeof d.woo_direct !== 'undefined'){
+						badge.textContent = d.woo_direct ? '⚡ WC مستقیم' : '🌐 WC از API';
+					}
+					var rows = d.rows || [];
+					if(!rows.length){
+						if(body) body.innerHTML = '<tr><td colspan="20" style="padding:16px;text-align:center;color:#94a3b8">ردیفی در این فیلتر نیست</td></tr>';
+					} else if(body){
+						var start = ((d.page||1)-1)*(d.per_page||50);
+						body.innerHTML = rows.map(function(r,i){
+							var stMap = {ok:['✅ یکسان','ok'],mismatch:['❌ مغایرت','bad'],missing:['📤 ناقص','missing_dst'],only_profile:['📘 فقط مبدأ','missing_dst'],only_dest:['📦 فقط مقصد','extra'],partial:['➖ ناقص','warn']};
+							var st = stMap[r.status] || ['?','na'];
+							var flags = '';
+							(r.flags||[]).forEach(function(f){
+								if(String(f).indexOf('dup')===0) flags += ' <span style="background:#6d28d9;color:#fff;border-radius:4px;padding:0 5px;font-size:10px">تکراری</span>';
+							});
+							var tr = '<tr>';
+							tr += amphpSmCell(amphpSmFa(start+i+1),'na');
+							tr += amphpSmCell('<div style="font-weight:700;max-width:200px">'+amphpEsc(r.title||r.bare||'')+'</div>','na');
+							tr += amphpSmCell(amphpEsc(r.profile||'—'),'na');
+							tr += amphpSmCell(amphpSmMoney(r.src_price), r.src_price>0?'na':'no_src');
+							tr += amphpSmCell(amphpSmMoney(r.profile_price), r.profile_price>0?'na':'no_src');
+							tr += amphpSmCell(amphpSmMoney(r.woo_expect), r.woo_expect>0?'na':'no_src');
+							if(r.woo){
+								tr += amphpSmCell(amphpSmMoney(r.woo.price)+'<div style="font-size:9px;opacity:.75">#'+amphpSmFa(r.woo.id)+' · '+amphpEsc(r.woo.status||'')+'</div>', r.woo_tone||'na');
+							} else {
+								tr += amphpSmCell(r.profile_hits?'نیست':'—', r.profile_hits?'missing_dst':'na');
+							}
+							shops.forEach(function(sh){
+								var cell = (r.shops && r.shops[sh.vendor_id]) ? r.shops[sh.vendor_id] : null;
+								if(cell){
+									var exp = cell.expect || r.bsl_expect || 0;
+									tr += amphpSmCell(amphpSmMoney(cell.price)+'<div style="font-size:9px;opacity:.75">انتظار '+amphpSmMoney(exp)+' · #'+amphpSmFa(cell.id)+'</div>', cell.tone||'na');
+								} else {
+									tr += amphpSmCell(r.profile_hits?'نیست':'—', r.profile_hits?'missing_dst':'na');
+								}
+							});
+							tr += amphpSmCell(st[0]+flags, st[1]);
+							tr += '</tr>';
+							return tr;
+						}).join('');
+					}
+					if(pager){
+						var pg = '';
+						var mk = function(lab,p,dis){
+							return '<button type="button" class="button'+(p===d.page?' button-primary':'')+'" '+(dis?'disabled':'')+' data-sm-page="'+p+'" style="font-size:12px;min-width:36px">' + lab + '</button>';
+						};
+						pg += mk('«', Math.max(1,(d.page||1)-1), (d.page||1)<=1);
+						var a = Math.max(1,(d.page||1)-2), b = Math.min(d.pages||1,(d.page||1)+2);
+						for(var p=a;p<=b;p++) pg += mk(amphpSmFa(p), p, false);
+						pg += mk('»', Math.min(d.pages||1,(d.page||1)+1), (d.page||1)>=(d.pages||1));
+						pager.innerHTML = pg;
+						$(pager).find('[data-sm-page]').on('click', function(){
+							var p = parseInt($(this).attr('data-sm-page'),10)||1;
+							amphpSmLoad(p);
+						});
+					}
+				});
+			}
+			$(function(){
+				$('#amphpSmStart').on('click', function(e){ e.preventDefault(); amphpSmStart(); });
+				$('#amphpSmLoad, #amphpSmFilter').on('click', function(e){ e.preventDefault(); amphpSmLoad(1); });
+				$('#amphpSmPer').on('change', function(){ amphpSmLoad(1); });
+				$('#amphpSmQ').on('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); amphpSmLoad(1); }});
+				/* silent status on load */
+				amphpSmAjax('scraper_sync_matrix_status', {}, function(d){
+					if(!d) return;
+					if(d.running){ amphpSmPaintProgress(d.progress||{}); amphpSmPoll(); }
+					var badge = document.getElementById('amphpSmBadge');
+					if(badge && typeof d.woo_direct !== 'undefined'){
+						badge.textContent = d.woo_direct ? '⚡ WC مستقیم' : '🌐 WC از API';
+					}
+					var hint = document.getElementById('amphpSmHint');
+					if(hint && d.has_result){
+						hint.innerHTML = '<span style="color:#67e8f9">نتیجهٔ قبلی: '+amphpSmFa(d.result_rows||0)+' ردیف — «خواندن» را بزنید</span>';
+					}
+				});
+			});
+
 			function amphpEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
 			function amphpRenderDirectCards(p){
 				var $box = $('#amphpDirectSyncQueue');

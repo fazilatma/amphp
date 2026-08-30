@@ -298,7 +298,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.114';
+const APP_VERSION = '10.115';
 const APP_VERSION_DATE = '1405/06/13';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -22288,7 +22288,12 @@ function matrixBuild(array $opts = []): array {
     $wooErr = '';
     $wooRows = [];
     $w = $cn['woocommerce'] ?? [];
-    matrixProgress(['phase' => 'woo_fetch', 'pct' => 32, 'log_add' => ['📥 دریافت محصولات ووکامرس...']]);
+    matrixProgress(['phase' => 'woo_fetch', 'pct' => 32, 'log_add' => [
+            '📥 دریافت محصولات ووکامرس…'
+            . ((function_exists('wooDirectAvailable') && wooDirectAvailable())
+                ? ' (مسیر ⚡ مستقیم DB — سریع)'
+                : ' (مسیر 🌐 REST API — کندتر)'),
+        ]]);
     try {
         if (!empty($w['store_url']) || function_exists('wc_get_products')) {
             // progress via reconProgress is separate; also tick matrix
@@ -37895,9 +37900,111 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
 }
 
 /** همهٔ محصولات ووکامرس */
+/**
+ * v10.115: واکشی محصولات ووکامرس از دیتابیس محلی (اتصال مستقیم).
+ * وقتی اسکرپر داخل همان وردپرس/ووکامرس لود شود، به‌جای REST API صدها برابر سریع‌تر است.
+ * @return list<array{id:int,title:string,price:int,status:string}>
+ */
+function reconFetchWooDirect(int $max = 0): array {
+    $rows = [];
+    if (!function_exists('wc_get_products') && !function_exists('get_posts')) {
+        return $rows;
+    }
+    $limit = $max > 0 ? $max : 50000;
+    if (function_exists('wc_get_products')) {
+        $page = 1;
+        $per = 200;
+        $got = 0;
+        while ($got < $limit) {
+            $batch = wc_get_products([
+                'limit'  => $per,
+                'page'   => $page,
+                'status' => ['publish', 'draft', 'pending', 'private'],
+                'orderby'=> 'ID',
+                'order'  => 'ASC',
+                'return' => 'objects',
+            ]);
+            if (!is_array($batch) || !$batch) break;
+            foreach ($batch as $pr) {
+                if (!is_object($pr) || !method_exists($pr, 'get_id')) continue;
+                $name = trim((string)$pr->get_name());
+                if ($name === '') continue;
+                $reg = (string)$pr->get_regular_price();
+                if ($reg === '' || $reg === null) $reg = (string)$pr->get_price();
+                $rows[] = [
+                    'id'     => (int)$pr->get_id(),
+                    'title'  => $name,
+                    'price'  => (int)preg_replace('~\D~', '', (string)$reg),
+                    'status' => (string)$pr->get_status(),
+                    'via'    => 'direct',
+                ];
+                $got++;
+                if ($got >= $limit) break;
+            }
+            if (count($batch) < $per) break;
+            $page++;
+            if ($page % 5 === 0) {
+                reconProgress([
+                    'phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+                    'log_add' => ['⚡ مستقیم WC: ' . count($rows) . ' محصول (صفحه ' . $page . ')'],
+                ]);
+            }
+        }
+        if ($rows) {
+            reconProgress([
+                'phase' => 'fetch', 'fetched' => count($rows),
+                'log_add' => ['⚡ ووکامرس مستقیم (DB): ' . count($rows) . ' محصول — بدون REST API'],
+            ]);
+        }
+        return $rows;
+    }
+    /* fallback get_posts */
+    $raw = get_posts([
+        'post_type'      => 'product',
+        'post_status'    => ['publish', 'draft', 'pending', 'private'],
+        'posts_per_page' => min($limit, 5000),
+        'orderby'        => 'ID',
+        'order'          => 'ASC',
+    ]);
+    foreach ((array)$raw as $post) {
+        if (!is_object($post)) continue;
+        $pid = (int)$post->ID;
+        $name = trim((string)($post->post_title ?? ''));
+        if ($name === '') continue;
+        $reg = (string)get_post_meta($pid, '_regular_price', true);
+        if ($reg === '') $reg = (string)get_post_meta($pid, '_price', true);
+        $rows[] = [
+            'id' => $pid, 'title' => $name,
+            'price' => (int)preg_replace('~\D~', '', $reg),
+            'status' => (string)($post->post_status ?? ''),
+            'via' => 'direct',
+        ];
+    }
+    if ($rows) {
+        reconProgress([
+            'phase' => 'fetch', 'fetched' => count($rows),
+            'log_add' => ['⚡ ووکامرس مستقیم (posts): ' . count($rows) . ' محصول'],
+        ]);
+    }
+    return $rows;
+}
+
 function reconFetchWoo(array $w, int $maxPages = 0): array {
+    /* v10.115: اگر داخل وردپرس هستیم، اول DB مستقیم — API خیلی کندتر است */
+    if (function_exists('wooDirectAvailable') && wooDirectAvailable()) {
+        $direct = reconFetchWooDirect($maxPages > 0 ? $maxPages * 100 : 0);
+        if ($direct) return $direct;
+    }
     if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
+    $url = rtrim(trim((string)($w['store_url'] ?? '')), '/');
+    $ck  = trim((string)($w['consumer_key'] ?? ''));
+    $cs  = trim((string)($w['consumer_secret'] ?? ''));
+    if ($url === '' || $ck === '' || $cs === '') {
+        reconProgress(['log_add' => ['⚠️ تنظیمات API ووکامرس ناقص و اتصال مستقیم هم در دسترس نبود']]);
+        return $rows;
+    }
+    reconProgress(['log_add' => ['🌐 واکشی ووکامرس از REST API (کندتر از مستقیم)…']]);
     for ($page = 1; $page <= $maxPages; $page++) {
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
             'products?per_page=100&status=any&page=' . $page);
@@ -37909,12 +38016,13 @@ function reconFetchWoo(array $w, int $maxPages = 0): array {
             if ($name === '') continue;
             $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
                        'price' => (int)preg_replace('~[^\d]~', '', (string)($pr['regular_price'] ?? '0')),
-                       'status' => (string)($pr['status'] ?? '')];
+                       'status' => (string)($pr['status'] ?? ''),
+                       'via' => 'api'];
         }
         // v8.64: نمونهٔ واقعی از عنوان‌های مقصد — برای وقتی تطبیق نمی‌خورد
         $fLog = ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')'];
         if ($page === 1) {
-            foreach (array_slice($rows, 0, 3) as $s) $fLog[] = '  • ' . mb_substr($s['title'], 0, 50);
+            foreach (array_slice($rows, 0, 3) as $srow) $fLog[] = '  • ' . mb_substr($srow['title'], 0, 50);
         }
         reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
             'log_add' => $fLog]);
@@ -52907,7 +53015,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div id="smJobLog" style="margin-top:6px;max-height:90px;overflow:auto;font-size:10px;color:#94a3b8;line-height:1.6"></div>
 </div>
 <div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
-ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند.
+ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). اگر اسکرپر داخل وردپرس باشد، WC از <b>دیتابیس مستقیم</b> خوانده می‌شود (سریع‌تر از API). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند. همین جدول در <b>افزونه → تب فروشگاه</b> هم هست.
 پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول».
 رنگ‌ها: <span style="background:#14532d;color:#bbf7d0;padding:1px 6px;border-radius:4px">یکسان</span>
 <span style="background:#713f12;color:#fde68a;padding:1px 6px;border-radius:4px">نزدیک/هشدار</span>
@@ -61552,6 +61660,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.115', t:'📊 جدول مقایسه در افزونه + WC مستقیم (سریع)', items:[
+    'جدول نظیر‌به‌نظیر در تب «فروشگاه» افزونه وردپرس هم آمده (ساخت/خواندن سرورساید).',
+    'واکشی ووکامرس وقتی داخل WP باشد از دیتابیس مستقیم است — بدون REST API کند.',
+    'اگر مستقیم در دسترس نباشد، همان REST API قبلی fallback می‌ماند.',
+  ]},
   {v:'10.114', t:'📋 آمار خلاصهٔ جدولی هر پروفایل (محلی×WC×غرفه‌ها)', items:[
     'بخش «آمار محصولات هر پروفایل» جدول خلاصهٔ زیبا دارد: تعداد در پروفایل،',
     'ووکامرس و هر غرفهٔ باسلام + نوار پوشش رنگی و وضعیت همگام/ناقص/فقط محلی.',

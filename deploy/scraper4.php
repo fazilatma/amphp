@@ -71,6 +71,9 @@ const RECON_AUTO_STATE_FILE = __DIR__ . '/recon_auto_state.json'; // v10.107
 const SYNC_MATRIX_PROGRESS_FILE = __DIR__ . '/sync_matrix_progress.json'; // v10.113
 const SYNC_MATRIX_RESULT_FILE   = __DIR__ . '/sync_matrix_result.json';   // v10.113
 const SYNC_MATRIX_LOCK_FILE     = __DIR__ . '/sync_matrix.lock';          // v10.113
+const SYNC_MATRIX_FIX_PROGRESS_FILE = __DIR__ . '/sync_matrix_fix_progress.json'; // v10.117
+const SYNC_MATRIX_FIX_LOCK_FILE     = __DIR__ . '/sync_matrix_fix.lock';          // v10.117
+const SYNC_MATRIX_FIX_STOP_FILE     = __DIR__ . '/sync_matrix_fix_stop.json';     // v10.117
 const CATFIX_AUTO_STATE_FILE = __DIR__ . '/catfix_auto_state.json'; // v10.107
 const RECON_FETCH_MAX_PAGES = 400; // v10.107: غرفه‌های بزرگ
 const SUFFIX_PROGRESS_FILE = __DIR__ . '/suffix_progress.json'; // v8.53
@@ -298,7 +301,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.116';
+const APP_VERSION = '10.117';
 const APP_VERSION_DATE = '1405/06/13';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
@@ -22692,6 +22695,460 @@ function matrixBuild(array $opts = []): array {
  * اجرای جاب ساخت ماتریس با قفل فایل.
  * background=true → پاسخ زود و ادامه در همان درخواست پس از flush (مثل recon)
  */
+
+/* =====================================================================
+ *  v10.117: اصلاح مغایرت از روی جدول مقایسه (سرورساید + لاگ زنده)
+ *  start:  ?sync_matrix_fix_start=1  (یا POST action=)
+ *  status: ?sync_matrix_fix_status=1
+ *  stop:   ?sync_matrix_fix_stop=1
+ *  از نتیجهٔ sync_matrix_result.json می‌خواند و قیمت WC/غرفه‌ها را
+ *  طبق «انتظار» اصلاح می‌کند؛ هر ردیف همان لحظه در فایل نتیجه به‌روز می‌شود.
+ * ===================================================================== */
+
+function matrixFixProgress(array $patch): void {
+    $cur = [];
+    if (is_file(SYNC_MATRIX_FIX_PROGRESS_FILE)) {
+        $d = json_decode((string)@file_get_contents(SYNC_MATRIX_FIX_PROGRESS_FILE), true);
+        if (is_array($d)) $cur = $d;
+    }
+    $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
+    if (isset($patch['log_add'])) {
+        foreach ((array)$patch['log_add'] as $l) {
+            $log[] = ['t' => time(), 'm' => (string)$l];
+        }
+        if (count($log) > 400) $log = array_slice($log, -400);
+        unset($patch['log_add']);
+    }
+    if (isset($patch['live_add']) && is_array($patch['live_add'])) {
+        $live = is_array($cur['live'] ?? null) ? $cur['live'] : [];
+        $live[] = $patch['live_add'];
+        if (count($live) > 80) $live = array_slice($live, -80);
+        $cur['live'] = $live;
+        unset($patch['live_add']);
+    }
+    $cur = array_merge($cur, $patch);
+    $cur['log'] = $log;
+    $cur['ts'] = time();
+    @file_put_contents(SYNC_MATRIX_FIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+}
+
+function matrixFixProgressRead(): array {
+    if (!is_file(SYNC_MATRIX_FIX_PROGRESS_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(SYNC_MATRIX_FIX_PROGRESS_FILE), true);
+    return is_array($d) ? $d : [];
+}
+
+function matrixFixStopRequested(): bool {
+    return is_file(SYNC_MATRIX_FIX_STOP_FILE);
+}
+
+function matrixFixStopClear(): void {
+    @unlink(SYNC_MATRIX_FIX_STOP_FILE);
+}
+
+/** به‌روزرسانی یک ردیف در فایل نتیجهٔ ماتریس (با کلید bare) */
+function matrixResultPatchRow(string $bare, array $rowPatch, ?array $summaryPatch = null): bool {
+    $data = matrixResultLoad();
+    if (!$data || empty($data['rows']) || !is_array($data['rows'])) return false;
+    $found = false;
+    foreach ($data['rows'] as $i => $r) {
+        if (!is_array($r)) continue;
+        if ((string)($r['bare'] ?? '') !== $bare) continue;
+        $data['rows'][$i] = array_merge($r, $rowPatch);
+        /* nested shops merge */
+        if (isset($rowPatch['shops']) && is_array($rowPatch['shops'])) {
+            $shops = is_array($r['shops'] ?? null) ? $r['shops'] : [];
+            foreach ($rowPatch['shops'] as $vid => $cell) {
+                if (is_array($cell) && isset($shops[$vid]) && is_array($shops[$vid])) {
+                    $shops[$vid] = array_merge($shops[$vid], $cell);
+                } else {
+                    $shops[$vid] = $cell;
+                }
+            }
+            $data['rows'][$i]['shops'] = $shops;
+        }
+        if (isset($rowPatch['woo']) && is_array($rowPatch['woo'])) {
+            $w0 = is_array($r['woo'] ?? null) ? $r['woo'] : [];
+            $data['rows'][$i]['woo'] = array_merge($w0, $rowPatch['woo']);
+        }
+        $found = true;
+        break;
+    }
+    if (!$found) return false;
+    if (is_array($summaryPatch)) {
+        $sum = is_array($data['summary'] ?? null) ? $data['summary'] : [];
+        $data['summary'] = array_merge($sum, $summaryPatch);
+    }
+    $data['fix_at'] = time();
+    return matrixResultSave($data);
+}
+
+/**
+ * ووکامرس: قیمت را با API یا مستقیم DB تنظیم می‌کند.
+ * $priceToman عدد صحیح تومان.
+ */
+function matrixFixWooPrice(array $cn, int $pid, int $priceToman): array {
+    if ($pid <= 0 || $priceToman <= 0) {
+        return ['ok' => false, 'error' => 'شناسه/قیمت نامعتبر'];
+    }
+    /* direct when in WP */
+    if (function_exists('wooDirectAvailable') && wooDirectAvailable() && function_exists('wc_get_product')) {
+        try {
+            $p = wc_get_product($pid);
+            if ($p && is_object($p)) {
+                $p->set_regular_price((string)$priceToman);
+                if (method_exists($p, 'set_price')) $p->set_price((string)$priceToman);
+                $p->save();
+                return ['ok' => true, 'via' => 'direct', 'id' => $pid, 'price' => $priceToman];
+            }
+        } catch (Throwable $e) {
+            /* fall through to API */
+        }
+    }
+    $w = $cn['woocommerce'] ?? [];
+    if (empty($w['store_url']) || empty($w['consumer_key'])) {
+        return ['ok' => false, 'error' => 'تنظیمات WC ناقص و direct در دسترس نیست'];
+    }
+    $r = wooEditProduct($w, $pid, [
+        'regular_price' => (string)$priceToman,
+        'price' => (string)$priceToman,
+    ]);
+    if (!empty($r['ok'])) return ['ok' => true, 'via' => 'api', 'id' => $pid, 'price' => $priceToman];
+    return ['ok' => false, 'error' => (string)($r['error'] ?? ('HTTP ' . ($r['code'] ?? 0))), 'code' => (int)($r['code'] ?? 0)];
+}
+
+/** باسلام: قیمت تومان → ریال ×۱۰ */
+function matrixFixBslPrice(string $tk, int $vid, int $pid, int $priceToman): array {
+    if ($pid <= 0 || $priceToman <= 0 || $tk === '') {
+        return ['ok' => false, 'error' => 'ورودی ناقص'];
+    }
+    $rial = $priceToman * 10;
+    $bu = ['primary_price' => $rial];
+    $r = bslReq($tk, 'PATCH', 'products/' . $pid, $bu);
+    if ((int)($r['code'] ?? 0) === 404 && $vid > 0) {
+        $r = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $pid, $bu);
+    }
+    if (in_array((int)($r['code'] ?? 0), [401, 403, 422], true) && $vid > 0 && empty($r['ok'])) {
+        $r2 = bslReq($tk, 'PATCH', 'vendors/' . $vid . '/products/' . $pid, $bu);
+        if (!empty($r2['ok']) || (int)($r2['code'] ?? 0) !== 404) $r = $r2;
+    }
+    if (!empty($r['ok'])) return ['ok' => true, 'id' => $pid, 'price' => $priceToman, 'rial' => $rial];
+    return ['ok' => false, 'error' => (string)($r['error'] ?? ('HTTP ' . ($r['code'] ?? 0))), 'code' => (int)($r['code'] ?? 0)];
+}
+
+/**
+ * جمع‌آوری کارهای اصلاح از ردیف‌های ماتریس.
+ * فقط مغایرت قیمت روی مقصدهایی که محصول دارند (id موجود).
+ * $scope: all|woo|bsl
+ */
+function matrixFixCollectJobs(array $data, string $scope = 'all'): array {
+    $jobs = [];
+    $shops = is_array($data['shops'] ?? null) ? $data['shops'] : [];
+    foreach ((array)($data['rows'] ?? []) as $ri => $r) {
+        if (!is_array($r)) continue;
+        $bare = (string)($r['bare'] ?? '');
+        $title = (string)($r['title'] ?? $bare);
+        if ($bare === '') continue;
+        $hasProf = ((int)($r['profile_hits'] ?? 0) > 0) || ((int)($r['profile_price'] ?? 0) > 0);
+
+        /* Woo */
+        if ($scope === 'all' || $scope === 'woo') {
+            $woo = is_array($r['woo'] ?? null) ? $r['woo'] : null;
+            $wooTone = (string)($r['woo_tone'] ?? '');
+            $expect = (int)($r['woo_expect'] ?? 0);
+            if ($woo && $hasProf && $expect > 0) {
+                $got = (int)($woo['price'] ?? 0);
+                $wid = (int)($woo['id'] ?? 0);
+                $need = in_array($wooTone, ['bad', 'warn'], true)
+                    || ($got > 0 && $expect > 0 && abs($got - $expect) / max($expect, 1) > 0.01);
+                if ($need && $wid > 0 && $got !== $expect) {
+                    $jobs[] = [
+                        'kind' => 'woo', 'bare' => $bare, 'title' => $title,
+                        'row_i' => $ri, 'id' => $wid,
+                        'from' => $got, 'to' => $expect,
+                    ];
+                }
+            }
+        }
+
+        /* BSL shops */
+        if ($scope === 'all' || $scope === 'bsl') {
+            $rowShops = is_array($r['shops'] ?? null) ? $r['shops'] : [];
+            foreach ($shops as $sm) {
+                if (!is_array($sm)) continue;
+                $vid = (int)($sm['vendor_id'] ?? 0);
+                if ($vid <= 0) continue;
+                $cell = is_array($rowShops[$vid] ?? null) ? $rowShops[$vid] : null;
+                if (!$cell || !$hasProf) continue;
+                $expect = (int)($cell['expect'] ?? ($r['bsl_expect'] ?? 0));
+                $got = (int)($cell['price'] ?? 0);
+                $bid = (int)($cell['id'] ?? 0);
+                $tone = (string)($cell['tone'] ?? '');
+                $need = in_array($tone, ['bad', 'warn'], true)
+                    || ($got > 0 && $expect > 0 && abs($got - $expect) / max($expect, 1) > 0.01);
+                if ($need && $bid > 0 && $expect > 0 && $got !== $expect) {
+                    $jobs[] = [
+                        'kind' => 'bsl', 'bare' => $bare, 'title' => $title,
+                        'row_i' => $ri, 'id' => $bid, 'vendor_id' => $vid,
+                        'shop_name' => (string)($sm['name'] ?? $cell['shop_name'] ?? ('#' . $vid)),
+                        'from' => $got, 'to' => $expect,
+                    ];
+                }
+            }
+        }
+    }
+    return $jobs;
+}
+
+/**
+ * اجرای کامل اصلاح از روی ماتریس — سرورساید با progress/log زنده.
+ * $opts: scope=all|woo|bsl, delay_ms, source
+ */
+function matrixFixRun(array $opts = []): array {
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+    matrixFixStopClear();
+    $scope = (string)($opts['scope'] ?? 'all');
+    if (!in_array($scope, ['all', 'woo', 'bsl'], true)) $scope = 'all';
+    $delayMs = max(50, min(2000, (int)($opts['delay_ms'] ?? 180)));
+    $source = (string)($opts['source'] ?? 'manual');
+
+    $data = matrixResultLoad();
+    if (!$data || empty($data['rows'])) {
+        matrixFixProgress([
+            'running' => false, 'done' => true, 'error' => 'جدول مقایسه موجود نیست — اول بسازید',
+            'pct' => 100, 'log_add' => ['❌ جدول مقایسه روی سرور نیست'],
+        ]);
+        return ['ok' => false, 'error' => 'no_matrix'];
+    }
+
+    $jobs = matrixFixCollectJobs($data, $scope);
+    $total = count($jobs);
+    matrixFixProgress([
+        'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
+        'phase' => 'start', 'started_at' => time(), 'source' => $source,
+        'scope' => $scope, 'job' => 'fix',
+        'total' => $total, 'cur' => 0, 'ok_n' => 0, 'fail_n' => 0, 'skip_n' => 0,
+        'live' => [],
+        'log_add' => [
+            '🔧 شروع اصلاح مغایرت از جدول مقایسه — محدوده: ' . $scope,
+            '📋 ' . $total . ' مورد قیمت ناهماهنگ برای اصلاح',
+        ],
+    ]);
+
+    if ($total === 0) {
+        matrixFixProgress([
+            'running' => false, 'done' => true, 'pct' => 100, 'phase' => 'done',
+            'log_add' => ['✅ موردی برای اصلاح قیمت نبود (همه یکسان یا بدون مقصد)'],
+            'finished_at' => time(),
+        ]);
+        return ['ok' => true, 'total' => 0, 'ok_n' => 0, 'fail_n' => 0];
+    }
+
+    $cn = loadConnections();
+    $shopTok = [];
+    foreach (function_exists('bslAllShops') ? bslAllShops($cn) : [] as $sh) {
+        if (!is_array($sh)) continue;
+        $vid = (int)($sh['vendor_id'] ?? 0);
+        $tok = trim((string)($sh['token'] ?? ($cn['basalam']['token'] ?? '')));
+        if ($vid > 0 && $tok !== '') $shopTok[$vid] = $tok;
+    }
+    $defTok = trim((string)($cn['basalam']['token'] ?? ''));
+
+    $okN = 0; $failN = 0; $skipN = 0;
+    $stopped = false;
+
+    foreach ($jobs as $ji => $job) {
+        if (matrixFixStopRequested()) {
+            $stopped = true;
+            matrixFixProgress(['log_add' => ['⏹ توقف توسط کاربر']]);
+            break;
+        }
+        $n = $ji + 1;
+        $pct = 5 + (int)round(90 * $n / max(1, $total));
+        $title = mb_substr((string)$job['title'], 0, 48);
+        $from = (int)$job['from'];
+        $to = (int)$job['to'];
+        $bare = (string)$job['bare'];
+
+        if ($job['kind'] === 'woo') {
+            matrixFixProgress([
+                'phase' => 'woo_fix', 'pct' => $pct, 'cur' => $n, 'total' => $total,
+                'log_add' => ['🛒 [' . $n . '/' . $total . '] WC · ' . $title
+                    . ' — ' . number_format($from) . ' → ' . number_format($to)],
+            ]);
+            $res = matrixFixWooPrice($cn, (int)$job['id'], $to);
+            if (!empty($res['ok'])) {
+                $okN++;
+                $tone = matrixPriceTone($to, $to);
+                matrixResultPatchRow($bare, [
+                    'woo' => ['price' => $to, 'id' => (int)$job['id']],
+                    'woo_tone' => 'ok',
+                    'fix_woo_at' => time(),
+                    'fix_woo_ok' => true,
+                ]);
+                /* recompute status lightly */
+                $dataNow = matrixResultLoad();
+                foreach ((array)($dataNow['rows'] ?? []) as $rr) {
+                    if ((string)($rr['bare'] ?? '') !== $bare) continue;
+                    $shopBad = 0; $shopMiss = 0;
+                    foreach ((array)($dataNow['shops'] ?? []) as $sm) {
+                        $vid = (int)($sm['vendor_id'] ?? 0);
+                        $c = $rr['shops'][$vid] ?? null;
+                        if ($c) {
+                            $t = (string)($c['tone'] ?? '');
+                            if ($t === 'bad' || $t === 'warn') $shopBad++;
+                        } elseif (((int)($rr['profile_hits'] ?? 0)) > 0) {
+                            $shopMiss++;
+                        }
+                    }
+                    $st = 'ok';
+                    if ($shopBad > 0) $st = 'mismatch';
+                    elseif ($shopMiss > 0) $st = 'missing';
+                    $flags = array_values(array_filter((array)($rr['flags'] ?? []), function ($f) {
+                        return $f !== 'price_mismatch' && $f !== 'missing_woo';
+                    }));
+                    matrixResultPatchRow($bare, ['status' => $st, 'flags' => $flags, 'woo_tone' => 'ok']);
+                    break;
+                }
+                $msg = '✅ WC #' . (int)$job['id'] . ' · ' . $title . ' · ' . number_format($to);
+                matrixFixProgress([
+                    'ok_n' => $okN, 'fail_n' => $failN,
+                    'log_add' => ['  ' . $msg . ' (' . ($res['via'] ?? 'api') . ')'],
+                    'live_add' => ['ok' => true, 'kind' => 'woo', 'bare' => $bare, 'title' => $title,
+                        'from' => $from, 'to' => $to, 'id' => (int)$job['id'], 't' => time()],
+                ]);
+            } else {
+                $failN++;
+                $err = (string)($res['error'] ?? 'خطا');
+                matrixFixProgress([
+                    'ok_n' => $okN, 'fail_n' => $failN,
+                    'log_add' => ['  ❌ WC · ' . $title . ' — ' . $err],
+                    'live_add' => ['ok' => false, 'kind' => 'woo', 'bare' => $bare, 'title' => $title,
+                        'error' => $err, 't' => time()],
+                ]);
+            }
+        } else { /* bsl */
+            $vid = (int)($job['vendor_id'] ?? 0);
+            $tok = $shopTok[$vid] ?? $defTok;
+            $sname = (string)($job['shop_name'] ?? ('#' . $vid));
+            matrixFixProgress([
+                'phase' => 'bsl_fix', 'pct' => $pct, 'cur' => $n, 'total' => $total,
+                'log_add' => ['🏪 [' . $n . '/' . $total . '] ' . $sname . ' · ' . $title
+                    . ' — ' . number_format($from) . ' → ' . number_format($to)],
+            ]);
+            if ($tok === '') {
+                $failN++;
+                matrixFixProgress([
+                    'fail_n' => $failN,
+                    'log_add' => ['  ❌ توکن غرفه ' . $sname . ' نیست'],
+                    'live_add' => ['ok' => false, 'kind' => 'bsl', 'bare' => $bare, 'title' => $title,
+                        'error' => 'no token', 't' => time()],
+                ]);
+            } else {
+                $res = matrixFixBslPrice($tok, $vid, (int)$job['id'], $to);
+                if (!empty($res['ok'])) {
+                    $okN++;
+                    matrixResultPatchRow($bare, [
+                        'shops' => [
+                            $vid => [
+                                'price' => $to,
+                                'price_rial' => $to * 10,
+                                'tone' => 'ok',
+                                'id' => (int)$job['id'],
+                                'expect' => $to,
+                            ],
+                        ],
+                        'fix_bsl_at' => time(),
+                    ]);
+                    /* status refresh */
+                    $dataNow = matrixResultLoad();
+                    foreach ((array)($dataNow['rows'] ?? []) as $rr) {
+                        if ((string)($rr['bare'] ?? '') !== $bare) continue;
+                        $wooTone = (string)($rr['woo_tone'] ?? 'na');
+                        $shopBad = 0; $shopMiss = 0;
+                        foreach ((array)($dataNow['shops'] ?? []) as $sm) {
+                            $v2 = (int)($sm['vendor_id'] ?? 0);
+                            $c = $rr['shops'][$v2] ?? null;
+                            if ($c) {
+                                $t = (string)($c['tone'] ?? '');
+                                if ($t === 'bad' || $t === 'warn') $shopBad++;
+                            } elseif (((int)($rr['profile_hits'] ?? 0)) > 0) {
+                                $shopMiss++;
+                            }
+                        }
+                        $st = 'ok';
+                        if ($wooTone === 'bad' || $wooTone === 'warn' || $shopBad > 0) $st = 'mismatch';
+                        elseif ($wooTone === 'missing_dst' || $shopMiss > 0) $st = 'missing';
+                        $flags = array_values(array_filter((array)($rr['flags'] ?? []), function ($f) use ($vid) {
+                            return $f !== 'price_mismatch';
+                        }));
+                        if ($st === 'ok') {
+                            $flags = array_values(array_filter($flags, function ($f) {
+                                return $f !== 'price_mismatch';
+                            }));
+                        }
+                        matrixResultPatchRow($bare, ['status' => $st, 'flags' => $flags]);
+                        break;
+                    }
+                    $msg = '✅ ' . $sname . ' #' . (int)$job['id'] . ' · ' . $title . ' · ' . number_format($to);
+                    matrixFixProgress([
+                        'ok_n' => $okN, 'fail_n' => $failN,
+                        'log_add' => ['  ' . $msg],
+                        'live_add' => ['ok' => true, 'kind' => 'bsl', 'bare' => $bare, 'title' => $title,
+                            'from' => $from, 'to' => $to, 'id' => (int)$job['id'], 'vendor_id' => $vid,
+                            'shop' => $sname, 't' => time()],
+                    ]);
+                } else {
+                    $failN++;
+                    $err = (string)($res['error'] ?? 'خطا');
+                    matrixFixProgress([
+                        'ok_n' => $okN, 'fail_n' => $failN,
+                        'log_add' => ['  ❌ ' . $sname . ' · ' . $title . ' — ' . $err],
+                        'live_add' => ['ok' => false, 'kind' => 'bsl', 'bare' => $bare, 'title' => $title,
+                            'error' => $err, 't' => time()],
+                    ]);
+                }
+            }
+        }
+        usleep($delayMs * 1000);
+    }
+
+    /* recount summary price_mismatch roughly */
+    $dataF = matrixResultLoad();
+    $mm = 0; $okRows = 0;
+    foreach ((array)($dataF['rows'] ?? []) as $rr) {
+        if (!is_array($rr)) continue;
+        if ((string)($rr['status'] ?? '') === 'ok') $okRows++;
+        if (in_array('price_mismatch', (array)($rr['flags'] ?? []), true)
+            || (string)($rr['status'] ?? '') === 'mismatch') $mm++;
+    }
+    if ($dataF) {
+        $sum = is_array($dataF['summary'] ?? null) ? $dataF['summary'] : [];
+        $sum['price_mismatch'] = $mm;
+        $sum['ok'] = $okRows;
+        $dataF['summary'] = $sum;
+        $dataF['fix_stats'] = [
+            'at' => time(), 'ok' => $okN, 'fail' => $failN, 'total_jobs' => $total,
+            'stopped' => $stopped, 'scope' => $scope,
+        ];
+        matrixResultSave($dataF);
+    }
+
+    matrixFixProgress([
+        'running' => false, 'done' => true, 'pct' => 100,
+        'phase' => $stopped ? 'stopped' : 'done',
+        'ok_n' => $okN, 'fail_n' => $failN, 'cur' => $total, 'total' => $total,
+        'finished_at' => time(),
+        'log_add' => [
+            ($stopped ? '⏹ متوقف شد — ' : '✅ تمام — ')
+            . 'موفق ' . $okN . ' · ناموفق ' . $failN . ' از ' . $total,
+        ],
+    ]);
+    matrixFixStopClear();
+    return ['ok' => true, 'total' => $total, 'ok_n' => $okN, 'fail_n' => $failN, 'stopped' => $stopped];
+}
+
 function matrixJobRun(array $opts = []): array {
     $bg = !empty($opts['background']);
     $lockFile = SYNC_MATRIX_LOCK_FILE;
@@ -22791,16 +23248,23 @@ function matrixQueryPage(array $opts = []): array {
 if (isset($_GET['sync_matrix_status']) || (($_POST['action'] ?? '') === 'sync_matrix_status')) {
     header('Content-Type: application/json; charset=UTF-8');
     $prog = matrixProgressRead();
+    $fix = function_exists('matrixFixProgressRead') ? matrixFixProgressRead() : [];
     $has = is_file(SYNC_MATRIX_RESULT_FILE);
     $age = $has ? (time() - (int)@filemtime(SYNC_MATRIX_RESULT_FILE)) : -1;
+    $anyRun = !empty($prog['running']) || !empty($fix['running']);
     echo json_encode([
         'ok' => true,
-        'running' => !empty($prog['running']),
-        'done' => !empty($prog['done']),
-        'progress' => $prog,
+        'running' => $anyRun,
+        'build_running' => !empty($prog['running']),
+        'fix_running' => !empty($fix['running']),
+        'done' => !empty($prog['done']) || !empty($fix['done']),
+        'progress' => !empty($fix['running']) || (!empty($fix['done']) && empty($prog['running'])) ? $fix : $prog,
+        'build_progress' => $prog,
+        'fix_progress' => $fix,
         'has_result' => $has,
         'result_age_sec' => $age,
         'result_rows' => $has ? (int)((matrixResultLoad()['row_count'] ?? 0)) : 0,
+        'job' => !empty($fix['running']) ? 'fix' : (!empty($prog['running']) ? 'build' : ((string)($fix['phase'] ?? '') === 'done' || !empty($fix['done']) ? 'fix' : 'build')),
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -22875,6 +23339,96 @@ if (isset($_GET['sync_matrix']) || (($_POST['action'] ?? '') === 'sync_matrix'))
         exit;
     }
     echo json_encode(matrixQueryPage($opts), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/* v10.117: اصلاح مغایرت از جدول مقایسه */
+if (isset($_GET['sync_matrix_fix_status']) || (($_POST['action'] ?? '') === 'sync_matrix_fix_status')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $prog = matrixFixProgressRead();
+    $since = max(0, (int)($_GET['since'] ?? $_POST['since'] ?? 0));
+    $log = is_array($prog['log'] ?? null) ? $prog['log'] : [];
+    $logTotal = count($log);
+    if ($since > 0 && $since < $logTotal) {
+        $prog['log_delta'] = array_slice($log, $since);
+    } else {
+        $prog['log_delta'] = array_slice($log, -40);
+    }
+    $prog['log_total'] = $logTotal;
+    /* keep full log for UI that wants it, but also delta */
+    echo json_encode([
+        'ok' => true,
+        'running' => !empty($prog['running']),
+        'done' => !empty($prog['done']),
+        'progress' => $prog,
+        'job' => 'fix',
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if (isset($_GET['sync_matrix_fix_stop']) || (($_POST['action'] ?? '') === 'sync_matrix_fix_stop')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @file_put_contents(SYNC_MATRIX_FIX_STOP_FILE, json_encode(['at' => time()]), LOCK_EX);
+    matrixFixProgress(['log_add' => ['⏹ درخواست توقف ثبت شد…']]);
+    echo json_encode(['ok' => true, 'stopping' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync_matrix_fix_start')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+    $opts = [
+        'scope' => (string)($_GET['scope'] ?? $_POST['scope'] ?? 'all'),
+        'delay_ms' => (int)($_GET['delay_ms'] ?? $_POST['delay_ms'] ?? 180),
+        'source' => (string)($_GET['source'] ?? $_POST['source'] ?? 'manual'),
+    ];
+    if (!is_file(SYNC_MATRIX_RESULT_FILE)) {
+        echo json_encode(['ok' => false, 'error' => 'اول جدول مقایسه را بسازید'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    /* don't run while matrix build is running */
+    $mxProg = matrixProgressRead();
+    if (!empty($mxProg['running'])) {
+        echo json_encode(['ok' => false, 'error' => 'ساخت جدول در حال اجراست — صبر کنید', 'running' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $lockFile = SYNC_MATRIX_FIX_LOCK_FILE;
+    $fp = @fopen($lockFile, 'c');
+    if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) {
+        if ($fp) @fclose($fp);
+        echo json_encode(['ok' => false, 'error' => 'یک اصلاح در حال اجراست', 'running' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    matrixFixProgress([
+        'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
+        'phase' => 'queued', 'started_at' => time(), 'source' => $opts['source'],
+        'job' => 'fix', 'log' => [], 'live' => [],
+        'log_add' => ['🚀 جاب اصلاح مغایرت در صف سرور…'],
+    ]);
+    $early = json_encode(['ok' => true, 'started' => true, 'message' => 'اصلاح روی سرور شروع شد', 'running' => true], JSON_UNESCAPED_UNICODE);
+    header('Connection: close');
+    header('Content-Length: ' . strlen($early));
+    echo $early;
+    @ob_end_flush();
+    @ob_flush();
+    @flush();
+    if (function_exists('fastcgi_finish_request')) {
+        @fastcgi_finish_request();
+    }
+    register_shutdown_function(function () use ($fp, $lockFile) {
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+        @unlink($lockFile);
+    });
+    try {
+        matrixFixRun($opts);
+    } catch (Throwable $e) {
+        matrixFixProgress([
+            'running' => false, 'done' => true, 'error' => $e->getMessage(), 'pct' => 100,
+            'log_add' => ['❌ ' . $e->getMessage()],
+        ]);
+    }
     exit;
 }
 
@@ -53191,6 +53745,10 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div style="display:flex;gap:6px;flex-wrap:wrap">
 <button class="btn btn-purple" onclick="syncMatrixStart()" style="font-size:11px;padding:6px 12px">🚀 ساخت روی سرور</button>
 <button class="btn btn-cyan" onclick="syncMatrixLoad(1)" style="font-size:11px;padding:6px 12px">📖 خواندن نتیجه</button>
+<button class="btn btn-green" onclick="syncMatrixFixStart('all')" style="font-size:11px;padding:6px 12px" title="اصلاح قیمت همهٔ مغایرت‌های جدول طبق انتظار">🔧 اصلاح مغایرت‌ها</button>
+<button class="btn btn-gray" onclick="syncMatrixFixStart('woo')" style="font-size:10px;padding:5px 10px">فقط WC</button>
+<button class="btn btn-gray" onclick="syncMatrixFixStart('bsl')" style="font-size:10px;padding:5px 10px">فقط غرفه‌ها</button>
+<button class="btn btn-red" onclick="syncMatrixFixStop()" id="smFixStopBtn" style="font-size:10px;padding:5px 10px;display:none">⏹ توقف اصلاح</button>
 </div>
 </div>
 <div id="smJobBar" style="display:none;margin-bottom:8px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:8px">
@@ -53200,11 +53758,13 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div style="height:8px;background:#1e293b;border-radius:99px;overflow:hidden">
 <div id="smJobFill" style="height:100%;width:0%;background:linear-gradient(90deg,#7c3aed,#2563eb);transition:width .3s"></div>
 </div>
-<div id="smJobLog" style="margin-top:6px;max-height:90px;overflow:auto;font-size:10px;color:#94a3b8;line-height:1.6"></div>
+<div id="smJobLog" style="margin-top:6px;max-height:220px;overflow:auto;font-size:10.5px;color:#e2e8f0;line-height:1.7;font-family:ui-monospace,Tahoma,sans-serif;direction:rtl"></div>
+<div id="smFixLive" style="display:none;margin-top:8px"></div>
 </div>
+<div id="smFixBanner" style="display:none;margin-bottom:8px;padding:8px 10px;background:linear-gradient(90deg,#14532d33,#1e3a8a33);border:1px solid #22c55e55;border-radius:8px;font-size:11px;color:#bbf7d0"></div>
 <div style="font-size:10.5px;color:#a5b4fc;line-height:1.75;margin-bottom:8px">
 ساخت <b>کاملاً سرورساید</b> است (حتی ده‌ها هزار محصول). اگر اسکرپر داخل وردپرس باشد، WC از <b>دیتابیس مستقیم</b> خوانده می‌شود (سریع‌تر از API). نتیجه در فایل ذخیره می‌شود؛ این صفحه فقط صفحه‌بندی می‌خواند. همین جدول در <b>افزونه → تب فروشگاه</b> هم هست.
-پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول». از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> (وضعیت ۲۹۷۶) می‌آید.
+پروفایل × ووکامرس × غرفه‌ها — تطبیق <b>بدون پسوند</b> و بدون «کد محصول». از باسلام فقط محصولات <b>فعال و قابل‌مشاهده برای مشتری</b> (وضعیت ۲۹۷۶) می‌آید. با «🔧 اصلاح مغایرت‌ها» همان ردیف‌های ناهماهنگ <b>سرورساید</b> اصلاح قیمت می‌شوند و جدول زنده به‌روز می‌شود.
 رنگ‌ها: <span style="background:#14532d;color:#bbf7d0;padding:1px 6px;border-radius:4px">یکسان</span>
 <span style="background:#713f12;color:#fde68a;padding:1px 6px;border-radius:4px">نزدیک/هشدار</span>
 <span style="background:#7f1d1d;color:#fecaca;padding:1px 6px;border-radius:4px">مغایرت</span>
@@ -61851,6 +62411,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.117', t:'🔧 اصلاح مغایرت از جدول مقایسه (سرورساید + لاگ زنده)', items:[
+    'دکمهٔ «اصلاح مغایرت‌ها» از روی همان جدول، قیمت WC و غرفه‌ها را طبق انتظار اصلاح می‌کند.',
+    'جاب کاملاً سرورساید با progress و لاگ اسکرولی زنده؛ نتایج همان لحظه روی ردیف‌های جدول اعمال می‌شوند.',
+    'محدوده: همه / فقط ووکامرس / فقط غرفه‌ها + دکمه توقف.',
+  ]},
   {v:'10.116', t:'📊 ماتریس فقط BSL فعال + تنوع‌ها به‌صورت گالری عکس', items:[
     'جدول مقایسه نظیر‌به‌نظیر فقط محصولات فعال قابل‌مشاهده مشتری باسلام (وضعیت ۲۹۷۶) را می‌آورد.',
     'سلکتور «تنوع‌ها» تصاویر سواچ/بندانگشتی را هم به‌عنوان گالری استخراج و به images محصول می‌افزاید.',
@@ -67722,8 +68287,24 @@ function smPaintProgress(p){
     $('smJobLabel').textContent = p.running ? ('⏳ '+(ph||'در حال ساخت')+'…') : (p.done ? (p.error?'❌ خطا':'✅ تمام') : '—');
   }
   if($('smJobLog') && Array.isArray(p.log)){
-    const lines=p.log.slice(-8).map(x=> (x&&x.m)?x.m:String(x));
-    $('smJobLog').innerHTML=lines.map(l=>'<div>'+esc(l)+'</div>').join('');
+    const lines=p.log.slice(-80).map(x=> (x&&x.m)?x.m:String(x));
+    const el=$('smJobLog');
+    el.innerHTML=lines.map(l=>'<div style="border-bottom:1px solid #1e293b;padding:2px 0">'+esc(l)+'</div>').join('');
+    try{ el.scrollTop = el.scrollHeight; }catch(e){}
+  }
+  const stopBtn=$('smFixStopBtn');
+  if(stopBtn) stopBtn.style.display = (p.running && (p.job==='fix' || p.phase==='woo_fix' || p.phase==='bsl_fix' || p.phase==='queued' || (p.ok_n!=null))) ? '' : (p.running && p.job==='fix' ? '' : stopBtn.style.display);
+  if(stopBtn && p.running && (String(p.phase||'').indexOf('fix')>=0 || p.job==='fix' || p.ok_n!=null || p.phase==='woo_fix' || p.phase==='bsl_fix' || p.phase==='queued')){
+    stopBtn.style.display='';
+  }
+  if(stopBtn && !p.running) stopBtn.style.display='none';
+  const ban=$('smFixBanner');
+  if(ban && (p.ok_n!=null || p.job==='fix' || p.phase==='woo_fix' || p.phase==='bsl_fix')){
+    ban.style.display='block';
+    ban.innerHTML = (p.running?'⏳ در حال اصلاح… ':'')
+      +'✅ '+smFa(p.ok_n||0)+' · ❌ '+smFa(p.fail_n||0)
+      +' · '+smFa(p.cur||0)+'/'+smFa(p.total||0)
+      +(p.phase?(' · '+esc(String(p.phase))):'');
   }
 }
 function syncMatrixStart(){
@@ -67749,9 +68330,17 @@ function syncMatrixPoll(){
     const fd=new FormData(); fd.append('action','sync_matrix_status');
     fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
       if(!d||!d.ok)return;
-      smPaintProgress(d.progress||{});
-      if(d.running){
-        /* continue */
+      const p = d.progress || {};
+      if(d.fix_running && d.fix_progress) smPaintProgress(d.fix_progress);
+      else smPaintProgress(p);
+      if(d.running || d.fix_running || d.build_running){
+        /* while fixing, refresh table every few ticks so cells update live */
+        if(d.fix_running){
+          window._smFixTick = (window._smFixTick||0)+1;
+          if(window._smFixTick % 3 === 0){
+            try{ syncMatrixLoad(window._smPage||1, true); }catch(e){}
+          }
+        }
       } else {
         if(window._smPoll){ clearInterval(window._smPoll); window._smPoll=null; }
         if(d.has_result){
@@ -67761,12 +68350,42 @@ function syncMatrixPoll(){
     }).catch(()=>{});
   };
   tick();
-  window._smPoll=setInterval(tick, 2000);
+  window._smPoll=setInterval(tick, 1500);
 }
-function syncMatrixLoad(page){
+/* v10.117: اصلاح مغایرت از روی جدول */
+function syncMatrixFixStart(scope){
+  scope = scope || 'all';
+  if(!confirm('اصلاح قیمت همهٔ ردیف‌های ناهماهنگ طبق «انتظار» جدول؟\nمحدوده: '+(scope==='woo'?'فقط ووکامرس':(scope==='bsl'?'فقط غرفه‌های باسلام':'همه'))+'\nاین کار روی سرور انجام می‌شود و جدول زنده به‌روز می‌شود.')) return;
+  smShowJob(true);
+  if($('smJobLabel')) $('smJobLabel').textContent='🔧 شروع اصلاح…';
+  if($('smFixStopBtn')) $('smFixStopBtn').style.display='';
+  if($('smJobLog')) $('smJobLog').innerHTML='';
+  const fd=new FormData();
+  fd.append('action','sync_matrix_fix_start');
+  fd.append('scope', scope);
+  fd.append('source','manual');
+  fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+    if(!d||!d.ok){
+      showToast((d&&d.error)||'شروع اصلاح ناموفق',1);
+      if(d&&d.running) syncMatrixPoll();
+      return;
+    }
+    showToast('اصلاح مغایرت روی سرور آغاز شد');
+    window._smFixTick=0;
+    syncMatrixPoll();
+  }).catch(e=>showToast('خطا: '+e,1));
+}
+function syncMatrixFixStop(){
+  const fd=new FormData(); fd.append('action','sync_matrix_fix_stop');
+  fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+    showToast(d&&d.ok?'درخواست توقف ثبت شد':'توقف ناموفق', !(d&&d.ok));
+  }).catch(()=>{});
+}
+function syncMatrixLoad(page, silent){
   page = page || 1; window._smPage = page;
+  silent = !!silent;
   const body = $('smBody'), sum=$('smSummary'), meta=$('smMeta'), pager=$('smPager'), head=$('smHead');
-  if(body) body.innerHTML='<tr><td style="padding:16px;text-align:center;color:#67e8f9">📖 خواندن صفحه از فایل سرور…</td></tr>';
+  if(body && !silent) body.innerHTML='<tr><td style="padding:16px;text-align:center;color:#67e8f9">📖 خواندن صفحه از فایل سرور…</td></tr>';
   const fd = new FormData();
   fd.append('action','sync_matrix');
   fd.append('page', String(page));

@@ -301,7 +301,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.122';
+const APP_VERSION = '10.123';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -315,7 +315,7 @@ if (!function_exists('str_contains')) {
     }
 }
 
-const APP_VERSION_DATE = '1405/06/13';
+const APP_VERSION_DATE = '1405/06/08';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -14232,6 +14232,48 @@ function extractListResumeMeta(array $profile): array {
     ];
 }
 
+/**
+ * v10.123: آماده‌سازیِ «ادامهٔ خودکار» برای یک پروفایلِ رهاشده.
+ *
+ *  همان کاری که دکمهٔ «▶ ادامه» می‌کند، ولی سرورساید و در تیکِ کران:
+ *  فازِ مناسب را برمی‌گرداند (detail اگر وسطِ جزئیات مانده، وگرنه all)،
+ *  پرچمِ resume را روی پروفایل می‌نشاند و ردیف‌های مرده / قفلِ کهنهٔ همان
+ *  پروفایل را می‌بندد تا محافظِ تکراری جلوی ادامه را نگیرد.
+ *
+ *  @return ['ok'=>bool, 'phase'=>string, 'reason'=>string]
+ */
+function extractResumePrepare(string $profileKey, array $cn): array {
+    $out = ['ok' => false, 'phase' => 'all', 'reason' => ''];
+    if ($profileKey === '') { $out['reason'] = 'no_key'; return $out; }
+    $profiles = loadProfiles();
+    $pr = is_array($profiles[$profileKey] ?? null) ? $profiles[$profileKey] : null;
+    if ($pr === null) { $out['reason'] = 'no_profile'; return $out; }
+    $stage = (string)($pr['_extract_stage'] ?? '');
+    $age   = time() - (int)($pr['_extract_stage_at'] ?? 0);
+    $stale = max(120, (int)($cn['stall_after'] ?? 300));
+    /* وسطِ جزئیات مانده و هنوز «تازه» است → فقط ادامهٔ فاز جزئیات؛
+       وگرنه فاز all که فهرست را از صفحهٔ ذخیره‌شده ادامه می‌دهد. */
+    $phase = ($stage === 'detail' && $age <= $stale) ? 'detail' : 'all';
+    $pr['_extract_resume_req'] = time();
+    if (empty($pr['_extract_resume_from'])) {
+        $pr['_extract_resume_from'] = extractResumeStartPage($pr);
+    }
+    $pr['_extract_list_incomplete'] = true;
+    $profiles[$profileKey] = $pr;
+    saveProfiles($profiles);
+    /* ردیفِ مردهٔ همین پروفایل و قفلِ کهنه بسته می‌شوند — مثل دکمهٔ ادامه. */
+    try {
+        extractClearStaleBlockers($profileKey, [
+            'max_idle'      => $stale,
+            'clear_waiting' => true,
+            'reason'        => 'ادامهٔ خودکار استخراج رهاشده',
+        ]);
+    } catch (Throwable $e) { /* ادامه نباید به‌خاطرِ پاک‌سازی بیفتد */ }
+    $out['ok']    = true;
+    $out['phase'] = $phase;
+    return $out;
+}
+
 
 
 /**
@@ -18350,48 +18392,71 @@ $syncState = loadSyncState();
      ⇒ دوباره کشته می‌شود ⇒ حلقهٔ بی‌پایانِ «جزئیات در هر دقیقه».
 
    نگهبان برای «کارِ نیمه‌کارهٔ یک اجرای مرده» ساخته شده، نه برای دور زدنِ
-   زمان‌بندی. پس ادامه فقط وقتی مجاز است که خودِ آن پروفایل هم اکنون در
-   نوبتش باشد. اگر نوبتش نیست، ردیفِ گیرکرده همین حالا از صف برداشته شده
-   (کارِ نگهبان انجام شد) و کارِ نیمه‌تمام در نوبتِ بعدیِ خودش ادامه
-   می‌یابد — چیزی از دست نمی‌رود چون چک‌پوینتِ هر محصول روی دیسک است. */
-if (!empty($wdEarly['extract_resume'])) {
-    foreach (array_unique((array)$wdEarly['extract_resume']) as $_rk) {
+   زمان‌بندی. پس ادامه فقط وقتی مجاز بود که خودِ آن پروفایل هم اکنون در
+   نوبتش باشد — وگرنه ردیفِ گیرکرده از صف برداشته می‌شد و کار در نوبتِ
+   بعدی ادامه می‌یافت.
+
+   v10.123 این سیاست را عوض کرد: به‌جای گیتِ نوبت، «ادامهٔ استخراج» مستقل
+   از بازهٔ سینک و در هر تیکِ کران اجرا می‌شود (خواستهٔ صریحِ کاربر) — چون
+   بودجهٔ زمانیِ فهرست/جزئیات (v8.97 / v10.122) تضمین می‌کند هر اجرا تمیز
+   بایستد و چک‌پوینت بنویسد، حلقهٔ بی‌پایانِ «هر دقیقه» دیگر از سمتِ بودجه
+   کنترل می‌شود و ضدِ آن دو سقفِ پایین است: تعداد در هر تیک + تلاشِ هر
+   پروفایل در پنجرهٔ یک‌ساعته (auto_resume_max). */
+/* v10.123: گذرِ «ادامهٔ استخراج» — حالا مستقل از گیتِ زمان‌بندیِ سینک.
+   خواستهٔ کاربر: با هر اجرای کران، استخراجِ وسط‌راه‌مانده — درست مثل زدنِ
+   دکمهٔ «▶ ادامه از صفحهٔ X» — خودش ادامه پیدا کند، نه اینکه صبر کند تا
+   نوبتِ سینکِ بعدی برسد. فهرستِ کاندیدا از دو جا می‌آید:
+     ۱) پروفایل‌هایی که نگهبانِ بالا ردیفِ بی‌حرکتشان را بسته (extract_resume).
+     ۲) پروفایل‌هایی که روی دیسک علامتِ فهرست/جزئیاتِ نیمه‌کاره دارند و
+        ضربانشان کهنه شده (یعنی اجرا مرده، نه در حال کار).
+   ضدِ حلقهٔ بی‌پایان هم دو تا است: سقفِ تعداد در هر تیک + سقفِ تلاشِ هر
+   پروفایل در پنجرهٔ یک‌ساعته — پروفایلِ واقعاً خراب هر دقیقه شلیک نمی‌شود. */
+$_resumeCandidates = array_values(array_unique((array)($wdEarly['extract_resume'] ?? [])));
+$_rStaleNow = time();
+$_rStaleMin = max(120, (int)($cn['stall_after'] ?? 300));
+foreach ($profiles as $_rk => $_prR) {
+    if (!is_array($_prR)) continue;
+    $_rStage = (string)($_prR['_extract_stage'] ?? '');
+    $_rMid   = in_array($_rStage, ['list', 'list_done', 'detail'], true);
+    $_rInc   = !empty($_prR['_extract_list_incomplete']) || !empty($_prR['_extract_resume_req']);
+    $_rAge   = $_rStaleNow - (int)($_prR['_extract_stage_at'] ?? 0);
+    if (($_rMid || $_rInc) && $_rAge > $_rStaleMin) {
+        if (!in_array($_rk, $_resumeCandidates, true)) $_resumeCandidates[] = $_rk;
+    }
+}
+if ($_resumeCandidates) {
+    $_resumeBudget = max(1, min(10, (int)($cn['auto_resume_max'] ?? 3)));  /* سقف در هر تیک */
+    $_resumeRan = 0;
+    foreach ($_resumeCandidates as $_rk) {
         if ($_rk === '') continue;
+        if ($_resumeRan >= $_resumeBudget) {
+            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'tick_budget'];
+            continue;
+        }
         $_prR = $profiles[$_rk] ?? null;
-        /* گیتِ زمان‌بندی — همان معیارِ حلقهٔ اصلی، نه چیزی سخت‌گیرانه‌تر.
-           interval=0 یعنی «هر بار فراخوانی»، پس آن‌جا ادامه آزاد است. */
-        $_scR  = is_array($_prR) ? ($_prR['syncConfig'] ?? []) : [];
-        $_ivR  = (int)($_scR['interval'] ?? 3600);
-        $_lrR  = (int)($syncState[$_rk]['lastRun'] ?? 0);
-        if (empty($_scR['enabled'])) {
-            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'sync_disabled'];
+        if (!is_array($_prR)) continue;
+        /* سقفِ تلاش در پنجرهٔ یک‌ساعته — پروفایلِ واقعاً خراب حلقه نسازد */
+        $_rTry = autoResumeCount('extract_resume:' . $_rk, time());
+        if ($_rTry >= $_resumeBudget) {
+            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'hourly_cap', 'tries' => $_rTry];
             continue;
         }
-        if ($_ivR > 0 && ($now - $_lrR) < $_ivR) {
-            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'not_due',
-                'remaining' => $_ivR - ($now - $_lrR)];
+        $_prep = extractResumePrepare($_rk, $cn);
+        if (empty($_prep['ok'])) {
+            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => $_prep['reason'] ?: 'no_profile'];
             continue;
         }
-        $_phR = 'all';
-        if (is_array($_prR)) {
-            $_psR = (string)($_prR['_extract_stage'] ?? '');
-            $_psaR = time() - (int)($_prR['_extract_stage_at'] ?? 0);
-            $_staleR = max(120, (int)($cn['stall_after'] ?? 300));
-            if ($_psR === 'detail' && $_psaR <= $_staleR) $_phR = 'detail';
-            /* v10.122: پرچم resume تا از صفحهٔ قبلی ادامه دهد نه از اول */
-            $_prR['_extract_resume_req'] = time();
-            if (empty($_prR['_extract_resume_from'])) {
-                $_prR['_extract_resume_from'] = extractResumeStartPage($_prR);
-            }
-            $_prR['_extract_list_incomplete'] = true;
-            $profiles[$_rk] = $_prR;
-            saveProfiles($profiles);
-            $profiles = loadProfiles();
-        }
+        autoResumeMark('extract_resume:' . $_rk, time());
         cronMarkRun($_rk, 'extract_resume');
         $syncState = loadSyncState();
-        $_rr = runBackendExtract($_rk, 'watchdog_resume', false, $_phR);
-        $results['extract_resumed'][] = ['key' => $_rk, 'phase' => $_phR, 'ok' => !empty($_rr['ok'])];
+        try {
+            $_rr = runBackendExtract($_rk, 'watchdog_resume', false, $_prep['phase']);
+            $results['extract_resumed'][] = ['key' => $_rk, 'phase' => $_prep['phase'], 'ok' => !empty($_rr['ok'])];
+        } catch (Throwable $_rEx) {
+            $results['extract_resumed'][] = ['key' => $_rk, 'phase' => $_prep['phase'], 'ok' => false,
+                'error' => mb_substr($_rEx->getMessage(), 0, 160)];
+        }
+        $_resumeRan++;
     }
     // پروفایل‌ها و وضعیت را بعد از ادامه‌دادن دوباره بخوان تا حلقهٔ پایین نسخهٔ تازه ببیند
     $profiles  = loadProfiles();
@@ -26194,9 +26259,10 @@ if (isset($_GET['selftest'])) {
     /* ---------- v9.75: نگهبانِ ادامه‌یافتِ استخراج + اتصالِ مستقیمِ تبِ سلکتورها ---------- */
     $add('9.75', 'نگهبانِ استخراج ردیفِ گیرکرده را برمی‌دارد و همان پروفایل را برای ادامه علامت می‌زند',
          strpos($selfSrc, "\$exResumeKeys[] = \$exKey;") !== false
-         && strpos($selfSrc, "runBackendExtract(\$_rk, 'watchdog_resume', false, \$_phR);") !== false);
+         && strpos($selfSrc, "runBackendExtract(\$_rk, 'watchdog_resume', false, \$_prep['phase']);") !== false);
     $add('9.75', 'فازِ ادامه از روی نشانهٔ مرحله انتخاب می‌شود (detail یا all)',
-         strpos($selfSrc, "if (\$_psR === 'detail' && \$_psaR <= \$_staleR) \$_phR = 'detail';") !== false);
+         strpos($selfSrc, "function extractResumePrepare(string \$profileKey, array \$cn): array {") !== false
+         && strpos($selfSrc, "\$phase = (\$stage === 'detail' && \$age <= \$stale) ? 'detail' : 'all';") !== false);
     $add('9.75', 'بارگذاریِ صفحه در تبِ سلکتورها اتصالِش را مطابق «اتصال غیرمستقیم»ِ پروفایلِ فعلی می‌کند',
          strpos($selfSrc, 'function srcNetSet' . 'ProfileIndirect(?string $pk)') !== false
          && strpos($selfSrc, "srcNetSetProfileIndirect((string)(\$_GET['pk'] ?? ''));") !== false
@@ -32581,12 +32647,11 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
       && strpos($selfSrc, 'saveSyncState($st);') !== false);
     $add('9.92', 'حلقهٔ کران پیش از استخراجِ طولانی نوبت را مصرف می‌کند',
          strpos($selfSrc, "cronMarkRun(\$key, 'runn" . "ing');") !== false);
-    $add('9.92', 'ادامهٔ نگهبان به دورهٔ زمان‌بندیِ همان پروفایل مقید است',
-         strpos($selfSrc, "\$_ivR  = (int)(\$_scR['interv" . "al'] ?? 3600);") !== false
-      && strpos($selfSrc, "if (\$_ivR > 0 && (\$now - \$_lrR) < \$_ivR) {") !== false
-      && strpos($selfSrc, "'reason' => 'not_" . "due'") !== false);
-    $add('9.92', 'ادامهٔ نگهبان برای پروفایلِ خاموش اجرا نمی‌شود',
-         strpos($selfSrc, "'reason' => 'sync_disa" . "bled'") !== false);
+    $add('10.123', 'ادامهٔ استخراج از گیتِ زمان‌بندیِ سینک جدا شده — هر تیک از چک‌پوینت ادامه می‌دهد',
+         strpos($selfSrc, "\$_resumeCandidates = array_values(array_unique((array)(\$wdEarly['extract_resume'] ?? [])));") !== false
+      && strpos($selfSrc, "function extractResumePrepare(string \$profileKey, array \$cn): array {") !== false
+      && strpos($selfSrc, "'reason' => 'hourly_" . "cap'") !== false
+      && strpos($selfSrc, "'reason' => 'tick_" . "budget'") !== false);
     $add('9.92', 'ادامهٔ نگهبان هم نوبت را پیش از شروع مصرف می‌کند',
          strpos($selfSrc, "cronMarkRun(\$_rk, 'extract_res" . "ume');") !== false);
     /* باگ ۲: نوشتنِ غیراتمی، فایلِ نصفه می‌ساخت؛ خوانشِ بعدی آن را «خالی»
@@ -63503,6 +63568,13 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.123', t:'♻️ ادامهٔ خودکار استخراجِ نیمه‌کاره در هر تیکِ کران', items:[
+    'گذرِ «ادامهٔ استخراج» از گیتِ زمان‌بندی سینک جدا شد: با هر کران، هر استخراجِ رهاشده از چک‌پوینت ادامه می‌یابد (مثل دکمهٔ ادامه از صفحهٔ ذخیره‌شده).',
+    'افزونه v13.3.40: همگام نسخه با اسکرپر (بدون تغییر رفتاری در افزونه).',
+    'کاندیداها از دو جا جمع می‌شوند: ردیف‌های بی‌حرکتی که نگهبان بسته + پروفایل‌هایی که علامتِ فهرست/جزئیات نیمه‌کاره دارند و ضربانشان کهنه شده.',
+    'آماده‌سازیِ یکجا (extractResumePrepare): فاز مناسب + پرچم resume + بستن ردیف مرده/قفل کهنه.',
+    'ضدِ حلقهٔ بی‌پایان: سقفِ تعداد در هر تیک + سقفِ تلاش هر پروفایل در پنجرهٔ یک‌ساعته (auto_resume_max).',
+  ]},
   {v:'10.122', t:'▶️ ادامه استخراج از صفحهٔ قبل از گیر (نه از اول)', items:[
     'چک‌پوینت هر صفحه؛ دکمه ادامه در صف؛ بودجه فهرست؛ resume_page در نگهبان.',
   ]},

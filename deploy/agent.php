@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.25
+ * Version: 13.3.26
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -36,11 +36,11 @@ class Scraper_Auto_Shop_Plugin {
 			'enable_scraped_products'     => true, // سازگاری عقب‌رو (true = اسکرپر یا ادغام)
 			'catalog_source'              => 'scraper', // scraper | woocommerce | merge
 			'catalog_merge_prefer'        => 'scraper', // scraper | woocommerce | keep_both
-			'takeover_front_page'         => true, // v13.3.25: صفحه نخست هم ویترین React
+			'takeover_front_page'         => true, // v13.3.26: صفحه نخست هم ویترین React
 			'enable_native_wp_template'   => true, // قالب بومی فقط برای برگهٔ پشتیبان (نه ویترین اصلی React)
 			'native_fallback_page_id'     => 0, // برگه پشتیبان فروشگاه (جدا از فروشگاه اصلی)
 			'enable_404_shop_redirect'    => true, // ریدایرکت 404 به صفحه پشتیبان
-			'set_wc_shop_to_fallback'     => false, // v13.3.25: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
+			'set_wc_shop_to_fallback'     => false, // v13.3.26: پیش‌فرض خاموش — پشتیبان جای ویترین React را نگیرد
 			'auto_create_fallback_page'   => true, // ساخت خودکار برگه پشتیبان
 			'replace_site_header'         => true, // حذف کامل هدر و منوی قالب وردپرس
 			'show_top_bar'                => true,
@@ -203,6 +203,11 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		} catch ( \Throwable $e ) {
 			// ignore
+		}
+
+		/* v13.3.26: ویترین React روی دامنهٔ اصلی (صفحهٔ خانه) — نه فقط /shop یا ?amphp_shop=1 */
+		if ( ! empty( $opts['enable_shop_takeover'] ) ) {
+			$opts['takeover_front_page'] = true;
 		}
 
 		return $opts;
@@ -2834,7 +2839,7 @@ class Scraper_Auto_Shop_Plugin {
 				}
 			}
 
-			// v13.3.25: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
+			// v13.3.26: فوروارد چندرسانه‌ای (عکس/ویدیو/گیف/فایل/لینک)
 			if ( ! empty( $media ) && is_array( $media ) ) {
 				foreach ( array_slice( $media, 0, 8 ) as $it ) {
 					if ( ! is_array( $it ) ) {
@@ -2860,7 +2865,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: ارسال یک آیتم رسانه به یک پیام‌رسان.
+	 * v13.3.26: ارسال یک آیتم رسانه به یک پیام‌رسان.
 	 * $item = [ kind => photo|video|animation|audio|document|link, url, caption, name ]
 	 */
 	public static function send_media_to_messenger( $key, $m, $item ) {
@@ -2944,7 +2949,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: تشخیص نوع رسانه از URL یا MIME.
+	 * v13.3.26: تشخیص نوع رسانه از URL یا MIME.
 	 */
 	public static function media_kind_from_meta( $url, $mime = '', $name = '' ) {
 		$mime = strtolower( (string) $mime );
@@ -2968,7 +2973,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
+	 * v13.3.26: ذخیره پیوست آپلود‌شدهٔ چت پشتیبانی و ساخت آیتم رسانه.
 	 * @return array{ok:bool,item?:array,error?:string,path?:string,url?:string}
 	 */
 	public static function handle_support_chat_upload() {
@@ -3046,7 +3051,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
+	 * v13.3.26: استخراج لینک‌های داخل متن پیام مشتری به‌عنوان آیتم رسانه.
 	 */
 	public static function extract_links_as_media( $text ) {
 		$items = array();
@@ -6440,7 +6445,7 @@ class Scraper_Auto_Shop_Plugin {
 		$email   = sanitize_email( $_POST['email'] ?? '' );
 		$subject = sanitize_text_field( $_POST['subject'] ?? '' );
 		$message = sanitize_textarea_field( $_POST['message'] ?? '' );
-		$media_items = array(); // v13.3.25
+		$media_items = array(); // v13.3.26
 		$product_id    = sanitize_text_field( $_POST['product_id'] ?? '' );
 		$product_title = sanitize_text_field( $_POST['product_title'] ?? '' );
 		$product_ctx   = sanitize_textarea_field( $_POST['product_context'] ?? '' );
@@ -8462,6 +8467,9 @@ class Scraper_Auto_Shop_Plugin {
 		if ( empty( $settings['enable_shop_takeover'] ) ) {
 			return false;
 		}
+		if ( self::is_site_home_request() ) {
+			return true;
+		}
 		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
 			return true;
 		}
@@ -8593,6 +8601,11 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	public static function maybe_load_native_page_template( $template ) {
 		if ( is_admin() || ! is_singular( 'page' ) ) {
+			return $template;
+		}
+		/* v13.3.26: صفحهٔ خانه همیشه React — قالب native را اینجا بارگذاری نکن */
+		$settings = self::get_settings();
+		if ( ! empty( $settings['enable_shop_takeover'] ) && self::is_site_home_request() ) {
 			return $template;
 		}
 		$page_template = get_page_template_slug( get_queried_object_id() );
@@ -8733,11 +8746,11 @@ class Scraper_Auto_Shop_Plugin {
 			}
 			self::sync_native_template_to_theme();
 			update_option( 'scraper_native_fallback_page_id', $page_id, false );
-			// v13.3.25: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
+			// v13.3.26: برگهٔ پشتیبان ≠ صفحهٔ فروشگاه اصلی — shop_page_id را روی پشتیبان ننویس
 			$settings['native_fallback_page_id'] = $page_id;
 			update_option( self::OPTION_NAME, $settings );
 
-			/* v13.3.25: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
+			/* v13.3.26: فقط وقتی صریحاً خواسته شده و takeover React خاموش است،
 			   فروشگاه ووکامرس را روی پشتیبان بگذار — وگرنه ویترین React می‌میرد. */
 			$react_takeover = ! empty( $settings['enable_shop_takeover'] );
 			$tpl_now = (string) ( $settings['store_template'] ?? 'digikala' );
@@ -8795,7 +8808,7 @@ class Scraper_Auto_Shop_Plugin {
 	 */
 	
 	/**
-	 * v13.3.25: ذخیرهٔ خودکار تنظیمات ادمین (AJAX) بدون رفرش صفحه.
+	 * v13.3.26: ذخیرهٔ خودکار تنظیمات ادمین (AJAX) بدون رفرش صفحه.
 	 */
 	public static function ajax_autosave_settings() {
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -8834,7 +8847,7 @@ class Scraper_Auto_Shop_Plugin {
 				array(
 					'message'   => 'ذخیره شد',
 					'saved_at'  => current_time( 'H:i:s' ),
-					'version'   => '13.3.25',
+					'version'   => '13.3.26',
 					'takeover'  => ! empty( $new_settings['enable_shop_takeover'] ),
 					'template'  => (string) ( $new_settings['store_template'] ?? '' ),
 					'wc_fb'     => ! empty( $new_settings['set_wc_shop_to_fallback'] ),
@@ -8846,7 +8859,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: استخراج آرایهٔ تنظیمات از درخواست POST (ذخیره دستی و خودکار مشترک).
+	 * v13.3.26: استخراج آرایهٔ تنظیمات از درخواست POST (ذخیره دستی و خودکار مشترک).
 	 *
 	 * @return array
 	 */
@@ -8927,6 +8940,11 @@ class Scraper_Auto_Shop_Plugin {
 
 		$merged = array_merge( is_array( $cur ) ? $cur : array(), $posted );
 
+		/* v13.3.26: خانهٔ سایت همیشه React وقتی takeover روشن است */
+		if ( ! empty( $merged['enable_shop_takeover'] ) ) {
+			$merged['takeover_front_page'] = true;
+		}
+
 		// Keep accent in sync with palette when palette posted
 		if ( ! empty( $merged['store_palette'] ) ) {
 			$__pal_map = array(
@@ -9006,7 +9024,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.25: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
+	 * v13.3.26: اگر فروشگاه ووکامرس اشتباهاً روی برگهٔ «پشتیبان» نشسته و
 	 * ویترین React فعال است، ارتباط را قطع کن تا رفرش دوباره native نیاید.
 	 */
 	public static function maybe_detach_fallback_from_primary_shop() {
@@ -9050,7 +9068,7 @@ class Scraper_Auto_Shop_Plugin {
 						'at'          => time(),
 						'fallback_id' => $fb_id,
 						'primary_id'  => $primary_id,
-						'reason'      => 'v13.3.25_react_primary',
+						'reason'      => 'v13.3.26_react_primary',
 					),
 					false
 				);
@@ -9085,7 +9103,7 @@ class Scraper_Auto_Shop_Plugin {
 	}
 
 	/**
-	 * v13.3.25: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
+	 * v13.3.26: برگهٔ اصلی فروشگاه برای takeover React (جدا از «— پشتیبان»).
 	 *
 	 * @param array $settings
 	 * @param int   $fallback_id
@@ -9167,37 +9185,109 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.25: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
+	 * v13.3.26: آیا این درخواست باید ویترین React bare (دیجی‌کالا و …) باشد؟
 	 */
 	
 	/**
-	 * v13.3.25: در صفحات افزونه، نوار بالا و منوی همبرگری پیشخوان وردپرس چسبان بماند.
+	 * v13.3.26: نوار سیاه بالای پیشخوان وردپرس (#wpadminbar) و منوی کناری/همبرگر (#adminmenuwrap)
+	 * در تمام صفحات wp-admin چسبان بمانند — مربوط به خود وردپرس، نه هدر افزونه.
 	 */
 	public static function amphp_admin_sticky_assets() {
-		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-		$id = is_object( $screen ) ? (string) ( $screen->id ?? '' ) : '';
-		$page = isset( $_GET['page'] ) ? sanitize_key( (string) $_GET['page'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$ours = ( $page === 'scraper-auto-shop' || $page === 'scraper-full-dashboard' || strpos( $id, 'scraper-auto-shop' ) !== false );
-		if ( ! $ours ) {
+		if ( ! is_admin() ) {
 			return;
 		}
-		echo '<style id="amphp-admin-sticky-css">
-#wpadminbar{position:fixed!important;top:0!important;left:0!important;right:0!important;z-index:99999!important}
-#adminmenumain,#adminmenuwrap{position:sticky!important;top:32px!important;z-index:8001;align-self:flex-start;max-height:calc(100vh - 32px);overflow-y:auto;overflow-x:hidden}
-#adminmenu{margin-top:0!important}
-#wpcontent,#wpbody{padding-top:0}
+		// همهٔ صفحات پیشخوان (نه فقط صفحهٔ افزونه)
+		echo '<style id="amphp-wp-admin-chrome-sticky">
+/* —— خود پیشخوان وردپرس —— */
+html.wp-toolbar{padding-top:32px!important}
 @media screen and (max-width:782px){
-  #adminmenumain,#adminmenuwrap{top:46px!important;max-height:calc(100vh - 46px)}
+  html.wp-toolbar{padding-top:46px!important}
 }
-/* منوی جمع‌شده / همبرگر موبایل */
-#wp-admin-bar-menu-toggle{position:relative;z-index:100000}
-.scraper-admin-dashboard .scraper-sticky-admin-head,
-.scraper-admin-dashboard .scraper-admin-topbar{position:sticky;top:32px;z-index:100;background:#f1f5f9ee;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#wpadminbar{
+  position:fixed!important;
+  top:0!important;left:0!important;right:0!important;
+  width:100%!important;
+  z-index:99999!important;
+}
+/* منوی کناری دسکتاپ + همبرگر موبایل */
+#adminmenuback,
+#adminmenuwrap{
+  position:fixed!important;
+  top:32px!important;
+  bottom:0!important;
+  z-index:9990!important;
+  height:auto!important;
+  max-height:none!important;
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
+}
+#adminmenuback{z-index:9989!important}
+#adminmenuwrap{overflow-y:auto!important}
+#adminmenu{margin-top:0!important;position:relative}
+/* همبرگر موبایل در نوار بالا */
+#wpadminbar #wp-admin-bar-menu-toggle{display:block}
+#wpadminbar #wp-admin-bar-menu-toggle .ab-icon:before{color:#f0f0f1}
 @media screen and (max-width:782px){
-  .scraper-admin-dashboard .scraper-sticky-admin-head,
-  .scraper-admin-dashboard .scraper-admin-topbar{top:46px}
+  #adminmenuback,
+  #adminmenuwrap{
+    top:46px!important;
+  }
+  /* وقتی منو با همبرگر باز است، روی محتوا بماند */
+  .auto-fold #adminmenuwrap,
+  .auto-fold #adminmenuback{
+    position:fixed!important;
+  }
 }
+/* محتوا زیر نوار ثابت جا نشود (وردپرس خودش padding دارد؛ تقویت) */
+#wpcontent, #wpbody{position:relative}
 </style>';
+	}
+
+
+	/**
+	 * v13.3.26: آیا درخواست فعلی صفحهٔ اصلی دامنه است؟ (/, front page، posts home)
+	 * حتی اگر show_on_front=page و page_on_front برگهٔ دیگری باشد.
+	 *
+	 * @return bool
+	 */
+	public static function is_site_home_request() {
+		if ( is_admin() ) {
+			return false;
+		}
+		// پرچم‌های کوئری اصلی وردپرس (پس از parse_query)
+		if ( function_exists( 'is_front_page' ) && is_front_page() ) {
+			return true;
+		}
+		if ( function_exists( 'is_home' ) && is_home() ) {
+			// فقط وقتی «نوشته‌ها» همان صفحهٔ نخست‌اند
+			if ( (string) get_option( 'show_on_front', 'posts' ) === 'posts' ) {
+				return true;
+			}
+		}
+		// برگهٔ ثابتِ صفحهٔ نخست
+		$fp = (int) get_option( 'page_on_front', 0 );
+		if ( $fp > 0 && function_exists( 'is_page' ) && is_page( $fp ) ) {
+			return true;
+		}
+		// اگر کوئری اصلی قبلاً اجرا شده و front نبود، دیگر URI را حدس نزن
+		if ( did_action( 'wp' ) || did_action( 'template_redirect' ) ) {
+			return false;
+		}
+		// قبل از main query: فقط مسیر ریشه بدون آرگومان محتوا
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+		$path = (string) ( wp_parse_url( $uri, PHP_URL_PATH ) ?: '/' );
+		$path = untrailingslashit( $path );
+		$home_path = untrailingslashit( (string) ( wp_parse_url( home_url( '/' ), PHP_URL_PATH ) ?: '/' ) );
+		if ( $path !== '' && $path !== '/' && $path !== $home_path ) {
+			return false;
+		}
+		$skip = array( 'p', 'page_id', 'pagename', 'name', 'product', 'product_cat', 'post_type', 's', 'rest_route', 'wc-ajax', 'preview', 'amphp_sf' ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		foreach ( $skip as $k ) {
+			if ( isset( $_GET[ $k ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public static function should_render_react_storefront( $settings = null ) {
@@ -9214,6 +9304,10 @@ class Scraper_Auto_Shop_Plugin {
 		if ( isset( $_GET['amphp_shop'] ) && (string) $_GET['amphp_shop'] !== '' && (string) $_GET['amphp_shop'] !== '0' ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			return true;
 		}
+		// v13.3.26: صفحهٔ اصلی دامنه (/, front page, blog home) → React bare
+		if ( self::is_site_home_request() ) {
+			return true;
+		}
 		if ( ( function_exists( 'is_shop' ) && is_shop() ) || ( function_exists( 'is_product_taxonomy' ) && is_product_taxonomy() ) ) {
 			return true;
 		}
@@ -9221,18 +9315,20 @@ class Scraper_Auto_Shop_Plugin {
 			return true;
 		}
 		$fb_id = intval( $settings['native_fallback_page_id'] ?? get_option( 'scraper_native_fallback_page_id', 0 ) );
+		/* اگر صفحهٔ اصلی همان برگهٔ پشتیبان باشد، React روی خانه اولویت دارد (v13.3.26) */
+		$__home_react = self::is_site_home_request();
 		if ( is_singular( 'page' ) ) {
 			$pid = (int) get_queried_object_id();
 			if ( $pid > 0 ) {
-				// برگهٔ پشتیبان native = نه React
-				if ( $fb_id > 0 && $pid === $fb_id ) {
+				// برگهٔ پشتیبان native = نه React — مگر همین برگه صفحهٔ خانه باشد
+				if ( ! $__home_react && $fb_id > 0 && $pid === $fb_id ) {
 					return false;
 				}
-				if ( get_post_meta( $pid, '_amphp_native_fallback_shop', true ) === '1' ) {
+				if ( ! $__home_react && get_post_meta( $pid, '_amphp_native_fallback_shop', true ) === '1' ) {
 					return false;
 				}
 				$tpl_slug = get_page_template_slug( $pid );
-				if ( $tpl_slug === 'templates/native-shop.php' || $tpl_slug === 'native-shop.php' ) {
+				if ( ! $__home_react && ( $tpl_slug === 'templates/native-shop.php' || $tpl_slug === 'native-shop.php' ) ) {
 					return false;
 				}
 				if ( get_post_meta( $pid, '_amphp_primary_react_shop', true ) === '1' ) {
@@ -9378,7 +9474,7 @@ class Scraper_Auto_Shop_Plugin {
 			}
 		}
 		header( 'Content-Type: text/html; charset=UTF-8' );
-		header( 'X-AMPHP-Storefront: bare-v13.3.25' );
+		header( 'X-AMPHP-Storefront: bare-v13.3.26' );
 		// Avoid caching heavy theme shells.
 		nocache_headers();
 		?><!DOCTYPE html>
@@ -9594,7 +9690,7 @@ img{max-width:100%;height:auto}
 			'gateways' => $gateways,
 			'paid_order' => $paid_order_boot,
 			'meta'     => array(
-				'version'     => '13.3.25',
+				'version'     => '13.3.26',
 				'asset_ver'   => self::storefront_assets_ver(),
 				'engine'      => 'react',
 				'count'       => count( $safe_products ),
@@ -9620,7 +9716,7 @@ img{max-width:100%;height:auto}
 
 		ob_start();
 		?>
-		<!-- ویترین فروشگاه v13.3.25 -->
+		<!-- ویترین فروشگاه v13.3.26 -->
 		<?php echo self::get_storefront_font_boot_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 		<?php if ( empty( $bare_assets ) ) : ?>
 		<link rel="stylesheet" href="<?php echo esc_url( $css_url ); ?>?ver=<?php echo esc_attr( $ver ); ?>" id="amphp-storefront-css" />
@@ -9774,7 +9870,7 @@ img{max-width:100%;height:auto}
 		if ( null !== $ver ) {
 			return $ver;
 		}
-		$parts = array( '13.3.25' );
+		$parts = array( '13.3.26' );
 		$js = self::storefront_asset_path( 'storefront.js' );
 		if ( $js && is_readable( $js ) ) {
 			$parts[] = substr( md5_file( $js ), 0, 10 );
@@ -9801,7 +9897,7 @@ public static function get_embedded_storefront_assets() {
 				return $cache;
 			}
 		}
-		// Inline fallback baked at build time (v13.3.25) — single-file deploy.
+		// Inline fallback baked at build time (v13.3.26) — single-file deploy.
 		$cache = array(
 			'storefront.js'  => array(
 				'mime' => 'application/javascript; charset=UTF-8',
@@ -9935,7 +10031,7 @@ public static function get_embedded_storefront_assets() {
 	 */
 	
 	/**
-	 * v13.3.25: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
+	 * v13.3.26: Boot سبک برای چت پشتیبانی هوشمند (صفحه بومی / پشتیبان).
 	 *
 	 * @return array
 	 */
@@ -9968,7 +10064,7 @@ public static function get_embedded_storefront_assets() {
 				'nonce'     => wp_create_nonce( 'scraper_support_chat_nonce' ),
 			),
 			'meta'      => array(
-				'version'   => '13.3.25',
+				'version'   => '13.3.26',
 				'asset_ver' => self::storefront_assets_ver(),
 				'mode'      => 'chat-only',
 			),
@@ -9980,7 +10076,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.25: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
+	 * v13.3.26: چاپ ویجت چت پشتیبانی هوشمند روی قالب بومی / هر صفحهٔ غیر React.
 	 * فقط FAB + پنجرهٔ چت (بدون کل ویترین).
 	 */
 	public static function print_native_support_chat_widget() {
@@ -10025,7 +10121,7 @@ public static function get_embedded_storefront_assets() {
 		$css_url = add_query_arg( array( 'amphp_sf' => 'storefront.css', 'ver' => $ver ), home_url( '/' ) );
 		$js_url  = add_query_arg( array( 'amphp_sf' => 'storefront.js', 'ver' => $ver ), home_url( '/' ) );
 		// Minimal CSS isolation so theme chrome stays; chat FAB is fixed
-		echo "\n<!-- AMPHP support chat (native) v13.3.25 -->\n";
+		echo "\n<!-- AMPHP support chat (native) v13.3.26 -->\n";
 		echo '<link rel="stylesheet" href="' . esc_url( $css_url ) . '" id="amphp-storefront-css-chat" />' . "\n";
 		echo '<div id="amphp-support-chat-root" class="amphp-support-chat-root" data-engine="react-chat" dir="rtl" style="position:relative;z-index:99999;"></div>' . "\n";
 		echo '<script id="amphp-storefront-boot">window.AMPHP_STOREFRONT = ' . $boot_json . ';</script>' . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -10033,7 +10129,7 @@ public static function get_embedded_storefront_assets() {
 	}
 
 	/**
-	 * v13.3.25: wp_footer hook — چت روی قالب بومی.
+	 * v13.3.26: wp_footer hook — چت روی قالب بومی.
 	 */
 	public static function maybe_print_native_support_chat() {
 		self::print_native_support_chat_widget();
@@ -10079,7 +10175,7 @@ public static function get_embedded_storefront_assets() {
 				'catalog_source'              => $__post_cs,
 				'catalog_merge_prefer'        => $__post_mp,
 				'enable_scraped_products'     => ( 'woocommerce' !== $__post_cs ),
-				'takeover_front_page'         => ! empty( $_POST['takeover_front_page'] ),
+				'takeover_front_page'         => ! empty( $_POST['takeover_front_page'] ) || ! empty( $_POST['enable_shop_takeover'] ),
 				'enable_native_wp_template'   => ! empty( $_POST['enable_native_wp_template'] ),
 				'native_fallback_page_id'     => intval( $_POST['native_fallback_page_id'] ?? 0 ),
 				'enable_404_shop_redirect'    => ! empty( $_POST['enable_404_shop_redirect'] ),
@@ -10236,13 +10332,13 @@ public static function get_embedded_storefront_assets() {
 					$fb_res = self::ensure_fallback_shop_page( ! empty( $new_settings['set_wc_shop_to_fallback'] ) );
 					if ( ! empty( $fb_res['id'] ) ) {
 						$new_settings['native_fallback_page_id'] = intval( $fb_res['id'] );
-						// v13.3.25: shop_page_id را با پشتیبان یکی نکن
+						// v13.3.26: shop_page_id را با پشتیبان یکی نکن
 						update_option( self::OPTION_NAME, $new_settings );
 					}
 					self::maybe_detach_fallback_from_primary_shop();
 				} catch ( \Throwable $e ) { /* ignore */ }
 			}
-			// v13.3.25: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
+			// v13.3.26: با React روشن، primary بساز و پشتیبان را از /shop جدا کن
 			if ( ! empty( $new_settings['enable_shop_takeover'] ) ) {
 				try {
 					$_tpl_s = (string) ( $new_settings['store_template'] ?? 'digikala' );
@@ -10736,7 +10832,7 @@ public static function get_embedded_storefront_assets() {
 
 
 						<?php
-						// v13.3.25: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
+						// v13.3.26: وضعیت ویترین React در برابر پشتیبان — راهنمای پیدا کردن تیک‌ها
 						$_sf_take = ! empty( $opts['enable_shop_takeover'] );
 						$_sf_tpl  = (string) ( $opts['store_template'] ?? 'digikala' );
 						$_sf_wc_fb = ! empty( $opts['set_wc_shop_to_fallback'] );
@@ -10745,15 +10841,14 @@ public static function get_embedded_storefront_assets() {
 						$_sf_bound = ( $_sf_fb_id > 0 && $_sf_wc_shop > 0 && $_sf_fb_id === $_sf_wc_shop );
 						$_sf_react_ok = $_sf_take && $_sf_tpl !== 'native-wp' && $_sf_tpl !== 'native' && ! $_sf_bound;
 						$_sf_primary = intval( $opts['shop_page_id'] ?? get_option( 'scraper_shop_page_id', 0 ) );
-						$_sf_react_url = '';
+						/* v13.3.26: لینک اصلی ویترین = دامنهٔ خانه */
+						$_sf_react_url = home_url( '/' );
+						$_sf_shop_url = '';
 						if ( $_sf_primary > 0 ) {
-							$_sf_react_url = get_permalink( $_sf_primary );
+							$_sf_shop_url = get_permalink( $_sf_primary );
 						}
-						if ( ! $_sf_react_url && function_exists( 'wc_get_page_permalink' ) ) {
-							$_sf_react_url = wc_get_page_permalink( 'shop' );
-						}
-						if ( ! $_sf_react_url ) {
-							$_sf_react_url = add_query_arg( 'amphp_shop', '1', home_url( '/' ) );
+						if ( ! $_sf_shop_url && function_exists( 'wc_get_page_permalink' ) ) {
+							$_sf_shop_url = wc_get_page_permalink( 'shop' );
 						}
 						?>
 						<div style="margin:0 0 20px; padding:16px 18px; border-radius:14px; border:2px solid <?php echo $_sf_react_ok ? '#10b981' : '#f59e0b'; ?>; background:<?php echo $_sf_react_ok ? 'linear-gradient(135deg,#ecfdf5,#f0fdf4)' : 'linear-gradient(135deg,#fffbeb,#fef3c7)'; ?>;">
@@ -10767,14 +10862,16 @@ public static function get_embedded_storefront_assets() {
 									— کارت نارنجی <strong>بلافاصله زیر همین بنر</strong></li>
 							</ul>
 							<p style="margin:0; font-size:0.84rem; font-weight:800;">
-								🔗 باز کردن ویترین React:
+								🏠 ویترین React روی <strong>صفحهٔ اصلی سایت</strong>:
 								<a href="<?php echo esc_url( $_sf_react_url ); ?>" target="_blank" rel="noopener" style="color:#1d4ed8;"><?php echo esc_html( $_sf_react_url ); ?></a>
-								· یا <a href="<?php echo esc_url( add_query_arg( 'amphp_shop', '1', home_url( '/' ) ) ); ?>" target="_blank" rel="noopener">/?amphp_shop=1</a>
+								<?php if ( ! empty( $_sf_shop_url ) && untrailingslashit( (string) $_sf_shop_url ) !== untrailingslashit( (string) $_sf_react_url ) ) : ?>
+									· فروشگاه: <a href="<?php echo esc_url( $_sf_shop_url ); ?>" target="_blank" rel="noopener" style="color:#1d4ed8;"><?php echo esc_html( $_sf_shop_url ); ?></a>
+								<?php endif; ?>
 							</p>
 						</div>
 
 						
-						<!-- v13.3.25: کلید روشن/خاموش ووکامرس=پشتیبان — بدون اتکا به ظاهر چک‌باکس وردپرس -->
+						<!-- v13.3.26: کلید روشن/خاموش ووکامرس=پشتیبان — بدون اتکا به ظاهر چک‌باکس وردپرس -->
 						<div id="amphp-wc-shop-fallback-card" style="margin:0 0 22px;padding:20px;background:linear-gradient(135deg,#fff7ed,#ffedd5);border:3px solid #ea580c;border-radius:16px;box-shadow:0 8px 28px rgba(234,88,12,.2);">
 							<div style="font-weight:900;font-size:1.15rem;color:#9a3412;margin-bottom:6px;">🟧 فروشگاه ووکامرس = برگهٔ پشتیبان؟</div>
 							<p style="margin:0 0 14px;font-size:0.88rem;font-weight:700;color:#7c2d12;line-height:1.7;">
@@ -11214,17 +11311,19 @@ public static function get_embedded_storefront_assets() {
 							<tr>
 								<th scope="row">جایگزینی صفحه نخست وب‌سایت (Home Page):</th>
 								<td>
-									<label>
-										<input type="checkbox" name="takeover_front_page" value="1" <?php checked( ! empty( $opts['takeover_front_page'] ) ); ?>>
-										صفحهٔ <strong>اصلی (خانه)</strong> هم ویترین React باشد — برای دیدن دیجی‌کالا روی دامنهٔ اصلی این تیک را روشن بگذارید.
-									</label>
+									<div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#ecfdf5;border:2px solid #10b981;border-radius:12px;font-weight:800;">
+										<span style="font-size:1.4rem;line-height:1;">🏠</span>
+										<span>صفحهٔ <strong>اصلی دامنه (Home / /)</strong> = ویترین React اختصاصی<br>
+										<span style="font-size:0.82rem;font-weight:700;color:#047857;">از v13.3.26 با روشن بودن «ویترین React» صفحهٔ خانه خودکار React است — نه آدرس فرعی.</span></span>
+										<input type="hidden" name="takeover_front_page" value="1">
+									</div>
 								</td>
 							</tr>
 						</table>
 					</div>
 
 						
-						<!-- v13.3.25 قالب بومی وردپرس + برگه پشتیبان -->
+						<!-- v13.3.26 قالب بومی وردپرس + برگه پشتیبان -->
 						<div style="margin:20px 0 24px; background:linear-gradient(135deg,#f8fafc,#eff6ff); border:1px solid #93c5fd; border-radius:14px; padding:20px;">
 							<h4 style="margin:0 0 8px; font-size:1.08rem; color:#1e3a8a;">🧱 قالب بومی وردپرس + برگهٔ پشتیبان فروشگاه</h4>
 							<p style="margin:0 0 14px; color:#1e40af; font-size:0.85rem; line-height:1.85;">
@@ -11233,7 +11332,7 @@ public static function get_embedded_storefront_assets() {
 								عنوان «نام‌فروشگاه — پشتیبان» طبیعی است و <em>نباید</em> جای ویترین اصلی را بگیرد.
 							</p>
 							<p style="margin:0 0 14px; padding:10px 12px; background:#fef3c7; border:1px solid #f59e0b; border-radius:10px; color:#92400e; font-size:0.82rem; font-weight:700; line-height:1.7;">
-								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.25 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
+								⚠️ اگر با رفرش فقط صفحهٔ «… — پشتیبان» می‌بینید: قالب ویترین را روی native نگذارید، تیک «صفحه فروشگاه ووکامرس = پشتیبان» را خاموش کنید، ذخیره کنید. از v13.3.26 افزونه خودش پشتیبان را از فروشگاه اصلی جدا می‌کند.
 							</p>
 							<label style="display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; color:#0f172a;">
 								<input type="checkbox" name="enable_native_wp_template" value="1" <?php checked( ! isset( $opts['enable_native_wp_template'] ) || ! empty( $opts['enable_native_wp_template'] ) ); ?> style="width:18px;height:18px;accent-color:#2563eb;">
@@ -13541,7 +13640,7 @@ public static function get_embedded_storefront_assets() {
 
 			<script>
 			(function(){
-			  // v13.3.25: ذخیرهٔ خودکار تنظیمات + وضعیت
+			  // v13.3.26: ذخیرهٔ خودکار تنظیمات + وضعیت
 			  var form = document.getElementById('scraperAdminForm');
 			  var pill = document.getElementById('amphpAutosavePill');
 			  if (!form) return;

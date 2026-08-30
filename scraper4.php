@@ -301,7 +301,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.120';
+const APP_VERSION = '10.121';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -13625,6 +13625,7 @@ if (isset($_POST['recon_auto'])) {
         'enqueue_missing' => !empty($ra['enqueue_missing']),
         /* v10.113: بعد از مغایرت دوره‌ای، جدول مقایسه را سمت سرور بساز */
         'build_matrix' => !isset($ra['build_matrix']) || !empty($ra['build_matrix']),
+        'matrix_fix' => !isset($ra['matrix_fix']) || !empty($ra['matrix_fix']),
     ];
 }
 if (isset($_POST['catfix_auto'])) {
@@ -14368,10 +14369,19 @@ foreach($detailSelectors as $_f=>$_sv){ if(!empty($_sv))$_wantKeys[]=$_f; }
 $_inlineDetailDone=0;   // شمارندهٔ جزئیاتِ درجایِ همین اجرا (برای چک‌پوینت)
 $pkFinal=$profileKey!==''?$profileKey:profileKey($url);
 for($page=1;$phase!=='detail'&&$page<=$maxPages;$page++){
-if(file_exists(EXTRACT_STOP_FILE)){@unlink(EXTRACT_STOP_FILE);
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'total'=>count($allProducts),'current'=>$page,'started_at'=>$startedAt,'recent_log'=>['❌ متوقف شد'],'total_log_count'=>2,'extracted'=>count($allProducts)]);
-if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
-return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'cancelled'=>true];
+/* v10.121 FAIL-SAFE: if بدون {} فقط unlink بود و cancel همیشه اجرا می‌شد */
+if(file_exists(EXTRACT_STOP_FILE)){
+@unlink(EXTRACT_STOP_FILE);
+if(!empty($allProducts)){
+$pkTmp=$profileKey!==''?$profileKey:profileKey($url);
+extractCheckpoint($pkTmp,$allProducts,['_extract_stage'=>'stopped','_extract_stage_at'=>time()]);
+}
+writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'total'=>count($allProducts),'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>['⏹ توقف کاربر — تا اینجا ذخیره شد','   • '.count($allProducts).' محصول'],'total_log_count'=>2,'extracted'=>count($allProducts)]);
+$queue=extractReadQueue();
+foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='done';$qe['done_at']=time();$qe['products_count']=count($allProducts);break;}}unset($qe);
+extractWriteQueue($queue);
+if($phase!=='detail')extractLockRelease($queueId);
+return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'partial'=>true];
 }
 if($page===1){$pageUrl=$url;}
 elseif($pagType==='next_selector'&&$nextUrl){$pageUrl=$nextUrl;}
@@ -14562,6 +14572,25 @@ if(!isset($prevByKey[$key])||!is_array($prevByKey[$key]))continue;
 $allProducts[$key]=extractMergeDetail($p,$prevByKey[$key]);
 }
 
+/* v10.121: گارد soft-collapse — فهرست ناقص نباید کاتالوگ را جایگزین کند */
+$_prevN=count($prevByKey);
+$_newN=count($allProducts);
+if($_prevN>=8 && $_newN>0 && $_newN < (int)max(3, floor($_prevN * 0.45))){
+    $_why='فروپاشی فهرست: قبلاً '.$_prevN.' محصول، این نوبت '.$_newN.' — دادهٔ قبلی حفظ شد';
+    writeProgress(EXTRACT_PROGRESS_FILE,[
+        'running'=>false,'done'=>true,'error'=>$_why,'guard'=>'soft_collapse',
+        'kept'=>$_prevN,'extracted'=>$_newN,'started_at'=>$startedAt,
+        'last_progress_ts'=>time(),'queue_id'=>$queueId,
+        'recent_log'=>['🛡 گارد پایداری: فهرست ناقص','   • قبلی '.$_prevN.' · الان '.$_newN,'   • محصولات قبلی دست‌نخورده ماندند'],
+        'total_log_count'=>3,'products_saved'=>false,
+    ]);
+    $queue=extractReadQueue();
+    foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='failed';$qe['done_at']=time();$qe['error']=$_why;$qe['products_count']=$_prevN;break;}}unset($qe);
+    extractWriteQueue($queue);
+    if($phase!=='detail')extractLockRelease($queueId);
+    return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$_why,'guard'=>'soft_collapse','kept'=>$_prevN,'extracted'=>$_newN];
+}
+
 /* v8.94: مرحلهٔ ۱ تمام شد — همین‌جا ذخیره کن.
 
    این نقطهٔ امنِ اول است. فاز بعدی (باز کردن صفحهٔ تک‌تک محصول‌ها برای
@@ -14712,15 +14741,18 @@ foreach($needDetail as $key=>$p){
    v8.98: ولی حداقل چند محصول باید انجام شود، وگرنه پیشرفتی حاصل نمی‌شود
    و هر نوبت دقیقاً از همان جای قبل شروع می‌کند. */
 if($detailDone>=$_minPerRun&&time()>=$_deadline){$_ranOut=true;break;}
-if(file_exists(EXTRACT_STOP_FILE)){@unlink(EXTRACT_STOP_FILE);
-/* v8.94: کاربر توقف زد — کارِ تا اینجا را نگه دار و نشانهٔ «نیمه‌کاره»
-   را بردار، وگرنه محافظِ ارسال تا ابد بسته می‌ماند. */
+/* v10.121 FAIL-SAFE: stop فقط وقتی فایل stop هست */
+if(file_exists(EXTRACT_STOP_FILE)){
+@unlink(EXTRACT_STOP_FILE);
 extractCheckpoint($pkFinal,$allProducts,
     ['_extract_stage'=>'stopped','_extract_stage_at'=>time(),
      '_extract_detail_done'=>$detailDone,'_extract_detail_total'=>$detailTotal]);
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'started_at'=>$startedAt,'recent_log'=>['❌ متوقف شد'],'total_log_count'=>$totalPages+$detailDone+1]);
-if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
-return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'cancelled'=>true];
+writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>['⏹ توقف کاربر — جزئیات ذخیره شد','   • '.$detailDone.' / '.$detailTotal],'total_log_count'=>$totalPages+$detailDone+1]);
+$queue=extractReadQueue();
+foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='done';$qe['done_at']=time();$qe['products_count']=count($allProducts);$qe['detail_done']=$detailDone;break;}}unset($qe);
+extractWriteQueue($queue);
+if($phase!=='detail')extractLockRelease($queueId);
+return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'partial'=>true,'detail_done'=>$detailDone];
 }
 $detailDone++;
 $_pTitle=mb_substr(trim((string)($p['title']??$key)),0,42);
@@ -15088,7 +15120,7 @@ extractWriteQueue($queue);
 // v10.21 (۳۴الف): سینکِ «بدون استخراج» باید بداند چند صفحه واقعاً باز شد و
 // آیا بودجهٔ زمانی تمام شد (تا در نوبتِ بعدی از همان‌جا ادامه دهد)
 if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
-return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'extracted'=>count($allProducts),'new'=>$newCount,'price_changed'=>$priceChanged,'removed'=>$removedCount,'unchanged'=>$unchanged,'price_up'=>$priceUp,'price_down'=>$priceDown,'new_items'=>$newItems,'changed_items'=>$changedItems,'removed_items'=>$removedItems,'products_saved'=>true,'profile_key'=>$profileKey??profileKey($url),'detail_done'=>$detailDone,'detail_total'=>$detailTotal,'detail_ok'=>$detailOk,'detail_fail'=>$detailFail,'ran_out'=>!empty($_ranOut),'stock_out'=>$_stockOut??0,'stock_back'=>$_stockBack??0];
+return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'extracted'=>count($allProducts),'new'=>$newCount,'price_changed'=>$priceChanged,'removed'=>$removedCount,'unchanged'=>$unchanged,'price_up'=>$priceUp,'price_down'=>$priceDown,'new_items'=>$newItems,'changed_items'=>$changedItems,'removed_items'=>$removedItems,'products_saved'=>true,'profile_key'=>$profileKey??profileKey($url),'detail_done'=>$detailDone,'detail_total'=>$detailTotal,'detail_ok'=>$detailOk,'detail_fail'=>$detailFail,'ran_out'=>!empty($_ranOut),'resume_needed'=>!empty($_ranOut),'extract_stage'=>(!empty($_ranOut)?'detail':(($phase==='list')?'list_done':'complete')),'stock_out'=>$_stockOut??0,'stock_back'=>$_stockBack??0];
 }
 
 if(isset($_GET['action']) && $_GET['action'] === 'backend_extract'){
@@ -18275,6 +18307,16 @@ $pResult['extract_method'] = 'backend_extract';
 $pResult['new'] = (int)($exRes['new'] ?? 0);
 $pResult['price_changed'] = (int)($exRes['price_changed'] ?? 0);
 $pResult['removed'] = (int)($exRes['removed'] ?? 0);
+if (!empty($exRes['ran_out']) || !empty($exRes['resume_needed'])) {
+    $pResult['extract_resume'] = true;
+    $pResult['detail_done'] = (int)($exRes['detail_done'] ?? 0);
+    $pResult['detail_total'] = (int)($exRes['detail_total'] ?? 0);
+    $pResult['note'] = 'جزئیات نیمه‌تمام — نوبت بعد ادامه ('
+        . (int)($exRes['detail_done'] ?? 0) . '/' . (int)($exRes['detail_total'] ?? 0) . ')';
+}
+if (!empty($exRes['partial']) || !empty($exRes['cancelled'])) {
+    $pResult['extract_partial'] = true;
+}
 // v8.30: گران/ارزان و موجود/ناموجود شدن سایت مبدأ را اطلاع بده
 $srcN = notifSourceChanges($cn, $exRes, $profile['name'] ?? $key);
 if (!empty($srcN['sent'])) $pResult['src_notified'] = $srcN['sent'];
@@ -18294,7 +18336,13 @@ if (!empty($srcN['sent'])) $pResult['src_notified'] = $srcN['sent'];
    محافظِ ۳۰٪/۵۰ مورد سرِ جایش می‌ماند و هر اقدام لاگ و گزارش می‌شود.
    ================================================================= */
 /* v10.101: همگام خودکار — بایگانی/حذف ناموجود و حذف‌شده‌های مبدأ (مثل دستی) */
+if (!empty($exRes['ok']) && empty($exRes['ran_out']) && empty($exRes['resume_needed'])
+    && empty($exRes['partial']) && (string)($exRes['guard'] ?? '') === '') {
 $_retPack = retireAfterExtract($cn, $profile, $exRes, (string)$target, $syncCfg, (string)$key);
+} else {
+$_retPack = ['skipped' => !empty($exRes['ran_out']) ? 'extract_incomplete'
+    : ((string)($exRes['guard'] ?? '') !== '' ? (string)$exRes['guard'] : 'extract_not_ready')];
+}
 if (!empty($_retPack['result'])) {
     $rt = $_retPack['result'];
     $pResult['retire'] = [
@@ -39469,6 +39517,7 @@ function reconAutoCfg(?array $cn = null): array {
         'notify'        => !isset($r['notify']) || !empty($r['notify']),
         'enqueue_missing' => !empty($r['enqueue_missing']), // صف‌کردن محصولاتِ «در مقصد نیست»
         'build_matrix'  => !isset($r['build_matrix']) || !empty($r['build_matrix']), // v10.113
+        'matrix_fix'    => !isset($r['matrix_fix']) || !empty($r['matrix_fix']), // v10.121
     ];
 }
 
@@ -40197,8 +40246,11 @@ function reconAutoTick(array $cn, int $now = 0): array {
             reconProgress(['running' => true, 'done' => false, 'target' => $t,
                 'apply' => !empty($cfg['apply']), 'started_at' => time(),
                 'log_add' => ['⏰ مغایرت‌گیری دوره‌ای — ' . ($t === 'woo' ? 'ووکامرس' : 'باسلام')]]);
-            $res = reconRun($cn, $t, !empty($cfg['apply']), (string)$cfg['extra_mode'],
-                !empty($cfg['fix_price']), !empty($cfg['all_profiles']),
+            /* v10.121: با matrix_fix روشن، apply/قیمت legacy خاموش تا دو بار حذف نشود */
+            $_legacyApply = !empty($cfg['apply']) && empty($cfg['matrix_fix']);
+            $_legacyFixP = !empty($cfg['fix_price']) && empty($cfg['matrix_fix']);
+            $res = reconRun($cn, $t, $_legacyApply, (string)$cfg['extra_mode'],
+                $_legacyFixP, !empty($cfg['all_profiles']),
                 $t === 'bsl' && !empty($cfg['all_vendors']), 0);
             foreach (['extra', 'price_diff', 'matched_items', 'missing'] as $k) {
                 $res[$k . '_total'] = $k === 'missing'
@@ -40221,7 +40273,7 @@ function reconAutoTick(array $cn, int $now = 0): array {
                 'enqueue_products' => 0,
             ];
             /* v10.108: صف خودکار «در مقصد نیست» */
-            if (!empty($cfg['enqueue_missing']) && !empty($res['ok']) && !empty($res['missing'])) {
+            if (!empty($cfg['enqueue_missing']) && empty($cfg['matrix_fix']) && !empty($res['ok']) && !empty($res['missing'])) {
                 try {
                     $eq = reconEnqueueMissingProducts($cn, $t, (array)$res['missing'], ['max' => 2000]);
                     $results[$t]['enqueue'] = [
@@ -40260,27 +40312,70 @@ function reconAutoTick(array $cn, int $now = 0): array {
     $st['last_results'] = $results;
     reconAutoStateSave($st);
 
-    /* v10.113: جدول مقایسهٔ سرورساید — همزمان با مغایرت دوره‌ای */
-    if (!empty($cfg['build_matrix']) && function_exists('matrixJobRun')) {
+    /* v10.121: مسیر اصلی مغایرت دوره‌ای = جدول + matrixFix */
+    $wantMatrix = !empty($cfg['build_matrix']) || !empty($cfg['apply']) || !empty($cfg['fix_price'])
+        || !empty($cfg['enqueue_missing']) || (isset($cfg['matrix_fix']) ? !empty($cfg['matrix_fix']) : true);
+    if ($wantMatrix && function_exists('matrixJobRun')) {
         try {
-            $mx = matrixJobRun(['source' => 'recon_auto', 'background' => false]);
+            reconProgress(['log_add' => ['📊 ساخت جدول مقایسه (مسیر ماتریس)…']]);
+            $mx = matrixJobRun(['source' => 'recon_auto', 'background' => false, 'profile' => 'all']);
+            $sum = is_array($mx['summary'] ?? null) ? $mx['summary'] : [];
             $out['matrix'] = [
                 'ok' => !empty($mx['ok']),
-                'total' => (int)($mx['summary']['total'] ?? 0),
-                'mismatch' => (int)($mx['summary']['price_mismatch'] ?? 0),
-                'missing_woo' => (int)($mx['summary']['missing_woo'] ?? 0),
+                'total' => (int)($sum['total'] ?? ($mx['row_count'] ?? 0)),
+                'mismatch' => (int)($sum['price_mismatch'] ?? 0),
+                'missing_woo' => (int)($sum['missing_woo'] ?? 0),
+                'missing_bsl' => (int)($sum['missing_bsl'] ?? 0),
                 'error' => (string)($mx['error'] ?? ''),
             ];
             $st['last_matrix'] = $out['matrix'];
             $st['last_matrix_at'] = time();
             reconAutoStateSave($st);
+            reconProgress(['log_add' => [
+                !empty($mx['ok'])
+                    ? ('✅ جدول: ' . (int)$out['matrix']['total'] . ' · مغایرت ' . (int)$out['matrix']['mismatch'])
+                    : ('⚠️ جدول: ' . (string)($out['matrix']['error'] ?? 'ناموفق')),
+            ]]);
         } catch (\Throwable $e) {
             $out['matrix'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
         }
     }
 
+    $doFix = !empty($cfg['apply']) || !empty($cfg['fix_price']) || !empty($cfg['enqueue_missing'])
+        || !empty($cfg['matrix_fix']);
+    if ($doFix && !empty($out['matrix']['ok']) && function_exists('matrixFixRun')) {
+        try {
+            $scope = 'all';
+            if (!empty($cfg['woo']) && empty($cfg['bsl'])) $scope = 'woo';
+            elseif (!empty($cfg['bsl']) && empty($cfg['woo'])) $scope = 'bsl';
+            reconProgress(['log_add' => ['🔧 اصلاح از جدول — scope=' . $scope]]);
+            $fx = matrixFixRun(['scope' => $scope, 'source' => 'recon_auto', 'delay_ms' => 120]);
+            $out['matrix_fix'] = [
+                'ok' => !empty($fx['ok']),
+                'total' => (int)($fx['total'] ?? 0),
+                'ok_n' => (int)($fx['ok_n'] ?? 0),
+                'fail_n' => (int)($fx['fail_n'] ?? 0),
+                'sent' => (int)($fx['sent'] ?? 0),
+                'deleted' => (int)($fx['deleted'] ?? 0),
+                'priced' => (int)($fx['priced'] ?? 0),
+            ];
+            $st['last_matrix_fix'] = $out['matrix_fix'];
+            $st['last_matrix_fix_at'] = time();
+            reconAutoStateSave($st);
+            reconProgress(['log_add' => [
+                '✅ اصلاح جدول: ✅' . (int)$out['matrix_fix']['ok_n']
+                . ' · ❌' . (int)$out['matrix_fix']['fail_n']
+                . ' · 💰' . (int)$out['matrix_fix']['priced']
+                . ' · 📤' . (int)$out['matrix_fix']['sent']
+                . ' · 🗑' . (int)$out['matrix_fix']['deleted'],
+            ]]);
+        } catch (\Throwable $e) {
+            $out['matrix_fix'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
+        }
+    }
+
     if (!empty($cfg['notify']) && function_exists('notifSend')) {
-        $lines = ['⚖ مغایرت‌گیری دوره‌ای v' . APP_VERSION];
+        $lines = ['⚖ مغایرت دوره‌ای v' . APP_VERSION . ' (جدول)'];
         foreach ($results as $t => $r) {
             $lbl = $t === 'woo' ? 'ووکامرس' : 'باسلام';
             if (empty($r['ok'])) { $lines[] = "❌ {$lbl}: " . ($r['error'] ?? 'خطا'); continue; }
@@ -40300,10 +40395,21 @@ function reconAutoTick(array $cn, int $now = 0): array {
         if (!empty($out['matrix'])) {
             $mx = $out['matrix'];
             if (!empty($mx['ok'])) {
-                $lines[] = '📊 جدول مقایسه: ' . (int)($mx['total'] ?? 0) . ' ردیف · مغایرت قیمت '
-                    . (int)($mx['mismatch'] ?? 0) . ' · نیست در WC ' . (int)($mx['missing_woo'] ?? 0);
+                $lines[] = '📊 جدول: ' . (int)($mx['total'] ?? 0) . ' · مغایرت ' . (int)($mx['mismatch'] ?? 0)
+                    . ' · نیست WC ' . (int)($mx['missing_woo'] ?? 0)
+                    . ' · نیست غرفه ' . (int)($mx['missing_bsl'] ?? 0);
             } else {
-                $lines[] = '📊 جدول مقایسه: خطا — ' . (string)($mx['error'] ?? '');
+                $lines[] = '📊 جدول: خطا — ' . (string)($mx['error'] ?? '');
+            }
+        }
+        if (!empty($out['matrix_fix'])) {
+            $fx = $out['matrix_fix'];
+            if (!empty($fx['ok'])) {
+                $lines[] = '🔧 اصلاح: ✅' . (int)($fx['ok_n'] ?? 0) . ' · ❌' . (int)($fx['fail_n'] ?? 0)
+                    . ' · 💰' . (int)($fx['priced'] ?? 0) . ' · 📤' . (int)($fx['sent'] ?? 0)
+                    . ' · 🗑' . (int)($fx['deleted'] ?? 0);
+            } else {
+                $lines[] = '🔧 اصلاح: خطا — ' . (string)($fx['error'] ?? '');
             }
         }
         $lines[] = '🕐 ' . date('Y/m/d H:i');
@@ -54469,6 +54575,9 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <label style="display:flex;align-items:flex-start;gap:6px;font-size:11px;color:#e9d5ff;margin:8px 0 4px;cursor:pointer;line-height:1.6">
 <input type="checkbox" id="reconAutoMatrix" checked onchange="reconAutoSave()" style="width:14px;height:14px;margin-top:2px">
 <span><b>📊 ساخت جدول مقایسه روی سرور</b> — بعد از هر مغایرت‌گیری دوره‌ای، ماتریس پروفایل×WC×غرفه‌ها در پس‌زمینه ساخته و ذخیره می‌شود (مناسب کاتالوگ بزرگ)</span></label>
+<label style="display:flex;gap:8px;align-items:flex-start;font-size:11px;color:#bbf7d0;margin:6px 0 4px;cursor:pointer;line-height:1.6">
+<input type="checkbox" id="reconAutoMatrixFix" checked onchange="reconAutoSave()" style="width:14px;height:14px;margin-top:2px">
+<span><b>🔧 اصلاح از روی جدول</b> — قیمت ناهماهنگ + ارسال missing + حذف/بایگانی extra (همان «اصلاح مغایرت‌ها»ی جدول؛ مسیر اصلی اعمال دوره‌ای از v10.121)</span></label>
 <div id="reconAutoStatus" style="font-size:10.5px;color:#67e8f9;margin-top:6px"></div>
 </div>
 <!-- v8.65: دفترچهٔ شناسه‌ها -->
@@ -63043,6 +63152,11 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.121', t:'🛡 استخراج fail-safe + مغایرت دوره‌ای از جدول', items:[
+    'باگ stop بدون {}: استخراج از صفحهٔ اول cancel می‌شد — رفع شد.',
+    'گارد soft-collapse + retire فقط بعد از extract کامل.',
+    'مغایرت دوره‌ای: matrix build + matrixFix مسیر اصلی.',
+  ]},
   {v:'10.120', t:'🔧 مغایرت‌گیری: گزارش همیشه پیدا + تشخیص job صفر', items:[
     'باکس گزارش بالای جدول (نه فقط صفحهٔ آخر) + پرش به صفحهٔ آخر بعد از اتمام.',
     'جمع‌آوری کارها قوی‌تر (flags/status + کلید غرفه string/int).',
@@ -64831,7 +64945,8 @@ function reconAutoCollect(){
     interval_h: parseInt(($('reconAutoIv')||{}).value||'6')||6,
     notify: !!($('reconAutoNotify')||{}).checked,
     enqueue_missing: !!($('reconAutoEnqueue')||{}).checked,
-    build_matrix: ($('reconAutoMatrix') ? !!$('reconAutoMatrix').checked : true)
+    build_matrix: ($('reconAutoMatrix') ? !!$('reconAutoMatrix').checked : true),
+    matrix_fix: ($('reconAutoMatrixFix') ? !!$('reconAutoMatrixFix').checked : true)
   };
 }
 function reconAutoSave(){
@@ -64857,11 +64972,12 @@ function reconAutoApplyCfg(c){
   chk('reconAutoNotify', c.notify!==false);
   chk('reconAutoEnqueue', c.enqueue_missing);
   chk('reconAutoMatrix', c.build_matrix!==false);
+  chk('reconAutoMatrixFix', c.matrix_fix!==false);
   set('reconAutoIv', c.interval_h||6);
   set('reconAutoMode', c.extra_mode||'off');
   reconAutoBadge();
   const st=$('reconAutoStatus');
-  if(st && c.enabled) st.textContent='فعال · هر '+(c.interval_h||6)+' ساعت';
+  if(st && c.enabled) st.textContent='فعال · هر '+(c.interval_h||6)+' ساعت · مسیر جدول';
 }
 function reconAutoBadge(){
   const b=$('reconAutoBadge'); if(!b) return;

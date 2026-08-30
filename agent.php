@@ -3,7 +3,7 @@
  * Plugin Name: Scraper & Auto Shop Pro
  * Plugin URI: https://github.com/fazilatma/amphp
  * Description: افزونه جامع اسکرپر، استخراج هوشمند محصولات، همگام‌ساز ووکامرس و باسلام، همراه با ظاهر مدرن و جذاب برای فروشگاه، سربرگ و منوهای لوکس، تعدیل قیمت خودکار و جایگزینی مستقیم محصولات ووکامرس
- * Version: 13.3.37
+ * Version: 13.3.38
  * Author: Fazilatma
  * Text Domain: scraper-auto-shop
  */
@@ -2896,7 +2896,7 @@ class Scraper_Auto_Shop_Plugin {
 
 
 	/**
-	 * v13.3.37 / v10.120: مغایرت کامل (قیمت+ارسال+حذف+گزارش) از جدول مقایسه.
+	 * v13.3.38 / v10.121: مغایرت کامل (قیمت+ارسال+حذف+گزارش) از جدول مقایسه.
 	 */
 	public static function ajax_sync_matrix_fix_start() {
 		if ( ! self::verify_woo_bridge_nonce() && ! check_ajax_referer( 'scraper_shop_admin_nonce', 'nonce', false ) ) {

@@ -301,7 +301,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.123';
+const APP_VERSION = '10.124';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -14274,6 +14274,21 @@ function extractResumePrepare(string $profileKey, array $cn): array {
     return $out;
 }
 
+/**
+ * v10.124: امضای پیشرفتِ استخراجِ یک پروفایل — برای تشخیصِ «پیشرفت» بین دو
+ *  تلاشِ ادامه. اگر بین دو تیکِ کران این امضا عوض شده باشد یعنی ادامهٔ قبلی
+ *  واقعاً جلو رفته (صفحه/جزئیات/محصول تازه‌ای ثبت شده) و سقفِ ضدِ حلقه نباید
+ *  جلوی ادامهٔ بعدی را بگیرد. اگر عوض نشده باشد یعنی پروفایل واقعاً گیر کرده.
+ */
+function extractResumeSig(array $profile): string {
+    $stage  = (string)($profile['_extract_stage'] ?? '');
+    $pageOk = (int)($profile['_extract_list_page_ok'] ?? 0);
+    $pageTr = (int)($profile['_extract_list_page_try'] ?? 0);
+    $det    = (int)($profile['_extract_detail_done'] ?? 0);
+    $n      = count((array)($profile['products'] ?? []));
+    return $stage . '|' . $pageOk . '|' . $pageTr . '|' . $det . '|' . $n;
+}
+
 
 
 /**
@@ -18399,30 +18414,39 @@ $syncState = loadSyncState();
    v10.123 این سیاست را عوض کرد: به‌جای گیتِ نوبت، «ادامهٔ استخراج» مستقل
    از بازهٔ سینک و در هر تیکِ کران اجرا می‌شود (خواستهٔ صریحِ کاربر) — چون
    بودجهٔ زمانیِ فهرست/جزئیات (v8.97 / v10.122) تضمین می‌کند هر اجرا تمیز
-   بایستد و چک‌پوینت بنویسد، حلقهٔ بی‌پایانِ «هر دقیقه» دیگر از سمتِ بودجه
-   کنترل می‌شود و ضدِ آن دو سقفِ پایین است: تعداد در هر تیک + تلاشِ هر
-   پروفایل در پنجرهٔ یک‌ساعته (auto_resume_max). */
-/* v10.123: گذرِ «ادامهٔ استخراج» — حالا مستقل از گیتِ زمان‌بندیِ سینک.
-   خواستهٔ کاربر: با هر اجرای کران، استخراجِ وسط‌راه‌مانده — درست مثل زدنِ
-   دکمهٔ «▶ ادامه از صفحهٔ X» — خودش ادامه پیدا کند، نه اینکه صبر کند تا
-   نوبتِ سینکِ بعدی برسد. فهرستِ کاندیدا از دو جا می‌آید:
+   بایستد و چک‌پوینت بنویسد. ضدِ حلقهٔ بی‌پایان هم (v10.124) سقفِ «بدون
+   پیشرفت» است نه سقفِ ساعتیِ کور: تا وقتی ادامه جلو می‌رود، هر تیک ادامه
+   می‌یابد؛ فقط پروفایلی که چند بار پشت‌سرهم هیچ پیشرفتی نمی‌کند مهار می‌شود. */
+/* v10.123: گذرِ «ادامهٔ استخراج» — مستقل از گیتِ زمان‌بندیِ سینک.
+   خواستهٔ کاربر: استخراجِ متوقف/وسط‌راه‌مانده با کرانِ بعدی ادامه پیدا کند،
+   نه دورهٔ بعدیِ اجرایش — درست مثل زدنِ دکمهٔ «▶ ادامه از صفحهٔ X». فهرستِ
+   کاندیدا از دو جا می‌آید:
      ۱) پروفایل‌هایی که نگهبانِ بالا ردیفِ بی‌حرکتشان را بسته (extract_resume).
-     ۲) پروفایل‌هایی که روی دیسک علامتِ فهرست/جزئیاتِ نیمه‌کاره دارند و
-        ضربانشان کهنه شده (یعنی اجرا مرده، نه در حال کار).
-   ضدِ حلقهٔ بی‌پایان هم دو تا است: سقفِ تعداد در هر تیک + سقفِ تلاشِ هر
-   پروفایل در پنجرهٔ یک‌ساعته — پروفایلِ واقعاً خراب هر دقیقه شلیک نمی‌شود. */
+     ۲) هر پروفایلی که روی دیسک علامتِ فهرست/جزئیاتِ نیمه‌کاره دارد (stage میانی،
+        incomplete، یا _extract_resume_from) و الان واقعاً در حال اجرا نیست —
+        این شاملِ توقفِ تمیزِ بودجهٔ زمانی (ردیفِ paused) هم می‌شود، نه فقطِ مرده‌ها.
+   ضدِ حلقهٔ بی‌پایان: سقفِ تعداد در هر تیک + سقفِ «بدون پیشرفت» هر پروفایل —
+   اگر ادامهٔ قبلی جلو نرفته باشد (امضای پیشرفت ثابت)، پس از چند تلاش مهار
+   می‌شود؛ اما تا وقتی پیشرفت هست، هر تیک ادامه می‌یابد. */
 $_resumeCandidates = array_values(array_unique((array)($wdEarly['extract_resume'] ?? [])));
-$_rStaleNow = time();
-$_rStaleMin = max(120, (int)($cn['stall_after'] ?? 300));
+$_rQueueNow = extractReadQueue();
 foreach ($profiles as $_rk => $_prR) {
     if (!is_array($_prR)) continue;
     $_rStage = (string)($_prR['_extract_stage'] ?? '');
     $_rMid   = in_array($_rStage, ['list', 'list_done', 'detail'], true);
-    $_rInc   = !empty($_prR['_extract_list_incomplete']) || !empty($_prR['_extract_resume_req']);
-    $_rAge   = $_rStaleNow - (int)($_prR['_extract_stage_at'] ?? 0);
-    if (($_rMid || $_rInc) && $_rAge > $_rStaleMin) {
-        if (!in_array($_rk, $_resumeCandidates, true)) $_resumeCandidates[] = $_rk;
+    $_rInc   = !empty($_prR['_extract_list_incomplete']) || !empty($_prR['_extract_resume_req'])
+               || (int)($_prR['_extract_resume_from'] ?? 0) > 0;
+    if (!$_rMid && !$_rInc) continue;
+    /* اگر همین پروفایل ردیفِ running یا waiting دارد، یا الان کار می‌کند یا
+       در نوبت است — خودش می‌رود؛ اینجا دوباره شروعش نکن (اجرای موازی). */
+    $_rBusy = false;
+    foreach ((array)($_rQueueNow['entries'] ?? []) as $_qe) {
+        if (!is_array($_qe)) continue;
+        if ((string)($_qe['profile_key'] ?? '') !== $_rk) continue;
+        if (in_array((string)($_qe['status'] ?? ''), ['running', 'waiting'], true)) { $_rBusy = true; break; }
     }
+    if ($_rBusy) continue;
+    if (!in_array($_rk, $_resumeCandidates, true)) $_resumeCandidates[] = $_rk;
 }
 if ($_resumeCandidates) {
     $_resumeBudget = max(1, min(10, (int)($cn['auto_resume_max'] ?? 3)));  /* سقف در هر تیک */
@@ -18435,18 +18459,33 @@ if ($_resumeCandidates) {
         }
         $_prR = $profiles[$_rk] ?? null;
         if (!is_array($_prR)) continue;
-        /* سقفِ تلاش در پنجرهٔ یک‌ساعته — پروفایلِ واقعاً خراب حلقه نسازد */
-        $_rTry = autoResumeCount('extract_resume:' . $_rk, time());
-        if ($_rTry >= $_resumeBudget) {
-            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'hourly_cap', 'tries' => $_rTry];
+        /* v10.124: سقفِ «بدون پیشرفت» — فقط وقتی مهار می‌شود که ادامهٔ قبلی
+           هیچ پیشرفتی نکرده باشد (امضای چک‌پوینت ثابت). پیشرفتِ هر بار، شمارنده
+           را صفر می‌کند تا کاتالوگِ بزرگِ سالم هر تیک جلو برود. */
+        $_rSig  = extractResumeSig($_prR);
+        $_rMeta = is_array($_prR['_extract_resume_meta'] ?? null) ? $_prR['_extract_resume_meta'] : [];
+        $_rPrevSig = (string)($_rMeta['sig'] ?? '');
+        $_rPrevAt  = (int)($_rMeta['at'] ?? 0);
+        $_rTries   = (int)($_rMeta['tries'] ?? 0);
+        if ($_rPrevSig !== '' && $_rPrevSig === $_rSig && (time() - $_rPrevAt) < AUTO_RESUME_WINDOW) {
+            $_rTries++;
+        } else {
+            $_rTries = 0;
+        }
+        if ($_rTries >= $_resumeBudget) {
+            $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => 'no_progress', 'tries' => $_rTries];
             continue;
         }
+        /* امضا و شمارنده را «پیش از» اجرا بنویس تا اگر هاست وسطِ کار کشت،
+           تیکِ بعدی بداند این تلاش از کجا شروع شد و پیشرفتی کرده یا نه. */
+        $_prR['_extract_resume_meta'] = ['sig' => $_rSig, 'at' => time(), 'tries' => $_rTries];
+        $profiles[$_rk] = $_prR;
+        saveProfiles($profiles);
         $_prep = extractResumePrepare($_rk, $cn);
         if (empty($_prep['ok'])) {
             $results['extract_resume_skipped'][] = ['key' => $_rk, 'reason' => $_prep['reason'] ?: 'no_profile'];
             continue;
         }
-        autoResumeMark('extract_resume:' . $_rk, time());
         cronMarkRun($_rk, 'extract_resume');
         $syncState = loadSyncState();
         try {
@@ -32650,7 +32689,8 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
     $add('10.123', 'ادامهٔ استخراج از گیتِ زمان‌بندیِ سینک جدا شده — هر تیک از چک‌پوینت ادامه می‌دهد',
          strpos($selfSrc, "\$_resumeCandidates = array_values(array_unique((array)(\$wdEarly['extract_resume'] ?? [])));") !== false
       && strpos($selfSrc, "function extractResumePrepare(string \$profileKey, array \$cn): array {") !== false
-      && strpos($selfSrc, "'reason' => 'hourly_" . "cap'") !== false
+      && strpos($selfSrc, "function extractResumeSig(array \$profile): string {") !== false
+      && strpos($selfSrc, "'reason' => 'no_prog" . "ress'") !== false
       && strpos($selfSrc, "'reason' => 'tick_" . "budget'") !== false);
     $add('9.92', 'ادامهٔ نگهبان هم نوبت را پیش از شروع مصرف می‌کند',
          strpos($selfSrc, "cronMarkRun(\$_rk, 'extract_res" . "ume');") !== false);
@@ -63568,6 +63608,12 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.124', t:'⏩ استخراجِ متوقف با کرانِ بعدی ادامه می‌یابد (نه دورهٔ بعدی)', items:[
+    'کاندیدای ادامه فقط «مرده‌ها» نیستند: توقفِ تمیزِ بودجهٔ زمانی (ردیف paused) و هر پروفایلِ دارای علامتِ نیمه‌کاره که در حال اجرا نیست هم همان تیک ادامه می‌یابد.',
+    'سقفِ ساعتیِ کور با سقفِ «بدون پیشرفت» جایگزین شد: تا وقتی ادامه جلو می‌رود هر تیک ادامه می‌یابد؛ فقط تکرارِ بدونِ پیشرفت مهار می‌شود.',
+    'امضای پیشرفت (extractResumeSig) بین دو تلاش مقایسه می‌شود تا کاتالوگِ بزرگِ سالم پشتِ سقف نماند.',
+    'افزونه v13.3.41: همگام نسخه با اسکرپر (بدون تغییر رفتاری در افزونه).',
+  ]},
   {v:'10.123', t:'♻️ ادامهٔ خودکار استخراجِ نیمه‌کاره در هر تیکِ کران', items:[
     'گذرِ «ادامهٔ استخراج» از گیتِ زمان‌بندی سینک جدا شد: با هر کران، هر استخراجِ رهاشده از چک‌پوینت ادامه می‌یابد (مثل دکمهٔ ادامه از صفحهٔ ذخیره‌شده).',
     'افزونه v13.3.40: همگام نسخه با اسکرپر (بدون تغییر رفتاری در افزونه).',

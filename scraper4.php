@@ -302,7 +302,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.126';
+const APP_VERSION = '10.127';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -45174,6 +45174,26 @@ echo json_encode(['ok'=>true,'paused'=>$stopPaused,
 exit;
 }
 
+/* v10.127: جمعِ محصولاتِ حذف/بایگانی‌شده از ردیف‌هایِ بازنشستگیِ صفِ ارسال.
+   این کار داخلِ خودِ ارسالِ زنده انجام نمی‌شود؛ retireRemoved آن را همگام
+   انجام می‌دهد و retireReportToSendQueues نتیجه را به‌صورتِ ردیفِ «done» در
+   صف می‌گذارد. این‌جا همان ردیف‌ها را جمع می‌کنیم تا شمارنده‌ها و کارت‌هایِ
+   ارسال هم حذف/بایگانی‌شده‌ها را نشان بدهند. */
+function sendQueueRetireAgg(array $queue): array {
+    $retired = 0; $notFound = 0; $failed = 0; $details = [];
+    foreach ((array)($queue['entries'] ?? []) as $e) {
+        if (!is_array($e)) continue;
+        if (empty($e['retire_report']) && ($e['kind'] ?? '') !== 'retire' && ($e['trigger'] ?? '') !== 'retire') continue;
+        $retired  += (int)($e['sent'] ?? 0);
+        $notFound += (int)($e['skipped'] ?? 0);
+        $failed   += (int)($e['failed'] ?? 0);
+        foreach ((array)($e['sent_details'] ?? []) as $d) if (is_array($d)) $details[] = $d;
+        foreach ((array)($e['skipped_details'] ?? []) as $d) if (is_array($d)) $details[] = $d;
+        foreach ((array)($e['failed_details'] ?? []) as $d) if (is_array($d)) $details[] = $d;
+    }
+    return ['retired' => $retired, 'not_found' => $notFound, 'failed' => $failed, 'details' => $details];
+}
+
 if (isset($_GET['poll_bsl'])) {
 header('Content-Type: application/json; charset=UTF-8');
 $p = readProgress(BSL_PROGRESS_FILE);
@@ -45184,6 +45204,12 @@ foreach ($queue['entries'] as $e) {
 if ($e['status'] === 'waiting') { $hasMore = true; break; }
 }
 $p['has_more'] = $hasMore;
+/* v10.127: شمارنده و کارت‌هایِ حذف/بایگانی‌شده در گزارشِ زندهٔ ارسال */
+$_retB = sendQueueRetireAgg($queue);
+$p['retired'] = $_retB['retired'];
+$p['retired_not_found'] = $_retB['not_found'];
+$p['retired_failed'] = $_retB['failed'];
+$p['retired_details'] = $_retB['details'];
 /* v10.59 (۷۳): پویینگِ تبِ ارسال، موتورِ بازسازیِ صف می‌شود — توضیح کامل
    در sendAutoRecover(). اگر صف گیر کرده باشد، همین‌جا از چک‌پوینت
    خودکار ادامه می‌افتد و رابط با recovered=... یک توست نشان می‌دهد. */
@@ -45220,6 +45246,12 @@ $hasMore=false;
 foreach($queue['entries'] as $e){if($e['status']==='waiting'){$hasMore=true;break;}}
 $p['has_more']=$hasMore;
 $p['queue_count']=count($queue['entries']);
+/* v10.127: شمارنده و کارت‌هایِ حذف/بایگانی‌شده در گزارشِ زندهٔ ارسال */
+$_retW = sendQueueRetireAgg($queue);
+$p['retired'] = $_retW['retired'];
+$p['retired_not_found'] = $_retW['not_found'];
+$p['retired_failed'] = $_retW['failed'];
+$p['retired_details'] = $_retW['details'];
 /* v10.59 (۷۳): همان موتورِ بازسازی برای صفِ ووکامرس (sendAutoRecover). */
 $_recW = sendAutoRecover('woo');
 if ($_recW !== null) $p['recovered'] = $_recW;
@@ -52916,7 +52948,7 @@ app_theme_ob_start();   // v9.94: رنگ‌بندیِ انتخابیِ کارب�
 .section-title.purple{color:#c4b5fd}.empty-state{text-align:center;padding:40px 20px;color:#64748b}.empty-state .icon{font-size:48px;margin-bottom:10px;opacity:.5}.empty-state p{font-size:13px}.switch{position:relative;display:inline-block;width:36px;height:20px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;inset:0;background:#475569;transition:.2s;border-radius:20px}.slider:before{position:absolute;content:"";height:14px;width:14px;right:3px;bottom:3px;background:#fff;transition:.2s;border-radius:50%}input:checked+.slider{background:#a855f7}input:checked+.slider:before{transform:translateX(-16px)}.cc{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px}.cc.wc{border-color:#7c3aed}.cc.bs{border-color:#0891b2}.cch{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;cursor:pointer}
 .cch h3{font-size:14px;margin:0;display:flex;align-items:center;gap:6px}.ccb{overflow:hidden}.ccb.collapsed{max-height:0!important;padding:0;margin:0;overflow:hidden}.cst{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700}.cst.on{background:#14532d;color:#86efac}.cst.off{background:#475569;color:#94a3b8}.cst.tg{background:#78350f;color:#fbbf24}.crow{display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap}.crow label{min-width:100px;color:#94a3b8;font-size:12px;flex-shrink:0}.crow input,.crow select{flex:1;min-width:150px}.cact{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.sres{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;max-height:500px;overflow-y:auto;font-size:11px;margin-top:10px}.sres .ok2{color:#4ade80;padding:2px 0;border-bottom:1px solid #1e293b}
 .sres .no2{color:#f87171;padding:2px 0;border-bottom:1px solid #1e293b}.sres a{color:#60a5fa;text-decoration:none}.scard{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:8px;margin:4px 0;display:flex;gap:8px;align-items:flex-start;transition:border-color .2s}.scard:hover{border-color:#475569}.scard-img{width:48px;height:48px;border-radius:6px;object-fit:cover;flex-shrink:0;background:#0f172a}.scard-noimg{width:48px;height:48px;border-radius:6px;flex-shrink:0;background:#0f172a;display:flex;align-items:center;justify-content:center;color:#475569;font-size:18px}.scard-body{flex:1;min-width:0;direction:rtl}.scard-title{color:#e2e8f0;font-weight:700;font-size:11px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl}.scard-meta{display:flex;gap:6px;flex-wrap:wrap;font-size:10px;margin-bottom:2px;direction:rtl}
-.scard-meta span{display:inline-flex;align-items:center;gap:2px}.scard-price{color:#4ade80;font-family:monospace;font-size:10px;direction:ltr}.scard-cat{color:#c084fc;font-size:9px}.scard-unit{color:#64748b;font-size:9px}.scard-result{font-size:10px;font-weight:700;margin-top:2px}.scard-ok{color:#4ade80}.scard-up{color:#facc15}.scard-skip{color:#94a3b8}.scard-fail{color:#f87171}.scard.scard-ok{border-left:3px solid #4ade80}.scard.scard-up{border-left:3px solid #facc15}.scard.scard-skip{border-left:3px solid #94a3b8}.scard.scard-fail{border-left:3px solid #f87171}.scard-err{color:#f87171;font-size:9px;margin-top:2px;direction:rtl;background:#7f1d1d20;padding:1px 6px;border-radius:3px}.scard-reason{color:#fbbf24;font-size:9px;margin-top:2px;direction:rtl;background:#42200620;padding:1px 6px;border-radius:3px}.scard-rid{color:#60a5fa;font-size:9px;direction:ltr}
+.scard-meta span{display:inline-flex;align-items:center;gap:2px}.scard-price{color:#4ade80;font-family:monospace;font-size:10px;direction:ltr}.scard-cat{color:#c084fc;font-size:9px}.scard-unit{color:#64748b;font-size:9px}.scard-result{font-size:10px;font-weight:700;margin-top:2px}.scard-ok{color:#4ade80}.scard-up{color:#facc15}.scard-skip{color:#94a3b8}.scard-fail{color:#f87171}.scard-retired{color:#fbbf24}.scard.scard-ok{border-left:3px solid #4ade80}.scard.scard-up{border-left:3px solid #facc15}.scard.scard-skip{border-left:3px solid #94a3b8}.scard.scard-fail{border-left:3px solid #f87171}.scard.scard-retired{border-left:3px solid #fbbf24}.scard-err{color:#f87171;font-size:9px;margin-top:2px;direction:rtl;background:#7f1d1d20;padding:1px 6px;border-radius:3px}.scard-reason{color:#fbbf24;font-size:9px;margin-top:2px;direction:rtl;background:#42200620;padding:1px 6px;border-radius:3px}.scard-rid{color:#60a5fa;font-size:9px;direction:ltr}
 .ssum{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px}.ssum .si{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center}.ssum .si b{font-size:18px;display:block}.ssum .si span{color:#64748b;font-size:10px}@media(min-width:900px){body{padding:16px;padding-bottom:16px}h1{font-size:22px}.main-tabs{position:static;border-top:none;box-shadow:none;background:#1e293b;border:1px solid #334155;border-radius:12px;margin-bottom:14px;padding:3px}.main-tab{padding:12px;border-radius:8px;flex-direction:row;gap:8px;font-size:13px}.main-tab .t-icon{font-size:16px}.main-tab.active{background:#3b82f6}.main-tab .badge{position:static;margin-right:4px;min-width:auto}.visual-container{grid-template-columns:1fr 320px}.grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.btn{padding:10px 16px}.profile-row{flex-wrap:nowrap}}
 .bsl-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100001;display:flex;align-items:center;justify-content:center;padding:10px}.bsl-modal{background:#0f172a;border:1px solid #334155;border-radius:14px;max-width:95vw;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;width:900px}.bsl-modal-head{padding:12px 16px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between}.bsl-modal-head h2{margin:0;font-size:15px;color:#67e8f9}
 /* =====================================================================
@@ -56713,7 +56745,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="cact"><button class="btn btn-purple" id="wSB" onclick="sendWoo()" style="flex:1">🚀 ارسال ووکامرس</button><button class="btn btn-orange hidden" id="wRB" onclick="sendWoo()" style="flex:1">🔄 تلاش مجدد</button><button class="btn btn-red hidden" id="wST" onclick="wooStop()">⏹</button></div>
 <div class="progress hidden" id="wP"><div class="progress-bar" id="wPB" style="background:linear-gradient(90deg,#7c3aed,#a78bfa)"></div></div>
 <div class="status" id="wSS" style="color:#c4b5fd"></div>
-<div class="ssum hidden" id="wSM"><div class="si" style="cursor:pointer" onclick="showWooReport('sent')"><b id="wO" style="color:#4ade80">۰</b><span>جدید</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('updated')"><b id="wU" style="color:#facc15">۰</b><span>آپدیت</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('skipped')"><b id="wK" style="color:#fb923c">۰</b><span>تکراری</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('failed')"><b id="wF" style="color:#f87171">۰</b><span>خطا</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('all')"><b id="wT" style="color:#60a5fa">۰</b><span>کل</span></div></div>
+<div class="ssum hidden" id="wSM" style="grid-template-columns:repeat(6,1fr)"><div class="si" style="cursor:pointer" onclick="showWooReport('sent')"><b id="wO" style="color:#4ade80">۰</b><span>جدید</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('updated')"><b id="wU" style="color:#facc15">۰</b><span>آپدیت</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('skipped')"><b id="wK" style="color:#fb923c">۰</b><span>تکراری</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('failed')"><b id="wF" style="color:#f87171">۰</b><span>خطا</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('retired')"><b id="wX" style="color:#fbbf24">۰</b><span>🗂 بایگانی/حذف</span></div><div class="si" style="cursor:pointer" onclick="showWooReport('all')"><b id="wT" style="color:#60a5fa">۰</b><span>کل</span></div></div>
 <div class="sres hidden" id="wR"></div>
 
 <div id="wooQueueSection" style="margin-top:10px">
@@ -56829,7 +56861,7 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div class="cact"><button class="btn btn-cyan" id="bSB" onclick="sendBsl()" style="flex:1">🚀 ارسال باسلام</button><button class="btn btn-green" id="bSBlegacy" onclick="sendBslClient()" style="flex:1">🚀 ارسال فرات</button><button class="btn btn-orange hidden" id="bRB" onclick="sendBsl()" style="flex:1">🔄 تلاش مجدد</button><button class="btn btn-teal" onclick="showBslProductsModal()" style="flex-shrink:0;font-size:12px;padding:6px 10px">🏪 مدیریت جامع محصولات باسلام</button><button class="btn btn-red hidden" id="bST" onclick="stopBslProcess()">⏹ توقف</button></div>
 <div class="progress hidden" id="bP"><div class="progress-bar" id="bPB" style="background:linear-gradient(90deg,#0891b2,#22d3ee)"></div></div>
 <div class="status" id="bSS" style="color:#67e8f9"></div>
-<div class="ssum hidden" id="bSM"><div class="si" style="cursor:pointer" onclick="showBslReport('sent')"><b id="bO" style="color:#4ade80">۰</b><span>جدید</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('updated')"><b id="bU" style="color:#facc15">۰</b><span>آپدیت</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('skipped')"><b id="bK" style="color:#fb923c">۰</b><span>تکراری</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('failed')"><b id="bF" style="color:#f87171">۰</b><span>خطا</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('all')"><b id="bT" style="color:#60a5fa">۰</b><span>کل</span></div></div>
+<div class="ssum hidden" id="bSM" style="grid-template-columns:repeat(6,1fr)"><div class="si" style="cursor:pointer" onclick="showBslReport('sent')"><b id="bO" style="color:#4ade80">۰</b><span>جدید</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('updated')"><b id="bU" style="color:#facc15">۰</b><span>آپدیت</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('skipped')"><b id="bK" style="color:#fb923c">۰</b><span>تکراری</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('failed')"><b id="bF" style="color:#f87171">۰</b><span>خطا</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('retired')"><b id="bX" style="color:#fbbf24">۰</b><span>🗂 بایگانی/حذف</span></div><div class="si" style="cursor:pointer" onclick="showBslReport('all')"><b id="bT" style="color:#60a5fa">۰</b><span>کل</span></div></div>
 <!-- v10.36 (۴۹ب): تفکیکِ زندهٔ غرفه‌ها حینِ ارسال — تا حالا فقط در کارتِ صف بود -->
 <div id="bslLiveShops" style="margin-top:6px"></div>
 <div class="sres hidden" id="bR"></div>
@@ -63961,6 +63993,12 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.127', t:'🗂 گزارش حذف/بایگانی‌شده‌ها در شمارنده و کارت‌های ارسال', items:[
+    'شمارندهٔ «بایگانی/حذف» به‌صورت زنده در پنل ارسال باسلام و ووکامرس (کنار جدید/آپدیت/تکراری/خطا) اضافه شد.',
+    'کارت‌های محصول در گزارش ارسال حالا ردیف‌های بازنشستگی (بایگانی باسلام / حذف ووکامرس) را با برچسب 🗂 و جزئیات نشان می‌دهند.',
+    'در گزارش نهایی و مودال «همه»، دستهٔ «بایگانی/حذف» با رنگ جدا فهرست می‌شود.',
+    'شمارندهٔ صف‌های ارسال هم تعداد حذف/بایگانی‌شده‌ها را (نه فقط شمار ردیف‌ها) نمایش می‌دهد.',
+  ]},
   {v:'10.126', t:'⏯ ادامهٔ واقعیِ کارهای طولانی از چک‌پوینت (نه از اول)', items:[
     'dedup: شناسه‌هایِ ازقبل‌حذف/بایگانی‌شده در ادامه رد می‌شوند و شمارنده‌ها جمعِ کل را نگه می‌دارند (باسلام بایگانی را از فهرست حذف نمی‌کند، پس بدونِ این ادامه دوباره همان‌ها را برمی‌داشت).',
     'catfix: محصولِ ازقبل‌پردازش‌شده در ادامه رد می‌شود؛ شمارنده‌ها و اقلامِ گزارش از چک‌پوینت ادامه می‌یابند.',
@@ -73910,8 +73948,10 @@ function pollBslProgress() {
         if(d.updated_details!==undefined) bslReportData.updated=_keepDet(d.updated_details,bslReportData.updated);
         if(d.skipped_details!==undefined) bslReportData.skipped=_keepDet(d.skipped_details,bslReportData.skipped);
         if(d.failed_details!==undefined) bslReportData.failed=_keepDet(d.failed_details,bslReportData.failed);
+        /* v10.127: کارت‌هایِ حذف/بایگانی‌شده در گزارشِ زندهٔ ارسال */
+        if(d.retired_details!==undefined) bslReportData.retired=_keepDet(d.retired_details,bslReportData.retired);
         // v7.82/v10.104: Render product cards — full rebuild if count dropped (resume)
-        const totalCards=bslReportData.sent.length+bslReportData.updated.length+bslReportData.skipped.length+bslReportData.failed.length;
+        const totalCards=bslReportData.sent.length+bslReportData.updated.length+bslReportData.skipped.length+bslReportData.failed.length+(bslReportData.retired||[]).length;
         const logDiv=$('bR');
         if(logDiv && totalCards>0 && (totalCards>bslLastCardCount || (bslLastCardCount>0 && logDiv.querySelectorAll('.scard').length===0))){
             const allItems=[];
@@ -73919,6 +73959,7 @@ function pollBslProgress() {
             bslReportData.updated.forEach(x=>{allItems.push(Object.assign({result:'update'},x));});
             bslReportData.skipped.forEach(x=>{allItems.push(Object.assign({result:'skip'},x));});
             bslReportData.failed.forEach(x=>{allItems.push(Object.assign({result:'fail'},x));});
+            (bslReportData.retired||[]).forEach(x=>{allItems.push(Object.assign({result:'retired'},x));});
             const needFull = bslLastCardCount===0 || logDiv.querySelectorAll('.scard').length===0 || totalCards<bslLastCardCount;
             if(needFull){
                 // نگه داشتن بنرهای وضعیت غیر-کارت
@@ -73941,6 +73982,7 @@ function pollBslProgress() {
         $('bU').textContent=toFa(updated);
         $('bK').textContent=toFa(skipped);
         $('bF').textContent=toFa(failed);
+        $('bX').textContent=toFa(d.retired||0);
         $('bT').textContent=toFa(total);
         /* v10.36 (۴۹ب): تفکیکِ غرفه‌ها همین‌جا، زیرِ شمارنده‌های کلی.
            تا اینجا shop_stats فقط در کارتِ صف رندر می‌شد — یعنی کاربری که
@@ -74223,7 +74265,7 @@ function queueWooSend(ps){
                 if(!d.ok){showToast('خطا: '+d.error,1);return;}
                 showToast('✓ '+toFa(totalSaved)+' محصول در صف ووکامرس — سرورساید');
                 wSend=true;
-                wooReportData={sent:[],updated:[],skipped:[],failed:[]};
+                wooReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
                 wooLastLogCount=0;wooLastCardCount=0;wooLastUpdateTime=0;
                 // v8.17: Keep send button visible so user can add more to queue
                 $('wSB').textContent='🚀 + افزودن به صف';
@@ -74231,7 +74273,7 @@ function queueWooSend(ps){
                 $('wP').classList.remove('hidden');$('wPB').style.width='0%';
                 $('wR').classList.remove('hidden');
                 $('wR').innerHTML='<div style="color:#a78bfa;font-weight:bold;padding:8px;margin-bottom:4px;background:#1e3a5f;border-radius:6px">✓ ارسال '+toFa(totalSaved)+' محصول ووکامرس (سرورساید — بسته مرورگر ادامه می‌دهد)</div>';
-                $('wSM').classList.remove('hidden');$('wO').textContent=toFa(0);$('wU').textContent=toFa(0);$('wK').textContent=toFa(0);$('wF').textContent=toFa(0);$('wT').textContent=toFa(totalSaved);
+                $('wSM').classList.remove('hidden');$('wO').textContent=toFa(0);$('wU').textContent=toFa(0);$('wK').textContent=toFa(0);$('wF').textContent=toFa(0);$('wX').textContent=toFa(0);$('wT').textContent=toFa(totalSaved);
                 $('wSS').textContent='✓ شروع ارسال...';
                 window._currentWooQueueId=qid;
                 checkWooQueue();
@@ -74283,8 +74325,10 @@ function pollWooProgress(){
         if(d.updated_details!==undefined)wooReportData.updated=_keepW(d.updated_details,wooReportData.updated);
         if(d.skipped_details!==undefined)wooReportData.skipped=_keepW(d.skipped_details,wooReportData.skipped);
         if(d.failed_details!==undefined)wooReportData.failed=_keepW(d.failed_details,wooReportData.failed);
+        /* v10.127: کارت‌هایِ حذف/بایگانی‌شده در گزارشِ زندهٔ ارسال */
+        if(d.retired_details!==undefined)wooReportData.retired=_keepW(d.retired_details,wooReportData.retired);
         // v8.06/v10.104: Render product cards
-        const totalCards=wooReportData.sent.length+wooReportData.updated.length+wooReportData.skipped.length+wooReportData.failed.length;
+        const totalCards=wooReportData.sent.length+wooReportData.updated.length+wooReportData.skipped.length+wooReportData.failed.length+(wooReportData.retired||[]).length;
         const logDiv=$('wR');
         if(logDiv && totalCards>0 && (totalCards>wooLastCardCount || (wooLastCardCount>0 && logDiv.querySelectorAll('.scard').length===0))){
             const allItems=[];
@@ -74292,6 +74336,7 @@ function pollWooProgress(){
             wooReportData.updated.forEach(x=>{allItems.push(Object.assign({result:'update'},x));});
             wooReportData.skipped.forEach(x=>{allItems.push(Object.assign({result:'skip'},x));});
             wooReportData.failed.forEach(x=>{allItems.push(Object.assign({result:'fail'},x));});
+            (wooReportData.retired||[]).forEach(x=>{allItems.push(Object.assign({result:'retired'},x));});
             const needFull=wooLastCardCount===0||logDiv.querySelectorAll('.scard').length===0||totalCards<wooLastCardCount;
             if(needFull){
                 const keep=[];
@@ -74313,6 +74358,7 @@ function pollWooProgress(){
         $('wU').textContent=toFa(updated);
         $('wK').textContent=toFa(skipped);
         $('wF').textContent=toFa(failed);
+        $('wX').textContent=toFa(d.retired||0);
         $('wT').textContent=toFa(total);
         // Calculate elapsed and ETA
         let elapsedStr='';
@@ -74360,13 +74406,13 @@ function pollWooProgress(){
                     if(nd.ok&&nd.next_id){
                         showToast('📋 شروع فرآیند بعدی از صف ووکامرس');
                         // Reset progress for new entry
-                        wooReportData={sent:[],updated:[],skipped:[],failed:[]};
+                        wooReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
                         wooLastLogCount=0;wooLastCardCount=0;wooLastUpdateTime=0;
                         wSend=true;
                         $('wSB').textContent='🚀 + افزودن به صف';$('wST').classList.remove('hidden');
                         $('wPB').style.width='0%';
                         $('wR').innerHTML='<div style="color:#a78bfa;font-weight:bold;padding:8px;margin-bottom:4px;background:#1e3a5f;border-radius:6px">📋 شروع فرآیند بعدی از صف — '+toFa(nd.total)+' محصول</div>';
-                        $('wO').textContent=toFa(0);$('wU').textContent=toFa(0);$('wK').textContent=toFa(0);$('wF').textContent=toFa(0);$('wT').textContent=toFa(nd.total);
+                        $('wO').textContent=toFa(0);$('wU').textContent=toFa(0);$('wK').textContent=toFa(0);$('wF').textContent=toFa(0);$('wX').textContent=toFa(0);$('wT').textContent=toFa(nd.total);
                         fetch('?action=woo_backend').catch(()=>{});
                         setTimeout(pollWooProgress,1500);
                     }
@@ -74424,7 +74470,7 @@ function checkWooProgress(){
             $('wP').classList.remove('hidden');$('wR').classList.remove('hidden');$('wSM').classList.remove('hidden');
             $('wPB').style.width='100%';
             $('wO').textContent=toFa(d.sent||0);$('wU').textContent=toFa(d.updated||0);
-            $('wK').textContent=toFa(d.skipped||0);$('wF').textContent=toFa(d.failed||0);$('wT').textContent=toFa(d.total||0);
+            $('wK').textContent=toFa(d.skipped||0);$('wF').textContent=toFa(d.failed||0);$('wX').textContent=toFa(d.retired||0);$('wT').textContent=toFa(d.total||0);
             if(d.cancelled){
                 $('wSS').textContent='❌ ارسال لغو شد';
             }else{
@@ -74435,11 +74481,13 @@ function checkWooProgress(){
             if(d.updated_details)wooReportData.updated=d.updated_details;
             if(d.skipped_details)wooReportData.skipped=d.skipped_details;
             if(d.failed_details)wooReportData.failed=d.failed_details;
+            if(d.retired_details)wooReportData.retired=d.retired_details;
             const allItems=[];
             wooReportData.sent.forEach(x=>{allItems.push(Object.assign({result:'ok'},x));});
             wooReportData.updated.forEach(x=>{allItems.push(Object.assign({result:'update'},x));});
             wooReportData.skipped.forEach(x=>{allItems.push(Object.assign({result:'skip'},x));});
             wooReportData.failed.forEach(x=>{allItems.push(Object.assign({result:'fail'},x));});
+            (wooReportData.retired||[]).forEach(x=>{allItems.push(Object.assign({result:'retired'},x));});
             allItems.forEach(item=>{$('wR').insertAdjacentHTML('beforeend',renderSendCard(item));});
             wooLastCardCount=allItems.length;
         }
@@ -74767,14 +74815,14 @@ function queueBslSend(ps,catId){
                 showToast('\u2713 '+toFa(totalSaved)+' \u0645\u062d\u0635\u0648\u0644 \u062f\u0631 \u0635\u0641 \u2014 \u0633\u0631\u0648\u0631\u0633\u0627\u06cc\u062f');
                 // Initialize visual UI
                 bSend=true;
-                bslReportData={sent:[],updated:[],skipped:[],failed:[]};
+                bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
                 bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
                 $('bSB').classList.add('hidden');$('bSBlegacy').classList.add('hidden');
                 $('bST').classList.remove('hidden');
                 $('bP').classList.remove('hidden');$('bPB').style.width='0%';
                 $('bR').classList.remove('hidden');
                 $('bR').innerHTML='<div style="color:#67e8f9;font-weight:bold;padding:8px;margin-bottom:4px;background:#1e3a5f;border-radius:6px">\u2713 \u0627\u0631\u0633\u0627\u0644 '+toFa(totalSaved)+' \u0645\u062d\u0635\u0648\u0644 (\u0633\u0631\u0648\u0631\u0633\u0627\u06cc\u062f \u2014 \u0628\u0633\u062a\u0647 \u0645\u0631\u0648\u0631\u06af\u0632 \u0628\u0627 \u0627\u062f\u0627\u0645\u0647 \u0645\u06cc\u062f\u0647\u062f)</div>';
-                $('bSM').classList.remove('hidden');$('bO').textContent=toFa(0);$('bU').textContent=toFa(0);$('bK').textContent=toFa(0);$('bF').textContent=toFa(0);$('bT').textContent=toFa(totalSaved);
+                $('bSM').classList.remove('hidden');$('bO').textContent=toFa(0);$('bU').textContent=toFa(0);$('bK').textContent=toFa(0);$('bF').textContent=toFa(0);$('bX').textContent=toFa(0);$('bT').textContent=toFa(totalSaved);
                 $('bSS').textContent='\u2713 \u0634\u0631\u0648\u0631 \u0627\u0631\u0633\u0627\u0644...';
                 // v7.66: Track current queue ID for resume capability                window._currentBslQueueId=qid;                console.log("[v7.66 queueBslSend] Starting bsl_backend for queue_id="+qid+" with "+totalSaved+" products");                checkBslQueue();
                 // v7.66: Trigger bsl_backend (pure PHP processor)
@@ -74856,14 +74904,14 @@ function sendBslClient(){
     const ps=getSendP();
     if(!ps.length){showToast('محصولی نیست',1);return;}
     bslClientRunning=true;bSend=true;
-    bslReportData={sent:[],updated:[],skipped:[],failed:[]};
+    bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
     bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;bslResumeCount=0;
     $('bR').dataset.logIdx='0';
     $('bSB').classList.add('hidden');$('bSBlegacy').classList.add('hidden');$('bST').classList.remove('hidden');
     $('bP').classList.remove('hidden');$('bPB').style.width='0%';
     $('bR').classList.remove('hidden');
     $('bR').innerHTML='<div style="color:#22c55e;font-weight:bold;padding:8px;margin-bottom:4px;background:#14532d30;border-radius:6px">🚀 ارسال فرات '+toFa(ps.length)+' محصول به باسلام (تکی)</div>';
-    $('bSM').classList.remove('hidden');$('bO').textContent='۰';$('bU').textContent='۰';$('bK').textContent='۰';$('bF').textContent='۰';$('bT').textContent=toFa(ps.length);
+    $('bSM').classList.remove('hidden');$('bO').textContent='۰';$('bU').textContent='۰';$('bK').textContent='۰';$('bF').textContent='۰';$('bX').textContent='۰';$('bT').textContent=toFa(ps.length);
     $('bSS').textContent='0/'+toFa(ps.length);
     // v7.48: Also clear stale temp/progress files before starting
     fetch('?bsl_clear_temp=1').then(()=>{}).catch(()=>{});
@@ -75006,7 +75054,7 @@ const vCheck=document.querySelector('h1');if(vCheck&&!vCheck.textContent.include
             $('bST').classList.remove('hidden');
             $('bP').classList.remove('hidden');$('bR').classList.remove('hidden');$('bSM').classList.remove('hidden');
             const sent=d.sent||0,updated=d.updated||0,skipped=d.skipped||0,failed=d.failed||0,total=d.total||0,current=d.current||0;
-            $('bO').textContent=toFa(sent);$('bU').textContent=toFa(updated);$('bK').textContent=toFa(skipped);$('bF').textContent=toFa(failed);$('bT').textContent=toFa(total);
+            $('bO').textContent=toFa(sent);$('bU').textContent=toFa(updated);$('bK').textContent=toFa(skipped);$('bF').textContent=toFa(failed);$('bX').textContent=toFa(d.retired||0);$('bT').textContent=toFa(total);
             $('bPB').style.width=(total>0?current/total*100:0)+'%';
             const logDiv=$('bR');
             const logs=d.recent_log||[];
@@ -75027,6 +75075,7 @@ const vCheck=document.querySelector('h1');if(vCheck&&!vCheck.textContent.include
             if(d.updated_details)bslReportData.updated=d.updated_details;
             if(d.skipped_details)bslReportData.skipped=d.skipped_details;
             if(d.failed_details)bslReportData.failed=d.failed_details;
+            if(d.retired_details)bslReportData.retired=d.retired_details;
             let elapsedStr='';
             if(d.started_at>0){const elapsedSec=Math.floor(Date.now()/1000-d.started_at);elapsedStr=elapsedSec>=60?(Math.floor(elapsedSec/60)+' \u062f\u0631\u06cc\u0642\u0647 '+elapsedSec%60+' \u062b\u0627\u0646\u06cc\u0647'):(elapsedSec+' \u062b\u0627\u0646\u06cc\u0647');}
             $('bSS').textContent=toFa(current)+'/'+toFa(total)+' ('+Math.round(current/total*100)+'\u066a)'+(elapsedStr?' | '+elapsedStr:'');
@@ -75153,12 +75202,24 @@ function restoreSendQueuePanes(){
 try{document.addEventListener('DOMContentLoaded',restoreSendQueuePanes);}catch(e){}
 try{setTimeout(restoreSendQueuePanes,0);}catch(e){}
 
+/* v10.127: جمعِ محصولاتِ حذف/بایگانی‌شده از ردیف‌هایِ بازنشستگیِ صفِ ارسال */
+function sendQueueRetireAgg(entries){
+    let retired=0,notFound=0,failed=0;
+    (entries||[]).forEach(function(e){
+        if(!e)return;
+        if(!(e.retire_report||e.kind==='retire'||e.trigger==='retire'))return;
+        retired+=Number(e.sent||0);
+        notFound+=Number(e.skipped||0);
+        failed+=Number(e.failed||0);
+    });
+    return {retired:retired,notFound:notFound,failed:failed};
+}
 function renderBslQueue(q){
     const section=$('bslQueueSection');
     const list=$('bslQueueList');
     if(!section||!list)return;
     const entries=q.entries||[];
-    try{const bd=$('bslQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const ret=(entries||[]).filter(e=>e&&(e.retire_report||e.kind==='retire'||e.trigger==='retire')).length;bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(ret?' · 🗂 '+toFa(ret):'')):'';}}catch(_e){}
+    try{const bd=$('bslQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const rag=sendQueueRetireAgg(entries);bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(rag.retired?' · 🗂 '+toFa(rag.retired)+' حذف/بایگانی':'')):'';}}catch(_e){}
     if(entries.length===0){list.innerHTML='<span style="color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال باسلام» را کلیک کنید</span>';return;}
     section.style.display='block';
     const statusLabels={waiting:'⏳ در صف',running:'🔄 در حال ارسال',paused:'⏸ متوقف',done:'✅ انجام شد',failed:'❌ خطا'};
@@ -75286,7 +75347,7 @@ function resumeBslQueue(qid){
         showToast('▶ ادامه از محصول '+toFa((d.current||0)+1));
         bSend=true;
         window._currentBslQueueId=qid;
-        bslReportData={sent:[],updated:[],skipped:[],failed:[]};
+        bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
         bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
         $('bSB').classList.add('hidden');$('bSBlegacy').classList.add('hidden');$('bST').classList.remove('hidden');
         $('bP').classList.remove('hidden');$('bR').classList.remove('hidden');$('bSM').classList.remove('hidden');
@@ -75299,12 +75360,12 @@ function startBslServer(qid){
     // v7.56: Start server-side processing for a waiting queue entry
     // Copy products file, update connections, trigger bsl_backend
     $('bSS').textContent='\u0634\u0631\u0648\u0631 \u0633\u0631\u0648\u0631\u0633\u0627\u06cc\u062f...';
-    bSend=true;bslReportData={sent:[],updated:[],skipped:[],failed:[]};bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
+    bSend=true;bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
     window._currentBslQueueId=qid; // v7.66: track queue ID
     $('bSB').classList.add('hidden');$('bSBlegacy').classList.add('hidden');$('bST').classList.remove('hidden');
     $('bP').classList.remove('hidden');$('bPB').style.width='0%';
     $('bR').classList.remove('hidden');$('bR').innerHTML='';
-    $('bSM').classList.remove('hidden');$('bO').textContent=toFa(0);$('bU').textContent=toFa(0);$('bK').textContent=toFa(0);$('bF').textContent=toFa(0);
+    $('bSM').classList.remove('hidden');$('bO').textContent=toFa(0);$('bU').textContent=toFa(0);$('bK').textContent=toFa(0);$('bF').textContent=toFa(0);$('bX').textContent=toFa(0);
     const fd=new FormData();fd.append('queue_id',qid);fd.append('start_immediately','1');fd.append('total','0');fd.append('category_id','0');fd.append('auto_category','0');fd.append('title_suffix','');
     // First: copy products file and set status='running' via bsl_queue_add (reuse start_immediately logic)
     // But bsl_queue_add needs total — let's use a dedicated endpoint
@@ -75325,7 +75386,7 @@ function restartBslServer(qid){
     // v7.56: Restart server-side processing for a stuck 'running' entry
     // Same as startBslServer but also clears progress and updates current position
     $('bSS').textContent='\u0634\u0631\u0648\u0631 \u0627\u062f\u0627\u0645\u0647 \u0633\u0631\u0648\u0631\u0633\u0627\u06cc\u062f...';
-    bSend=true;bslReportData={sent:[],updated:[],skipped:[],failed:[]};bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
+    bSend=true;bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
     window._currentBslQueueId=qid; // v7.66: track queue ID
     $('bSB').classList.add('hidden');$('bSBlegacy').classList.add('hidden');$('bST').classList.remove('hidden');
     $('bP').classList.remove('hidden');$('bR').classList.remove('hidden');$('bSM').classList.remove('hidden');
@@ -75387,7 +75448,7 @@ function renderWooQueue(q){
     const list=$('wooQueueList');
     if(!section||!list)return;
     const entries=q.entries||[];
-    try{const bd=$('wooQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const ret=(entries||[]).filter(e=>e&&(e.retire_report||e.kind==='retire'||e.trigger==='retire')).length;bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(ret?' · 🗂 '+toFa(ret):'')):'';}}catch(_e){}
+    try{const bd=$('wooQueueCountBadge');if(bd){const n=(entries||[]).length;const act=(entries||[]).filter(e=>e&&(e.status==='running'||e.status==='waiting'||e.status==='paused')).length;const rag=sendQueueRetireAgg(entries);bd.textContent=n?(toFa(n)+' وظیفه'+(act?' · '+toFa(act)+' فعال':'')+(rag.retired?' · 🗂 '+toFa(rag.retired)+' حذف/بایگانی':'')):'';}}catch(_e){}
     if(entries.length===0){list.innerHTML='<span style="color:#64748b">صف خالی — برای افزودن، دکمه «🚀 ارسال ووکامرس» را کلیک کنید</span>';return;}
     section.style.display='block';
     const statusLabels={waiting:'⏳ در صف',running:'🔄 در حال ارسال',paused:'⏸ متوقف',done:'✅ انجام شد',failed:'❌ خطا'};
@@ -75756,7 +75817,7 @@ function startNextBslQueueEntry(){
     fetch('?action=bsl_backend',{method:'GET'}).catch(()=>{});
     console.log('[v7.81] Triggered bsl_backend for next entry — polling starts');
     bSend=true;
-    bslReportData={sent:[],updated:[],skipped:[],failed:[]};
+    bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
     bslLastLogCount=0;bslLastCardCount=0;bslLastUpdateTime=0;
     $('bSM').classList.remove('hidden');
     $('bPB').style.width='0%';
@@ -77479,12 +77540,12 @@ function sendImportToWoo(){
     }));
     if(!ps.length){showToast('محصولی نیست',true);return;}
     switchMainTab('send');
-    wSend=true;wooReportData={sent:[],updated:[],skipped:[],failed:[]};
+    wSend=true;wooReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
     $('wSB').textContent='🚀 + افزودن به صف';$('wST').classList.remove('hidden');
     $('wP').classList.remove('hidden');$('wPB').style.width='0%';
     $('wR').classList.remove('hidden');
     $('wR').innerHTML='<div style="color:#67e8f9;font-weight:bold;padding:8px;margin-bottom:4px;background:#1e3a5f;border-radius:6px">🚥 ارسال '+toFa(ps.length)+' محصول وارد شده به ووکامرس</div>';
-    $('wSM').classList.remove('hidden');$('wO').textContent='۰';$('wU').textContent='۰';$('wK').textContent='۰';$('wF').textContent='۰';$('wT').textContent=toFa(ps.length);
+    $('wSM').classList.remove('hidden');$('wO').textContent='۰';$('wU').textContent='۰';$('wK').textContent='۰';$('wF').textContent='۰';$('wX').textContent='۰';$('wT').textContent=toFa(ps.length);
     $('wSS').textContent='ذخیره محصولات...';
     // v8.17: Use queue system for import too
     queueWooSend(ps);
@@ -79346,13 +79407,13 @@ function bslFixCat(productId,catId,autoCatId){
 }
 function closePhase2(){const m=document.getElementById('phase2Container');if(m)m.remove();}
 function mb_substr(s,len){if(!s)return'';if(s.length<=len)return s;return s.substring(0,len)+'…';}
-var bslReportData={sent:[],updated:[],skipped:[],failed:[]};
-var wooReportData={sent:[],updated:[],skipped:[],failed:[]};
+var bslReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
+var wooReportData={sent:[],updated:[],skipped:[],failed:[],retired:[]};
 function showBslReport(type){
     // v8.19: 'all' type shows all categories combined
     if(type==='all'){
-        const allList=[...(bslReportData.sent||[]).map(x=>({...x,_cat:'✅ ایجاد'})),...(bslReportData.updated||[]).map(x=>({...x,_cat:'⚡ آپدیت'})),...(bslReportData.skipped||[]).map(x=>({...x,_cat:'⏭ تکراری'})),...(bslReportData.failed||[]).map(x=>({...x,_cat:'❌ خطا'}))];
-        const catColors={'✅ ایجاد':'#4ade80','⚡ آپدیت':'#facc15','⏭ تکراری':'#fb923c','❌ خطا':'#f87171'};
+        const allList=[...(bslReportData.sent||[]).map(x=>({...x,_cat:'✅ ایجاد'})),...(bslReportData.updated||[]).map(x=>({...x,_cat:'⚡ آپدیت'})),...(bslReportData.skipped||[]).map(x=>({...x,_cat:'⏭ تکراری'})),...(bslReportData.failed||[]).map(x=>({...x,_cat:'❌ خطا'})),...(bslReportData.retired||[]).map(x=>({...x,_cat:'🗂 بایگانی/حذف'}))];
+        const catColors={'✅ ایجاد':'#4ade80','⚡ آپدیت':'#facc15','⏭ تکراری':'#fb923c','❌ خطا':'#f87171','🗂 بایگانی/حذف':'#fbbf24'};
         let html='<div class="bsl-modal-overlay" onclick="if(event.target===this)closeReportModal()">';
         html+='<div class="bsl-modal" style="max-width:700px">';
         html+='<div class="bsl-modal-head"><h2 style="color:#60a5fa">📊 گزارش کل باسلام ('+toFa(allList.length)+' محصول)</h2><button class="btn btn-gray" onclick="closeReportModal()">✕</button></div>';
@@ -79361,7 +79422,7 @@ function showBslReport(type){
             html+='<div class="bsl-modal-body" style="max-height:500px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
             html+='<thead><tr style="background:#1e293b;color:#94a3b8"><th style="padding:6px;text-align:right">#</th><th style="padding:6px;text-align:right">وضعیت</th><th style="padding:6px;text-align:right">عنوان</th><th style="padding:6px;text-align:right">جزئیات</th></tr></thead><tbody>';
             allList.forEach((item,i)=>{
-                const det=item.remote_id?'ID#'+item.remote_id:(item.reason||item.error||item.update_reason||item.changes||'—');
+                const det=item.remote_id?'ID#'+item.remote_id:(item.detail||item.reason||item.error||item.update_reason||item.changes||'—');
                 html+='<tr style="border-bottom:1px solid #1e293b"><td style="padding:4px;color:#64748b">'+toFa(i+1)+'</td>';
                 html+='<td style="padding:4px;color:'+(catColors[item._cat]||'#94a3b8')+'">'+item._cat+'</td>';
                 html+='<td style="padding:4px;color:#e2e8f0">'+esc(item.title||'—')+'</td>';
@@ -79375,8 +79436,8 @@ function showBslReport(type){
         document.body.appendChild(div);return;
     }
     const list=bslReportData[type]||[];
-    const labels={sent:'✅ ایجاد شده',updated:'⚡ آپدیت شده',skipped:'⏭ تکراری',failed:'❌ خطا'};
-    const colors={sent:'#22c55e',updated:'#facc15',skipped:'#94a3b8',failed:'#f87171'};
+    const labels={sent:'✅ ایجاد شده',updated:'⚡ آپدیت شده',skipped:'⏭ تکراری',failed:'❌ خطا',retired:'🗂 بایگانی/حذف شده'};
+    const colors={sent:'#22c55e',updated:'#facc15',skipped:'#94a3b8',failed:'#f87171',retired:'#fbbf24'};
     const title=labels[type]||type;
     let html='<div class="bsl-modal-overlay" onclick="if(event.target===this)closeReportModal()">';
     html+='<div class="bsl-modal" style="max-width:700px">';
@@ -79389,6 +79450,7 @@ function showBslReport(type){
         if(type==='updated'){html+='<th style="padding:6px;text-align:right">علت آپدیت</th>';}
         if(type==='skipped'){html+='<th style="padding:6px;text-align:right">علت</th>';}
         if(type==='failed'){html+='<th style="padding:6px;text-align:right">خطا</th>';}
+        if(type==='retired'){html+='<th style="padding:6px;text-align:right">نتیجه</th>';}
         html+='</tr></thead><tbody>';
         list.forEach((item,i)=>{
             html+='<tr style="border-bottom:1px solid #1e293b"><td style="padding:4px;color:#64748b">'+toFa(i+1)+'</td>';
@@ -79397,6 +79459,7 @@ function showBslReport(type){
             if(type==='updated'){html+='<td style="padding:4px;color:#facc15">'+esc(item.update_reason||item.changes||'—')+'</td>';}
             if(type==='skipped'){html+='<td style="padding:4px;color:#94a3b8">'+esc(item.reason||'—')+'</td>';}
             if(type==='failed'){html+='<td style="padding:4px;color:#f87171">'+esc(item.error||'—')+'</td>';}
+            if(type==='retired'){html+='<td style="padding:4px;color:#fbbf24">'+esc(item.detail||item.reason||'—')+'</td>';}
             html+='</tr>';
         });
         html+='</tbody></table></div>';
@@ -79409,8 +79472,8 @@ function showBslReport(type){
 function showWooReport(type){
     // v8.19: 'all' type shows all categories combined
     if(type==='all'){
-        const allList=[...(wooReportData.sent||[]).map(x=>({...x,_cat:'✅ ایجاد'})),...(wooReportData.updated||[]).map(x=>({...x,_cat:'⚡ آپدیت'})),...(wooReportData.skipped||[]).map(x=>({...x,_cat:'⏭ تکراری'})),...(wooReportData.failed||[]).map(x=>({...x,_cat:'❌ خطا'}))];
-        const catColors={'✅ ایجاد':'#4ade80','⚡ آپدیت':'#facc15','⏭ تکراری':'#fb923c','❌ خطا':'#f87171'};
+        const allList=[...(wooReportData.sent||[]).map(x=>({...x,_cat:'✅ ایجاد'})),...(wooReportData.updated||[]).map(x=>({...x,_cat:'⚡ آپدیت'})),...(wooReportData.skipped||[]).map(x=>({...x,_cat:'⏭ تکراری'})),...(wooReportData.failed||[]).map(x=>({...x,_cat:'❌ خطا'})),...(wooReportData.retired||[]).map(x=>({...x,_cat:'🗂 بایگانی/حذف'}))];
+        const catColors={'✅ ایجاد':'#4ade80','⚡ آپدیت':'#facc15','⏭ تکراری':'#fb923c','❌ خطا':'#f87171','🗂 بایگانی/حذف':'#fbbf24'};
         let html='<div class="bsl-modal-overlay" onclick="if(event.target===this)closeReportModal()">';
         html+='<div class="bsl-modal" style="max-width:700px">';
         html+='<div class="bsl-modal-head"><h2 style="color:#60a5fa">📊 گزارش کل ووکامرس ('+toFa(allList.length)+' محصول)</h2><button class="btn btn-gray" onclick="closeReportModal()">✕</button></div>';
@@ -79419,7 +79482,7 @@ function showWooReport(type){
             html+='<div class="bsl-modal-body" style="max-height:500px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
             html+='<thead><tr style="background:#1e293b;color:#94a3b8"><th style="padding:6px;text-align:right">#</th><th style="padding:6px;text-align:right">وضعیت</th><th style="padding:6px;text-align:right">عنوان</th><th style="padding:6px;text-align:right">جزئیات</th></tr></thead><tbody>';
             allList.forEach((item,i)=>{
-                const det=item.remote_id?'ID#'+item.remote_id:(item.reason||item.error||item.update_reason||item.changes||'—');
+                const det=item.remote_id?'ID#'+item.remote_id:(item.detail||item.reason||item.error||item.update_reason||item.changes||'—');
                 html+='<tr style="border-bottom:1px solid #1e293b"><td style="padding:4px;color:#64748b">'+toFa(i+1)+'</td>';
                 html+='<td style="padding:4px;color:'+(catColors[item._cat]||'#94a3b8')+'">'+item._cat+'</td>';
                 html+='<td style="padding:4px;color:#e2e8f0">'+esc(item.title||'—')+'</td>';
@@ -79433,8 +79496,8 @@ function showWooReport(type){
         document.body.appendChild(div);return;
     }
     const list=wooReportData[type]||[];
-    const labels={sent:'✅ ایجاد شده',updated:'⚡ آپدیت شده',skipped:'⏭ تکراری',failed:'❌ خطا'};
-    const colors={sent:'#22c55e',updated:'#facc15',skipped:'#94a3b8',failed:'#f87171'};
+    const labels={sent:'✅ ایجاد شده',updated:'⚡ آپدیت شده',skipped:'⏭ تکراری',failed:'❌ خطا',retired:'🗂 بایگانی/حذف شده'};
+    const colors={sent:'#22c55e',updated:'#facc15',skipped:'#94a3b8',failed:'#f87171',retired:'#fbbf24'};
     const title=labels[type]||type;
     let html='<div class="bsl-modal-overlay" onclick="if(event.target===this)closeReportModal()">';
     html+='<div class="bsl-modal" style="max-width:700px">';
@@ -79447,6 +79510,7 @@ function showWooReport(type){
         if(type==='updated'){html+='<th style="padding:6px;text-align:right">علت آپدیت</th>';}
         if(type==='skipped'){html+='<th style="padding:6px;text-align:right">علت</th>';}
         if(type==='failed'){html+='<th style="padding:6px;text-align:right">خطا</th>';}
+        if(type==='retired'){html+='<th style="padding:6px;text-align:right">نتیجه</th>';}
         html+='</tr></thead><tbody>';
         list.forEach((item,i)=>{
             html+='<tr style="border-bottom:1px solid #1e293b"><td style="padding:4px;color:#64748b">'+toFa(i+1)+'</td>';
@@ -79455,6 +79519,7 @@ function showWooReport(type){
             if(type==='updated'){html+='<td style="padding:4px;color:#facc15">'+esc(item.update_reason||item.changes||'—')+'</td>';}
             if(type==='skipped'){html+='<td style="padding:4px;color:#94a3b8">'+esc(item.reason||'—')+'</td>';}
             if(type==='failed'){html+='<td style="padding:4px;color:#f87171">'+esc(item.error||'—')+'</td>';}
+            if(type==='retired'){html+='<td style="padding:4px;color:#fbbf24">'+esc(item.detail||item.reason||'—')+'</td>';}
             html+='</tr>';
         });
         html+='</tbody></table></div>';
@@ -79468,15 +79533,18 @@ function closeReportModal(){const m=document.getElementById('reportModalContaine
 
 // v7.82: Product card renderer for send logs
 function renderSendCard(d){
-    // d = {title, image, price, category, result:'ok'|'update'|'skip'|'fail', error, remote_id, edit_url, changes, price_unit, link}
+    // d = {title, image, price, category, result:'ok'|'update'|'skip'|'fail'|'retired', error, remote_id, edit_url, changes, price_unit, link}
     const img=d.image?'<img class="scard-img" src="?image_proxy='+encodeURIComponent(d.image)+'">':'<div class="scard-noimg">📷</div>';
-    const rc={ok:'scard-ok',update:'scard-up',skip:'scard-skip',fail:'scard-fail'};
-    const ri={ok:'✅ ایجاد شد',update:'⚡ آپدیت شد',skip:'⏭ تکراری',fail:'❌ خطا'};
+    const rc={ok:'scard-ok',update:'scard-up',skip:'scard-skip',fail:'scard-fail',retired:'scard-retired'};
+    const ri={ok:'✅ ایجاد شد',update:'⚡ آپدیت شد',skip:'⏭ تکراری',fail:'❌ خطا',retired:'🗂 بایگانی/حذف'};
     const rc2=rc[d.result]||'scard-fail';
     const ri2=ri[d.result]||d.result;
     let priceStr=d.price?toFa(Number(d.price).toLocaleString('en-US'))+(d.price_unit==='rial'?' ریال':' تومان'):'—';
     let catStr=d.category||'—';
     let errStr=d.error?'<div class="scard-err">⚠️ '+esc(d.error)+'</div>':'';
+    /* v10.127: جزئیاتِ حذف/بایگانی (بازنشستگی) — ردیف‌هایِ retire در صف
+       «detail» دارند که توضیح می‌دهد چه شد (انجام شد/یافت نشد/خطا). */
+    let retStr=d.result==='retired'?(d.detail||d.reason)?'<div class="scard-reason">🗂 '+esc(d.detail||d.reason)+'</div>':'' : '';
     let ridStr=d.remote_id?'<div class="scard-rid">'+(d.edit_url?'<a href="'+esc(d.edit_url)+'" target="_blank">🔗</a> ':'')+'#'+d.remote_id+'</div>':'';
     /* v8.82: روی محصول ناموفق، یک دکمه که همان را در مدیریت محصولات باز
        می‌کند. تا حالا کاربر شناسه را می‌دید ولی راهی برای رسیدن به محصول
@@ -79495,7 +79563,7 @@ function renderSendCard(d){
     }
     let changesStr=d.changes?'<span style="color:#facc15;font-size:9px">('+esc(d.changes)+')</span>':'';
     let reasonStr=(d.result==='update'&&(d.update_reason||d.changes))?'<div class="scard-reason">📋 علت آپدیت: '+esc(d.update_reason||d.changes)+'</div>':'';
-    return '<div class="scard scard-'+d.result+'">'+img+'<div class="scard-body"><div class="scard-title">'+esc(d.title||'—')+'</div><div class="scard-meta"><span class="scard-price">💰 '+priceStr+'</span><span class="scard-cat">📂 '+esc(catStr)+'</span>'+(d.link?'<span><a href="'+esc(d.link)+'" target="_blank" style="color:#60a5fa">🔗</a></span>':'')+'</div><div class="scard-result '+rc2+'">'+ri2+' '+changesStr+'</div>'+reasonStr+errStr+ridStr+findStr+'</div></div>';
+    return '<div class="scard scard-'+d.result+'">'+img+'<div class="scard-body"><div class="scard-title">'+esc(d.title||'—')+'</div><div class="scard-meta"><span class="scard-price">💰 '+priceStr+'</span><span class="scard-cat">📂 '+esc(catStr)+'</span>'+(d.link?'<span><a href="'+esc(d.link)+'" target="_blank" style="color:#60a5fa">🔗</a></span>':'')+'</div><div class="scard-result '+rc2+'">'+ri2+' '+changesStr+'</div>'+reasonStr+retStr+errStr+ridStr+findStr+'</div></div>';
 }
 </script>
 </body>

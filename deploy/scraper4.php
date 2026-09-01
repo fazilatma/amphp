@@ -42079,6 +42079,9 @@ function reconAutoTick(array $cn, int $now = 0): array {
         try { notifSend($cn, implode("\n", $lines), 'sync'); } catch (\Throwable $e) {}
     }
     return $out;
+    } finally {
+        @flock($reconLockFp, LOCK_UN); @fclose($reconLockFp); @unlink($lockFile);
+    }
 }
 
 /**
@@ -42190,10 +42193,7 @@ function catfixAutoTick(array $cn, int $now = 0): array {
             'checkpoint' => $catKeep && is_array($catLast['checkpoint'] ?? null)
                 ? $catLast['checkpoint'] : null]);
     }
-        return $out;
-    } finally {
-        @flock($reconLockFp, LOCK_UN); @fclose($reconLockFp); @unlink($lockFile);
-    }
+    return $out;
 }
 
 

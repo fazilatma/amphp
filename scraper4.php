@@ -302,7 +302,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.127';
+const APP_VERSION = '10.128';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -22253,7 +22253,7 @@ if (isset($_GET['selagent_stop'])) {
 
 /**
  * v8.53: گزارش محصولات بر اساس پسوند پروفایل.
- * ?suffix_report=1&target=woo|bsl[&notify=1]  → شروع در پس‌زمینه
+ * ?suffix_report=1&target=woo|bsl[&notify=1][&debug=1]  → شروع در پس‌زمینه
  * ?suffix_status=1                             → وضعیت زنده
  * ?suffix_result=1                             → نتیجهٔ کامل
  */
@@ -22273,12 +22273,14 @@ if (isset($_GET['suffix_report'])) {
     }
     @set_time_limit(0); @ignore_user_abort(true);
     $notify = !empty($_GET['notify']);
+    $debug = !empty($_GET['debug']);
     $cn = loadConnections();
 
     @unlink(SUFFIX_PROGRESS_FILE);
     suffixProgress(['running' => true, 'done' => false, 'target' => $target,
-        'started_at' => time(), 'log_add' => ['🔍 شروع گزارش — '
-        . ($target === 'woo' ? 'ووکامرس' : 'باسلام')]]);
+        'debug' => $debug, 'started_at' => time(), 'log_add' => ['🔍 شروع گزارش — '
+        . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
+        . ($debug ? ' · 🐞 دیباگ روشن' : '')]]);
 
     $early = json_encode(['ok' => true, 'started' => true, 'target' => $target], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -22295,7 +22297,7 @@ if (isset($_GET['suffix_report'])) {
         if ($target === 'summary' || $target === 'all') {
             $rep = profileStatsSummary($cn);
         } else {
-            $rep = suffixReport($cn, $target);
+            $rep = suffixReport($cn, $target, $debug);
         }
     } catch (Throwable $e) {
         suffixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
@@ -23854,6 +23856,16 @@ function matrixFixDelBsl(array $cn, int $pid, int $vid): array {
     return ['ok' => false, 'error' => (string)($r['error'] ?? 'آرشیو ناموفق')];
 }
 
+/** جزئیات استانداردِ یک اصلاح برای شمارنده‌ها و مودالِ مقصد */
+function matrixFixDetail(string $target, string $destination, string $kind, string $title,
+                         bool $ok, string $label, int $id = 0, array $extra = []): array {
+    return array_merge([
+        'ok' => $ok, 'fixed' => $ok, 'target' => $target,
+        'destination' => $destination, 'kind' => $kind,
+        'title' => $title, 'id' => $id, 'label' => $label,
+    ], $extra);
+}
+
 /** افزودن/به‌روزرسانی دو ردیف گزارش در انتهای جدول */
 function matrixFixAppendReportRows(array $stats): void {
     $data = matrixResultLoad();
@@ -23883,6 +23895,18 @@ function matrixFixAppendReportRows(array $stats): void {
         . "موفق {$ok} · ناموفق {$fail} از {$total}"
         . " · 💰قیمت {$priced} · 📤ارسال {$sent} · 🗑حذف {$del}"
         . ' · محدوده ' . $scope;
+    /* خلاصهٔ مقصدها داخل خودِ ردیف گزارش هم بماند؛ UI جدید آن را به
+       شمارندهٔ کلیک‌پذیر تبدیل می‌کند و UIهای قدیمی دست‌خالی نمی‌مانند. */
+    $destinationLines = [];
+    $destinationCounts = [];
+    foreach ($details as $d) {
+        if (!is_array($d) || empty($d['ok']) || empty($d['target'])) continue;
+        $dest = (string)($d['destination'] ?? ($d['target'] === 'woo' ? 'ووکامرس' : 'باسلام'));
+        $destinationCounts[$dest] = (int)($destinationCounts[$dest] ?? 0) + 1;
+    }
+    foreach ($destinationCounts as $dest => $nDest) {
+        $destinationLines[] = '📍 ' . $dest . ': ' . $nDest . ' اصلاح موفق';
+    }
 
     $rowWork = [
         'bare' => '__report_work__',
@@ -23902,13 +23926,13 @@ function matrixFixAppendReportRows(array $stats): void {
         'status' => 'report',
         'flags' => ['report'],
         'report_text' => $summaryTxt,
-        'report_lines' => [
+        'report_lines' => array_merge([
             '💰 اصلاح قیمت: ' . $priced,
             '📤 ارسال (در مقصد نبود): ' . $sent,
             '🗑 حذف/بایگانی (فقط مقصد): ' . $del,
             'محدوده: ' . $scope,
             'زمان: ' . date('Y-m-d H:i:s', (int)($stats['at'] ?? time())),
-        ],
+        ], $destinationLines),
         'fix_at' => time(),
     ];
     $rowResult = [
@@ -23929,7 +23953,7 @@ function matrixFixAppendReportRows(array $stats): void {
         'status' => 'report',
         'flags' => ['report'],
         'report_text' => $summaryTxt,
-        'report_lines' => $lines ?: ['موردی ثبت نشد'],
+        'report_lines' => array_merge($destinationLines, $lines ?: ['موردی ثبت نشد']),
         'report_ok' => $ok,
         'report_fail' => $fail,
         'report_total' => $total,
@@ -24085,7 +24109,7 @@ function matrixFixRun(array $opts = []): array {
                     'woo' => ['price' => $to, 'id' => (int)$job['id']],
                     'woo_tone' => 'ok', 'fix_woo_at' => time(), 'fix_woo_ok' => true,
                 ]);
-                $details[] = ['ok' => true, 'label' => 'قیمت WC · ' . $title . ' → ' . number_format($to)];
+                $details[] = matrixFixDetail('woo', 'ووکامرس', 'price', $title, true, 'قیمت WC · ' . $title . ' → ' . number_format($to), (int)$job['id'], ['from' => $from, 'to' => $to]);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN, 'price_n' => $priceN,
                     'log_add' => ['  ✅ WC #' . (int)$job['id'] . ' · ' . number_format($to) . ' (' . ($res['via'] ?? '') . ')'],
@@ -24094,7 +24118,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $failN++;
                 $err = (string)($res['error'] ?? 'خطا');
-                $details[] = ['ok' => false, 'label' => 'قیمت WC · ' . $title . ' — ' . $err];
+                $details[] = matrixFixDetail('woo', 'ووکامرس', 'price', $title, false, 'قیمت WC · ' . $title . ' — ' . $err, (int)$job['id'], ['error' => $err]);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN,
                     'log_add' => ['  ❌ WC · ' . $title . ' — ' . $err],
@@ -24115,7 +24139,7 @@ function matrixFixRun(array $opts = []): array {
             ]);
             if ($tok === '') {
                 $failN++;
-                $details[] = ['ok' => false, 'label' => 'قیمت ' . $sname . ' · بدون توکن'];
+                $details[] = matrixFixDetail('bsl', $sname, 'price', $title, false, 'قیمت ' . $sname . ' · بدون توکن', (int)($job['id'] ?? 0), ['vendor_id' => $vid, 'error' => 'بدون توکن']);
                 matrixFixProgress(['fail_n' => $failN, 'log_add' => ['  ❌ توکن غرفه نیست']]);
             } else {
                 $res = matrixFixBslPrice($tok, $vid, (int)$job['id'], $to);
@@ -24128,7 +24152,7 @@ function matrixFixRun(array $opts = []): array {
                         ]],
                         'fix_bsl_at' => time(),
                     ]);
-                    $details[] = ['ok' => true, 'label' => 'قیمت ' . $sname . ' · ' . $title . ' → ' . number_format($to)];
+                    $details[] = matrixFixDetail('bsl', $sname, 'price', $title, true, 'قیمت ' . $sname . ' · ' . $title . ' → ' . number_format($to), (int)$job['id'], ['vendor_id' => $vid, 'from' => $from, 'to' => $to]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN, 'price_n' => $priceN,
                         'log_add' => ['  ✅ ' . $sname . ' #' . (int)$job['id'] . ' · ' . number_format($to)],
@@ -24137,7 +24161,7 @@ function matrixFixRun(array $opts = []): array {
                 } else {
                     $failN++;
                     $err = (string)($res['error'] ?? 'خطا');
-                    $details[] = ['ok' => false, 'label' => 'قیمت ' . $sname . ' · ' . $title . ' — ' . $err];
+                    $details[] = matrixFixDetail('bsl', $sname, 'price', $title, false, 'قیمت ' . $sname . ' · ' . $title . ' — ' . $err, (int)$job['id'], ['vendor_id' => $vid, 'error' => $err]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN,
                         'log_add' => ['  ❌ ' . $sname . ' · ' . $err],
@@ -24155,7 +24179,7 @@ function matrixFixRun(array $opts = []): array {
             $found = matrixFixFindProduct($bare, (string)($job['profile_key'] ?? ''), (string)($job['product_key'] ?? ''));
             if (!$found) {
                 $failN++;
-                $details[] = ['ok' => false, 'label' => 'ارسال WC · محصول در پروفایل پیدا نشد: ' . $title];
+                $details[] = matrixFixDetail('woo', 'ووکامرس', 'send', $title, false, 'ارسال WC · محصول در پروفایل پیدا نشد: ' . $title, 0, ['error' => 'در پروفایل پیدا نشد']);
                 matrixFixProgress(['fail_n' => $failN, 'log_add' => ['  ❌ در پروفایل پیدا نشد']]);
             } else {
                 $res = matrixFixSendWoo($cn, $found, (int)($job['expect'] ?? 0));
@@ -24169,7 +24193,7 @@ function matrixFixRun(array $opts = []): array {
                         'status' => 'ok',
                         'fix_send_woo_at' => time(),
                     ]);
-                    $details[] = ['ok' => true, 'label' => 'ارسال WC · ' . $title . ($id ? (' #' . $id) : '')];
+                    $details[] = matrixFixDetail('woo', 'ووکامرس', 'send', $title, true, 'ارسال WC · ' . $title . ($id ? (' #' . $id) : ''), $id, ['to' => $price]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN,
                         'log_add' => ['  ✅ ارسال WC' . ($id ? (' #' . $id) : '') . ' · ' . ($res['via'] ?? '')],
@@ -24178,7 +24202,7 @@ function matrixFixRun(array $opts = []): array {
                 } else {
                     $failN++;
                     $err = (string)($res['error'] ?? 'خطا');
-                    $details[] = ['ok' => false, 'label' => 'ارسال WC · ' . $title . ' — ' . $err];
+                    $details[] = matrixFixDetail('woo', 'ووکامرس', 'send', $title, false, 'ارسال WC · ' . $title . ' — ' . $err, 0, ['error' => $err]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN,
                         'log_add' => ['  ❌ ارسال WC — ' . $err],
@@ -24199,11 +24223,11 @@ function matrixFixRun(array $opts = []): array {
             $found = matrixFixFindProduct($bare, (string)($job['profile_key'] ?? ''), (string)($job['product_key'] ?? ''));
             if (!$found) {
                 $failN++;
-                $details[] = ['ok' => false, 'label' => 'ارسال ' . $sname . ' · محصول پیدا نشد: ' . $title];
+                $details[] = matrixFixDetail('bsl', $sname, 'send', $title, false, 'ارسال ' . $sname . ' · محصول پیدا نشد: ' . $title, 0, ['vendor_id' => $vid, 'error' => 'در پروفایل پیدا نشد']);
                 matrixFixProgress(['fail_n' => $failN, 'log_add' => ['  ❌ در پروفایل پیدا نشد']]);
             } elseif ($tok === '') {
                 $failN++;
-                $details[] = ['ok' => false, 'label' => 'ارسال ' . $sname . ' · بدون توکن'];
+                $details[] = matrixFixDetail('bsl', $sname, 'send', $title, false, 'ارسال ' . $sname . ' · بدون توکن', 0, ['vendor_id' => $vid, 'error' => 'بدون توکن']);
                 matrixFixProgress(['fail_n' => $failN, 'log_add' => ['  ❌ توکن غرفه نیست']]);
             } else {
                 $res = matrixFixSendBsl($cn, $found, $vid, $tok, (int)($job['expect'] ?? 0));
@@ -24219,7 +24243,7 @@ function matrixFixRun(array $opts = []): array {
                         ]],
                         'fix_send_bsl_at' => time(),
                     ]);
-                    $details[] = ['ok' => true, 'label' => 'ارسال ' . $sname . ' · ' . $title . ($id ? (' #' . $id) : '')];
+                    $details[] = matrixFixDetail('bsl', $sname, 'send', $title, true, 'ارسال ' . $sname . ' · ' . $title . ($id ? (' #' . $id) : ''), $id, ['vendor_id' => $vid, 'to' => $price]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN,
                         'log_add' => ['  ✅ ارسال ' . $sname . ($id ? (' #' . $id) : '') . ' · ' . ($res['action'] ?? '')],
@@ -24228,7 +24252,7 @@ function matrixFixRun(array $opts = []): array {
                 } else {
                     $failN++;
                     $err = (string)($res['error'] ?? 'خطا');
-                    $details[] = ['ok' => false, 'label' => 'ارسال ' . $sname . ' · ' . $title . ' — ' . $err];
+                    $details[] = matrixFixDetail('bsl', $sname, 'send', $title, false, 'ارسال ' . $sname . ' · ' . $title . ' — ' . $err, 0, ['vendor_id' => $vid, 'error' => $err]);
                     matrixFixProgress([
                         'ok_n' => $okN, 'fail_n' => $failN,
                         'log_add' => ['  ❌ ارسال ' . $sname . ' — ' . $err],
@@ -24266,7 +24290,7 @@ function matrixFixRun(array $opts = []): array {
                     ]);
                     break;
                 }
-                $details[] = ['ok' => true, 'label' => 'حذف WC · ' . $title . ' #' . (int)$job['id']];
+                $details[] = matrixFixDetail('woo', 'ووکامرس', 'delete', $title, true, 'حذف WC · ' . $title . ' #' . (int)$job['id'], (int)$job['id']);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN, 'del_n' => $delN,
                     'log_add' => ['  ✅ حذف/زباله‌دان WC #' . (int)$job['id']],
@@ -24275,7 +24299,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $failN++;
                 $err = (string)($res['error'] ?? 'خطا');
-                $details[] = ['ok' => false, 'label' => 'حذف WC · ' . $title . ' — ' . $err];
+                $details[] = matrixFixDetail('woo', 'ووکامرس', 'delete', $title, false, 'حذف WC · ' . $title . ' — ' . $err, (int)$job['id'], ['error' => $err]);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN,
                     'log_add' => ['  ❌ حذف WC — ' . $err],
@@ -24311,7 +24335,7 @@ function matrixFixRun(array $opts = []): array {
                     ]);
                     break;
                 }
-                $details[] = ['ok' => true, 'label' => 'بایگانی ' . $sname . ' · ' . $title . ' #' . (int)$job['id']];
+                $details[] = matrixFixDetail('bsl', $sname, 'delete', $title, true, 'بایگانی ' . $sname . ' · ' . $title . ' #' . (int)$job['id'], (int)$job['id'], ['vendor_id' => $vid]);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN, 'del_n' => $delN,
                     'log_add' => ['  ✅ بایگانی ' . $sname . ' #' . (int)$job['id']],
@@ -24320,7 +24344,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $failN++;
                 $err = (string)($res['error'] ?? 'خطا');
-                $details[] = ['ok' => false, 'label' => 'بایگانی ' . $sname . ' · ' . $title . ' — ' . $err];
+                $details[] = matrixFixDetail('bsl', $sname, 'delete', $title, false, 'بایگانی ' . $sname . ' · ' . $title . ' — ' . $err, (int)$job['id'], ['vendor_id' => $vid, 'error' => $err]);
                 matrixFixProgress([
                     'ok_n' => $okN, 'fail_n' => $failN,
                     'log_add' => ['  ❌ بایگانی ' . $sname . ' — ' . $err],
@@ -25691,6 +25715,16 @@ if (isset($_GET['selftest'])) {
          strpos($selfSrc, "\$out['matched_by_id']") !== false);
     $add('8.65', 'آمار پسوند هم از شناسه کمک می‌گیرد',
          strpos($selfSrc, 'sfxIdMap') !== false);
+
+    /* ---------- v10.128: تفکیک پسوند + گزارش مقصدِ اصلاح ---------- */
+    $add('10.128', 'تطبیق پسوندِ کد با رقم فارسی و شکل پرانتزی کار می‌کند',
+         function_exists('suffixMatches')
+         && suffixMatches('نمونه محصول (کد: ۱)', '(کد:1)')
+         && !suffixMatches('نمونه محصول (کد: ۱) توضیح اضافه', '(کد:1)'));
+    $add('10.128', 'جزئیات اصلاح، مقصد و محصول را برای مودال نگه می‌دارد',
+         function_exists('matrixFixDetail')
+         && (($d128 = matrixFixDetail('woo', 'ووکامرس', 'price', 'آزمون', true, 'آزمون', 7))['destination'] ?? '') === 'ووکامرس'
+         && !empty($d128['fixed']) && (int)($d128['id'] ?? 0) === 7);
     $add('8.65', 'عکس‌دار کردن از شناسه کمک می‌گیرد',
          strpos($selfSrc, 'pfIdMap') !== false);
     $add('8.65', 'عکس‌دار کردن کل گالری را می‌فرستد',
@@ -38660,7 +38694,11 @@ function catProfileResolver(string $target = 'bsl'): callable {
     $sfx = suffixProfiles();
     /* پسوندِ بلندتر اول سنجیده شود: اگر «فروشگاه الف» و «الف» هر دو پسوند
        باشند، عنوانی که هر دو را دارد باید به بلندتر نسبت داده شود. */
-    usort($sfx, fn($a, $b) => mb_strlen($b['suffix']) <=> mb_strlen($a['suffix']));
+    usort($sfx, function ($a, $b) {
+        $sa = function_exists('suffixTextNormalize') ? suffixTextNormalize((string)$a['suffix']) : (string)$a['suffix'];
+        $sb = function_exists('suffixTextNormalize') ? suffixTextNormalize((string)$b['suffix']) : (string)$b['suffix'];
+        return mb_strlen($sb, 'UTF-8') <=> mb_strlen($sa, 'UTF-8');
+    });
 
     return function (int $remoteId, string $title) use ($byId, $profiles, $sfx): string {
         if ($remoteId > 0 && isset($byId[$remoteId])) {
@@ -38672,8 +38710,11 @@ function catProfileResolver(string $target = 'bsl'): callable {
         $t = trim($title);
         if ($t !== '') {
             foreach ($sfx as $s) {
-                if ($s['suffix'] !== '' && mb_strpos($t, $s['suffix']) !== false)
+                if ($s['suffix'] !== '' && (function_exists('suffixMatches')
+                    ? suffixMatches($t, (string)$s['suffix'])
+                    : mb_strpos($t, (string)$s['suffix']) !== false)) {
                     return (string)$s['name'];
+                }
             }
         }
         return '';
@@ -39249,20 +39290,72 @@ function suffixFetchWoo(array $w, int $maxPages = 80): array {
     return $rows;
 }
 
-/** آیا عنوان با این پسوند تمام می‌شود؟ */
+/** نرمال‌سازی امن عنوان/پسوند برای تطبیقِ «کد:ایکس» در انتهای عنوان */
+function suffixTextNormalize(string $text): string {
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if (function_exists('persianToEnglish')) $text = persianToEnglish($text);
+    $text = str_replace(['ي', 'ى', 'ك', 'ة', 'ۀ', 'أ', 'إ', 'ؤ', '：'],
+                        ['ی', 'ی', 'ک', 'ه', 'ه', 'ا', 'ا', 'و', ':'], $text);
+    /* فاصلهٔ معمولی و نیم‌فاصله برای این گزارش یکی هستند. */
+    $text = preg_replace('~[\x{200c}\x{200d}\x{200e}\x{200f}\x{00a0}\x{feff}]~u', ' ', $text);
+    $text = preg_replace('~[\x{064B}-\x{065F}\x{0670}]~u', '', $text);
+    $text = preg_replace('~\s*([()\[\]:])\s*~u', '$1', $text);
+    $text = preg_replace('~\s+~u', ' ', trim($text));
+    return function_exists('mb_strtolower') ? mb_strtolower($text, 'UTF-8') : strtolower($text);
+}
+
+/** آیا عنوان دقیقاً با پسوندِ پروفایل تمام می‌شود؟ (نه صرفاً شامل آن باشد) */
 function suffixMatches(string $title, string $suffix): bool {
-    $t = trim($title); $x = trim($suffix);
-    if ($x === '') return false;
-    if (function_exists('mb_strtolower')) { $t = mb_strtolower($t, 'UTF-8'); $x = mb_strtolower($x, 'UTF-8'); }
-    return mb_strpos($t, $x) !== false;
+    $t = suffixTextNormalize($title); $x = suffixTextNormalize($suffix);
+    if ($x === '' || $t === '') return false;
+    $candidates = [$x];
+    /* اگر تنظیم فقط «کد:۱» باشد، شکل رایجِ «(کد:۱)» هم معتبر است و برعکس. */
+    $first = $x[0] ?? ''; $last = substr($x, -1);
+    if (($first === '(' && $last === ')') || ($first === '[' && $last === ']')) {
+        $bare = trim(substr($x, 1, -1));
+        if ($bare !== '') $candidates[] = $bare;
+    } else {
+        $candidates[] = '(' . $x . ')';
+        $candidates[] = '[' . $x . ']';
+    }
+    foreach (array_unique($candidates) as $candidate) {
+        $n = function_exists('mb_strlen') ? mb_strlen($candidate, 'UTF-8') : strlen($candidate);
+        $tn = function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : strlen($t);
+        if ($n > 0 && $tn >= $n) {
+            $tail = function_exists('mb_substr')
+                ? mb_substr($t, $tn - $n, $n, 'UTF-8') : substr($t, -$n);
+            if ($tail === $candidate) return true;
+        }
+    }
+    return false;
+}
+
+/** دستهٔ شمارندهٔ وضعیتِ یک محصول مقصد */
+function suffixStatusBucket(array $row, string $target): string {
+    if ($target === 'bsl') {
+        $st = (int)($row['status'] ?? 0);
+        if ($st === 2976) return 'approved';
+        if ($st === 3567) return 'rejected';
+        if ($st === 3568) return 'pending';
+        if ($st === 4184) return 'archived';
+        return 'inactive';
+    }
+    $ws = (string)($row['wstatus'] ?? '');
+    if ($ws === 'publish') return 'approved';
+    if ($ws === 'pending') return 'pending';
+    if ($ws === 'trash') return 'archived';
+    return 'inactive';
 }
 
 /**
  * آمار هر پسوند را می‌سازد.
  * وضعیت‌های باسلام: 2976 فعال/تأییدشده · 3567 تأیید نشده ·
  * 3568 در انتظار · 3790 غیرفعال · 4184 بایگانی
+ *
+ * v10.128: هر محصول فقط یک‌بار و با بلندترین پسوند به یک پروفایل نسبت داده
+ * می‌شود؛ در صورت نبودن پسوند، دفترچهٔ شناسه fallback است و بقیه در misc می‌آیند.
  */
-function suffixReport(array $cn, string $target): array {
+function suffixReport(array $cn, string $target, bool $debug = false): array {
     $profs = suffixProfiles();
     if (!$profs) return ['ok' => false, 'error' => 'هیچ پروفایلی پسوند عنوان ندارد'];
 
@@ -39272,7 +39365,13 @@ function suffixReport(array $cn, string $target): array {
     }
     if (!$wanted) return ['ok' => false, 'error' => 'هیچ پروفایلی با پسوند برای این مقصد نیست'];
 
-    suffixProgress(['log_add' => ['🔎 ' . count($wanted) . ' پروفایل با پسوند پیدا شد']]);
+    /* پسوندهای هم‌پوشان: «فروشگاه الف» باید قبل از «الف» امتحان شود. */
+    usort($wanted, function ($a, $b) {
+        return mb_strlen(suffixTextNormalize((string)$b['suffix']), 'UTF-8')
+            <=> mb_strlen(suffixTextNormalize((string)$a['suffix']), 'UTF-8');
+    });
+    suffixProgress(['log_add' => ['🔎 ' . count($wanted) . ' پروفایل با پسوند پیدا شد'
+        . ($debug ? ' · 🐞 فهرست مسیر تطبیق فعال است' : '')]]);
 
     if ($target === 'bsl') {
         $tk = (string)($cn['basalam']['token'] ?? '');
@@ -39286,10 +39385,9 @@ function suffixReport(array $cn, string $target): array {
     }
     if (!$rows) return ['ok' => false, 'error' => 'هیچ محصولی از مقصد دریافت نشد'];
 
-    suffixProgress(['log_add' => ['⚖️ تفکیک بر اساس پسوند...'], 'remote' => count($rows)]);
+    suffixProgress(['log_add' => ['⚖️ تفکیک بر اساس پسوند (کد:ایکس)...'], 'remote' => count($rows)]);
 
-    // v8.65: محصولی که در مقصد تغییر نام داده پسوند پروفایل را ندارد و در
-    // آمار گم می‌شد. شناسهٔ ثبت‌شده می‌گوید مال کدام پروفایل است.
+    // v8.65: عنوانِ تغییرنام‌داده‌شده با شناسهٔ ثبت‌شده هم قابل نسبت‌دادن است.
     $sfxIdMap = remoteMapById($target === 'bsl' ? 'bsl' : 'woo');
     $sfxKeyOwner = [];
     foreach (loadProfiles() as $pk => $pv) {
@@ -39298,48 +39396,82 @@ function suffixReport(array $cn, string $target): array {
             if ($kk !== '') $sfxKeyOwner[$kk] = $pk;
         }
     }
-    $out = []; $claimed = []; $byIdTotal = 0;
-    foreach ($wanted as $p) {
-        $c = ['approved' => 0, 'rejected' => 0, 'pending' => 0, 'inactive' => 0, 'archived' => 0];
-        foreach ($rows as $i => $r) {
-            $ok = suffixMatches($r['title'], $p['suffix']);
-            if (!$ok) {
-                $rid = (int)($r['id'] ?? 0);
-                if ($rid > 0 && isset($sfxIdMap[$rid])
-                    && ($sfxKeyOwner[$sfxIdMap[$rid]] ?? '') === $p['key']) {
-                    $ok = true; $byIdTotal++;
-                }
-            }
-            if (!$ok) continue;
-            $claimed[$i] = true;
-            if ($target === 'bsl') {
-                $st = (int)($r['status'] ?? 0);
-                if ($st === 2976)      $c['approved']++;
-                elseif ($st === 3567)  $c['rejected']++;
-                elseif ($st === 3568)  $c['pending']++;
-                elseif ($st === 4184)  $c['archived']++;
-                else                   $c['inactive']++;
-            } else {
-                $ws = (string)($r['wstatus'] ?? '');
-                if ($ws === 'publish')      $c['approved']++;
-                elseif ($ws === 'pending')  $c['pending']++;
-                elseif ($ws === 'draft')    $c['inactive']++;
-                elseif ($ws === 'trash')    $c['archived']++;
-                else                        $c['inactive']++;
+    $wantedIndex = [];
+    foreach ($wanted as $wi => $p) $wantedIndex[(string)$p['key']] = $wi;
+    $counts = [];
+    foreach ($wanted as $wi => $p) $counts[$wi] = ['approved' => 0, 'rejected' => 0,
+        'pending' => 0, 'inactive' => 0, 'archived' => 0];
+    $claimed = []; $assigned = []; $byIdTotal = 0; $bySuffixTotal = 0; $debugRows = [];
+
+    foreach ($rows as $i => $r) {
+        $which = -1; $method = ''; $matchedSuffix = '';
+        foreach ($wanted as $wi => $p) {
+            if (suffixMatches((string)($r['title'] ?? ''), (string)$p['suffix'])) {
+                $which = $wi; $method = 'suffix'; $matchedSuffix = (string)$p['suffix'];
+                break;
             }
         }
-        $total = array_sum($c);
-        $pct = [];
+        if ($which < 0) {
+            $rid = (int)($r['id'] ?? 0);
+            $owner = $rid > 0 ? (string)($sfxKeyOwner[$sfxIdMap[$rid] ?? ''] ?? '') : '';
+            if ($owner !== '' && isset($wantedIndex[$owner])) {
+                $which = (int)$wantedIndex[$owner]; $method = 'id';
+                $matchedSuffix = (string)($wanted[$which]['suffix'] ?? '');
+                $byIdTotal++;
+            }
+        }
+        if ($which >= 0) {
+            $claimed[$i] = true; $assigned[$i] = $which;
+            if ($method === 'suffix') $bySuffixTotal++;
+            $bucket = suffixStatusBucket($r, $target);
+            $counts[$which][$bucket]++;
+            if ($debug) {
+                $debugRows[] = [
+                    'id' => (int)($r['id'] ?? 0), 'title' => (string)($r['title'] ?? ''),
+                    'status' => $target === 'bsl' ? (int)($r['status'] ?? 0) : '',
+                    'wstatus' => $target === 'woo' ? (string)($r['wstatus'] ?? '') : '',
+                    'profile_key' => (string)$wanted[$which]['key'],
+                    'profile' => (string)$wanted[$which]['name'],
+                    'suffix' => $matchedSuffix, 'method' => $method,
+                    'reason' => $method === 'id' ? 'شناسهٔ ثبت‌شده' : 'پسوندِ انتهای عنوان',
+                ];
+            }
+        } elseif ($debug) {
+            $debugRows[] = [
+                'id' => (int)($r['id'] ?? 0), 'title' => (string)($r['title'] ?? ''),
+                'status' => $target === 'bsl' ? (int)($r['status'] ?? 0) : '',
+                'wstatus' => $target === 'woo' ? (string)($r['wstatus'] ?? '') : '',
+                'profile_key' => '', 'profile' => '', 'suffix' => '', 'method' => 'misc',
+                'reason' => 'هیچ پسوند یا شناسه‌ای پیدا نشد',
+            ];
+        }
+    }
+
+    $out = [];
+    foreach ($wanted as $wi => $p) {
+        $c = $counts[$wi]; $total = array_sum($c); $pct = [];
         foreach ($c as $k => $v) $pct[$k] = $total > 0 ? round($v / $total * 100, 1) : 0.0;
         $out[] = ['key' => $p['key'], 'name' => $p['name'], 'suffix' => $p['suffix'],
                   'total' => $total, 'counts' => $c, 'pct' => $pct];
         suffixProgress(['log_add' => ['• ' . $p['name'] . ' («' . $p['suffix'] . '»): ' . $total . ' محصول']]);
     }
-    $unmatched = count($rows) - count($claimed);
+    $misc = [];
+    foreach ($rows as $i => $r) {
+        if (isset($claimed[$i])) continue;
+        $misc[] = ['id' => (int)($r['id'] ?? 0), 'title' => (string)($r['title'] ?? ''),
+                   'status' => $target === 'bsl' ? (int)($r['status'] ?? 0) : '',
+                   'wstatus' => $target === 'woo' ? (string)($r['wstatus'] ?? '') : ''];
+    }
+    $unmatched = count($misc);
     if ($byIdTotal > 0) suffixProgress(['log_add' => ['🔗 ' . $byIdTotal
         . ' محصول با شناسهٔ ثبت‌شده به پروفایلش وصل شد (پسوند در عنوانشان نبود)']]);
-    return ['ok' => true, 'target' => $target, 'remote_total' => count($rows),
-            'unmatched' => $unmatched, 'matched_by_id' => $byIdTotal, 'profiles' => $out];
+    if ($unmatched > 0) suffixProgress(['log_add' => ['🗂 متفرقه‌ها: ' . $unmatched . ' محصول در جدول گزارش می‌شود']]);
+    $rep = ['ok' => true, 'target' => $target, 'remote_total' => count($rows),
+            'unmatched' => $unmatched, 'misc_total' => $unmatched,
+            'misc' => $misc, 'matched_by_id' => $byIdTotal, 'matched_by_suffix' => $bySuffixTotal, 'profiles' => $out,
+            'debug_enabled' => $debug];
+    if ($debug) { $rep['debug'] = $debugRows; $rep['debug_count'] = count($debugRows); }
+    return $rep;
 }
 
 /** متن گزارش برای پیام‌رسان‌ها */
@@ -39362,7 +39494,13 @@ function suffixReportMsg(array $rep): string {
     }
     if ((int)($rep['unmatched'] ?? 0) > 0) {
         $lines[] = '━━━━━━━━━━';
-        $lines[] = '❔ بدون پسوند شناخته‌شده: ' . (int)$rep['unmatched'];
+        $lines[] = '🗂 متفرقه‌ها (بدون پسوند/شناسه): ' . (int)$rep['unmatched'];
+        $shown = 0;
+        foreach ((array)($rep['misc'] ?? []) as $m) {
+            if ($shown++ >= 8) break;
+            $lines[] = '  • ' . (string)($m['title'] ?? '');
+        }
+        if ((int)($rep['unmatched'] ?? 0) > 8) $lines[] = '  … و ' . ((int)$rep['unmatched'] - 8) . ' مورد دیگر';
     }
     return implode("\n", $lines);
 }
@@ -39483,6 +39621,13 @@ function profileStatsSummary(array $cn): array {
             }
         }
     }
+    /* عنوان‌های هم‌پوشان باید همیشه با پسوندِ بلندتر به پروفایل برسند. */
+    $suffixProfileOrder = array_keys($rows);
+    usort($suffixProfileOrder, function ($a, $b) use ($rows) {
+        $sa = suffixTextNormalize((string)($rows[$a]['suffix'] ?? ''));
+        $sb = suffixTextNormalize((string)($rows[$b]['suffix'] ?? ''));
+        return mb_strlen($sb, 'UTF-8') <=> mb_strlen($sa, 'UTF-8');
+    });
     suffixProgress(['log_add' => ['✅ ' . count($rows) . ' پروفایل · ' . count($keyOwner) . ' کلید محصول'], 'phase' => 'local']);
 
     // --- remote_map ownership (woo + bsl default shard) ---
@@ -39550,7 +39695,8 @@ function profileStatsSummary(array $cn): array {
                 : reconNormTitle((string)($wr['title'] ?? ''));
             // suffix match first
             if ($owner === '') {
-                foreach ($rows as $pk => $pr) {
+                foreach ($suffixProfileOrder as $pk) {
+            $pr = $rows[$pk];
                     $sfx = (string)($pr['suffix'] ?? '');
                     if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches((string)($wr['title'] ?? ''), $sfx)) {
                         $owner = $pk; break;
@@ -39619,7 +39765,8 @@ function profileStatsSummary(array $cn): array {
         $bare = function_exists('matrixBareTitle')
             ? matrixBareTitle((string)($wr['title'] ?? ''), $suffixes)
             : reconNormTitle((string)($wr['title'] ?? ''));
-        foreach ($rows as $pk => $pr) {
+        foreach ($suffixProfileOrder as $pk) {
+            $pr = $rows[$pk];
             $sfx = (string)($pr['suffix'] ?? '');
             if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches((string)($wr['title'] ?? ''), $sfx)) {
                 $owner = $pk; break;
@@ -39688,7 +39835,8 @@ function profileStatsSummary(array $cn): array {
             if ($rid > 0 && isset($seenIds[$rid])) continue;
             $owner = '';
             $title = (string)($br['title'] ?? '');
-            foreach ($rows as $pk => $pr) {
+            foreach ($suffixProfileOrder as $pk) {
+            $pr = $rows[$pk];
                 $sfx = (string)($pr['suffix'] ?? '');
                 if ($sfx !== '' && function_exists('suffixMatches') && suffixMatches($title, $sfx)) {
                     $owner = $pk; break;
@@ -55826,16 +55974,22 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <div style="font-size:10.5px;color:#94a3b8;margin-bottom:10px;line-height:1.75">
 جدول خلاصه: تعداد محصولات <b style="color:#e2e8f0">استخراج‌شده در پروفایل</b>،
 در <b style="color:#c4b5fd">ووکامرس</b> و در <b style="color:#67e8f9">هر غرفهٔ باسلام</b> —
-با نوار پوشش و رنگ وضعیت. جزئیات وضعیت مقصد (تأیید/پیش‌نویس) هم جداگانه هست.
+با نوار پوشش و رنگ وضعیت. جزئیات وضعیت مقصد (تأیید/پیش‌نویس) هم جداگانه هست؛
+در گزارش مقصد، تفکیک بر اساس پسوند «کد:ایکس» انجام می‌شود و محصولاتِ بدون تطبیق در جدول «متفرقه‌ها» می‌آیند.
 </div>
 <div class="cact" style="flex-wrap:wrap;gap:6px">
 <button class="btn btn-purple" onclick="sfxRun('summary')" style="flex:1;min-width:140px;font-weight:800">📋 جدول خلاصهٔ همه</button>
 <button class="btn btn-blue" onclick="sfxRun('woo')" style="flex:1;min-width:110px">🛒 جزئیات ووکامرس</button>
 <button class="btn btn-cyan" onclick="sfxRun('bsl')" style="flex:1;min-width:110px">🏪 جزئیات باسلام</button>
 </div>
-<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;margin-top:8px;cursor:pointer">
+<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:8px">
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;cursor:pointer">
 <input type="checkbox" id="sfxNotify" style="width:14px;height:14px">
 <span>📤 گزارش را به پیام‌رسان‌ها هم بفرست</span></label>
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#fbbf24;cursor:pointer" title="مسیر تطبیق هر محصول، روش پسوند/شناسه و متفرقه‌ها را نشان می‌دهد">
+<input type="checkbox" id="sfxDebug" style="width:14px;height:14px">
+<span>🐞 نمایش دیباگ تطبیق</span></label>
+</div>
 <div id="sfxR" style="margin-top:10px"></div>
 </div></div>
 
@@ -63993,6 +64147,12 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.128', t:'🏷 تفکیک دقیق آمار پروفایل + گزارش مودالی اصلاح مغایرت', items:[
+    'محصولات مقصد بر اساس پسوند انتهایی «کد:ایکس» و با نرمال‌سازی ارقام/فاصله‌ها فقط به یک پروفایل نسبت داده می‌شوند؛ پسوندهای هم‌پوشان از بلندترین شروع می‌شوند.',
+    'محصولاتی که نه پسوند و نه شناسهٔ ثبت‌شده دارند در فهرست واقعیِ «متفرقه‌ها» ذخیره و به‌صورت جدول با شناسه و وضعیت نمایش داده می‌شوند.',
+    'تیک «نمایش دیباگ تطبیق» مسیر هر محصول (پسوند، شناسه یا متفرقه) را در جدول بازشونده نشان می‌دهد.',
+    'در اصلاح مغایرت، گزارش موفقیت‌ها بر اساس مقصد شمارندهٔ کلیک‌پذیر دارد؛ کلیک روی ووکامرس یا هر غرفه، فهرست محصولات اصلاح‌شدهٔ همان مقصد را در مودال باز می‌کند.',
+  ]},
   {v:'10.127', t:'🗂 گزارش حذف/بایگانی‌شده‌ها در شمارنده و کارت‌های ارسال', items:[
     'شمارندهٔ «بایگانی/حذف» به‌صورت زنده در پنل ارسال باسلام و ووکامرس (کنار جدید/آپدیت/تکراری/خطا) اضافه شد.',
     'کارت‌های محصول در گزارش ارسال حالا ردیف‌های بازنشستگی (بایگانی باسلام / حذف ووکامرس) را با برچسب 🗂 و جزئیات نشان می‌دهند.',
@@ -67983,9 +68143,10 @@ const SFX_SLICES=[
 
 function sfxRun(target){
   const notify=($('sfxNotify')||{}).checked?1:0;
+  const debug=($('sfxDebug')||{}).checked?1:0;
   const box=$('sfxR');
   if(box)box.innerHTML='<div style="color:#93c5fd;font-size:11px">⏳ شروع...</div>';
-  fetch('?suffix_report=1&target='+encodeURIComponent(target)+'&notify='+notify)
+  fetch('?suffix_report=1&target='+encodeURIComponent(target)+'&notify='+notify+'&debug='+debug)
     .then(r=>r.json()).then(d=>{
       if(!d.ok){
         if(box)box.innerHTML='<div style="color:#fca5a5;font-size:11px;background:#7f1d1d20;'
@@ -68152,6 +68313,62 @@ function sfxRenderSummary(rep){
   if(rep.delivery) h+='<div style="color:#4ade80;margin-top:6px">✅ گزارش فرستاده شد</div>';
   return h+'</div>';
 }
+function sfxRemoteStatus(r,target){
+  r=r||{};
+  if(target==='bsl'){
+    const code=Number(r.status||0);
+    const m={2976:['فعال / تأییدشده','#166534','#bbf7d0'],3567:['تأیید نشده','#7f1d1d','#fecaca'],
+      3568:['در انتظار','#854d0e','#fde68a'],3790:['غیرفعال','#334155','#cbd5e1'],4184:['بایگانی','#4c1d95','#e9d5ff']};
+    const x=m[code]||['نامشخص'+(code?' ('+code+')':''),'#334155','#cbd5e1'];
+    return '<span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;background:'+x[1]+';color:'+x[2]+'">'+x[0]+'</span>';
+  }
+  const st=String(r.wstatus||'');
+  const m={publish:['منتشر','#166534','#bbf7d0'],pending:['در انتظار','#854d0e','#fde68a'],draft:['پیش‌نویس','#334155','#cbd5e1'],trash:['بایگانی/زباله‌دان','#4c1d95','#e9d5ff']};
+  const x=m[st]||['نامشخص'+(st?' ('+esc(st)+')':''),'#334155','#cbd5e1'];
+  return '<span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;background:'+x[1]+';color:'+x[2]+'">'+x[0]+'</span>';
+}
+function sfxRenderMisc(rep,target){
+  const rows=Array.isArray(rep.misc)?rep.misc:[];
+  if(!rows.length) return (Number(rep.unmatched||0)>0
+    ?'<div style="color:#fbbf24;font-size:10.5px;margin:8px 0">⚠️ فهرست متفرقه‌ها از سرور دریافت نشد.</div>':'');
+  let h='<details open style="margin:8px 0 10px;border:1px solid #92400e;border-radius:9px;background:#1c1917">';
+  h+='<summary style="cursor:pointer;padding:8px 10px;color:#fbbf24;font-weight:900">🗂 متفرقه‌ها ('+toFa(rows.length)+') — بدون پسوند/شناسهٔ قابل‌تطبیق</summary>';
+  h+='<div style="overflow:auto;max-height:300px;border-top:1px solid #78350f">';
+  h+='<table style="width:100%;border-collapse:collapse;min-width:500px;font-size:10.5px">';
+  h+='<thead style="position:sticky;top:0;background:#292524;z-index:1"><tr>';
+  h+='<th style="padding:7px;text-align:right;color:#a8a29e">#</th><th style="padding:7px;text-align:right;color:#e7e5e4">عنوان</th>';
+  h+='<th style="padding:7px;text-align:center;color:#d6d3d1">شناسه</th><th style="padding:7px;text-align:center;color:#fbbf24">وضعیت</th></tr></thead><tbody>';
+  rows.forEach((r,i)=>{
+    h+='<tr style="border-top:1px solid #44403c">';
+    h+='<td style="padding:7px;color:#78716c">'+toFa(i+1)+'</td>';
+    h+='<td style="padding:7px;color:#f5f5f4;word-break:break-word">'+esc(r.title||'—')+'</td>';
+    h+='<td style="padding:7px;text-align:center;color:#a8a29e;direction:ltr">'+toFa(r.id||0)+'</td>';
+    h+='<td style="padding:7px;text-align:center">'+sfxRemoteStatus(r,target)+'</td></tr>';
+  });
+  h+='</tbody></table></div></details>';
+  return h;
+}
+function sfxRenderDebug(rep,target){
+  const rows=Array.isArray(rep.debug)?rep.debug:[];
+  if(!rows.length) return rep.debug_enabled
+    ?'<div style="color:#94a3b8;font-size:10.5px;margin:8px 0">🐞 دیباگ روشن بود، اما ردیفی برای نمایش ثبت نشد.</div>':'';
+  let h='<details style="margin:8px 0 10px;border:1px solid #365314;border-radius:9px;background:#17210f">';
+  h+='<summary style="cursor:pointer;padding:8px 10px;color:#bef264;font-weight:900">🐞 دیباگ تطبیق ('+toFa(rows.length)+' محصول)</summary>';
+  h+='<div style="overflow:auto;max-height:330px;border-top:1px solid #365314"><table style="width:100%;border-collapse:collapse;min-width:860px;font-size:10px">';
+  h+='<thead style="position:sticky;top:0;background:#1a2e05;z-index:1"><tr>';
+  h+='<th style="padding:6px;text-align:right">#</th><th style="padding:6px;text-align:right">عنوان</th><th style="padding:6px;text-align:center">پروفایل</th><th style="padding:6px;text-align:center">روش</th><th style="padding:6px;text-align:center">پسوند</th><th style="padding:6px;text-align:center">جزئیات</th><th style="padding:6px;text-align:center">وضعیت</th></tr></thead><tbody>';
+  rows.forEach((r,i)=>{
+    const method=r.method==='id'?'شناسهٔ ثبت‌شده':(r.method==='suffix'?'پسوندِ انتهای عنوان':'متفرقه');
+    const prof=r.profile||'🗂 متفرقه‌ها';
+    h+='<tr style="border-top:1px solid #365314">';
+    h+='<td style="padding:6px;color:#a3a3a3">'+toFa(i+1)+'</td><td style="padding:6px;color:#f5f5f4;word-break:break-word">'+esc(r.title||'—')+'</td>';
+    h+='<td style="padding:6px;color:#d9f99d">'+esc(prof)+'</td><td style="padding:6px;color:#bef264">'+method+'</td>';
+    h+='<td style="padding:6px;color:#c4b5fd">'+esc(r.suffix||'—')+'</td><td style="padding:6px;color:#a3e635">'+esc(r.reason||'—')+'</td><td style="padding:6px;text-align:center">'+sfxRemoteStatus(target==='bsl'?{status:r.status}:{wstatus:r.wstatus},target)+'</td></tr>';
+  });
+  h+='</tbody></table></div></details>';
+  return h;
+}
+
 function sfxRender(rep,target){
   if(rep && (rep.kind==='summary' || target==='summary' || target==='all')) return sfxRenderSummary(rep);
   const lbl=target==='woo'?'ووکامرس':'باسلام';
@@ -68160,12 +68377,13 @@ function sfxRender(rep,target){
   h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
    +'<b style="color:#e2e8f0">📊 آمار '+esc(lbl)+'</b>'
    +'<span style="color:#94a3b8">کل مقصد: '+toFa(rep.remote_total||0)+'</span>'
-   +((rep.unmatched||0)>0?'<span style="color:#fbbf24">بدون پسوند: '+toFa(rep.unmatched)+'</span>':'')
+   +((rep.unmatched||0)>0?'<span style="color:#fbbf24">🗂 متفرقه‌ها: '+toFa(rep.misc_total||rep.unmatched)+'</span>':'')
    +'<span style="flex:1"></span>'
    +'<button class="btn btn-gray" onclick="sfxSend()" style="font-size:10px;padding:3px 8px">📤 ارسال به پیام‌رسان</button>'
    +'</div>';
   if(rep.delivery)h+='<div style="color:#4ade80;margin-bottom:6px">✅ گزارش فرستاده شد</div>';
   if(rep.notify_error)h+='<div style="color:#fca5a5;margin-bottom:6px">⚠️ '+esc(rep.notify_error)+'</div>';
+  h+=sfxRenderMisc(rep,target);
   (rep.profiles||[]).forEach(p=>{
     const c=p.counts||{}, q=p.pct||{};
     h+='<div class="sfx-card">';
@@ -68186,6 +68404,7 @@ function sfxRender(rep,target){
     h+='</div></div>';
   });
   if(!(rep.profiles||[]).length)h+='<div style="color:#64748b">پروفایلی با پسوند نبود</div>';
+  h+=sfxRenderDebug(rep,target);
   return h+'</div>';
 }
 
@@ -70027,6 +70246,54 @@ function syncMatrixFixStop(){
     showToast(d&&d.ok?'درخواست توقف ثبت شد':'توقف ناموفق', !(d&&d.ok));
   }).catch(()=>{});
 }
+window._smFixDestLists=[];
+function smFixOperationLabel(kind){
+  return ({price:'اصلاح قیمت',send:'ارسال محصول',delete:'حذف / بایگانی'})[kind]||kind||'اصلاح';
+}
+function smOpenFixDestination(index){
+  const group=window._smFixDestLists[index];
+  if(!group)return;
+  let modal=document.getElementById('smFixDestModal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='smFixDestModal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100001;display:flex;align-items:center;justify-content:center;padding:12px';
+    modal.onclick=function(e){if(e.target===modal)smCloseFixDestination();};
+    document.body.appendChild(modal);
+  }
+  let h='<div style="background:#0f172a;border:1px solid #475569;border-radius:12px;width:min(850px,96vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;direction:rtl">';
+  h+='<div style="padding:11px 14px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between;gap:8px">';
+  h+='<b style="color:#bbf7d0;font-size:13px">✅ اصلاحات انجام‌شده در '+esc(group.label)+'</b>';
+  h+='<button class="btn btn-gray" type="button" onclick="smCloseFixDestination()" style="padding:3px 10px">✕</button></div>';
+  h+='<div style="padding:10px 12px;overflow:auto"><table style="width:100%;border-collapse:collapse;min-width:560px;font-size:11px">';
+  h+='<thead style="position:sticky;top:0;background:#1e293b;z-index:1"><tr><th style="padding:8px;text-align:right">#</th><th style="padding:8px;text-align:right">محصول</th><th style="padding:8px;text-align:center">نوع اصلاح</th><th style="padding:8px;text-align:center">شناسه مقصد</th><th style="padding:8px;text-align:center">نتیجه</th></tr></thead><tbody>';
+  group.items.forEach(function(item,i){
+    h+='<tr style="border-top:1px solid #334155"><td style="padding:7px;color:#94a3b8">'+smFa(i+1)+'</td>';
+    h+='<td style="padding:7px;color:#e2e8f0;word-break:break-word">'+esc(item.title||item.label||'—')+'</td>';
+    h+='<td style="padding:7px;text-align:center;color:#c4b5fd">'+esc(smFixOperationLabel(item.kind))+'</td>';
+    h+='<td style="padding:7px;text-align:center;color:#67e8f9;direction:ltr">'+(item.id?smFa(item.id):'—')+'</td>';
+    h+='<td style="padding:7px;text-align:center;color:#86efac">✅ موفق</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+  modal.innerHTML=h; modal.style.display='flex';
+}
+function smCloseFixDestination(){
+  const modal=document.getElementById('smFixDestModal');if(modal)modal.style.display='none';
+}
+function smFixDestinationGroups(st){
+  const groups={};
+  (st&&Array.isArray(st.details)?st.details:[]).forEach(function(d){
+    if(!d||!d.ok||!d.target)return;
+    const target=String(d.target)==='woo'?'woo':('bsl_'+String(d.vendor_id||d.destination||'default'));
+    const label=String(d.destination|| (d.target==='woo'?'ووکامرس':'باسلام'));
+    if(!groups[target])groups[target]={label:label,items:[]};
+    groups[target].items.push(d);
+  });
+  const order=Object.keys(groups).sort(function(a,b){return a==='woo'?-1:(b==='woo'?1:a.localeCompare(b));});
+  window._smFixDestLists=order.map(function(k){return groups[k];});
+  return window._smFixDestLists;
+}
+
 function smPaintReports(d){
   const box = $('smFixReport');
   if(!box) return;
@@ -70046,6 +70313,17 @@ function smPaintReports(d){
       +' · 💰'+smFa(st.priced||0)+' · 📤'+smFa(st.sent||0)+' · 🗑'+smFa(st.deleted||0)
       +' · محدوده '+(st.scope||'all')
       +'</div>';
+  }
+  const destinationGroups=smFixDestinationGroups(st);
+  if(destinationGroups.length){
+    html += '<div style="margin:8px 0 10px;padding:8px 10px;background:#0b1220;border:1px solid #334155;border-radius:8px">';
+    html += '<div style="font-size:11px;color:#67e8f9;font-weight:900;margin-bottom:6px">📍 فهرست اصلاحات بر اساس مقصد — برای دیدن محصولات کلیک کنید</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
+    destinationGroups.forEach(function(g,i){
+      html += '<button type="button" class="btn btn-gray" onclick="smOpenFixDestination('+i+')" style="font-size:10.5px;padding:5px 9px;border-color:#22c55e88;color:#bbf7d0">✅ '+esc(g.label)+' · '+smFa(g.items.length)+' اصلاح</button>';
+    });
+    const allFixed=destinationGroups.reduce(function(n,g){return n+g.items.length;},0);
+    html += '<span style="font-size:10px;color:#94a3b8">جمع: '+smFa(allFixed)+'</span></div></div>';
   }
   (reps||[]).forEach(r=>{
     if(!r) return;

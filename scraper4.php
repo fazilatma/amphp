@@ -204,6 +204,7 @@ const AI_PROVIDERS_FILE = __DIR__ . '/ai_providers.json';
    ریفرش یا بستن پنجره ادامه پیدا کند. پیشرفت در این فایل می‌نشیند و
    مرورگر آن را poll می‌کند؛ فایل توقف برای قطع صریح اجرا. */
 const AI_TEST_STATE_FILE = __DIR__ . '/ai_test_state.json';
+const AI_TEST_LOCK_FILE  = __DIR__ . '/ai_test.lock';
 const AI_TEST_STOP_FILE  = __DIR__ . '/ai_test_stop.json';
 /* v10.18 (۳۱ب): پس از اتمامِ صفِ تست، ردیف‌هایی که خطایشان *ربطی به اعتبار
    ندارد* تا این تعداد دور دوباره تست می‌شوند، هر دور با تایم‌اوتِ بزرگ‌تر. */
@@ -284,6 +285,7 @@ const BSL_CATS_TTL  = 2592000;  // ۳۰ روز
 /* v10.35 (۴۷د/ه): همگام‌سازیِ دستی — کارِ پس‌زمینه با ردیفِ خودش در مدیر
    وظیفه، و گزارشِ کاملِ ماندگارِ هر همگام‌سازی. */
 const MANUAL_SYNC_PROGRESS_FILE = __DIR__ . '/manual_sync_progress.json';
+const MANUAL_SYNC_LOCK_FILE     = __DIR__ . '/manual_sync.lock';
 const MANUAL_SYNC_STOP_FILE     = __DIR__ . '/manual_sync_stop.json';
 const SYNC_REPORT_FILE          = __DIR__ . '/sync_report.json';
 const SYNC_REPORT_KEEP          = 200;
@@ -302,7 +304,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.128';
+const APP_VERSION = '10.130';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -316,7 +318,7 @@ if (!function_exists('str_contains')) {
     }
 }
 
-const APP_VERSION_DATE = '1405/06/08';
+const APP_VERSION_DATE = '1405/06/10';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -3211,6 +3213,30 @@ function aiTestStateSave(array $st): void {
     $st['updated_at'] = time();
     writeJsonFile(AI_TEST_STATE_FILE, $st);
 }
+/** قفلِ واقعی تست مدل‌ها؛ state به‌تنهایی برای جلوگیری از اجرای موازی کافی نیست. */
+function aiTestLockOpen() {
+    $fp = @fopen(AI_TEST_LOCK_FILE, 'c');
+    if (!$fp || !@flock($fp, LOCK_EX | LOCK_NB)) {
+        if ($fp) @fclose($fp);
+        return null;
+    }
+    return $fp;
+}
+function aiTestLockHeld(): bool {
+    if (!is_file(AI_TEST_LOCK_FILE)) return false;
+    $fp = @fopen(AI_TEST_LOCK_FILE, 'c');
+    if (!$fp) return false;
+    $free = @flock($fp, LOCK_EX | LOCK_NB);
+    if ($free) @flock($fp, LOCK_UN);
+    @fclose($fp);
+    return !$free;
+}
+function aiTestLockClose($fp): void {
+    if (is_resource($fp)) {
+        @flock($fp, LOCK_UN); @fclose($fp);
+    }
+    @unlink(AI_TEST_LOCK_FILE);
+}
 /* v9.45: آیا «توقف تست مدل‌ها» درخواست شده؟ کش stat را پاک می‌کند تا فایلِ
    تازه‌ساخته‌شده هم دیده شود (همان الگوی bslReq). این یک نقطهٔ مشترک است تا
    همهٔ حلقه‌های شبکه — نه فقط aiHttp — سیگنال توقف را ببینند. */
@@ -5272,9 +5298,11 @@ function aicontentItemPush(array $item): void {
 /**
  * اجرای پس‌زمینه: پر کردن محصولاتِ بدون محتوا + ثبت کارت/گزارش.
  */
-function aicontentRun(?array $cn = null, int $limit = 0): array {
+function aicontentRun(?array $cn = null, int $limit = 0, ?array $resume = null): array {
     $cn = $cn ?? loadConnections();
     $cfg = aiContentAutoCfg($cn);
+    $contentCp = is_array($resume) ? $resume : [];
+    $contentStartedAt = (int)($contentCp['started_at'] ?? time());
     $per = $limit > 0 ? $limit : (int)$cfg['per_run'];
     $per = max(1, min(80, $per));
     $web = !empty($cfg['web_search']);
@@ -5283,8 +5311,10 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
     $maxSec = 240;
 
     $stats = [
-        'ok' => true, 'scanned' => 0, 'needed' => 0, 'filled' => 0, 'skipped' => 0,
-        'failed' => 0, 'profiles' => 0, 'items' => [], 'took' => 0, 'msg' => '',
+        'ok' => true, 'scanned' => (int)($contentCp['scanned'] ?? 0),
+        'needed' => 0, 'filled' => (int)($contentCp['filled'] ?? 0),
+        'skipped' => (int)($contentCp['skipped'] ?? 0),
+        'failed' => (int)($contentCp['failed'] ?? 0), 'profiles' => 0, 'items' => [], 'took' => 0, 'msg' => '',
         'stopped' => false,
     ];
     $profiles = loadProfiles();
@@ -5310,9 +5340,13 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
     $total = count($queue);
     aicontentProgress([
         'running' => true, 'done' => false, 'phase' => 'fill',
-        'total' => $total, 'current' => 0, 'filled' => 0, 'failed' => 0, 'skipped' => 0,
-        'last_title' => '',
-        'log_add' => ['🚀 شروع توضیح‌ساز — ' . $total . ' محصول در صف (سقف ' . $per . ')'],
+        'total' => $total, 'current' => (int)($contentCp['current'] ?? 0),
+        'filled' => $stats['filled'], 'failed' => $stats['failed'], 'skipped' => $stats['skipped'],
+        'last_title' => '', 'started_at' => $contentStartedAt,
+        'checkpoint' => ['limit' => $per, 'started_at' => $contentStartedAt,
+            'scanned' => $stats['scanned'], 'filled' => $stats['filled'],
+            'failed' => $stats['failed'], 'skipped' => $stats['skipped'], 'current' => (int)($contentCp['current'] ?? 0)],
+        'log_add' => ['🚀 ' . ($contentCp ? 'ادامه توضیح‌ساز از checkpoint' : 'شروع توضیح‌ساز') . ' — ' . $total . ' محصول در صف (سقف ' . $per . ')'],
     ]);
     if ($total === 0) {
         $stats['msg'] = 'محصولی برای تولید محتوا نبود';
@@ -5350,7 +5384,8 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
             break;
         }
         if ((time() - $t0) >= $maxSec) {
-            aicontentProgress(['log_add' => ['⏱ سقف زمانی نوبت — ادامه در اجرای بعد']]);
+            $stats['stopped'] = true;
+            aicontentProgress(['phase' => 'stopping', 'log_add' => ['⏱ سقف زمانی نوبت — ادامه در اجرای بعد']]);
             break;
         }
         $pk = $job['pk'];
@@ -5436,6 +5471,11 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
         }
         aicontentItemPush($item);
         $stats['items'][] = ['id' => $itemId, 'title' => $title, 'status' => $item['status']];
+        aicontentProgress(['checkpoint' => ['limit' => $per, 'started_at' => $contentStartedAt,
+            'scanned' => $stats['scanned'], 'filled' => $stats['filled'], 'failed' => $stats['failed'],
+            'skipped' => $stats['skipped'], 'current' => $curN],
+            'current' => $curN, 'filled' => $stats['filled'], 'failed' => $stats['failed'],
+            'skipped' => $stats['skipped']]);
     }
 
     $flushProfiles();   // v10.126: ذخیرهٔ باقی‌مانده (معمولاً خالی)
@@ -5447,6 +5487,10 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
         'phase' => 'done',
         'filled' => $stats['filled'], 'failed' => $stats['failed'],
         'current' => min($total, (int)($stats['scanned'])),
+        'checkpoint' => $stats['stopped'] ? ['limit' => $per, 'started_at' => $contentStartedAt,
+            'scanned' => $stats['scanned'], 'filled' => $stats['filled'], 'failed' => $stats['failed'],
+            'skipped' => $stats['skipped'], 'current' => (int)($stats['scanned'])] : null,
+        'stale' => $stats['stopped'],
         'log_add' => ['🏁 ' . $stats['msg'] . ' · ' . $stats['took'] . 'ث'],
     ]);
     return $stats;
@@ -16469,6 +16513,14 @@ function cronWatchdogs(array $cn): array {
                     . (int)($w['current'] ?? 0) . '/' . (int)($w['total'] ?? 0) . ') — '
                     . (!empty($w['resumed']) ? 'خودکار ادامه داده شد ✅' : 'ادامه ناموفق ❌'));
             }
+            /* fireAndForget فقط درخواستِ worker را آغاز می‌کند، نه پایانش را.
+               پس صفِ بعدی و بقیهٔ کارها باید به کران بعدی واگذار شوند؛ فاصلهٔ
+               زمانیِ ثابت هرگز جایِ انتظار/ترتیب را نمی‌گیرد. */
+            if (!empty($w['resumed'])) {
+                $results['resume_blocking'] = ['kind' => 'queue', 'which' => $wq,
+                    'queue_id' => (string)($w['queue_id'] ?? '')];
+                break;
+            }
         }
     }
     
@@ -16477,7 +16529,7 @@ function cronWatchdogs(array $cn): array {
        کار می‌مُرد (تایم‌اوت هاست، ری‌استارت PHP، قطع شبکه)، ردیف برای همیشه
        «در حال اجرا» می‌ماند و ردیف‌های بعدی هم راه نمی‌افتادند. علامت‌خوردنِ
        «خطا» هم فقط وقتی اتفاق می‌افتاد که کسی صفحهٔ صف را باز کند. */
-    if ($stallWake) {
+    if ($stallWake && empty($results['resume_blocking'])) {
         $exProg = readProgress(EXTRACT_PROGRESS_FILE);
         $exQ = extractReadQueue();
         $exNow = time();
@@ -16537,7 +16589,8 @@ function cronWatchdogs(array $cn): array {
 
        فقط غرفه‌هایی بازسازی می‌شوند که کششان کهنه شده؛ اگر همه تازه باشند
        این بلوک عملاً رایگان است و هیچ درخواستی نمی‌زند. */
-    if (!empty($cn['bsl_catalog_auto']) || !isset($cn['bsl_catalog_auto'])) {
+    if (empty($results['resume_blocking'])
+        && (!empty($cn['bsl_catalog_auto']) || !isset($cn['bsl_catalog_auto']))) {
         if (function_exists('bslAllShops') && function_exists('bslCatalogBuild')) {
             $catBuilt = []; $catAge = bslCatalogTtl($cn);
             foreach (bslAllShops($cn) as $csh) {
@@ -16563,8 +16616,9 @@ function cronWatchdogs(array $cn): array {
 
          • فقط کارهای «رهاشده» (stale). کارِ تمام‌شده دوباره اجرا نمی‌شود؛
            «done» یعنی نتیجه گرفته، نه اینکه ناقص مانده.
-         • صف و استخراج رد می‌شوند چون بالاتر نگهبانِ اختصاصیِ دقیق‌تری
-           دارند (سه شاهد). شلیکِ دوباره از اینجا یعنی اجرای موازیِ همان کار.
+         • صف و استخراج مسیرِ اختصاصیِ checkpoint-aware دارند؛ اگر همان تیک
+           در آن مسیر اجرا شده باشند از گذرِ عمومی رد می‌شوند، وگرنه در همین
+           رجیستری مثل بقیهٔ کارها پوشش داده می‌شوند.
          • v10.125: سقف «بدونِ پیشرفت» به‌جای سقفِ ساعتیِ کور — تا وقتی کار
            جلو می‌رود هر تیک ادامه می‌یابد؛ فقط تکرارِ بدونِ پیشرفت مهار
            می‌شود تا کارِ واقعاً خراب حلقه نسازد.
@@ -16572,15 +16626,20 @@ function cronWatchdogs(array $cn): array {
            همزمانِ چند کارِ سنگین همه را کند می‌کند و اصلِ مشکل را برمی‌گرداند.
          • ترتیب همان اولویتی است که کاربر در مدیر وظیفه چیده. */
     $autoCfg = !isset($cn['auto_resume']) || !empty($cn['auto_resume']);
-    if ($stallWake && $autoCfg && function_exists('tasksRowsOrdered')) {
+    if (empty($results['resume_blocking']) && $autoCfg && function_exists('tasksRowsOrdered')) {
         $arMax  = max(1, min(10, (int)($cn['auto_resume_max'] ?? 3)));  /* v10.103: پیش‌فرض ۳ */
-        /* این دو، نگهبانِ اختصاصیِ خودشان را دارند */
-        $arSkip = ['bsl_send' => 1, 'woo_send' => 1, 'extract' => 1];
+        /* v10.129: همهٔ ردیف‌های رجیستری از همین مسیر عبور می‌کنند.
+           صف و استخراج داخل tasksResumeOne به مسیرهای checkpoint-aware خود
+           می‌روند؛ بنابراین دیگر skip جداگانه‌ای که «ادامهٔ همه» را ناقص
+           کند وجود ندارد. */
         $arNow  = time();
-        $arDone = null; $arBlocked = [];
+        $arDone = []; $arBlocked = [];
         foreach (tasksRowsOrdered($arNow) as $arRow) {
             $arKey = (string)$arRow['key'];
-            if (isset($arSkip[$arKey]))            continue;
+            /* استخراجِ صف، نگهبانِ checkpoint-aware اختصاصی دارد و اگر همین
+               تیک آن را اجرا کرده، نباید یک resume عمومیِ دوم بگیرد. استخراجی
+               که بیرونِ صف stale مانده باشد همچنان از مسیر عمومی پوشش دارد. */
+            if ($arKey === 'extract' && !empty($results['extract_resumed'])) continue;
             if ((string)$arRow['state'] !== 'stale') continue;
             if (empty($arRow['resumable']))        continue;
             /* v10.125: سقفِ «بدون پیشرفت» — امضای پیشرفتِ فایلِ کار را با
@@ -16608,16 +16667,23 @@ function cronWatchdogs(array $cn): array {
             }
             autoResumeBookSet($arKey, $_arSig, $_arTr);
             $arRes = tasksResumeOne($arKey);
-            $arDone = ['key' => $arKey, 'title' => (string)$arRow['title'],
-                       'idle' => (int)$arRow['age'], 'try' => $_arTr + 1, 'max' => $arMax,
-                       'ok' => !empty($arRes['ok']), 'error' => (string)($arRes['error'] ?? '')];
+            $arDone[] = ['key' => $arKey, 'title' => (string)$arRow['title'],
+                         'idle' => (int)$arRow['age'], 'try' => $_arTr + 1, 'max' => $arMax,
+                         'ok' => !empty($arRes['ok']), 'error' => (string)($arRes['error'] ?? '')];
             notifRunFailure($cn, 'ادامهٔ خودکار', (string)$arRow['title'],
                 'این کار ' . (int)$arRow['age'] . ' ثانیه بی‌حرکت مانده بود — '
                 . (!empty($arRes['ok'])
                     ? 'خودکار ادامه داده شد ✅'
                     : 'ادامه ناموفق ❌ ' . (string)($arRes['error'] ?? ''))
                 . ' (تلاشِ بدونِ پیشرفت ' . ($_arTr + 1) . ' از ' . $arMax . ')');
-            break;   // فقط یک کار در هر نوبت
+            /* fireAndForget پاسخِ زودهنگام دارد؛ حتی با پاسخِ موفق، worker
+               هنوز ممکن است مشغول باشد. فقط همین یک کار در این تیک آغاز شود
+               و ادامهٔ صف در کران بعدی، پس از آزادشدنِ کار، انجام گیرد. */
+            if (!empty($arRes['ok']) || strpos((string)($arRes['error'] ?? ''), 'فعال') !== false
+                || strpos((string)($arRes['error'] ?? ''), 'پاسخ نداد') !== false) {
+                $results['resume_blocking'] = ['kind' => 'registry', 'key' => $arKey];
+                break;
+            }
         }
         if ($arDone)     $results['auto_resume'] = $arDone;
         if ($arBlocked)  $results['auto_resume_blocked'] = $arBlocked;
@@ -17723,6 +17789,19 @@ if (isset($_GET['manual_sync_status'])) {
     exit;
 }
 if (isset($_GET['manual_sync'])) {
+    /* قفل اختصاصی لازم است: قفلِ کران فقط اجرای دوره‌ای را می‌پوشاند و
+       دو resume از مدیر وظیفه می‌توانستند هر دو از checkpoint بخوانند. */
+    $_msLockFp = @fopen(MANUAL_SYNC_LOCK_FILE, 'c');
+    if (!$_msLockFp || !@flock($_msLockFp, LOCK_EX | LOCK_NB)) {
+        if ($_msLockFp) @fclose($_msLockFp);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['ok' => false, 'running' => true,
+            'error' => 'همگام‌سازی دستی هنوز قفلِ فعال دارد — اجرای موازی ساخته نشد'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    register_shutdown_function(function () use ($_msLockFp) {
+        @flock($_msLockFp, LOCK_UN); @fclose($_msLockFp); @unlink(MANUAL_SYNC_LOCK_FILE);
+    });
     /* =====================================================================
      *  v10.81: همگام‌سازی دستی = همان دکمهٔ «استخراج بک‌اند» + بقیهٔ کارها
      *
@@ -17736,6 +17815,8 @@ if (isset($_GET['manual_sync'])) {
      *  ===================================================================== */
     $_msPrev = readProgress(MANUAL_SYNC_PROGRESS_FILE);
     $_msAge  = time() - (int)($_msPrev['last_progress_ts'] ?? ($_msPrev['ts'] ?? 0));
+    $_msResumeCp = is_array($_msPrev['checkpoint'] ?? null) ? $_msPrev['checkpoint'] : [];
+    $_msResumeRequested = !empty($_GET['resume']);
     if (!empty($_msPrev['running']) && empty($_msPrev['done']) && empty($_GET['takeover'])) {
         $_msMaxD = max(120, (int)(loadConnections()['stall_after'] ?? 300));
         if ($_msAge >= $_msMaxD) {
@@ -17796,10 +17877,16 @@ if (isset($_GET['manual_sync'])) {
     $_msName = (string)($_msProf['name'] ?? $_msKey);
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
         'running' => true, 'done' => false, 'cancelled' => false,
-        'phase' => 'استخراج بک‌اند', 'started_at' => time(), 'ts' => time(),
+        'phase' => 'استخراج بک‌اند', 'started_at' => (int)($_msResumeCp['started_at'] ?? time()), 'ts' => time(),
         'last_progress_ts' => time(),
         'total' => 4, 'current' => 1,
         'profile_key' => $_msKey, 'profile_name' => $_msName,
+        /* v10.130: فیلدهای extract/enqueue/retire اجرای قبلی باید از همان
+           اولین write هم بمانند؛ وگرنه resume=1 پیش از رسیدن به manualSyncProgress
+           checkpoint ارکستراسیون را کوتاه می‌کرد. */
+        'checkpoint' => array_merge($_msResumeCp, ['profile_key' => $_msKey, 'profile_name' => $_msName,
+            'phase' => 'استخراج بک‌اند', 'current' => 1, 'total' => 4,
+            'started_at' => (int)($_msResumeCp['started_at'] ?? time())]),
         'recent_log' => [
             '▶ همگام‌سازی دستی — همان مسیر «استخراج بک‌اند»',
             '🔑 ' . $_msKey,
@@ -17830,8 +17917,18 @@ if (isset($_GET['manual_sync'])) {
         $_msPhase = 'detail';
         manualSyncProgress([], '📋 پروفایل بدون‌استخراج فهرست — فاز detail');
     }
-    /* emitEarlyResponse=false چون خودمان پاسخ را فرستادیم؛ trigger=manual_sync */
-    $_msEx = runBackendExtract($_msKey, 'manual_sync', false, $_msPhase, true);
+    /* emitEarlyResponse=false چون خودمان پاسخ را فرستادیم؛ trigger=manual_sync.
+       در resume اگر استخراج قبلاً تمام و نتیجه‌اش در checkpoint ثبت شده،
+       دوباره صفِ استخراج نمی‌سازیم و مستقیم سراغ صف/ارسال می‌رویم. */
+    $_msCanReuseExtract = $_msResumeRequested && (string)($_msResumeCp['profile_key'] ?? '') === $_msKey
+        && (int)($_msResumeCp['current'] ?? 0) >= 2 && is_array($_msResumeCp['extract'] ?? null);
+    if ($_msCanReuseExtract) {
+        $_msEx = $_msResumeCp['extract'];
+        manualSyncProgress([], '↻ استخراجِ کاملِ checkpoint دوباره اجرا نشد');
+    } else {
+        $_msEx = runBackendExtract($_msKey, 'manual_sync', false, $_msPhase, true);
+    }
+    manualSyncProgress(['checkpoint' => ['extract' => $_msEx]], '');
     $_msResults['extract'] = [
         'ok' => !empty($_msEx['ok']),
         'error' => (string)($_msEx['error'] ?? ''),
@@ -17863,7 +17960,11 @@ if (isset($_GET['manual_sync'])) {
         /* استخراج fail نباید کل همگام را بکشد اگر محصول روی دیسک هست — ادامه برای ارسال */
         if (empty($_msProf['products'])) {
             writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
-                'running' => false, 'done' => true, 'error' => $_msErr,
+                'running' => false, 'done' => true, 'stale' => true, 'error' => $_msErr,
+                'checkpoint' => array_merge(
+                    (array)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['checkpoint'] ?? []),
+                    ['profile_key' => $_msKey, 'phase' => 'خطا', 'current' => 1, 'total' => 4,
+                     'started_at' => (int)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['started_at'] ?? time())]),
                 'phase' => 'خطا', 'ts' => time(), 'last_progress_ts' => time(),
             ]));
             /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
@@ -17875,8 +17976,13 @@ if (isset($_GET['manual_sync'])) {
 
     if (manualSyncStopped()) {
         writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
-            'running' => false, 'done' => true, 'cancelled' => true,
-            'phase' => 'متوقف شد', 'ts' => time(), 'last_progress_ts' => time(),
+            'running' => false, 'done' => true, 'stale' => true, 'cancelled' => true,
+            'phase' => 'متوقف شد', 'checkpoint' => array_merge(
+                (array)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['checkpoint'] ?? []),
+                ['profile_key' => $_msKey, 'phase' => 'متوقف شد',
+                 'current' => (int)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['current'] ?? 0), 'total' => 4,
+                 'started_at' => (int)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['started_at'] ?? time())]),
+            'ts' => time(), 'last_progress_ts' => time(),
         ]));
         /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
 "; @ob_flush(); @flush(); } } catch (Throwable $e) {}
@@ -17968,6 +18074,8 @@ if (isset($_GET['manual_sync'])) {
                 }
             }
         }
+        manualSyncProgress(['checkpoint' => ['extract' => $_msEx, 'enqueue' => $_msEnq ?? [],
+            'retire' => $_msResults['retire'] ?? [], 'target' => $_msTarget]], '');
     } catch (Throwable $e) {
         manualSyncProgress([], '⚠️ صف ارسال: ' . mb_substr($e->getMessage(), 0, 200));
         $_msResults['enqueue_error'] = $e->getMessage();
@@ -17975,8 +18083,13 @@ if (isset($_GET['manual_sync'])) {
 
     if (manualSyncStopped()) {
         writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
-            'running' => false, 'done' => true, 'cancelled' => true,
-            'phase' => 'متوقف شد', 'ts' => time(), 'last_progress_ts' => time(),
+            'running' => false, 'done' => true, 'stale' => true, 'cancelled' => true,
+            'phase' => 'متوقف شد', 'checkpoint' => array_merge(
+                (array)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['checkpoint'] ?? []),
+                ['profile_key' => $_msKey, 'phase' => 'متوقف شد',
+                 'current' => (int)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['current'] ?? 0), 'total' => 4,
+                 'started_at' => (int)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['started_at'] ?? time())]),
+            'ts' => time(), 'last_progress_ts' => time(),
         ]));
         /* keep-conn: final line */ try { if (defined('MS_KEEP_CONN')) { echo json_encode(['done'=>true], JSON_UNESCAPED_UNICODE)."
 "; @ob_flush(); @flush(); } } catch (Throwable $e) {}
@@ -18000,6 +18113,33 @@ if (isset($_GET['manual_sync'])) {
     }
 
     /* ── ۴) گزارش ── */
+    /* v10.130: خطای صف/ارسال یا توقفِ نرم، پایانِ موفقِ زنجیره نیست. آن را
+       stale نگه می‌داریم تا کران بعدی همان checkpoint را resume کند؛ قبلاً
+       این مسیر با current=4 و checkpoint=null، کار نیمه‌کاره را done اعلام
+       می‌کرد و ادامهٔ خودکار هرگز به آن نمی‌رسید. */
+    $_msSendFailed = !empty($_msResults['ms_server_send']['error'])
+        || (isset($_msResults['ms_server_send']['ok']) && empty($_msResults['ms_server_send']['ok']));
+    $_msPartial = !empty($_msResults['ms_server_send']['stopped']) || $_msSendFailed
+        || !empty($_msResults['enqueue_error']) || !empty($_msResults['retire_error'])
+        || (isset($_msResults['extract']['ok']) && empty($_msResults['extract']['ok']));
+    if ($_msPartial) {
+        $_msPartialP = readProgress(MANUAL_SYNC_PROGRESS_FILE);
+        $_msPartialCp = is_array($_msPartialP['checkpoint'] ?? null) ? $_msPartialP['checkpoint'] : [];
+        $_msPartialP['running'] = false; $_msPartialP['done'] = true;
+        $_msSendStopped = !empty($_msResults['ms_server_send']['stopped']);
+        $_msPartialP['stale'] = true; $_msPartialP['cancelled'] = $_msSendStopped;
+        $_msPartialP['phase'] = $_msSendStopped ? 'متوقف شد' : 'نیمه‌کاره ماند';
+        $_msPartialP['error'] = $_msSendStopped ? 'ارسال با درخواست کاربر متوقف شد'
+            : 'بخشی از همگام‌سازی ناموفق بود — checkpoint برای ادامه حفظ شد';
+        $_msPartialP['checkpoint'] = $_msPartialCp;
+        $_msPartialP['summary_data'] = $_msResults;
+        $_msPartialP['ts'] = time(); $_msPartialP['last_progress_ts'] = time();
+        $_msPartialP['recent_log'][] = $_msPartialP['error'];
+        $_msPartialP['recent_log'] = array_slice((array)$_msPartialP['recent_log'], -40);
+        writeProgress(MANUAL_SYNC_PROGRESS_FILE, $_msPartialP);
+        @unlink(MANUAL_SYNC_STOP_FILE);
+        exit;
+    }
     try { cronMarkRun($_msKey, 'manual_done'); } catch (Throwable $e) {}
     manualSyncProgress(['phase' => 'تمام شد', 'current' => 4], '✅ همگام‌سازی دستی تمام شد');
     $_msDone = readProgress(MANUAL_SYNC_PROGRESS_FILE);
@@ -18008,6 +18148,8 @@ if (isset($_GET['manual_sync'])) {
     $_msDone['cancelled'] = false;
     $_msDone['current'] = 4;
     $_msDone['phase'] = 'تمام شد';
+    $_msDone['checkpoint'] = null;
+    $_msDone['stale'] = false;
     $_msDone['ts'] = time();
     $_msDone['last_progress_ts'] = time();
     $_msDone['summary_data'] = $_msResults;
@@ -18403,6 +18545,14 @@ try {
     $results['watchdog_error'] = 'ابتدایی: ' . mb_substr($e->getMessage(), 0, 200);
 }
 foreach ($wdEarly as $k => $v) { if (!empty($v)) $results[$k] = $v; }
+/* workerهای ادامه با پاسخِ زودهنگام جدا می‌شوند؛ این تیک نباید بعد از
+   dispatch، استخراج/ارسال/ایجنتِ دیگری را هم راه بیندازد. کران بعدی همین
+   رجیستری و checkpoint را دوباره می‌خواند و اولویت را ادامه می‌دهد. */
+if (!empty($wdEarly['resume_blocking'])) {
+    $results['deferred_by_resume'] = true;
+    cronEmit($results);
+    exit;
+}
 
 /* پروفایل‌ها و وضعیت دوباره خوانده می‌شوند تا همگام‌سازیِ پایین نسخهٔ
    کهنه (یا پروفایلِ تازه‌ای که همین تیک عوضش کرده) را نبیند. */
@@ -19176,6 +19326,7 @@ if (!empty($_bkCfg['auto'])) {
    در همگام‌سازیِ دستی اجرا نمی‌شود: آنجا مرورگر وصل است و رابط خودش
    ارسال را با اتصالِ زنده راه می‌اندازد (msKickSend). */
 if (!manualSyncActive()) {
+    $_pumpBlocking = false;
     try {
         $_pumpStall = max(120, (int)($cn['stall_after'] ?? 300));
         foreach (cronWatchdogQueueOrder() as $_pq) {
@@ -19189,10 +19340,21 @@ if (!manualSyncActive()) {
             ];
             $_pqAfter = queueStallCheck($_pq, $_pumpStall);
             $results['send_pump'][$_pq]['now'] = (int)($_pqAfter['current'] ?? 0);
+            if (!empty($_pqRec['resumed'])) {
+                /* این worker هم پاسخِ زودهنگام دارد؛ صفِ مقصدِ دیگر و همهٔ
+                   کارهای پایین‌تر باید به تیکِ بعدی واگذار شوند. */
+                $_pumpBlocking = true;
+                break;
+            }
             if (empty($_pqAfter['stalled'])) break;
         }
     } catch (Throwable $e) {
         $results['send_pump_error'] = mb_substr($e->getMessage(), 0, 200);
+    }
+    if ($_pumpBlocking) {
+        $results['deferred_by_resume'] = true;
+        cronEmit($results);
+        exit;
     }
 }
 
@@ -19760,6 +19922,22 @@ if (isset($_GET['bulk_edit'])) {
     if (!is_array($ops)) $ops = [];
     $dry = !empty($_POST['dry']);
     $notify = !empty($_POST['notify']);
+    /* v10.129: در resume، همان checkpoint منبع حقیقت است؛ مخصوصاً فهرستِ
+       باقی‌مانده، تا ویرایشِ نسبیِ قیمت روی محصولِ انجام‌شده دوباره اعمال نشود. */
+    $bulkResume = [];
+    if (!empty($_GET['resume']) && is_file(BULKEDIT_PROGRESS_FILE)) {
+        $oldBulk = json_decode((string)@file_get_contents(BULKEDIT_PROGRESS_FILE), true);
+        $oldCp = is_array($oldBulk['checkpoint'] ?? null) ? $oldBulk['checkpoint'] : [];
+        if (is_array($oldCp['ids'] ?? null) && is_array($oldCp['ops'] ?? null)
+            && in_array((string)($oldCp['target'] ?? ''), ['woo', 'bsl'], true)) {
+            $bulkResume = $oldCp;
+            $target = (string)$oldCp['target'];
+            $ids = is_array($oldCp['remaining_ids'] ?? null) ? $oldCp['remaining_ids'] : $oldCp['ids'];
+            $ops = $oldCp['ops'];
+            $dry = !empty($oldCp['dry']);
+            $notify = !empty($oldCp['notify']);
+        }
+    }
     if ($target !== 'woo' && $target !== 'bsl') {
         flock($lockFp, LOCK_UN); fclose($lockFp); @unlink($lockFile);
         echo json_encode(['ok' => false, 'error' => 'مقصد نامعتبر'], JSON_UNESCAPED_UNICODE); exit;
@@ -19768,6 +19946,11 @@ if (isset($_GET['bulk_edit'])) {
     @unlink(BULKEDIT_PROGRESS_FILE);
     bulkProgress(['running' => true, 'done' => false, 'target' => $target, 'dry' => $dry,
         'total' => count($ids), 'current' => 0, 'started_at' => time(),
+        'checkpoint' => ['target' => $target,
+            'ids' => array_values($bulkResume['ids'] ?? $ids), 'ops' => $ops,
+            'dry' => $dry, 'notify' => $notify, 'remaining_ids' => array_values($ids),
+            'changed' => (int)($bulkResume['changed'] ?? 0), 'deleted' => (int)($bulkResume['deleted'] ?? 0),
+            'skipped' => (int)($bulkResume['skipped'] ?? 0), 'failed' => (int)($bulkResume['failed'] ?? 0)],
         'log_add' => ['✏️ شروع ویرایش ' . count($ids) . ' محصول — ' . ($target === 'woo' ? 'ووکامرس' : 'باسلام') . ($dry ? ' (پیش‌نمایش)' : '')]]);
 
     $early = json_encode(['ok' => true, 'started' => true, 'total' => count($ids)], JSON_UNESCAPED_UNICODE);
@@ -19778,10 +19961,13 @@ if (isset($_GET['bulk_edit'])) {
         @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink($lockFile);
     });
 
-    try { $res = bulkEditRun($cn, $target, $ids, $ops, $dry); }
+    try { $res = bulkEditRun($cn, $target, $ids, $ops, $dry, $bulkResume); }
     catch (Throwable $e) {
-        bulkProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]); exit;
+        $bulkErrState = is_file(BULKEDIT_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(BULKEDIT_PROGRESS_FILE), true) : [];
+        bulkProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($bulkErrState['checkpoint'] ?? null) ? $bulkErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]); exit;
     }
     if ($notify && !$dry) {
         $why = notifPrereq($cn);
@@ -19790,8 +19976,14 @@ if (isset($_GET['bulk_edit'])) {
         else { $res['notify_error'] = $why; bulkProgress(['log_add' => ['⚠️ ارسال نشد: ' . $why]]); }
     }
     @file_put_contents(BULKEDIT_RESULT_FILE, json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    $bulkLastState = is_file(BULKEDIT_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(BULKEDIT_PROGRESS_FILE), true) : [];
+    $bulkKeepCp = !empty($res['stopped']) || empty($res['ok']);
     bulkProgress(['running' => false, 'done' => true, 'changed' => $res['changed'],
         'deleted' => $res['deleted'], 'failed' => $res['failed'], 'skipped' => $res['skipped'],
+        'stale' => $bulkKeepCp,
+        'checkpoint' => $bulkKeepCp && is_array($bulkLastState['checkpoint'] ?? null)
+            ? $bulkLastState['checkpoint'] : null,
         'log_add' => ['✅ پایان — ' . $res['changed'] . ' ویرایش، ' . $res['deleted'] . ' حذف/بایگانی، ' . $res['failed'] . ' خطا']]);
     exit;
 }
@@ -19826,10 +20018,28 @@ if (isset($_GET['photo_fix'])) {
     $dry = !empty($_GET['dry']);
     $onlyProfile = trim((string)($_GET['profile'] ?? ''));
     $notify = !empty($_GET['notify']);
+    /* v10.129: صفحه و شمارنده‌های بازسازی عکس از آخرین محصول امن ادامه
+       می‌یابند؛ محصول جاری در بدترین حالت دوباره با همان گالری مطلق دیده می‌شود. */
+    $photoCp = null;
+    if (!empty($_GET['resume']) && is_file(PHOTOFIX_PROGRESS_FILE)) {
+        $oldPhoto = json_decode((string)@file_get_contents(PHOTOFIX_PROGRESS_FILE), true);
+        $oldCp = is_array($oldPhoto['checkpoint'] ?? null) ? $oldPhoto['checkpoint'] : null;
+        if (is_array($oldCp) && (string)($oldCp['profile'] ?? '') === $onlyProfile
+            && (bool)($oldCp['dry'] ?? false) === $dry) {
+            $photoCp = $oldCp;
+            $notify = !empty($oldCp['notify']) || $notify;
+        }
+    }
 
     @unlink(PHOTOFIX_PROGRESS_FILE);
-    photoFixProgress(['running' => true, 'done' => false, 'dry' => $dry, 'started_at' => time(),
-        'log_add' => ['🖼 شروع عکس‌دار کردن' . ($dry ? ' (پیش‌نمایش)' : '')]]);
+    photoFixProgress(['running' => true, 'done' => false, 'dry' => $dry, 'profile' => $onlyProfile,
+        'notify' => $notify, 'started_at' => (int)($photoCp['started_at'] ?? time()),
+        'checkpoint' => $photoCp !== null ? $photoCp : ['page' => 1, 'offset' => 0,
+            'scanned' => 0, 'missing' => 0, 'matched' => 0, 'fixed' => 0, 'failed' => 0,
+            'unmatched' => 0, 'profile' => $onlyProfile, 'dry' => $dry, 'notify' => $notify,
+            'started_at' => time()],
+        'log_add' => ['🖼 ' . ($photoCp !== null ? 'ادامه عکس‌دار کردن' : 'شروع عکس‌دار کردن')
+            . ($dry ? ' (پیش‌نمایش)' : '')]]);
 
     $early = json_encode(['ok' => true, 'started' => true, 'dry' => $dry], JSON_UNESCAPED_UNICODE);
     header('Connection: close'); header('Content-Length: ' . strlen($early));
@@ -19839,10 +20049,14 @@ if (isset($_GET['photo_fix'])) {
         @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink($lockFile);
     });
 
-    try { $res = photoFixRun($cn, $dry, $onlyProfile); }
+    $photoRunCp = is_array($photoCp) ? $photoCp : ['notify' => $notify];
+    try { $res = photoFixRun($cn, $dry, $onlyProfile, 2000, $photoRunCp); }
     catch (Throwable $e) {
-        photoFixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]); exit;
+        $photoErrState = is_file(PHOTOFIX_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(PHOTOFIX_PROGRESS_FILE), true) : [];
+        photoFixProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($photoErrState['checkpoint'] ?? null) ? $photoErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]); exit;
     }
     if ($notify && !$dry) {
         $why = notifPrereq($cn);
@@ -19851,9 +20065,14 @@ if (isset($_GET['photo_fix'])) {
         else { $res['notify_error'] = $why; }
     }
     @file_put_contents(__DIR__ . '/photofix_result.json', json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    $photoLastState = is_file(PHOTOFIX_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(PHOTOFIX_PROGRESS_FILE), true) : [];
+    $photoKeepCp = !empty($res['stopped']) || empty($res['ok']);
     photoFixProgress(['running' => false, 'done' => true, 'fixed' => $res['fixed'] ?? 0,
         'failed' => $res['failed'] ?? 0, 'unmatched' => $res['unmatched'] ?? 0,
-        'result_ok' => !empty($res['ok']),
+        'result_ok' => !empty($res['ok']), 'stale' => $photoKeepCp,
+        'checkpoint' => $photoKeepCp && is_array($photoLastState['checkpoint'] ?? null)
+            ? $photoLastState['checkpoint'] : null,
         'log_add' => [empty($res['ok']) ? ('❌ ' . ($res['error'] ?? 'ناموفق'))
                      : ('✅ پایان — ' . (int)$res['fixed'] . ' محصول عکس‌دار شد')]]);
     exit;
@@ -20402,8 +20621,10 @@ if (isset($_GET['recon'])) {
         'all_vendors' => $allVendors, 'vendor_id' => $onlyVid,
         'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
         'phase' => (!empty($_GET['resume']) ? 'resume' : 'start'),
-        /* v10.126: چک‌پوینتِ همین کار برای ادامهٔ واکشی */
-        'checkpoint' => ['target' => $target, 'all_profiles' => $allProf,
+        /* v10.130: checkpoint کاملِ قبلی را نگه می‌داریم؛ جایگزین‌کردنِ آن
+           با یک checkpoint نازک، شناسه‌های اعمال‌شده/غرفه‌های انجام‌شده را
+           از بین می‌برد و resume را دوباره‌کار می‌کرد. */
+        'checkpoint' => $cp !== null ? $cp : ['target' => $target, 'all_profiles' => $allProf,
             'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
             'was_resume' => !empty($_GET['resume'])],
         'log_add' => [(!empty($_GET['resume']) ? '↻ ادامه از چک‌پوینت — ' : '') . (($apply ? '🚀 شروع اعمال تغییرات' : '🔍 شروع بررسی') . ' — ')
@@ -20428,10 +20649,13 @@ if (isset($_GET['recon'])) {
     try {
         $res = reconRun($cn, $target, $apply, $mode, $fixPrice, $allProf, $allVendors, $onlyVid, $cp);
     } catch (Throwable $e) {
-        @unlink(reconFetchCursorFile());   // v10.126
-        reconProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        /* cursor و checkpointِ اعمال باید بمانند؛ حذفشان یعنی گزارش بعدی
+           از صفحهٔ اول و با PUT/DELETEهای تکراری شروع می‌شود. */
+        $reconErrState = is_file(RECON_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true) : [];
+        reconProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($reconErrState['checkpoint'] ?? null) ? $reconErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         exit;
     }
     foreach (['extra', 'price_diff', 'matched_items', 'missing'] as $k) {
@@ -21055,6 +21279,24 @@ function tasksRegistry(): array {
                 return ['بررسی‌شده' => (int)($p['checked'] ?? 0), 'مغایرت' => (int)($p['diffs'] ?? 0)];
             },
         ],
+        'matrix_build' => [
+            'title' => 'ساخت جدول مقایسه', 'icon' => '📊', 'file' => SYNC_MATRIX_PROGRESS_FILE,
+            'stop' => '', 'tab' => 'ابزارها',
+            'pane' => 'settings', 'smenu' => 'مغایرت‌گیری با مقصد', 'resume' => 'sync_matrix_start=1',
+            'stat' => function (array $p): array {
+                return ['ردیف' => (int)($p['row_count'] ?? 0), 'پروفایل' => (int)($p['cur'] ?? 0)];
+            },
+        ],
+        'matrix_fix' => [
+            'title' => 'اصلاحِ مغایرت‌های جدول', 'icon' => '🔧', 'file' => SYNC_MATRIX_FIX_PROGRESS_FILE,
+            'stop' => 'sync_matrix_fix_stop', 'tab' => 'ابزارها',
+            'pane' => 'settings', 'smenu' => 'مغایرت‌گیری با مقصد', 'resume' => 'sync_matrix_fix_start=1',
+            'stat' => function (array $p): array {
+                return ['موفق' => (int)($p['ok_n'] ?? 0), 'ناموفق' => (int)($p['fail_n'] ?? 0),
+                        'اصلاح قیمت' => (int)($p['price_n'] ?? 0), 'ارسال' => (int)($p['sent_n'] ?? 0),
+                        'حذف' => (int)($p['del_n'] ?? 0)];
+            },
+        ],
         'suffix' => [
             'title' => 'گزارشِ پسوندِ پروفایل', 'icon' => '🏷', 'file' => SUFFIX_PROGRESS_FILE,
             'stop' => '', 'tab' => 'ابزارها',
@@ -21066,9 +21308,9 @@ function tasksRegistry(): array {
         'bulkedit' => [
             'title' => 'ویرایشِ گروهی', 'icon' => '✏', 'file' => BULKEDIT_PROGRESS_FILE,
             'stop' => '', 'tab' => 'ابزارها',
-            /* ویرایشِ گروهی بدونِ فهرستِ شناسه‌ها و عملیات معنا ندارد، پس
-               «ادامه» برایش تعریف نمی‌شود — کاربر باید انتخابش را دوباره بکند. */
-            'pane' => 'settings', 'smenu' => 'ویرایش محصولات مقصد', 'resume' => '',
+            /* v10.129: پارامترهای انتخاب و عملیات داخلِ checkpoint ذخیره می‌شوند
+               تا کارِ رهاشده بدونِ انتخابِ دوباره از همان فهرست ادامه یابد. */
+            'pane' => 'settings', 'smenu' => 'ویرایش محصولات مقصد', 'resume' => 'bulk_edit=1&resume=1',
             'stat' => function (array $p): array {
                 return ['ویرایش‌شده' => (int)($p['edited'] ?? 0), 'ناموفق' => (int)($p['failed'] ?? 0)];
             },
@@ -21109,6 +21351,24 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
     $base = trim((string)($def['resume'] ?? ''));
     if ($base === '') return '';
     switch ($key) {
+        case 'manual_sync':
+            $pk = trim((string)($p['profile_key'] ?? ''));
+            if ($pk === '') return '';
+            return $base . '&profile=' . rawurlencode($pk) . '&resume=1';
+        case 'bsl_send':
+        case 'woo_send':
+            $qid = trim((string)($p['queue_id'] ?? ''));
+            if ($qid === '') return '';
+            return $base . '&from_file=1&queue_id=' . rawurlencode($qid)
+                . '&start_index=' . max(0, (int)($p['current'] ?? 0));
+        case 'matrix_build':
+            $profile = trim((string)($p['profile'] ?? 'all')) ?: 'all';
+            return $base . '&profile=' . rawurlencode($profile) . '&source=tasks_resume&resume=1';
+        case 'matrix_fix':
+            $scope = (string)($p['scope'] ?? 'all');
+            if (!in_array($scope, ['all', 'woo', 'bsl'], true)) $scope = 'all';
+            $delay = max(50, min(2000, (int)($p['delay_ms'] ?? 180)));
+            return $base . '&scope=' . $scope . '&delay_ms=' . $delay . '&source=tasks_resume&resume=1';
         /* v10.35 (۴۷ه): ادامهٔ همگام‌سازیِ دستی یعنی «همان پروفایل را دوباره
            از اول اجرا کن». بدونِ کلیدِ پروفایل، اجرای مجدد کلِ پروفایل‌ها را
            راه می‌انداخت — رفتاری که کاربر انتظارش را ندارد، پس دکمه اصلاً
@@ -21116,8 +21376,10 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
         case 'manual_sync':
             $pk = trim((string)($p['profile_key'] ?? ''));
             if ($pk === '') return '';
-            return $base . '&profile=' . rawurlencode($pk) . '&force=1&takeover=1';
+            return $base . '&profile=' . rawurlencode($pk) . '&force=1&resume=1';
         case 'extract':
+            $pk = trim((string)($p['profile_key'] ?? ''));
+            if ($pk !== '') return $base . '&profile_key=' . rawurlencode($pk);
             $u = trim((string)($p['url'] ?? ''));
             if ($u === '') return '';
             return $base . '&url=' . rawurlencode($u);
@@ -21134,6 +21396,10 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             if (!in_array($m, ['ai_text', 'master', 'quorum', 'fallback'], true)) $m = 'ai_text';   /* v10.71 (85) */
             $q = $base . '&mode=' . $m;
             if ((int)($p['product_id'] ?? 0) > 0) $q .= '&product_id=' . (int)$p['product_id'];
+            if ((int)($p['quorum'] ?? 0) > 0) $q .= '&quorum=' . (int)$p['quorum'];
+            if (!empty($p['all_vendors'])) $q .= '&all_vendors=1';
+            if (array_key_exists('use_learn', $p) && empty($p['use_learn'])) $q .= '&use_learn=0';
+            if ((int)($p['vendor_id'] ?? 0) > 0) $q .= '&vendor_id=' . (int)$p['vendor_id'];
             /* v10.126: &resume=1 — ادامه از چک‌پوینتِ فایلِ پیشرفت، نه از اول */
             return $q . '&resume=1';
         case 'agent':
@@ -21142,31 +21408,66 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             $q = $base . '&mode=' . rawurlencode((string)($p['mode'] ?? 'dry'))
                . '&task=' . rawurlencode($task);
             if (trim((string)($p['model'] ?? '')) !== '') $q .= '&model=' . rawurlencode((string)$p['model']);
-            return $q;
+            return $q . '&resume=1';
         /* v10.25 (۳۸د): ادامهٔ کشفِ سلکتور یعنی «همان صفحه را دوباره کاوش کن».
            بدونِ url هیچ معنایی ندارد، پس اگر فایلِ پیشرفت آدرس نداشت اصلاً
            دکمهٔ ادامه نشان داده نمی‌شود. */
         case 'selagent':
             $u = trim((string)($p['url'] ?? ''));
-            if ($u === '') return '';
-            $q = $base . '&kind=' . (((string)($p['kind'] ?? 'list')) === 'detail' ? 'detail' : 'list')
-               . '&url=' . rawurlencode($u);
+            $lu = trim((string)($p['list_url'] ?? ''));
+            if ($u === '' && $lu === '') return '';
+            $q = $base . '&kind=' . (((string)($p['kind'] ?? 'list')) === 'detail' ? 'detail' : 'list');
+            if ($u !== '') $q .= '&url=' . rawurlencode($u);
             if (trim((string)($p['model'] ?? '')) !== '') $q .= '&model=' . rawurlencode((string)$p['model']);
-            return $q;
+            if (trim((string)($p['pk'] ?? '')) !== '') $q .= '&pk=' . rawurlencode((string)$p['pk']);
+            if ($lu !== '') $q .= '&list_url=' . rawurlencode($lu);
+            return $q . '&resume=1';
+        case 'ai_test':
+            $args = is_array($p['args'] ?? null) ? $p['args'] : [];
+            /* ai_test_start روی state.running قدیمی «busy» برمی‌گرداند؛
+               unstick همان checkpoint نتایج ذخیره‌شده را نگه می‌دارد و فقط
+               مدل‌های تست‌نشده را ادامه می‌دهد. */
+            $q = 'ai_test_unstick=1&force=1';
+            $vals = ['per_provider' => (int)($args['per'] ?? $p['per_provider'] ?? 50),
+                     'msg' => (string)($args['msg'] ?? 'سلام'),
+                     'cat' => (string)($args['cat'] ?? 'ادو پرفیوم'),
+                     'delay' => (int)($args['delay'] ?? $p['delay_ms'] ?? 120),
+                     'conc' => (int)($args['conc'] ?? $p['concurrency'] ?? 4),
+                     'nonchat' => !empty($args['nonchat']) ? '1' : '0'];
+            foreach ($vals as $k => $v) $q .= '&' . $k . '=' . rawurlencode((string)$v);
+            return $q . '&resume=1';
         case 'recon':
             $t = (string)($p['target'] ?? '');
             if ($t !== 'woo' && $t !== 'bsl') return '';
             $q = $base . '&target=' . $t;
+            if (!empty($p['apply'])) $q .= '&apply=1';
+            if ((string)($p['mode'] ?? '') !== '') $q .= '&mode=' . rawurlencode((string)$p['mode']);
+            if (array_key_exists('fix_price', $p) && empty($p['fix_price'])) $q .= '&fix_price=0';
             if (!empty($p['all_profiles'])) $q .= '&all_profiles=1';
-            /* اعمالِ تغییرات هرگز خودکار تکرار نمی‌شود — فقط گزارش */
-            /* v10.126: &resume=1 — ادامهٔ واکشیِ مقصد از صفحهٔ قطع‌شده */
+            if (!empty($p['all_vendors'])) $q .= '&all_vendors=1';
+            if ((int)($p['vendor_id'] ?? 0) > 0) $q .= '&vendor_id=' . (int)$p['vendor_id'];
+            /* v10.129: گزارش و اعمال هر دو از cursor/checkpoint ادامه می‌یابند. */
             return $q . '&resume=1';
         case 'suffix':
             $t = (string)($p['target'] ?? '');
-            if ($t !== 'woo' && $t !== 'bsl') return '';
-            return $base . '&target=' . $t;
+            if (!in_array($t, ['woo', 'bsl', 'summary', 'all'], true)) return '';
+            $q = $base . '&target=' . $t . '&resume=1';
+            if (!empty($p['notify'])) $q .= '&notify=1';
+            return $q;
         case 'photofix':
-            return $base . (!empty($p['dry']) ? '&dry=1' : '');
+            $q = $base . (!empty($p['dry']) ? '&dry=1' : '') . '&resume=1';
+            $profile = trim((string)($p['profile'] ?? ''));
+            if ($profile !== '') $q .= '&profile=' . rawurlencode($profile);
+            if (!empty($p['notify'])) $q .= '&notify=1';
+            return $q;
+        case 'aicontent':
+            $limit = max(1, min(80, (int)($p['limit'] ?? 0)));
+            return $base . ($limit > 0 ? '&limit=' . $limit : '') . '&resume=1';
+        case 'bulkedit':
+            $cp = is_array($p['checkpoint'] ?? null) ? $p['checkpoint'] : [];
+            if (!is_array($cp['ids'] ?? null) || !is_array($cp['ops'] ?? null)
+                || trim((string)($cp['target'] ?? '')) === '') return '';
+            return $base;
         default:
             return $base;
     }
@@ -21177,9 +21478,13 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
  *  می‌رود) مقدارِ -1 برمی‌گردد یعنی «نامعلوم» — نوارِ پیشرفت آن‌وقت
  *  حالتِ نامعین می‌گیرد به‌جای اینکه دروغِ ۰٪ نشان بدهد. */
 function tasksPercent(array $p): int {
-    $total = (int)($p['total'] ?? 0);
+    /* ماتریس درصد را مستقیماً ثبت می‌کند و هنوز در همهٔ فازها total ندارد. */
+    if (isset($p['pct']) && is_numeric($p['pct'])) {
+        return max(0, min(100, (int)round((float)$p['pct'])));
+    }
+    $total = (int)($p['total'] ?? $p['cur_total'] ?? 0);
     if ($total <= 0) return -1;
-    $cur = (int)($p['current'] ?? $p['processed'] ?? $p['tested'] ?? $p['checked'] ?? 0);
+    $cur = (int)($p['current'] ?? $p['processed'] ?? $p['tested'] ?? $p['checked'] ?? $p['cur'] ?? 0);
     if ($cur < 0) $cur = 0;
     if ($cur > $total) $cur = $total;
     return (int)floor($cur * 100 / $total);
@@ -21236,8 +21541,20 @@ function tasksState(array $p, int $now): string {
         // v10.36 (۴۹الف): ضربانِ واقعی، نه سنِ کار
         $ts = tasksHeartbeat($p);
         if ($ts > 0 && ($now - $ts) > TASKS_STALE_SEC) return 'stale';
+        /* resume endpointها ممکن است stale/stopped قدیمی را با merge روی
+           فایل نگه دارند؛ running تازه و ضربان تازه حقیقتِ فعلی است و نباید
+           دکمهٔ ادامه آن را دوباره به‌عنوان کارِ رهاشده انتخاب کند. */
         return 'running';
     }
+    /* عملیاتِ متوقف/خطادار با checkpoint عمداً done=true هم دارند؛ stale
+       باید برچسبِ اصلی باشد تا نگهبان کران آن را در نوبت بعد resume کند.
+       ai_test نیز برای آزادکردنِ state قدیمی از stalled استفاده می‌کند و
+       همگام‌سازیِ دستی cancelled را ثبت می‌کند؛ هر دو همان کارِ ناقص‌اند. */
+    if (!empty($p['stale']) || !empty($p['stalled']) || !empty($p['stopped']) || !empty($p['cancelled']))
+        return 'stale';
+    /* بعضی workerها هنگام خاتمهٔ ناگهانی running=false می‌نویسند ولی done
+       را false نگه می‌دارند؛ وجودِ checkpoint یعنی اجرای ناقص، نه idle/done. */
+    if (!$done && is_array($p['checkpoint'] ?? null) && !empty($p['checkpoint'])) return 'stale';
     if ($done || (int)($p['started_at'] ?? 0) > 0) return 'done';
     return 'idle';
 }
@@ -21312,6 +21629,22 @@ function tasksBuildRow(string $key, array $def, int $now): array {
     $file = (string)$def['file'];
     $p    = is_file($file) ? (array)json_decode((string)@file_get_contents($file), true) : [];
     $st   = tasksState($p, $now);
+    /* heartbeat کهنه نباید worker دارای flock را stale نشان دهد؛ همین گارد
+       مرکزی، UI و هر دو مسیر resume/clear را از اجرای موازی بازمی‌دارد. */
+    if ($st === 'stale') {
+        $taskLocks = [
+            'manual_sync' => MANUAL_SYNC_LOCK_FILE, 'bsl_send' => __DIR__ . '/bsl_backend.lock',
+            'woo_send' => __DIR__ . '/woo_backend.lock', 'extract' => EXTRACT_LOCK_FILE,
+            'dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE, 'catfix' => CATFIX_LOCK_FILE,
+            'selagent' => SELAGENT_LOCK_FILE, 'ai_test' => AI_TEST_LOCK_FILE,
+            'aicontent' => AICONTENT_LOCK_FILE, 'recon' => __DIR__ . '/recon.lock',
+            'suffix' => __DIR__ . '/suffix.lock', 'bulkedit' => __DIR__ . '/bulkedit.lock',
+            'photofix' => __DIR__ . '/photofix.lock', 'matrix_build' => SYNC_MATRIX_LOCK_FILE,
+            'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE,
+        ];
+        $taskLock = (string)($taskLocks[$key] ?? '');
+        if ($taskLock !== '' && is_file($taskLock) && !tasksResumeLockDead($taskLock)) $st = 'running';
+    }
     $ts   = tasksHeartbeat($p);   // v10.36 (۴۹الف): همان ضربانی که وضعیت با آن سنجیده شد
     $stat = [];
     foreach (($def['stat'])($p) as $k => $v) if ((int)$v !== 0) $stat[] = ['k' => $k, 'v' => (int)$v];
@@ -21345,8 +21678,8 @@ function tasksBuildRow(string $key, array $def, int $now): array {
         'resumable' => $resumeUrl !== '',
         'state'     => $st,
         'percent'   => $st === 'running' || $st === 'stale' ? tasksPercent($p) : ($st === 'done' ? 100 : 0),
-        'total'     => (int)($p['total'] ?? 0),
-        'current'   => (int)($p['current'] ?? $p['processed'] ?? $p['tested'] ?? 0),
+        'total'     => (int)($p['total'] ?? $p['cur_total'] ?? 0),
+        'current'   => (int)($p['current'] ?? $p['processed'] ?? $p['tested'] ?? $p['cur'] ?? 0),
         'phase'     => (string)($p['phase'] ?? ''),
         'last'      => (string)($p['last_title'] ?? $p['summary'] ?? ''),
         'started'   => (int)($p['started_at'] ?? 0),
@@ -21359,6 +21692,17 @@ function tasksBuildRow(string $key, array $def, int $now): array {
         'stats'     => $stat,
         'log'       => $log,
     ];
+}
+
+/** آیا قفلِ موتور واقعاً مرده است؟ unlink روی قفلِ در دستِ پردازه ممنوع است. */
+function tasksResumeLockDead(string $file): bool {
+    if (!is_file($file)) return true;
+    $fp = @fopen($file, 'c');
+    if (!$fp) return false;
+    $dead = @flock($fp, LOCK_EX | LOCK_NB);
+    if ($dead) @flock($fp, LOCK_UN);
+    @fclose($fp);
+    return $dead;
 }
 
 /**
@@ -21380,30 +21724,86 @@ function tasksResumeOne(string $key): array {
     if ($url === '')
         return ['ok' => false, 'error' => 'برای این کار «ادامه» تعریف نشده — از تبِ خودش دوباره شروعش کنید'];
 
-    /* قفلِ جامانده کنار می‌رود، وگرنه شروعِ تازه پشتِ همان قفل می‌ماند و
-       کاربر پیامِ «در حال اجراست» می‌گیرد. فایلِ پیشرفت فقط برای کارهایِ
-       چک‌پوینت‌دار (v10.126: dedup/catfix/recon) حفظ می‌شود — اندپوینتِ
-       خودشان با &resume=1 از داخلِ همان فایل ادامه می‌دهد؛ بقیهٔ کارها
-       مثل قبل از حالتِ تازه شروع می‌شوند. */
-    $locks = ['dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE, 'catfix' => CATFIX_LOCK_FILE,
-              'selagent' => SELAGENT_LOCK_FILE];   // v10.25 (۳۸د)
-    $cpKeep = ['dedup' => 1, 'catfix' => 1, 'recon' => 1];   // v10.126
-    if ($row['state'] === 'stale') {
-        if (isset($locks[$key])) @unlink($locks[$key]);
-        if (!isset($cpKeep[$key])) @unlink((string)$def['file']);
+    /* v10.129: هر موتور قفل و checkpoint خودش را دارد. قفل مرده فقط وقتی
+       stale تشخیص داده شده پاک می‌شود؛ فایل پیشرفت عمداً نگه داشته می‌شود
+       تا پارامترها و نقطهٔ امنِ اجرای قبلی از بین نرود. */
+    $locks = [
+        'bsl_send' => __DIR__ . '/bsl_backend.lock', 'woo_send' => __DIR__ . '/woo_backend.lock',
+        'extract' => EXTRACT_LOCK_FILE, 'dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE,
+        'catfix' => CATFIX_LOCK_FILE, 'selagent' => SELAGENT_LOCK_FILE,
+        'manual_sync' => MANUAL_SYNC_LOCK_FILE, 'aicontent' => AICONTENT_LOCK_FILE,
+        'ai_test' => AI_TEST_LOCK_FILE, 'recon' => __DIR__ . '/recon.lock', 'suffix' => __DIR__ . '/suffix.lock',
+        'bulkedit' => __DIR__ . '/bulkedit.lock', 'photofix' => __DIR__ . '/photofix.lock',
+        'matrix_build' => SYNC_MATRIX_LOCK_FILE, 'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE,
+    ];
+    if ($row['state'] === 'stale' && isset($locks[$key]) && is_file($locks[$key])) {
+        /* stale heartbeat به‌تنهایی دلیلِ کشتنِ worker نیست؛ اگر flock
+           هنوز دستِ پردازه‌ای باشد، ادامهٔ دیگری نباید موازی شود. */
+        if (!tasksResumeLockDead($locks[$key]))
+            return ['ok' => false, 'error' => 'این کار هنوز قفلِ فعال دارد — اجرای موازی ساخته نشد'];
+        @unlink($locks[$key]);
     }
-    /* سیگنالِ توقفِ جامانده هم برداشته می‌شود؛ وگرنه کارِ تازه در اولین
-       بررسی فوراً خودش را متوقف می‌کند. */
-    $stopMap = ['bsl_stop' => BSL_STOP_FILE, 'woo_stop' => WOO_STOP_FILE, 'extract_stop' => EXTRACT_STOP_FILE,
-                'dedup_stop' => DEDUP_STOP_FILE, 'agent_stop' => AGENT_STOP_FILE,
-                'ai_test_stop' => AI_TEST_STOP_FILE, 'catfix_stop' => CATFIX_STOP_FILE,
-                'selagent_stop' => SELAGENT_STOP_FILE,    // v10.25 (۳۸د)
-                'manual_sync_stop' => MANUAL_SYNC_STOP_FILE];   // v10.35 (۴۷ه)
+
+    $stopMap = [
+        'bsl_stop' => BSL_STOP_FILE, 'woo_stop' => WOO_STOP_FILE, 'extract_stop' => EXTRACT_STOP_FILE,
+        'dedup_stop' => DEDUP_STOP_FILE, 'agent_stop' => AGENT_STOP_FILE, 'ai_test_stop' => AI_TEST_STOP_FILE,
+        'catfix_stop' => CATFIX_STOP_FILE, 'selagent_stop' => SELAGENT_STOP_FILE,
+        'manual_sync_stop' => MANUAL_SYNC_STOP_FILE, 'aicontent_stop' => AICONTENT_STOP_FILE,
+        'sync_matrix_fix_stop' => SYNC_MATRIX_FIX_STOP_FILE,
+    ];
     $sf = $stopMap[(string)($def['stop'] ?? '')] ?? '';
     if ($sf !== '') @unlink($sf);
 
-    $started = fireAndForget($url, 2500);
-    return ['ok' => true, 'resumed' => $key, 'url' => $url, 'dispatched' => $started];
+    /* صف‌های ارسال تنها از مسیرِ checkpoint-aware خودشان ادامه می‌یابند؛
+       tasksResumeOne هرگز یک worker عمومیِ موازی برایشان شلیک نمی‌کند. */
+    if ($key === 'bsl_send' || $key === 'woo_send') {
+        $which = $key === 'bsl_send' ? 'bsl' : 'woo';
+        if (!empty($GLOBALS['_queueResumeFired'][$which])) {
+            return ['ok' => true, 'resumed' => $key, 'already_dispatched' => true];
+        }
+        $rec = queueStallRecover($which, max(120, (int)(loadConnections()['stall_after'] ?? 300)), false, 2500);
+        if (!empty($rec['resumed'])) {
+            return ['ok' => true, 'resumed' => $key, 'url' => $url,
+                'dispatched' => true, 'resume_from' => (int)($rec['resume_from'] ?? 0)];
+        }
+        return ['ok' => false, 'error' => !empty($rec['deferred'])
+            ? 'ادامهٔ صف به‌تازگی شلیک شده و در حال اجراست'
+            : 'صفِ قابل‌ادامه‌ای برای این ردیف پیدا نشد'];
+    }
+
+    $post = null;
+    if ($key === 'extract') {
+        $pk = trim((string)($row['profile_key'] ?? ''));
+        if ($pk === '') {
+            $p = is_file((string)$def['file'])
+                ? (array)json_decode((string)@file_get_contents((string)$def['file']), true) : [];
+            $pk = trim((string)($p['profile_key'] ?? ''));
+            if ($pk === '' && trim((string)($p['url'] ?? '')) !== '') $pk = profileKey((string)$p['url']);
+        }
+        if ($pk === '') return ['ok' => false, 'error' => 'کلید پروفایل استخراج در checkpoint نیست'];
+        $prep = extractResumePrepare($pk, loadConnections());
+        if (empty($prep['ok'])) return ['ok' => false, 'error' => 'checkpoint استخراج پیدا نشد'];
+        $url = 'action=backend_extract&profile_key=' . rawurlencode($pk)
+             . '&phase=' . rawurlencode((string)$prep['phase']);
+    } elseif ($key === 'bulkedit') {
+        $p = is_file((string)$def['file'])
+            ? (array)json_decode((string)@file_get_contents((string)$def['file']), true) : [];
+        $cp = is_array($p['checkpoint'] ?? null) ? $p['checkpoint'] : [];
+        if (!is_array($cp['ids'] ?? null) || !is_array($cp['ops'] ?? null)
+            || !in_array((string)($cp['target'] ?? ''), ['woo', 'bsl'], true)) {
+            return ['ok' => false, 'error' => 'checkpoint ویرایش گروهی ناقص است'];
+        }
+        $post = [
+            'target' => (string)$cp['target'], 'ids' => json_encode(array_values($cp['ids']), JSON_UNESCAPED_UNICODE),
+            'ops' => json_encode($cp['ops'], JSON_UNESCAPED_UNICODE),
+            'dry' => !empty($cp['dry']) ? '1' : '0', 'notify' => !empty($cp['notify']) ? '1' : '0',
+        ];
+    }
+
+    $started = fireAndForget($url, 2500, $post);
+    return ['ok' => $started, 'resumed' => $key, 'url' => $url,
+            'dispatched' => $started,
+            'error' => $started ? '' : 'worker برای ادامه پاسخ نداد'];
 }
 
 /* ═══════════ v10.39 (۵۲): ادامهٔ خودکارِ کارهای رهاشده ═══════════
@@ -21472,8 +21872,9 @@ function autoResumeMark(string $key, int $now): void {
 function taskProgressSig(array $p): string {
     /* فقط مقادیرِ پیشرفت؛ timestamp (ts/at/started_at) عمداً نیست وگرنه
        هر تلاش «جدید» به نظر می‌رسید و سقف هیچ‌وقت عمل نمی‌کرد. */
-    $keys = ['phase', 'current', 'total', 'processed', 'tested', 'checked', 'step',
+    $keys = ['phase', 'pct', 'current', 'total', 'processed', 'tested', 'checked', 'cur', 'cur_total', 'step',
              'calls', 'fixed', 'filled', 'edited', 'sent', 'updated', 'groups', 'dups',
+             'ok_n', 'fail_n', 'skip_n', 'sent_n', 'del_n', 'price_n',
              'deleted', 'diff', 'extra', 'matched', 'repriced', 'failed', 'no_ai',
              'no_cat', 'asked', 'skip_same', 'skip_tried', 'found', 'total_log_count',
              'cur', 'cur_total', 'detail_current', 'page', 'scanned', 'chunks'];
@@ -21579,7 +21980,8 @@ if (isset($_GET['tasks_stop'])) {
             'catfix_stop' => CATFIX_STOP_FILE,                 // v10.23 (۳۶د)
             'selagent_stop' => SELAGENT_STOP_FILE,             // v10.25 (۳۸د)
             'manual_sync_stop' => MANUAL_SYNC_STOP_FILE,      // v10.35 (۴۷ه)
-            'aicontent_stop' => AICONTENT_STOP_FILE];   // v10.97
+            'aicontent_stop' => AICONTENT_STOP_FILE,              // v10.97
+            'sync_matrix_fix_stop' => SYNC_MATRIX_FIX_STOP_FILE]; // v10.129
     $sf = $map[(string)$reg[$key]['stop']] ?? '';
     if ($sf === '') { echo json_encode(['ok' => false, 'error' => 'این کار توقفِ دستی ندارد'], JSON_UNESCAPED_UNICODE); exit; }
     @file_put_contents($sf, json_encode(['at' => time()]));
@@ -21611,29 +22013,41 @@ if (isset($_GET['tasks_resume'])) {
  *
  * وقتی هاست یک بار ری‌استارت می‌شود، معمولاً چند کار با هم می‌میرند. تا
  * اینجا کاربر باید تک‌تک روی «▶ ادامه» می‌زد. حالا یک دکمه همه را برمی‌گرداند،
- * و مهم‌تر: **به ترتیبِ اولویتی که خودش چیده** — چون روی هاستِ اشتراکی
- * راه‌انداختنِ همزمانِ چند کارِ سنگین یعنی همه با هم کند شوند، پس بینشان
- * فاصله می‌اندازیم و کارِ بالاترِ صف اول جان می‌گیرد.
+ * و مهم‌تر: **به ترتیبِ اولویتی که خودش چیده** — چون پاسخِ workerها
+ * زودهنگام است، فقط یک کار در هر dispatch آغاز می‌شود و بقیه بعد از آزادشدنِ
+ * کارِ بالاتر در کران بعدی جان می‌گیرند؛ فاصلهٔ ثابت جایِ ترتیب را نمی‌گیرد.
  */
 if (isset($_GET['tasks_resume_all'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $now  = time();
     $only = (string)($_GET['only'] ?? 'stale');   // stale | stale_done
     $rows = tasksRowsOrdered($now);
-    $done = []; $skipped = [];
+    $done = []; $skipped = []; $dispatched = false;
     foreach ($rows as $r) {
         $st = (string)$r['state'];
         $want = $only === 'stale_done' ? in_array($st, ['stale', 'done'], true) : ($st === 'stale');
         if (!$want) continue;
         if (empty($r['resumable'])) { $skipped[] = ['key' => $r['key'], 'why' => 'ادامه ندارد']; continue; }
+        if ($dispatched) {
+            /* worker قبلی با پاسخِ زودهنگام هنوز ممکن است زنده باشد؛
+               این ردیف عمداً در checkpoint خودش می‌ماند تا کران بعدی، پس
+               از آزادشدنِ قبلی، آن را به همان ترتیب بردارد. */
+            $skipped[] = ['key' => $r['key'], 'why' => 'پس از پایانِ کارِ اولویتِ بالاتر، در کران بعدی ادامه می‌یابد'];
+            continue;
+        }
         $one = tasksResumeOne((string)$r['key']);
-        if (!empty($one['ok'])) $done[] = ['key' => $r['key'], 'title' => $r['title'], 'rank' => $r['rank']];
-        else $skipped[] = ['key' => $r['key'], 'why' => (string)($one['error'] ?? '')];
-        /* فاصله تا چند کارِ سنگین همزمان روی هاستِ اشتراکی نیفتند */
-        if (count($done) > 0) usleep(400000);
+        if (!empty($one['ok'])) {
+            $done[] = ['key' => $r['key'], 'title' => $r['title'], 'rank' => $r['rank']];
+            $dispatched = true;
+        } else {
+            $skipped[] = ['key' => $r['key'], 'why' => (string)($one['error'] ?? '')];
+            /* قفلِ فعال یا dispatch نامطمئن: به کارِ بعدی نرو تا overlap نسازیم. */
+            if (strpos((string)($one['error'] ?? ''), 'فعال') !== false
+                || strpos((string)($one['error'] ?? ''), 'پاسخ نداد') !== false) $dispatched = true;
+        }
     }
     echo json_encode(['ok' => true, 'resumed' => $done, 'skipped' => $skipped,
-        'count' => count($done)], JSON_UNESCAPED_UNICODE);
+        'count' => count($done), 'sequential' => true], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -21676,8 +22090,19 @@ if (isset($_GET['tasks_clear'])) {
     /* کارِ رهاشده ممکن است قفلش هم جا مانده باشد */
     $locks = ['dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE,
               'catfix' => CATFIX_LOCK_FILE,                      // v10.23 (۳۶د)
-              'selagent' => SELAGENT_LOCK_FILE];                 // v10.25 (۳۸د)
-    if (isset($locks[$key])) @unlink($locks[$key]);
+              'selagent' => SELAGENT_LOCK_FILE,                   // v10.25
+              'extract' => EXTRACT_LOCK_FILE, 'manual_sync' => MANUAL_SYNC_LOCK_FILE,
+              'aicontent' => AICONTENT_LOCK_FILE, 'ai_test' => AI_TEST_LOCK_FILE,
+              'recon' => __DIR__ . '/recon.lock',
+              'suffix' => __DIR__ . '/suffix.lock', 'bulkedit' => __DIR__ . '/bulkedit.lock',
+              'photofix' => __DIR__ . '/photofix.lock', 'matrix_build' => SYNC_MATRIX_LOCK_FILE,
+              'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE];        // v10.129 (۳۸د)
+    if (isset($locks[$key]) && is_file($locks[$key])) {
+        if (!tasksResumeLockDead($locks[$key])) {
+            echo json_encode(['ok' => false, 'error' => 'قفلِ فعال وجود دارد — فایلِ پیشرفت پاک نشد'], JSON_UNESCAPED_UNICODE); exit;
+        }
+        @unlink($locks[$key]);
+    }
     @unlink((string)$reg[$key]['file']);
     echo json_encode(['ok' => true, 'cleared' => 1], JSON_UNESCAPED_UNICODE);
     exit;
@@ -21957,14 +22382,36 @@ if (isset($_GET['agent_start'])) {
     @set_time_limit(0); @ignore_user_abort(true);
     agentClearStop();
     $cn = loadConnections();
-
-    @unlink(AGENT_PROGRESS_FILE);
-    @unlink(AGENT_RESULT_FILE);
+    /* v10.129: ادامهٔ ایجنت فقط با همان دستور/حالت/مدل و تاریخچهٔ API قبلی
+       پذیرفته می‌شود. تاریخچهٔ پیام‌ها و ابزارهای انجام‌شده در checkpoint
+       است؛ بنابراین resume یک اجرای تازه و بی‌حافظه نیست. */
+    $agentCp = null;
+    if (!empty($_GET['resume']) && is_file(AGENT_PROGRESS_FILE)) {
+        $oldAgent = json_decode((string)@file_get_contents(AGENT_PROGRESS_FILE), true);
+        $oldTask = is_array($oldAgent) ? trim((string)($oldAgent['task'] ?? '')) : '';
+        $oldMode = is_array($oldAgent) ? (string)($oldAgent['mode'] ?? '') : '';
+        $oldModel = is_array($oldAgent) ? trim((string)($oldAgent['model'] ?? '')) : '';
+        if (is_array($oldAgent) && $oldTask === $task && $oldMode === $mode && $oldModel === $model
+            && is_array($oldAgent['checkpoint']['messages'] ?? null)
+            && count($oldAgent['checkpoint']['messages']) >= 2) {
+            $agentCp = $oldAgent['checkpoint'];
+        }
+    }
+    if ($agentCp === null) {
+        @unlink(AGENT_PROGRESS_FILE);
+        @unlink(AGENT_RESULT_FILE);
+    }
     agentProgress(['running' => true, 'done' => false, 'mode' => $mode, 'task' => $task,
-        'model' => $model,
-        'started_at' => time(), 'step' => 0, 'calls' => 0, 'changes' => 0, 'phase' => 'start',
-        'log_add' => ['🚀 شروعِ ایجنت — ' . agentModeLabel($mode)
-                      . ($model !== '' ? ' — مدلِ انتخابی: ' . $model : ' — مدلِ پیش‌فرضِ اتصالات')]]);
+        'model' => $model, 'resume' => $agentCp !== null,
+        'started_at' => (int)($agentCp['started_at'] ?? time()),
+        'step' => (int)($agentCp['last_step'] ?? 0), 'calls' => (int)($agentCp['calls'] ?? 0),
+        'changes' => count((array)($agentCp['changes'] ?? [])),
+        'phase' => $agentCp !== null ? 'resume' : 'start',
+        'checkpoint' => $agentCp,
+        'log_add' => [$agentCp !== null
+            ? '↻ ادامهٔ ایجنت از checkpoint — تاریخچهٔ گفتگو و ابزارها حفظ شد'
+            : ('🚀 شروعِ ایجنت — ' . agentModeLabel($mode)
+               . ($model !== '' ? ' — مدلِ انتخابی: ' . $model : ' — مدلِ پیش‌فرضِ اتصالات'))]]);
 
     $early = json_encode(['ok' => true, 'started' => true, 'mode' => $mode], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -21978,18 +22425,26 @@ if (isset($_GET['agent_start'])) {
     });
 
     try {
-        $rep = agentRun($cn, $task, $mode, $model);
+        $rep = agentRun($cn, $task, $mode, $model, $agentCp);
     } catch (Throwable $e) {
-        agentProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        $agentErrState = is_file(AGENT_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(AGENT_PROGRESS_FILE), true) : [];
+        agentProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($agentErrState['checkpoint'] ?? null) ? $agentErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         agentClearStop();
         exit;
     }
     @file_put_contents(AGENT_RESULT_FILE, json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $stopped = agentStopRequested();
+    $agentLastState = is_file(AGENT_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(AGENT_PROGRESS_FILE), true) : [];
+    $agentKeepCp = $stopped || !empty($rep['stopped_by']) || empty($rep['ok']);
     agentClearStop();
     agentProgress(['running' => false, 'done' => true, 'stopped' => $stopped,
-        'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'stale' => $agentKeepCp, 'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'checkpoint' => $agentKeepCp && is_array($agentLastState['checkpoint'] ?? null)
+            ? $agentLastState['checkpoint'] : null,
         'calls' => $rep['calls'] ?? 0, 'changes' => count($rep['changes'] ?? []),
         'log_add' => [empty($rep['ok'])
             ? ('❌ ' . ($rep['error'] ?? 'ناموفق'))
@@ -22074,14 +22529,38 @@ if (isset($_GET['selagent_start'])) {
     }
     @set_time_limit(0); @ignore_user_abort(true);
     selagentClearStop();
-    @unlink(SELAGENT_PROGRESS_FILE);
-    @unlink(SELAGENT_RESULT_FILE);
+    /* v10.129: تاریخچهٔ مدل، سلکتورهای تأییدشده و شمارنده‌های کاوش در
+       checkpoint می‌مانند. برای صفحهٔ جزئیات که URL نمونه‌اش را خودِ ایجنت
+       می‌سازد، pk/list_url شناسهٔ اجرای قبلی را تثبیت می‌کنند. */
+    $selAgentCp = null;
+    if (!empty($_GET['resume']) && is_file(SELAGENT_PROGRESS_FILE)) {
+        $oldSel = json_decode((string)@file_get_contents(SELAGENT_PROGRESS_FILE), true);
+        $sameUrl = $saUrl === '' || (string)($oldSel['url'] ?? '') === $saUrl
+            || (string)($oldSel['checkpoint']['effective_url'] ?? '') === $saUrl;
+        if (is_array($oldSel) && $sameUrl && (string)($oldSel['kind'] ?? '') === $saKind
+            && (string)($oldSel['pk'] ?? '') === $saPk
+            && (string)($oldSel['list_url'] ?? '') === $saList
+            && trim((string)($oldSel['model'] ?? '')) === $saModel
+            && is_array($oldSel['checkpoint']['messages'] ?? null)
+            && count($oldSel['checkpoint']['messages']) >= 2) {
+            $selAgentCp = $oldSel['checkpoint'];
+        }
+    }
+    if ($selAgentCp === null) {
+        @unlink(SELAGENT_PROGRESS_FILE);
+        @unlink(SELAGENT_RESULT_FILE);
+    }
     selagentProgress(['running' => true, 'done' => false, 'kind' => $saKind, 'url' => $saUrl,
-        'model' => $saModel, 'started_at' => time(), 'step' => 0, 'calls' => 0,
-        'probes' => 0, 'confirmed' => 0, 'phase' => 'start',
-        'log_add' => ['🚀 کشفِ سلکتورهای ' . ($saKind === 'detail' ? 'صفحهٔ جزئیات' : 'صفحهٔ فهرست')
-                      . ' — ' . ($saUrl !== '' ? $saUrl : ('صفحهٔ نمونه از ' . $saList))
-                      . ($saModel !== '' ? (' — مدل: ' . $saModel) : ' — مدلِ پیش‌فرضِ اتصالات')]]);
+        'pk' => $saPk, 'list_url' => $saList, 'model' => $saModel, 'resume' => $selAgentCp !== null,
+        'started_at' => (int)($selAgentCp['started_at'] ?? time()),
+        'step' => (int)($selAgentCp['last_step'] ?? 0), 'calls' => (int)($selAgentCp['calls'] ?? 0),
+        'probes' => (int)($selAgentCp['probes'] ?? 0), 'confirmed' => count((array)($selAgentCp['confirmed'] ?? [])),
+        'phase' => $selAgentCp !== null ? 'resume' : 'start', 'checkpoint' => $selAgentCp,
+        'log_add' => [$selAgentCp !== null
+            ? '↻ ادامهٔ کشف سلکتور از checkpoint — گفتگو و حدس‌های تأییدشده حفظ شد'
+            : ('🚀 کشفِ سلکتورهای ' . ($saKind === 'detail' ? 'صفحهٔ جزئیات' : 'صفحهٔ فهرست')
+               . ' — ' . ($saUrl !== '' ? $saUrl : ('صفحهٔ نمونه از ' . $saList))
+               . ($saModel !== '' ? (' — مدل: ' . $saModel) : ' — مدلِ پیش‌فرضِ اتصالات'))]]);
 
     $saEarly = json_encode(['ok' => true, 'started' => true, 'kind' => $saKind], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -22095,19 +22574,27 @@ if (isset($_GET['selagent_start'])) {
     });
 
     try {
-        $saRep = selagentRun($saUrl, $saKind, $saModel, $saPk, $saList);
+        $saRep = selagentRun($saUrl, $saKind, $saModel, $saPk, $saList, $selAgentCp);
     } catch (Throwable $e) {
-        selagentProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        $selErrState = is_file(SELAGENT_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(SELAGENT_PROGRESS_FILE), true) : [];
+        selagentProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($selErrState['checkpoint'] ?? null) ? $selErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         selagentClearStop();
         exit;
     }
     @file_put_contents(SELAGENT_RESULT_FILE, json_encode($saRep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $saStopped = selagentStopRequested();
+    $selLastState = is_file(SELAGENT_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(SELAGENT_PROGRESS_FILE), true) : [];
+    $selKeepCp = $saStopped || !empty($saRep['stopped_by']) || empty($saRep['ok']);
     selagentClearStop();
     $saN = count((array)($saRep['selectors'] ?? []));
     selagentProgress(['running' => false, 'done' => true, 'stopped' => $saStopped,
-        'result_ok' => !empty($saRep['ok']), 'error' => $saRep['error'] ?? '',
+        'stale' => $selKeepCp, 'result_ok' => !empty($saRep['ok']), 'error' => $saRep['error'] ?? '',
+        'checkpoint' => $selKeepCp && is_array($selLastState['checkpoint'] ?? null)
+            ? $selLastState['checkpoint'] : null,
         'found' => $saN,
         'log_add' => [empty($saRep['ok'])
             ? ('❌ ' . ($saRep['error'] ?? 'ناموفق'))
@@ -22253,7 +22740,7 @@ if (isset($_GET['selagent_stop'])) {
 
 /**
  * v8.53: گزارش محصولات بر اساس پسوند پروفایل.
- * ?suffix_report=1&target=woo|bsl[&notify=1][&debug=1]  → شروع در پس‌زمینه
+ * ?suffix_report=1&target=woo|bsl[&notify=1]  → شروع در پس‌زمینه
  * ?suffix_status=1                             → وضعیت زنده
  * ?suffix_result=1                             → نتیجهٔ کامل
  */
@@ -22273,14 +22760,32 @@ if (isset($_GET['suffix_report'])) {
     }
     @set_time_limit(0); @ignore_user_abort(true);
     $notify = !empty($_GET['notify']);
-    $debug = !empty($_GET['debug']);
     $cn = loadConnections();
-
+    /* v10.129: صفحاتِ خوانده‌شدهٔ گزارش هم checkpoint دارند؛ در resume
+       همان صفحات دوباره از مقصد خوانده نمی‌شوند. */
+    $suffixCp = null;
+    if (!empty($_GET['resume']) && is_file(SUFFIX_PROGRESS_FILE)) {
+        $oldSuffix = json_decode((string)@file_get_contents(SUFFIX_PROGRESS_FILE), true);
+        $oldCp = is_array($oldSuffix['checkpoint'] ?? null) ? $oldSuffix['checkpoint'] : null;
+        if (is_array($oldCp) && (string)($oldCp['target'] ?? '') === $target
+            && (is_array($oldCp['rows'] ?? null)
+                || (($target === 'summary' || $target === 'all')
+                    && (is_array($oldCp['woo_rows'] ?? null) || is_array($oldCp['shops'] ?? null))))) {
+            $suffixCp = $oldCp;
+            $notify = !empty($oldCp['notify']) || $notify;
+        }
+    }
+    if ($suffixCp === null && ($target === 'summary' || $target === 'all')) {
+        $suffixCp = ['target' => $target, 'phase' => 'start', 'woo_rows' => [], 'shops' => [],
+            'started_at' => time(), 'notify' => $notify];
+    }
     @unlink(SUFFIX_PROGRESS_FILE);
     suffixProgress(['running' => true, 'done' => false, 'target' => $target,
-        'debug' => $debug, 'started_at' => time(), 'log_add' => ['🔍 شروع گزارش — '
-        . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
-        . ($debug ? ' · 🐞 دیباگ روشن' : '')]]);
+        'notify' => $notify, 'started_at' => ($suffixCp['started_at'] ?? time()),
+        'phase' => ($suffixCp !== null ? 'resume' : 'start'),
+        'checkpoint' => $suffixCp !== null ? $suffixCp : ['target' => $target, 'phase' => 'start', 'page' => 0, 'rows' => [], 'notify' => $notify, 'started_at' => time()],
+        'log_add' => ['🔍 ' . ($suffixCp !== null ? 'ادامه گزارش — ' : 'شروع گزارش — ')
+        . ($target === 'woo' ? 'ووکامرس' : ($target === 'bsl' ? 'باسلام' : 'خلاصهٔ پروفایل‌ها'))]]);
 
     $early = json_encode(['ok' => true, 'started' => true, 'target' => $target], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -22295,13 +22800,16 @@ if (isset($_GET['suffix_report'])) {
 
     try {
         if ($target === 'summary' || $target === 'all') {
-            $rep = profileStatsSummary($cn);
+            $rep = profileStatsSummary($cn, $suffixCp);
         } else {
-            $rep = suffixReport($cn, $target, $debug);
+            $rep = suffixReport($cn, $target, $suffixCp);
         }
     } catch (Throwable $e) {
-        suffixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        $suffixErrState = is_file(SUFFIX_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(SUFFIX_PROGRESS_FILE), true) : [];
+        suffixProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($suffixErrState['checkpoint'] ?? null) ? $suffixErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         exit;
     }
     if ($notify && !empty($rep['ok'])) {
@@ -22318,8 +22826,13 @@ if (isset($_GET['suffix_report'])) {
     }
     @file_put_contents(__DIR__ . '/suffix_result.json',
         json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
-    suffixProgress(['running' => false, 'done' => true,
+    $suffixLastState = is_file(SUFFIX_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(SUFFIX_PROGRESS_FILE), true) : [];
+    $suffixKeepCp = empty($rep['ok']);
+    suffixProgress(['running' => false, 'done' => true, 'stale' => $suffixKeepCp,
         'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'checkpoint' => $suffixKeepCp && is_array($suffixLastState['checkpoint'] ?? null)
+            ? $suffixLastState['checkpoint'] : null,
         'log_add' => [empty($rep['ok']) ? ('❌ ' . ($rep['error'] ?? 'ناموفق')) : '✅ پایان']]);
     exit;
 }
@@ -22406,29 +22919,40 @@ if (isset($_GET['dedup_start'])) {
     try {
         $rep = dedupRun($cn, $target, $cfg, $mode, $cp);
     } catch (Throwable $e) {
-        dedupProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        $dedupErrState = is_file(DEDUP_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(DEDUP_PROGRESS_FILE), true) : [];
+        dedupProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($dedupErrState['checkpoint'] ?? null) ? $dedupErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         dedupClearStop();
         exit;
     }
     @file_put_contents(DEDUP_RESULT_FILE, json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $stopped = dedupStopRequested();
+    $dedupLastState = is_file(DEDUP_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(DEDUP_PROGRESS_FILE), true) : [];
+    $dedupKeepCp = $stopped || !empty($rep['partial']) || empty($rep['ok']);
     dedupClearStop();
+    if (empty($rep['ok'])) {
+        $dedupLog = '❌ ' . ($rep['error'] ?? 'ناموفق');
+    } elseif ($dedupKeepCp) {
+        $dedupLog = '⏸ توقف/برداشت ناقص؛ checkpoint حفظ شد';
+    } elseif ($mode === 'delete') {
+        $dedupLog = ($target === 'bsl' ? 'بایگانی‌شده: ' : 'حذف‌شده: ') . $rep['deleted']
+            . ($rep['failed'] ? ('، ناموفق: ' . $rep['failed']) : '');
+    } else {
+        $dedupLog = '🏁 پایان در ' . $rep['took'] . ' ثانیه — گزارش آماده است: '
+            . $rep['duplicates'] . ' نسخهٔ اضافی';
+    }
     dedupProgress(['running' => false, 'done' => true, 'stopped' => $stopped,
-        'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'stale' => $dedupKeepCp, 'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
         'groups' => $rep['groups'] ?? 0, 'dups' => $rep['duplicates'] ?? 0,
         'deleted' => $rep['deleted'] ?? 0, 'failed' => $rep['failed'] ?? 0,
-        'partial' => !empty($rep['partial']),          // v10.23 (۳۶ب)
+        'partial' => !empty($rep['partial']),
         'partial_msg' => (string)($rep['partial_msg'] ?? ''),
-        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
-        'log_add' => [empty($rep['ok'])
-            ? ('❌ ' . ($rep['error'] ?? 'ناموفق'))
-            : ('🏁 پایان در ' . $rep['took'] . ' ثانیه — '
-               . ($mode === 'delete'
-                  ? (($target === 'bsl' ? 'بایگانی‌شده: ' : 'حذف‌شده: ') . $rep['deleted']
-                     . ($rep['failed'] ? ('، ناموفق: ' . $rep['failed']) : ''))
-                  : ('گزارش آماده است: ' . $rep['duplicates'] . ' نسخهٔ اضافی')))]]);
+        'checkpoint' => $dedupKeepCp && is_array($dedupLastState['checkpoint'] ?? null)
+            ? $dedupLastState['checkpoint'] : null,
+        'log_add' => [$dedupLog]]);
     exit;
 }
 
@@ -22536,7 +23060,9 @@ if (isset($_GET['catfix_start'])) {
     }
     $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
     catfixProgress(['running' => true, 'done' => false, 'mode' => $mode,
-        'product_id' => (int)$opts['product_id'],
+        'product_id' => (int)$opts['product_id'], 'quorum' => (int)$opts['quorum'],
+        'all_vendors' => !empty($opts['all_vendors']), 'use_learn' => !empty($opts['use_learn']),
+        'vendor_id' => (int)$opts['vendor_id'],
         'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
         'total' => 0, 'current' => (int)($cp['idx'] ?? 0),
         'fixed' => (int)($cp['fixed'] ?? 0), 'failed' => (int)($cp['failed'] ?? 0),
@@ -22563,25 +23089,34 @@ if (isset($_GET['catfix_start'])) {
     try {
         $rep = catfixRun($cn, $mode, $opts, $cp);
     } catch (Throwable $e) {
-        catfixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
-            'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
+        /* خطایِ پردازه/شبکه نباید آخرین checkpoint امنِ محصولات را پاک کند؛
+           کران بعدی همین اجرای نیمه‌کاره را دوباره می‌گیرد. */
+        $catErrState = is_file(CATFIX_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
+        catfixProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($catErrState['checkpoint'] ?? null) ? $catErrState['checkpoint'] : null,
+            'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         catfixClearStop();
         exit;
     }
     @file_put_contents(CATFIX_RESULT_FILE, json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $stopped = catfixStopRequested();
+    $catLastState = is_file(CATFIX_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
+    $catKeepCp = $stopped || !empty($rep['partial']) || !empty($rep['stopped']) || empty($rep['ok']);
     catfixClearStop();
     catfixProgress(['running' => false, 'done' => true, 'stopped' => $stopped,
-        'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
+        'stale' => $catKeepCp, 'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
         'fixed' => $rep['fixed'] ?? 0, 'failed' => $rep['failed'] ?? 0,
         'no_ai' => $rep['no_ai'] ?? 0, 'no_cat' => $rep['no_cat'] ?? 0,
         'skip_same' => $rep['skip_same'] ?? 0, 'skip_tried' => $rep['skip_tried'] ?? 0,
         'asked' => $rep['asked'] ?? 0,
-        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
+        'checkpoint' => $catKeepCp && is_array($catLastState['checkpoint'] ?? null)
+            ? $catLastState['checkpoint'] : null,
         'log_add' => [empty($rep['ok'])
             ? ('❌ ' . ($rep['error'] ?? 'ناموفق'))
-            : ('🏁 پایان در ' . $rep['took'] . ' ثانیه — ' . $rep['msg'])]]);
+            : ($catKeepCp ? ('⏸ متوقف شد؛ checkpoint حفظ شد — ' . ($rep['msg'] ?? ''))
+                           : ('🏁 پایان در ' . $rep['took'] . ' ثانیه — ' . $rep['msg']))]]);
     exit;
 }
 
@@ -23044,23 +23579,40 @@ function matrixBuild(array $opts = []): array {
     $suffixes = matrixCollectSuffixes();
     $profileFilter = trim((string)($opts['profile'] ?? 'all'));
     $source = (string)($opts['source'] ?? 'manual');
+    $resumeCp = is_array($opts['checkpoint'] ?? null) ? $opts['checkpoint'] : [];
+    $startedAt = (int)($resumeCp['started_at'] ?? time());
+    $profileRows = is_array($resumeCp['profile_rows'] ?? null) ? $resumeCp['profile_rows'] : [];
+    $profilesDone = array_values(array_unique(array_map('strval', (array)($resumeCp['profiles_done'] ?? []))));
+    $profilesDoneSet = $profilesDone ? array_fill_keys($profilesDone, true) : [];
+    $matrixWooCp = is_array($resumeCp['woo_rows'] ?? null) ? $resumeCp['woo_rows'] : [];
+    $matrixWooDone = !empty($resumeCp['woo_done']);
+    $matrixShopCp = is_array($resumeCp['shop_rows'] ?? null) ? $resumeCp['shop_rows'] : [];
+    $matrixCp = static function (string $phase, array $rows, array $done, array $woo, array $shops, int $at, bool $wooDone = false) use ($profileFilter): array {
+        return ['phase' => $phase, 'profile_filter' => ($profileFilter ?: 'all'),
+            'profile_rows' => $rows, 'profiles_done' => $done, 'woo_rows' => $woo,
+            'woo_done' => $wooDone, 'shop_rows' => $shops, 'started_at' => $at];
+    };
 
     matrixProgress([
         'running' => true, 'done' => false, 'error' => '',
-        'phase' => 'profiles', 'pct' => 2, 'source' => $source,
-        'started_at' => time(),
-        'log_add' => ['🚀 شروع ساخت جدول مقایسه (سرورساید) — منبع: ' . $source],
+        'phase' => 'profiles', 'pct' => $profilesDone ? 2 : 2, 'source' => $source,
+        'profile' => $profileFilter, 'started_at' => $startedAt,
+        'checkpoint' => ['phase' => 'profiles', 'profile_filter' => ($profileFilter ?: 'all'),
+            'profile_rows' => $profileRows, 'profiles_done' => $profilesDone, 'started_at' => $startedAt],
+        'log_add' => ['🚀 ' . ($profilesDone ? 'ادامه ساخت جدول مقایسه' : 'شروع ساخت جدول مقایسه')
+            . ' (سرورساید) — منبع: ' . $source],
     ]);
 
     $wooCfg = destPriceCfg($cn, 'woocommerce');
     $bslCfg = destPriceCfg($cn, 'basalam');
 
-    $rowsByKey = [];
+    $rowsByKey = $profileRows;
     $profiles = loadProfiles();
     $pN = 0; $pTot = max(1, count($profiles));
     foreach ($profiles as $pk => $profile) {
         $pN++;
         if ($profileFilter !== '' && $profileFilter !== 'all' && $profileFilter !== $pk) continue;
+        if (isset($profilesDoneSet[(string)$pk])) continue;
         $pname = (string)($profile['name'] ?? $pk);
         if ($pN % 3 === 0 || $pN === $pTot) {
             matrixProgress([
@@ -23099,31 +23651,42 @@ function matrixBuild(array $opts = []): array {
                 }
             }
         }
+        $profilesDone[] = (string)$pk;
+        $profilesDoneSet[(string)$pk] = true;
+        matrixProgress([
+            'phase' => 'profiles', 'pct' => 5 + (int)round(20 * $pN / $pTot),
+            'cur' => $pN, 'cur_total' => $pTot,
+            'checkpoint' => $matrixCp('profiles', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone),
+        ]);
     }
     matrixProgress([
         'phase' => 'profiles_done', 'pct' => 28,
+        'checkpoint' => $matrixCp('woo_fetch', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone),
         'log_add' => ['✅ ' . count($rowsByKey) . ' عنوان یکتا از پروفایل‌ها'],
     ]);
 
     // Woo
     $wooErr = '';
-    $wooRows = [];
+    $wooRows = array_values(array_filter($matrixWooCp, 'is_array'));
     $w = $cn['woocommerce'] ?? [];
     matrixProgress(['phase' => 'woo_fetch', 'pct' => 32, 'log_add' => [
-            '📥 دریافت محصولات ووکامرس…'
+            $matrixWooDone ? '↻ ووکامرس از checkpoint خوانده شد' : ('📥 دریافت محصولات ووکامرس…'
             . ((function_exists('wooDirectAvailable') && wooDirectAvailable())
-                ? ' (مسیر ⚡ مستقیم DB — سریع)'
-                : ' (مسیر 🌐 REST API — کندتر)'),
+                ? ' (مسیر ⚡ مستقیم DB — سریع)' : ' (مسیر 🌐 REST API — کندتر)')),
         ]]);
-    try {
-        if (!empty($w['store_url']) || function_exists('wc_get_products')) {
-            // progress via reconProgress is separate; also tick matrix
-            $wooRows = reconFetchWoo(is_array($w) ? $w : []);
-        } else {
-            $wooErr = 'تنظیمات ووکامرس ناقص';
+    if (!$matrixWooDone) {
+        try {
+            if (!empty($w['store_url']) || function_exists('wc_get_products')) {
+                // progress via reconProgress is separate; also tick matrix
+                $wooRows = reconFetchWoo(is_array($w) ? $w : []);
+            } else {
+                $wooErr = 'تنظیمات ووکامرس ناقص';
+            }
+        } catch (Throwable $e) {
+            $wooErr = $e->getMessage();
         }
-    } catch (Throwable $e) {
-        $wooErr = $e->getMessage();
+        $matrixWooCp = $wooRows; $matrixWooDone = true;
+        matrixProgress(['checkpoint' => $matrixCp('woo_map', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, true)]);
     }
     matrixProgress([
         'phase' => 'woo_map', 'pct' => 48,
@@ -23174,13 +23737,19 @@ function matrixBuild(array $opts = []): array {
             'cur' => $sN, 'cur_total' => $sTot,
             'log_add' => ['🏪 دریافت غرفه ' . $sN . '/' . $sTot . ' — ' . $sname . ' (فقط فعال)'],
         ]);
+        $hasSavedShop = array_key_exists((string)$vid, $matrixShopCp);
+        $remote = $hasSavedShop && is_array($matrixShopCp[(string)$vid]) ? $matrixShopCp[(string)$vid] : [];
         try {
-            /* v10.116: فقط محصولات فعال قابل‌مشاهدهٔ مشتری (2976) */
-            $remote = reconFetchBsl($tok, $vid, 0, true);
+            if (!$hasSavedShop) {
+                /* v10.116: فقط محصولات فعال قابل‌مشاهدهٔ مشتری (2976) */
+                $remote = reconFetchBsl($tok, $vid, 0, true);
+            }
         } catch (Throwable $e) {
             $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
             $remote = [];
         }
+        $matrixShopCp[(string)$vid] = $remote;
+        matrixProgress(['checkpoint' => $matrixCp('bsl_fetch', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone)]);
         $seen = [];
         foreach ($remote as $br) {
             $bare = matrixBareTitle((string)($br['title'] ?? ''), $suffixes);
@@ -23329,7 +23898,7 @@ function matrixBuild(array $opts = []): array {
     matrixProgress([
         'running' => false, 'done' => true, 'error' => '', 'pct' => 100,
         'phase' => 'done', 'summary' => $sum, 'row_count' => count($rows),
-        'finished_at' => time(),
+        'checkpoint' => null, 'finished_at' => time(),
         'log_add' => [
             '✅ جدول آماده: ' . count($rows) . ' ردیف',
             '📊 یکسان ' . (int)$sum['ok'] . ' · مغایرت ' . (int)$sum['price_mismatch']
@@ -23986,6 +24555,14 @@ function matrixFixRun(array $opts = []): array {
     if (!in_array($scope, ['all', 'woo', 'bsl'], true)) $scope = 'all';
     $delayMs = max(50, min(2000, (int)($opts['delay_ms'] ?? 180)));
     $source = (string)($opts['source'] ?? 'manual');
+    $fixCp = is_array($opts['checkpoint'] ?? null) ? $opts['checkpoint'] : [];
+    $doneJobs = array_values(array_unique(array_map('strval', (array)($fixCp['done_jobs'] ?? []))));
+    $doneJobSet = $doneJobs ? array_fill_keys($doneJobs, true) : [];
+    $fixStartedAt = (int)($fixCp['started_at'] ?? time());
+    $jobKey = static function (array $j): string {
+        return (string)($j['kind'] ?? '') . '|' . (string)($j['bare'] ?? '') . '|'
+            . (int)($j['id'] ?? 0) . '|' . (int)($j['vendor_id'] ?? 0);
+    };
 
     $data = matrixResultLoad();
     if (!$data || empty($data['rows'])) {
@@ -24007,10 +24584,16 @@ function matrixFixRun(array $opts = []): array {
     }
     matrixFixProgress([
         'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
-        'phase' => 'start', 'started_at' => time(), 'source' => $source,
-        'scope' => $scope, 'job' => 'fix',
-        'total' => $total, 'cur' => 0, 'ok_n' => 0, 'fail_n' => 0, 'skip_n' => 0,
-        'sent_n' => 0, 'del_n' => 0, 'price_n' => 0,
+        'phase' => 'start', 'started_at' => $fixStartedAt, 'source' => $source,
+        'scope' => $scope, 'delay_ms' => $delayMs, 'job' => 'fix',
+        'total' => $total, 'cur' => 0, 'ok_n' => (int)($fixCp['ok_n'] ?? 0),
+        'fail_n' => (int)($fixCp['fail_n'] ?? 0), 'skip_n' => (int)($fixCp['skip_n'] ?? 0),
+        'sent_n' => (int)($fixCp['sent_n'] ?? 0), 'del_n' => (int)($fixCp['del_n'] ?? 0),
+        'price_n' => (int)($fixCp['price_n'] ?? 0), 'done_jobs' => $doneJobs,
+        'checkpoint' => ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
+            'ok_n' => (int)($fixCp['ok_n'] ?? 0), 'fail_n' => (int)($fixCp['fail_n'] ?? 0),
+            'sent_n' => (int)($fixCp['sent_n'] ?? 0), 'del_n' => (int)($fixCp['del_n'] ?? 0),
+            'price_n' => (int)($fixCp['price_n'] ?? 0)],
         'live' => [],
         'log_add' => array_merge([
             '🔧 شروع مغایرت‌گیری کامل از جدول — محدوده: ' . $scope,
@@ -24021,47 +24604,21 @@ function matrixFixRun(array $opts = []): array {
     ]);
 
     if ($total === 0) {
-        $sum = is_array($data['summary'] ?? null) ? $data['summary'] : [];
-        $diag = [
-            'ردیف‌های جدول: ' . count((array)($data['rows'] ?? [])),
-            'مغایرت قیمت (خلاصه): ' . (int)($sum['price_mismatch'] ?? 0),
-            'نیست در WC: ' . (int)($sum['missing_woo'] ?? 0),
-            'نیست در غرفه: ' . (int)($sum['missing_bsl'] ?? 0),
-            'غرفه‌های meta: ' . count($shops = is_array($data['shops'] ?? null) ? $data['shops'] : []),
-            'محدوده: ' . $scope,
-            'نکته: اگر خلاصه مغایرت دارد ولی کار ۰ است، جدول را یک‌بار از نو بسازید.',
-        ];
-        /* نمونهٔ چند ردیف برای دیباگ */
-        $sample = 0;
-        foreach ((array)($data['rows'] ?? []) as $rr) {
-            if (!is_array($rr) || !empty($rr['is_report'])) continue;
-            if ($sample >= 5) break;
-            $st = (string)($rr['status'] ?? '');
-            if (!in_array($st, ['mismatch', 'missing', 'only_profile', 'only_dest', 'partial'], true)
-                && !in_array('price_mismatch', (array)($rr['flags'] ?? []), true)) continue;
-            $diag[] = 'نمونه: ' . mb_substr((string)($rr['title'] ?? $rr['bare'] ?? ''), 0, 40)
-                . ' · st=' . $st
-                . ' · hits=' . (int)($rr['profile_hits'] ?? 0)
-                . ' · woo=' . (is_array($rr['woo'] ?? null) ? ('#' . (int)($rr['woo']['id'] ?? 0) . '@' . (int)($rr['woo']['price'] ?? 0)) : '—')
-                . ' · expectW=' . (int)($rr['woo_expect'] ?? 0)
-                . ' · flags=' . implode(',', (array)($rr['flags'] ?? []));
-            $sample++;
-        }
+        /* وقتی جدول کاری برای اجرا ندارد، فقط یک نتیجهٔ عادی ثبت کن؛ جزئیات
+           داخلیِ ردیف‌ها و نمونه‌های تشخیصی نباید در گزارش کاربر پخش شوند. */
+        $emptyMsg = 'هیچ مغایرت قابل اجرایی در جدول پیدا نشد';
         $stats = [
             'at' => time(), 'ok' => 0, 'fail' => 0, 'total' => 0,
             'sent' => 0, 'deleted' => 0, 'priced' => 0,
             'stopped' => false, 'scope' => $scope,
-            'details' => array_map(function ($x) { return ['ok' => true, 'label' => $x]; }, $diag),
+            'details' => [['ok' => true, 'label' => $emptyMsg]],
         ];
         matrixFixAppendReportRows($stats);
         matrixFixProgress([
             'running' => false, 'done' => true, 'pct' => 100, 'phase' => 'done',
             'ok_n' => 0, 'fail_n' => 0, 'total' => 0, 'cur' => 0,
             'sent_n' => 0, 'del_n' => 0, 'price_n' => 0,
-            'log_add' => array_merge(
-                ['⚠️ هیچ کاری برای اجرا پیدا نشد (۰ job) — گزارش تشخیصی ثبت شد'],
-                array_map(function ($x) { return '  · ' . $x; }, $diag)
-            ),
+            'log_add' => ['ℹ️ ' . $emptyMsg],
             'finished_at' => time(),
         ]);
         return ['ok' => true, 'total' => 0, 'ok_n' => 0, 'fail_n' => 0, 'empty' => true];
@@ -24083,6 +24640,8 @@ function matrixFixRun(array $opts = []): array {
     $details = [];
 
     foreach ($jobs as $ji => $job) {
+        $jk = $jobKey($job);
+        if (isset($doneJobSet[$jk])) continue;
         if (matrixFixStopRequested()) {
             $stopped = true;
             matrixFixProgress(['log_add' => ['⏹ توقف توسط کاربر']]);
@@ -24353,6 +24912,12 @@ function matrixFixRun(array $opts = []): array {
             }
         }
 
+        $doneJobs[] = $jk; $doneJobSet[$jk] = true;
+        matrixFixProgress(['done_jobs' => $doneJobs,
+            'checkpoint' => ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
+                'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN, 'del_n' => $delN,
+                'price_n' => $priceN, 'cur' => $n, 'total' => $total],
+            'cur' => $n, 'total' => $total]);
         usleep($delayMs * 1000);
     }
 
@@ -24389,6 +24954,10 @@ function matrixFixRun(array $opts = []): array {
         'ok_n' => $okN, 'fail_n' => $failN, 'cur' => $n ?? $total, 'total' => $total,
         'sent_n' => $sentN, 'del_n' => $delN, 'price_n' => $priceN,
         'finished_at' => time(),
+        'done_jobs' => $doneJobs,
+        'checkpoint' => $stopped ? ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
+            'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN, 'del_n' => $delN, 'price_n' => $priceN,
+            'cur' => $n ?? 0, 'total' => $total] : null,
         'log_add' => [
             ($stopped ? '⏹ متوقف شد — ' : '✅ تمام — ')
             . 'موفق ' . $okN . ' · ناموفق ' . $failN . ' از ' . $total
@@ -24405,6 +24974,15 @@ function matrixFixRun(array $opts = []): array {
 
 function matrixJobRun(array $opts = []): array {
     $bg = !empty($opts['background']);
+    /* v10.129: cron و فراخوانی‌های داخلی هم باید همان checkpoint رابط را
+       مصرف کنند؛ فقط دکمهٔ صریحِ resume نباید قادر به ادامه باشد. */
+    if (!is_array($opts['checkpoint'] ?? null)) {
+        $mp = matrixProgressRead();
+        $mcp = is_array($mp['checkpoint'] ?? null) ? $mp['checkpoint'] : null;
+        if (!empty($mcp) && empty($mp['done']) && is_array($mcp['profile_rows'] ?? null)) {
+            $opts['checkpoint'] = $mcp;
+        }
+    }
     $lockFile = SYNC_MATRIX_LOCK_FILE;
     $fp = @fopen($lockFile, 'c');
     if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) {
@@ -24566,6 +25144,20 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
         'source' => (string)($_GET['source'] ?? $_POST['source'] ?? 'manual'),
         'background' => true,
     ];
+    /* v10.129: مرحلهٔ خواندن پروفایل‌ها checkpoint دارد. دادهٔ محلیِ کامل
+       ذخیره می‌شود؛ اگر قطع در یکی از واکشی‌های مقصد رخ دهد، فقط آن واکشی
+       دوباره انجام می‌شود و پروفایل‌های مبدأ از ابتدا تکرار نمی‌شوند. */
+    $matrixCp = null;
+    if (!empty($_GET['resume']) && is_file(SYNC_MATRIX_PROGRESS_FILE)) {
+        $oldMatrix = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
+        $oldCp = is_array($oldMatrix['checkpoint'] ?? null) ? $oldMatrix['checkpoint'] : null;
+        if (is_array($oldCp)
+            && (string)($oldCp['profile_filter'] ?? 'all') === ($opts['profile'] ?: 'all')
+            && is_array($oldCp['profile_rows'] ?? null)) {
+            $matrixCp = $oldCp;
+        }
+    }
+    $opts['checkpoint'] = $matrixCp;
     // قفل زود
     $lockFile = SYNC_MATRIX_LOCK_FILE;
     $fp = @fopen($lockFile, 'c');
@@ -24576,8 +25168,11 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
     }
     matrixProgress([
         'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
-        'phase' => 'start', 'started_at' => time(), 'source' => $opts['source'],
-        'log_add' => ['🚀 جاب ساخت جدول در صف سرور...'],
+        'phase' => 'start', 'started_at' => (int)($matrixCp['started_at'] ?? time()),
+        'source' => $opts['source'], 'profile' => $opts['profile'],
+        'checkpoint' => $matrixCp ?: ['phase' => 'profiles', 'profile_filter' => ($opts['profile'] ?: 'all'),
+            'profile_rows' => [], 'profiles_done' => [], 'started_at' => time()],
+        'log_add' => ['🚀 ' . ($matrixCp ? 'ادامه ساخت جدول از checkpoint' : 'جاب ساخت جدول در صف سرور') . '...'],
     ]);
     $early = json_encode(['ok' => true, 'started' => true, 'message' => 'ساخت روی سرور شروع شد'], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -24597,9 +25192,11 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
     try {
         matrixBuild($opts);
     } catch (Throwable $e) {
+        $matrixErrState = matrixProgressRead();
         matrixProgress([
-            'running' => false, 'done' => true, 'error' => $e->getMessage(), 'pct' => 100,
-            'log_add' => ['❌ ' . $e->getMessage()],
+            'running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(), 'pct' => 100,
+            'checkpoint' => is_array($matrixErrState['checkpoint'] ?? null) ? $matrixErrState['checkpoint'] : null,
+            'log_add' => ['❌ ' . $e->getMessage() . ' — checkpoint حفظ شد'],
         ]);
     }
     exit;
@@ -24671,6 +25268,14 @@ if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync
         'delay_ms' => (int)($_GET['delay_ms'] ?? $_POST['delay_ms'] ?? 180),
         'source' => (string)($_GET['source'] ?? $_POST['source'] ?? 'manual'),
     ];
+    $matrixFixCp = null;
+    if (!empty($_GET['resume']) && is_file(SYNC_MATRIX_FIX_PROGRESS_FILE)) {
+        $oldFix = json_decode((string)@file_get_contents(SYNC_MATRIX_FIX_PROGRESS_FILE), true);
+        $oldFixCp = is_array($oldFix['checkpoint'] ?? null) ? $oldFix['checkpoint'] : null;
+        if (is_array($oldFixCp) && (string)($oldFixCp['scope'] ?? 'all') === $opts['scope']
+            && is_array($oldFixCp['done_jobs'] ?? null)) $matrixFixCp = $oldFixCp;
+    }
+    $opts['checkpoint'] = $matrixFixCp;
     if (!is_file(SYNC_MATRIX_RESULT_FILE)) {
         echo json_encode(['ok' => false, 'error' => 'اول جدول مقایسه را بسازید'], JSON_UNESCAPED_UNICODE);
         exit;
@@ -24690,9 +25295,11 @@ if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync
     }
     matrixFixProgress([
         'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
-        'phase' => 'queued', 'started_at' => time(), 'source' => $opts['source'],
+        'phase' => 'queued', 'started_at' => (int)($matrixFixCp['started_at'] ?? time()), 'source' => $opts['source'],
+        'scope' => $opts['scope'], 'delay_ms' => $opts['delay_ms'],
         'job' => 'fix', 'log' => [], 'live' => [],
-        'log_add' => ['🚀 جاب اصلاح مغایرت در صف سرور…'],
+        'checkpoint' => $matrixFixCp ?: ['scope' => $opts['scope'], 'done_jobs' => [], 'started_at' => time()],
+        'log_add' => ['🚀 ' . ($matrixFixCp ? 'ادامه اصلاح مغایرت از checkpoint' : 'جاب اصلاح مغایرت در صف سرور') . '…'],
     ]);
     $early = json_encode(['ok' => true, 'started' => true, 'message' => 'اصلاح روی سرور شروع شد', 'running' => true], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -24712,9 +25319,11 @@ if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync
     try {
         matrixFixRun($opts);
     } catch (Throwable $e) {
+        $fixErrState = matrixFixProgressRead();
         matrixFixProgress([
-            'running' => false, 'done' => true, 'error' => $e->getMessage(), 'pct' => 100,
-            'log_add' => ['❌ ' . $e->getMessage()],
+            'running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(), 'pct' => 100,
+            'checkpoint' => is_array($fixErrState['checkpoint'] ?? null) ? $fixErrState['checkpoint'] : null,
+            'log_add' => ['❌ ' . $e->getMessage() . ' — checkpoint حفظ شد'],
         ]);
     }
     exit;
@@ -25716,12 +26325,12 @@ if (isset($_GET['selftest'])) {
     $add('8.65', 'آمار پسوند هم از شناسه کمک می‌گیرد',
          strpos($selfSrc, 'sfxIdMap') !== false);
 
-    /* ---------- v10.128: تفکیک پسوند + گزارش مقصدِ اصلاح ---------- */
-    $add('10.128', 'تطبیق پسوندِ کد با رقم فارسی و شکل پرانتزی کار می‌کند',
+    /* ---------- v10.129: تفکیک پسوند + گزارش مقصدِ اصلاح + resume یکپارچه ---------- */
+    $add('10.129', 'تطبیق پسوندِ کد با رقم فارسی و شکل پرانتزی کار می‌کند',
          function_exists('suffixMatches')
          && suffixMatches('نمونه محصول (کد: ۱)', '(کد:1)')
          && !suffixMatches('نمونه محصول (کد: ۱) توضیح اضافه', '(کد:1)'));
-    $add('10.128', 'جزئیات اصلاح، مقصد و محصول را برای مودال نگه می‌دارد',
+    $add('10.129', 'جزئیات اصلاح، مقصد و محصول را برای مودال نگه می‌دارد',
          function_exists('matrixFixDetail')
          && (($d128 = matrixFixDetail('woo', 'ووکامرس', 'price', 'آزمون', true, 'آزمون', 7))['destination'] ?? '') === 'ووکامرس'
          && !empty($d128['fixed']) && (int)($d128['id'] ?? 0) === 7);
@@ -29187,7 +29796,7 @@ if (isset($_GET['selftest'])) {
          tasksResumeUrl('dedup', tasksRegistry()['dedup'], ['target' => 'bsl', 'mode' => 'delete'])
              === 'dedup_start=1&target=bsl&mode=delete'
       && tasksResumeUrl('suffix', tasksRegistry()['suffix'], ['target' => 'woo'])
-             === 'suffix_report=1&target=woo'
+             === 'suffix_report=1&target=woo&resume=1'
       && tasksResumeUrl('catfix', tasksRegistry()['catfix'], ['mode' => 'quorum'])
              === 'catfix_start=1&mode=quorum');
 
@@ -29207,8 +29816,9 @@ if (isset($_GET['selftest'])) {
 
     $add('10.23', 'اندپوینتِ ادامه قفل و سیگنالِ توقفِ جامانده را برمی‌دارد',
          strpos($selfSrc, "isset(\$_GET['tasks_resume'])") !== false
-      && strpos($selfSrc, '$started = fireAndForget($url, 2500);') !== false
-      && strpos($selfSrc, "'error' => 'این کار همین حالا در حال اجراست'") !== false);
+      && strpos($selfSrc, '$started = fireAndForget($url, 2500, $post);') !== false
+      && strpos($selfSrc, "'error' => 'این کار همین حالا در حال اجراست'") !== false
+      && function_exists('tasksResumeLockDead'));
 
     /* ۳۶د — اصلاحِ دستهٔ باسلام به‌عنوان کارِ پس‌زمینه */
     /* v10.35 (۴۷ه): شمار به ۱۳ رسید (manual_sync). عددِ ثابت با هر کارِ
@@ -29216,10 +29826,11 @@ if (isset($_GET['selftest'])) {
     $add('10.23', 'رجیستری «catfix» را دارد و هیچ کارِ شناخته‌شده‌ای گم نشده',
          (function () {
              $r = tasksRegistry();
-             foreach (['catfix', 'bsl_send', 'woo_send', 'extract', 'dedup', 'agent',
-                       'selagent', 'ai_test', 'recon', 'suffix', 'bulkedit', 'photofix'] as $k)
+             foreach (['manual_sync', 'bsl_send', 'woo_send', 'extract', 'dedup', 'catfix', 'agent',
+                       'selagent', 'ai_test', 'recon', 'matrix_build', 'matrix_fix', 'suffix',
+                       'bulkedit', 'photofix', 'aicontent'] as $k)
                  if (!isset($r[$k])) return false;
-             return count($r) >= 12;
+             return count($r) >= 16;
          })());
 
     $add('10.23', 'موتور و اندپوینت‌های اصلاحِ دسته وجود دارند',
@@ -29246,8 +29857,8 @@ if (isset($_GET['selftest'])) {
 
     $add('10.23', 'توقفِ catfix از مدیر وظیفه هم کار می‌کند',
          (tasksRegistry()['catfix']['stop'] ?? '') === 'catfix_stop'
-      && strpos($selfSrc, "'catfix_stop' => CATFIX_STOP_FILE];   // v10.23 (۳۶د)") !== false
-      && strpos($selfSrc, "'catfix' => CATFIX_LOCK_FILE];   // v10.23 (۳۶د)") !== false);
+      && strpos($selfSrc, "'catfix_stop' => CATFIX_STOP_FILE") !== false
+      && strpos($selfSrc, "'catfix' => CATFIX_LOCK_FILE") !== false);
 
     /* رشته‌ها تکه‌تکه ساخته می‌شوند وگرنه خودِ همین ادعا در سورس پیدا
        می‌شود و چکِ «وجود ندارد» همیشه شکست می‌خورد. */
@@ -30391,10 +31002,11 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
       && strpos($selfSrc, '$res = ' . $rsFn . "(string)(\$_GET['key'] ?? ''));") !== false
       && strpos($selfSrc, '$one = ' . $rsFn . "(string)\$r['key']);") !== false);
 
-    $add('10.24', 'ادامهٔ همه فقط کارهای رهاشدهٔ قابلِ ادامه را می‌گیرد و فاصله می‌اندازد',
+    $add('10.24', 'ادامهٔ همه کارها را به‌ترتیب و بدون هم‌پوشانی dispatch می‌کند',
          strpos($selfSrc, "\$only === 'stale_done'") !== false
       && strpos($selfSrc, "if (empty(\$r['resumable']))") !== false
-      && strpos($selfSrc, 'usleep(400000)') !== false);
+      && strpos($selfSrc, "'sequential' => true") !== false
+      && strpos($selfSrc, "waiting_previous") === false);
 
     $add('10.24', 'کارتِ مدیر وظیفه دکمه‌های اولویت و شمارهٔ رتبه دارد',
          strpos($selfSrc, 'function tmOrder(key,dir)') !== false
@@ -36705,6 +37317,16 @@ function manualSyncProgress(array $patch, string $log = ''): void {
     }
     $p['ts'] = time();
     $p['last_progress_ts'] = time();
+    /* v10.129: خودِ زنجیرهٔ دستی هم یک checkpoint ارکستراسیون دارد؛
+       بنابراین قطع بین استخراج، صف‌سازی و پمپ ارسال در کران بعدی قابل تشخیص است. */
+    $oldManualCp = is_array($p['checkpoint'] ?? null) ? $p['checkpoint'] : [];
+    $p['checkpoint'] = ['profile_key' => (string)($p['profile_key'] ?? ''),
+        'profile_name' => (string)($p['profile_name'] ?? ''), 'phase' => (string)($p['phase'] ?? ''),
+        'current' => (int)($p['current'] ?? 0), 'total' => (int)($p['total'] ?? 4),
+        'target' => (string)($p['target'] ?? ''), 'started_at' => (int)($p['started_at'] ?? time())];
+    foreach (['extract', 'enqueue', 'retire'] as $k) {
+        if (array_key_exists($k, $oldManualCp)) $p['checkpoint'][$k] = $oldManualCp[$k];
+    }
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, $p);
 }
 
@@ -36962,6 +37584,8 @@ function queueIdleRetryFailed(string $which): ?array {
     if ($picked === null) return null;
     $qid = (string)($picked['id'] ?? '');
     $start = max(0, (int)($picked['current'] ?? 0));
+    $idleLock = __DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock');
+    if (is_file($idleLock) && !tasksResumeLockDead($idleLock)) return null;
     /* بازگردانی به waiting و ادامه مثل دکمهٔ «ادامه» */
     foreach ($q['entries'] as &$e) {
         if ((string)($e['id'] ?? '') !== $qid) continue;
@@ -36972,7 +37596,7 @@ function queueIdleRetryFailed(string $which): ?array {
     unset($e);
     if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
     elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
-    @unlink(__DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock'));
+    @unlink($idleLock);
     if ($isBsl && defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
     if (!$isBsl && defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
     $action = $isBsl ? 'bsl_backend' : 'woo_backend';
@@ -37002,6 +37626,15 @@ function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = 
     }
 
     $qid   = (string)($chk['queue_id'] ?? '');
+    /* flock شاهدِ قوی‌تری از سنِ heartbeat است: یک درخواستِ شبکهٔ طولانی
+       ممکن است بیش از staleAfter طول بکشد، اما تا وقتی قفل در دستِ worker
+       است، نه آن را بکش و نه worker دوم بساز. */
+    if (!empty($chk['lock_held'])) {
+        $chk['resumed'] = false;
+        $chk['deferred'] = true;
+        $chk['reason_defer'] = 'lock_held';
+        return $chk;
+    }
     /* v10.56 (۷۰): resume_from = چک‌پوینتِ واقعی */
     $start = max(0, (int)($chk['resume_from'] ?? $chk['current'] ?? 0));
 
@@ -37049,6 +37682,11 @@ function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = 
 
     $chk['resume_from'] = $start;
     $chk['resumed'] = fireAndForget('action=' . $action, $waitMs, $post);
+    if (!empty($chk['resumed'])) {
+        if (!isset($GLOBALS['_queueResumeFired']) || !is_array($GLOBALS['_queueResumeFired']))
+            $GLOBALS['_queueResumeFired'] = [];
+        $GLOBALS['_queueResumeFired'][$which] = time();
+    }
     $tries++;
     queueResumeBook($which, $qid, [
         'tries' => $tries, 'at' => $now, 'from' => $start,
@@ -38754,12 +39392,30 @@ function bulkProgress(array $patch): void {
  *           'desc'=>'...', 'short_desc'=>'...', 'delete'=>true, 'force'=>false]
  * $dry     فقط پیش‌نمایش، بدون تغییر واقعی
  */
-function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dry = false): array {
-    $out = ['ok' => true, 'target' => $target, 'total' => count($ids), 'changed' => 0,
-            'deleted' => 0, 'skipped' => 0, 'failed' => 0, 'dry' => $dry, 'items' => [],
-            'started_at' => time()];
-    $ids = array_values(array_filter(array_map('intval', $ids), fn($v) => $v > 0));
-    if (empty($ids)) { $out['ok'] = false; $out['error'] = 'محصولی انتخاب نشده'; return $out; }
+function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dry = false, array $resume = []): array {
+    $allIds = array_values(array_filter(array_map('intval', $resume['ids'] ?? $ids), fn($v) => $v > 0));
+    $ids = array_values(array_filter(array_map('intval', $resume['remaining_ids'] ?? $ids), fn($v) => $v > 0));
+    if (!$allIds) $allIds = $ids;
+    $out = ['ok' => true, 'target' => $target,
+            'total' => max(count($allIds), (int)($resume['total'] ?? 0)),
+            'changed' => (int)($resume['changed'] ?? 0), 'deleted' => (int)($resume['deleted'] ?? 0),
+            'skipped' => (int)($resume['skipped'] ?? 0), 'failed' => (int)($resume['failed'] ?? 0),
+            'dry' => $dry, 'items' => [], 'started_at' => time()];
+    if (empty($ids) && empty($allIds)) { $out['ok'] = false; $out['error'] = 'محصولی انتخاب نشده'; return $out; }
+    /* v10.129: پیش از نخستین درخواستِ تغییر، طرحِ دقیقِ همان محصول در
+       checkpoint می‌نشیند. بنابراین اگر هاست بینِ درخواست مقصد و نوشتنِ
+       نتیجه قطع شود، resume همان مقدار مطلق را دوباره می‌فرستد و افزایشِ
+       نسبیِ قیمت دوباره محاسبه نمی‌شود. */
+    $plan = is_array($resume['plan'] ?? null) ? $resume['plan'] : [];
+    $saveCheckpoint = function (int $next) use (&$out, &$plan, $allIds, $ids, $target, $ops, $dry): void {
+        bulkProgress(['current' => $next, 'total' => $out['total'],
+            'changed' => $out['changed'], 'deleted' => $out['deleted'],
+            'failed' => $out['failed'], 'skipped' => $out['skipped'],
+            'checkpoint' => ['target' => $target, 'ids' => $allIds, 'ops' => $ops, 'dry' => $dry,
+                'remaining_ids' => array_slice($ids, $next), 'plan' => $plan,
+                'changed' => $out['changed'], 'deleted' => $out['deleted'],
+                'skipped' => $out['skipped'], 'failed' => $out['failed'], 'total' => $out['total']]]);
+    };
 
     $w  = $cn['woocommerce'] ?? [];
     $bs = $cn['basalam'] ?? [];
@@ -38772,17 +39428,22 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
     foreach ($ids as $pid) {
         $n++;
         if ($n % 5 === 1 || $n === count($ids)) {
-            bulkProgress(['current' => $n, 'total' => count($ids),
+            bulkProgress(['current' => $n, 'total' => $out['total'],
                 'changed' => $out['changed'], 'deleted' => $out['deleted'],
                 'failed' => $out['failed'], 'skipped' => $out['skipped']]);
         }
         $row = ['id' => $pid];
+        $planned = is_array($plan[(string)$pid] ?? null) ? $plan[(string)$pid] : null;
 
         // ---- وضعیت فعلی محصول را بگیر تا درصد قیمت درست حساب شود ----
         $curPrice = 0; $title = '';
-        if ($target === 'woo') {
+        if ($planned !== null) {
+            $curPrice = (int)($planned['old_price'] ?? 0);
+            $title = (string)($planned['title'] ?? '');
+            if (is_array($planned['row'] ?? null)) $row = array_merge($row, $planned['row']);
+        } elseif ($target === 'woo') {
             $g = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET', 'products/' . $pid);
-            if (empty($g['ok'])) { $out['failed']++; $row['error'] = 'یافت نشد (' . (int)$g['code'] . ')'; $out['items'][] = $row; continue; }
+            if (empty($g['ok'])) { $out['failed']++; $row['error'] = 'یافت نشد (' . (int)$g['code'] . ')'; $out['items'][] = $row; $saveCheckpoint($n); continue; }
             $gb = $g['body'] ?? [];
             $curPrice = (int)preg_replace('~[^0-9]~', '', (string)($gb['regular_price'] ?? '0'));
             $title = (string)($gb['name'] ?? '');
@@ -38794,14 +39455,19 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
             if ($curPrice > 0) $curPrice = (int)round($curPrice / 10);
             $title = (string)($gb['title'] ?? $gb['name'] ?? '');
         }
-        $row['title'] = mb_substr($title, 0, 60);
-        $row['old_price'] = $curPrice;
+        $row['title'] = $row['title'] ?? mb_substr($title, 0, 60);
+        $row['old_price'] = $row['old_price'] ?? $curPrice;
 
         // ---- حذف ----
         if ($wantDelete) {
+            if ($planned === null) {
+                $plan[(string)$pid] = ['delete' => true, 'old_price' => $curPrice,
+                    'title' => $title, 'row' => $row];
+                $saveCheckpoint($n - 1); // این محصول هنوز در remaining است
+            }
             if ($dry) {
                 $row['action'] = $target === 'bsl' ? 'بایگانی می‌شود' : 'حذف می‌شود';
-                $out['items'][] = $row; $out['deleted']++; continue;
+                $out['items'][] = $row; $out['deleted']++; $saveCheckpoint($n); continue;
             }
             if ($target === 'woo') {
                 $r = wooDeleteProduct($w, $pid, !empty($ops['force']));
@@ -38813,60 +39479,71 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
             if (!empty($r['ok'])) { $out['deleted']++; }
             else { $out['failed']++; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0); }
             $out['items'][] = $row;
+            $saveCheckpoint($n);
             usleep(250000);
             continue;
         }
 
         // ---- ساخت فیلدهای تغییر ----
         $fields = [];
-        if (!empty($ops['price']) && is_array($ops['price'])) {
-            $np = editApplyPrice((string)($ops['price']['op'] ?? ''), (string)($ops['price']['val'] ?? ''), $curPrice);
-            if ($np !== null && $np !== $curPrice) {
-                $row['new_price'] = $np;
-                $row['pct'] = $curPrice > 0 ? round(($np - $curPrice) / $curPrice * 100, 1) : 0;
-                if ($target === 'woo') $fields['regular_price'] = (string)$np;
-                else $fields['primary_price'] = $np * 10;   // باسلام ریالی
+        if ($planned !== null) {
+            $fields = is_array($planned['fields'] ?? null) ? $planned['fields'] : [];
+        } else {
+            if (!empty($ops['price']) && is_array($ops['price'])) {
+                $np = editApplyPrice((string)($ops['price']['op'] ?? ''), (string)($ops['price']['val'] ?? ''), $curPrice);
+                if ($np !== null && $np !== $curPrice) {
+                    $row['new_price'] = $np;
+                    $row['pct'] = $curPrice > 0 ? round(($np - $curPrice) / $curPrice * 100, 1) : 0;
+                    if ($target === 'woo') $fields['regular_price'] = (string)$np;
+                    else $fields['primary_price'] = $np * 10;   // باسلام ریالی
+                }
             }
-        }
-        if (isset($ops['stock']) && $ops['stock'] !== '') {
-            $st = (int)$ops['stock'];
-            if ($target === 'woo') { $fields['manage_stock'] = true; $fields['stock_quantity'] = $st;
-                                     $fields['stock_status'] = $st > 0 ? 'instock' : 'outofstock'; }
-            else $fields['stock'] = $st;
-            $row['stock'] = $st;
-        }
-        if (!empty($ops['status'])) {
-            $s = (string)$ops['status'];
-            if ($target === 'woo') { $fields['status'] = in_array($s, ['publish','draft','private','pending'], true) ? $s : 'draft'; }
-            else { $sm = bslStatusMap(); $si = (int)$s; if (isset($sm[$si])) $fields['status'] = $si; }
-            $row['status'] = $s;
-        }
-        if (isset($ops['desc']) && $ops['desc'] !== '') {
-            if ($target === 'woo') $fields['description'] = (string)$ops['desc'];
-            else $fields['description'] = (string)$ops['desc'];
-            $row['desc'] = true;
-        }
-        if (isset($ops['short_desc']) && $ops['short_desc'] !== '') {
-            if ($target === 'woo') $fields['short_description'] = (string)$ops['short_desc'];
-            else $fields['brief'] = mb_substr((string)$ops['short_desc'], 0, 250);
-            $row['short_desc'] = true;
-        }
-        if (!empty($ops['title_prefix']) || !empty($ops['title_suffix'])) {
-            $nt = (string)($ops['title_prefix'] ?? '') . $title . (string)($ops['title_suffix'] ?? '');
-            $nt = trim($nt);
-            if ($nt !== '' && $nt !== $title) {
-                if ($target === 'woo') $fields['name'] = $nt; else $fields['name'] = mb_substr($nt, 0, 120);
-                $row['new_title'] = mb_substr($nt, 0, 60);
+            if (isset($ops['stock']) && $ops['stock'] !== '') {
+                $st = (int)$ops['stock'];
+                if ($target === 'woo') { $fields['manage_stock'] = true; $fields['stock_quantity'] = $st;
+                                         $fields['stock_status'] = $st > 0 ? 'instock' : 'outofstock'; }
+                else $fields['stock'] = $st;
+                $row['stock'] = $st;
+            }
+            if (!empty($ops['status'])) {
+                $s = (string)$ops['status'];
+                if ($target === 'woo') { $fields['status'] = in_array($s, ['publish','draft','private','pending'], true) ? $s : 'draft'; }
+                else { $sm = bslStatusMap(); $si = (int)$s; if (isset($sm[$si])) $fields['status'] = $si; }
+                $row['status'] = $s;
+            }
+            if (isset($ops['desc']) && $ops['desc'] !== '') {
+                if ($target === 'woo') $fields['description'] = (string)$ops['desc'];
+                else $fields['description'] = (string)$ops['desc'];
+                $row['desc'] = true;
+            }
+            if (isset($ops['short_desc']) && $ops['short_desc'] !== '') {
+                if ($target === 'woo') $fields['short_description'] = (string)$ops['short_desc'];
+                else $fields['brief'] = mb_substr((string)$ops['short_desc'], 0, 250);
+                $row['short_desc'] = true;
+            }
+            if (!empty($ops['title_prefix']) || !empty($ops['title_suffix'])) {
+                $nt = (string)($ops['title_prefix'] ?? '') . $title . (string)($ops['title_suffix'] ?? '');
+                $nt = trim($nt);
+                if ($nt !== '' && $nt !== $title) {
+                    if ($target === 'woo') $fields['name'] = $nt; else $fields['name'] = mb_substr($nt, 0, 120);
+                    $row['new_title'] = mb_substr($nt, 0, 60);
+                }
             }
         }
 
-        if (empty($fields)) { $out['skipped']++; $row['action'] = 'تغییری لازم نبود'; $out['items'][] = $row; continue; }
-        if ($dry) { $row['action'] = 'آماده: ' . implode('، ', array_keys($fields)); $out['items'][] = $row; $out['changed']++; continue; }
+        if ($planned === null) {
+            $plan[(string)$pid] = ['delete' => false, 'old_price' => $curPrice,
+                'title' => $title, 'fields' => $fields, 'row' => $row];
+            $saveCheckpoint($n - 1); // طرح پیش از اولین PATCH/PUT امن شد
+        }
+        if (empty($fields)) { $out['skipped']++; $row['action'] = 'تغییری لازم نبود'; $out['items'][] = $row; $saveCheckpoint($n); continue; }
+        if ($dry) { $row['action'] = 'آماده: ' . implode('، ', array_keys($fields)); $out['items'][] = $row; $out['changed']++; $saveCheckpoint($n); continue; }
 
         $r = $target === 'woo' ? wooEditProduct($w, $pid, $fields) : bslEditProduct($tk, $vid, $pid, $fields);
         if (!empty($r['ok'])) { $out['changed']++; $row['action'] = 'انجام شد'; }
         else { $out['failed']++; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0) . ' ' . mb_substr((string)($r['body']['message'] ?? ''), 0, 60); }
         $out['items'][] = $row;
+        $saveCheckpoint($n);
         usleep(250000);
     }
     $out['finished_at'] = time();
@@ -38955,10 +39632,16 @@ function photoFixIndex(?string $onlyProfile = null, ?array &$byKey = null): arra
  * محصولات بی‌تصویر ووکامرس را پیدا و از روی پروفایل عکس‌دار می‌کند.
  * $dry فقط گزارش می‌دهد.
  */
-function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int $maxItems = 2000): array {
+function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int $maxItems = 2000,
+                     ?array $cp = null): array {
+    $cp = is_array($cp) ? $cp : [];
     $w = $cn['woocommerce'] ?? [];
-    $out = ['ok' => true, 'scanned' => 0, 'missing' => 0, 'matched' => 0, 'fixed' => 0,
-            'failed' => 0, 'unmatched' => 0, 'dry' => $dry, 'items' => [], 'started_at' => time()];
+    $out = ['ok' => true, 'scanned' => (int)($cp['scanned'] ?? 0),
+            'missing' => (int)($cp['missing'] ?? 0), 'matched' => (int)($cp['matched'] ?? 0),
+            'fixed' => (int)($cp['fixed'] ?? 0), 'failed' => (int)($cp['failed'] ?? 0),
+            'unmatched' => (int)($cp['unmatched'] ?? 0), 'dry' => $dry,
+            'items' => is_array($cp['items'] ?? null) ? $cp['items'] : [],
+            'started_at' => (int)($cp['started_at'] ?? time())];
     if (empty($w['store_url'])) { $out['ok'] = false; $out['error'] = 'تنظیمات ووکامرس ناقص'; return $out; }
 
     $pfByKey = null;
@@ -38971,15 +39654,32 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
     photoFixProgress(['log_add' => ['🗂 ' . count($idx) . ' تصویر از پروفایل‌ها فهرست شد'
         . (count($pfIdMap) ? ' · ' . count($pfIdMap) . ' شناسهٔ ثبت‌شده' : '')]]);
 
-    $page = 1;
+    $page = max(1, (int)($cp['page'] ?? 1));
+    $startOffset = max(0, (int)($cp['offset'] ?? 0));
+    $savePhotoCheckpoint = function (int $nextPage, int $nextOffset) use (&$out, $onlyProfile, $dry, $cp): void {
+        photoFixProgress(['scanned' => $out['scanned'], 'missing' => $out['missing'],
+            'matched' => $out['matched'], 'fixed' => $out['fixed'], 'failed' => $out['failed'],
+            'unmatched' => $out['unmatched'], 'checkpoint' => [
+                'page' => $nextPage, 'offset' => $nextOffset, 'scanned' => $out['scanned'],
+                'missing' => $out['missing'], 'matched' => $out['matched'], 'fixed' => $out['fixed'],
+                'failed' => $out['failed'], 'unmatched' => $out['unmatched'],
+                'profile' => $onlyProfile, 'dry' => $dry, 'notify' => !empty($cp['notify']),
+                'items' => $out['items'], 'started_at' => $out['started_at']]]);
+    };
     while ($page <= 100 && $out['scanned'] < $maxItems) {
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
                     'products?per_page=100&page=' . $page . '&status=any');
         if (empty($r['ok']) || !is_array($r['body'] ?? null) || empty($r['body'])) break;
+        $itemOffset = 0;
         foreach ($r['body'] as $p) {
+            if ($page === (int)($cp['page'] ?? 1) && $itemOffset < $startOffset) {
+                $itemOffset++;
+                continue;
+            }
+            $itemOffset++;
             $out['scanned']++;
             $imgs = $p['images'] ?? [];
-            if (!empty($imgs) && is_array($imgs)) continue;    // تصویر دارد
+            if (!empty($imgs) && is_array($imgs)) { $savePhotoCheckpoint($page, $itemOffset); continue; }    // تصویر دارد
             $out['missing']++;
             $pid = (int)($p['id'] ?? 0);
             $name = trim((string)($p['name'] ?? ''));
@@ -38992,12 +39692,14 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
             if ($hit === null) {
                 $out['unmatched']++;
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60), 'status' => 'در پروفایل‌ها نبود'];
+                $savePhotoCheckpoint($page, $itemOffset);
                 continue;
             }
             $out['matched']++;
             if ($dry) {
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60),
                     'status' => 'آماده', 'profile' => $hit['profile'], 'image' => $hit['image']];
+                $savePhotoCheckpoint($page, $itemOffset);
                 continue;
             }
             $note = null;
@@ -39008,23 +39710,27 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
             if (empty($payload)) {
                 $out['failed']++;
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60), 'status' => 'تصویر آماده نشد: ' . (string)$note];
+                $savePhotoCheckpoint($page, $itemOffset);
                 continue;
             }
             $u = wooEditProduct($w, $pid, ['images' => $payload]);
             if (empty($u['ok']) && wooIsImageError($u)) {
                 $out['failed']++;
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60), 'status' => 'ووکامرس تصویر را نگرفت'];
+                $savePhotoCheckpoint($page, $itemOffset);
                 continue;
             }
             if (!empty($u['ok'])) { $out['fixed']++;
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60), 'status' => '✅ عکس‌دار شد', 'profile' => $hit['profile']]; }
             else { $out['failed']++;
                 if (count($out['items']) < 200) $out['items'][] = ['id' => $pid, 'title' => mb_substr($name, 0, 60), 'status' => 'خطا ' . (int)$u['code']]; }
+            $savePhotoCheckpoint($page, $itemOffset);
             usleep(200000);
         }
         photoFixProgress(['scanned' => $out['scanned'], 'missing' => $out['missing'],
             'fixed' => $out['fixed'], 'failed' => $out['failed'], 'unmatched' => $out['unmatched'],
             'log_add' => ['📄 صفحهٔ ' . $page . ' — بررسی‌شده ' . $out['scanned'] . '، بی‌تصویر ' . $out['missing'] . '، درست‌شده ' . $out['fixed']]]);
+        $savePhotoCheckpoint($page + 1, 0);
         if (count($r['body']) < 100) break;
         $page++;
     }
@@ -39241,10 +39947,13 @@ function suffixProgress(array $patch): void {
  * برخلاف reconFetchBsl که فقط فعال و غیرفعال را می‌گیرد، اینجا وضعیت
  * تأیید نشده و در انتظار هم لازم است.
  */
-function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80): array {
-    $rows = [];
+function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80, ?array $cp = null): array {
+    $rows = is_array($cp['rows'] ?? null) && (string)($cp['target'] ?? '') === 'bsl'
+        ? array_values(array_filter($cp['rows'], 'is_array')) : [];
+    if (($cp['phase'] ?? '') === 'match' && $rows) return $rows;
+    $startPage = max(1, (int)($cp['page'] ?? 0) + 1);
     $statuses = '&statuses=2976&statuses=3790&statuses=3567&statuses=3568&statuses=4184';
-    for ($page = 1; $page <= $maxPages; $page++) {
+    for ($page = $startPage; $page <= $maxPages; $page++) {
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
              . '&per_page=100' . $statuses);
         if (empty($r['ok'])) break;
@@ -39260,7 +39969,10 @@ function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80): array {
                        'status' => (int)(is_array($st) ? ($st['value'] ?? 0) : $st)];
         }
         suffixProgress(['log_add' => ['📄 باسلام صفحهٔ ' . $page . ': ' . count($batch)
-            . ' محصول (مجموع ' . count($rows) . ')'], 'fetched' => count($rows)]);
+            . ' محصول (مجموع ' . count($rows) . ')'], 'phase' => 'fetch', 'page' => $page,
+            'fetched' => count($rows), 'checkpoint' => ['target' => 'bsl', 'phase' => 'fetch',
+                'page' => $page, 'rows' => $rows, 'notify' => !empty($cp['notify']),
+                'started_at' => (int)($cp['started_at'] ?? time())]]);
         if (count($batch) < 100) break;
         usleep(150000);
     }
@@ -39268,9 +39980,12 @@ function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80): array {
 }
 
 /** همهٔ محصولات ووکامرس با وضعیتشان */
-function suffixFetchWoo(array $w, int $maxPages = 80): array {
-    $rows = [];
-    for ($page = 1; $page <= $maxPages; $page++) {
+function suffixFetchWoo(array $w, int $maxPages = 80, ?array $cp = null): array {
+    $rows = is_array($cp['rows'] ?? null) && (string)($cp['target'] ?? '') === 'woo'
+        ? array_values(array_filter($cp['rows'], 'is_array')) : [];
+    if (($cp['phase'] ?? '') === 'match' && $rows) return $rows;
+    $startPage = max(1, (int)($cp['page'] ?? 0) + 1);
+    for ($page = $startPage; $page <= $maxPages; $page++) {
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
             'products?per_page=100&status=any&page=' . $page);
         if (empty($r['ok']) || !is_array($r['body'])) break;
@@ -39283,7 +39998,10 @@ function suffixFetchWoo(array $w, int $maxPages = 80): array {
                        'wstatus' => (string)($pr['status'] ?? '')];
         }
         suffixProgress(['log_add' => ['📄 ووکامرس صفحهٔ ' . $page . ': ' . count($batch)
-            . ' محصول (مجموع ' . count($rows) . ')'], 'fetched' => count($rows)]);
+            . ' محصول (مجموع ' . count($rows) . ')'], 'phase' => 'fetch', 'page' => $page,
+            'fetched' => count($rows), 'checkpoint' => ['target' => 'woo', 'phase' => 'fetch',
+                'page' => $page, 'rows' => $rows, 'notify' => !empty($cp['notify']),
+                'started_at' => (int)($cp['started_at'] ?? time())]]);
         if (count($batch) < 100) break;
         usleep(150000);
     }
@@ -39355,7 +40073,7 @@ function suffixStatusBucket(array $row, string $target): string {
  * v10.128: هر محصول فقط یک‌بار و با بلندترین پسوند به یک پروفایل نسبت داده
  * می‌شود؛ در صورت نبودن پسوند، دفترچهٔ شناسه fallback است و بقیه در misc می‌آیند.
  */
-function suffixReport(array $cn, string $target, bool $debug = false): array {
+function suffixReport(array $cn, string $target, ?array $cp = null): array {
     $profs = suffixProfiles();
     if (!$profs) return ['ok' => false, 'error' => 'هیچ پروفایلی پسوند عنوان ندارد'];
 
@@ -39370,22 +40088,25 @@ function suffixReport(array $cn, string $target, bool $debug = false): array {
         return mb_strlen(suffixTextNormalize((string)$b['suffix']), 'UTF-8')
             <=> mb_strlen(suffixTextNormalize((string)$a['suffix']), 'UTF-8');
     });
-    suffixProgress(['log_add' => ['🔎 ' . count($wanted) . ' پروفایل با پسوند پیدا شد'
-        . ($debug ? ' · 🐞 فهرست مسیر تطبیق فعال است' : '')]]);
+    suffixProgress(['log_add' => ['🔎 ' . count($wanted) . ' پروفایل با پسوند پیدا شد']]);
 
     if ($target === 'bsl') {
         $tk = (string)($cn['basalam']['token'] ?? '');
         $vid = (int)($cn['basalam']['vendor_id'] ?? 0);
         if ($tk === '' || $vid <= 0) return ['ok' => false, 'error' => 'تنظیمات باسلام ناقص'];
-        $rows = suffixFetchBsl($tk, $vid);
+        $rows = suffixFetchBsl($tk, $vid, 80, $cp);
     } else {
         $w = $cn['woocommerce'] ?? [];
         if (empty($w['store_url'])) return ['ok' => false, 'error' => 'تنظیمات ووکامرس ناقص'];
-        $rows = suffixFetchWoo($w);
+        $rows = suffixFetchWoo($w, 80, $cp);
     }
     if (!$rows) return ['ok' => false, 'error' => 'هیچ محصولی از مقصد دریافت نشد'];
 
-    suffixProgress(['log_add' => ['⚖️ تفکیک بر اساس پسوند (کد:ایکس)...'], 'remote' => count($rows)]);
+    suffixProgress(['log_add' => ['⚖️ تفکیک بر اساس پسوند (کد:ایکس)...'],
+        'phase' => 'match', 'current' => 0, 'total' => count($rows), 'remote' => count($rows),
+        'checkpoint' => ['target' => $target, 'phase' => 'match', 'page' => (int)($cp['page'] ?? 0),
+            'rows' => $rows, 'notify' => !empty($cp['notify']),
+            'started_at' => (int)($cp['started_at'] ?? time())]]);
 
     // v8.65: عنوانِ تغییرنام‌داده‌شده با شناسهٔ ثبت‌شده هم قابل نسبت‌دادن است.
     $sfxIdMap = remoteMapById($target === 'bsl' ? 'bsl' : 'woo');
@@ -39401,7 +40122,7 @@ function suffixReport(array $cn, string $target, bool $debug = false): array {
     $counts = [];
     foreach ($wanted as $wi => $p) $counts[$wi] = ['approved' => 0, 'rejected' => 0,
         'pending' => 0, 'inactive' => 0, 'archived' => 0];
-    $claimed = []; $assigned = []; $byIdTotal = 0; $bySuffixTotal = 0; $debugRows = [];
+    $claimed = []; $assigned = []; $byIdTotal = 0; $bySuffixTotal = 0;
 
     foreach ($rows as $i => $r) {
         $which = -1; $method = ''; $matchedSuffix = '';
@@ -39425,25 +40146,12 @@ function suffixReport(array $cn, string $target, bool $debug = false): array {
             if ($method === 'suffix') $bySuffixTotal++;
             $bucket = suffixStatusBucket($r, $target);
             $counts[$which][$bucket]++;
-            if ($debug) {
-                $debugRows[] = [
-                    'id' => (int)($r['id'] ?? 0), 'title' => (string)($r['title'] ?? ''),
-                    'status' => $target === 'bsl' ? (int)($r['status'] ?? 0) : '',
-                    'wstatus' => $target === 'woo' ? (string)($r['wstatus'] ?? '') : '',
-                    'profile_key' => (string)$wanted[$which]['key'],
-                    'profile' => (string)$wanted[$which]['name'],
-                    'suffix' => $matchedSuffix, 'method' => $method,
-                    'reason' => $method === 'id' ? 'شناسهٔ ثبت‌شده' : 'پسوندِ انتهای عنوان',
-                ];
-            }
-        } elseif ($debug) {
-            $debugRows[] = [
-                'id' => (int)($r['id'] ?? 0), 'title' => (string)($r['title'] ?? ''),
-                'status' => $target === 'bsl' ? (int)($r['status'] ?? 0) : '',
-                'wstatus' => $target === 'woo' ? (string)($r['wstatus'] ?? '') : '',
-                'profile_key' => '', 'profile' => '', 'suffix' => '', 'method' => 'misc',
-                'reason' => 'هیچ پسوند یا شناسه‌ای پیدا نشد',
-            ];
+        }
+        if (($i + 1) % 100 === 0 || $i === count($rows) - 1) {
+            suffixProgress(['current' => $i + 1, 'total' => count($rows),
+                'checkpoint' => ['target' => $target, 'phase' => 'match',
+                    'page' => (int)($cp['page'] ?? 0), 'rows' => $rows,
+                    'notify' => !empty($cp['notify']), 'started_at' => (int)($cp['started_at'] ?? time())]]);
         }
     }
 
@@ -39468,9 +40176,7 @@ function suffixReport(array $cn, string $target, bool $debug = false): array {
     if ($unmatched > 0) suffixProgress(['log_add' => ['🗂 متفرقه‌ها: ' . $unmatched . ' محصول در جدول گزارش می‌شود']]);
     $rep = ['ok' => true, 'target' => $target, 'remote_total' => count($rows),
             'unmatched' => $unmatched, 'misc_total' => $unmatched,
-            'misc' => $misc, 'matched_by_id' => $byIdTotal, 'matched_by_suffix' => $bySuffixTotal, 'profiles' => $out,
-            'debug_enabled' => $debug];
-    if ($debug) { $rep['debug'] = $debugRows; $rep['debug_count'] = count($debugRows); }
+            'misc' => $misc, 'matched_by_id' => $byIdTotal, 'matched_by_suffix' => $bySuffixTotal, 'profiles' => $out];
     return $rep;
 }
 
@@ -39535,9 +40241,18 @@ function profileLocalCount(array $profile): int {
     return $n;
 }
 
-function profileStatsSummary(array $cn): array {
+function profileStatsSummary(array $cn, ?array $cp = null): array {
     @set_time_limit(0);
-    suffixProgress(['log_add' => ['📊 ساخت جدول خلاصهٔ پروفایل‌ها...'], 'phase' => 'start']);
+    $sumCp = is_array($cp) ? $cp : [];
+    $sumTarget = in_array((string)($sumCp['target'] ?? ''), ['summary', 'all'], true)
+        ? (string)$sumCp['target'] : 'summary';
+    $sumStartedAt = (int)($sumCp['started_at'] ?? time());
+    suffixProgress(['log_add' => ['📊 ' . ($sumCp ? 'ادامهٔ ساخت جدول خلاصه از checkpoint' : 'ساخت جدول خلاصهٔ پروفایل‌ها') . '...'],
+        'phase' => 'start', 'checkpoint' => ['target' => $sumTarget,
+            'phase' => 'local', 'woo_rows' => is_array($sumCp['woo_rows'] ?? null) ? $sumCp['woo_rows'] : [],
+            'woo_done' => !empty($sumCp['woo_done']),
+            'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+            'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
 
     $profiles = loadProfiles();
     if (!$profiles) {
@@ -39628,7 +40343,12 @@ function profileStatsSummary(array $cn): array {
         $sb = suffixTextNormalize((string)($rows[$b]['suffix'] ?? ''));
         return mb_strlen($sb, 'UTF-8') <=> mb_strlen($sa, 'UTF-8');
     });
-    suffixProgress(['log_add' => ['✅ ' . count($rows) . ' پروفایل · ' . count($keyOwner) . ' کلید محصول'], 'phase' => 'local']);
+    suffixProgress(['log_add' => ['✅ ' . count($rows) . ' پروفایل · ' . count($keyOwner) . ' کلید محصول'], 'phase' => 'local',
+        'checkpoint' => ['target' => $sumTarget, 'phase' => 'local',
+            'woo_rows' => is_array($sumCp['woo_rows'] ?? null) ? $sumCp['woo_rows'] : [],
+            'woo_done' => !empty($sumCp['woo_done']),
+            'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+            'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
 
     // --- remote_map ownership (woo + bsl default shard) ---
     $map = function_exists('remoteMapLoad') ? remoteMapLoad() : ['woo' => [], 'bsl' => []];
@@ -39663,17 +40383,24 @@ function profileStatsSummary(array $cn): array {
 
     // --- fetch live destinations for title match + fill gaps ---
     $w = $cn['woocommerce'] ?? [];
-    $wooRows = [];
-    $wooErr = '';
-    suffixProgress(['log_add' => ['📥 دریافت ووکامرس...'], 'phase' => 'woo']);
-    try {
-        if (!empty($w['store_url']) || function_exists('wc_get_products')) {
-            $wooRows = function_exists('suffixFetchWoo') ? suffixFetchWoo($w) : (function_exists('reconFetchWoo') ? reconFetchWoo($w) : []);
-        } else {
-            $wooErr = 'تنظیمات ووکامرس ناقص';
+    $wooRows = is_array($sumCp['woo_rows'] ?? null) ? array_values(array_filter($sumCp['woo_rows'], 'is_array')) : [];
+    $wooDone = !empty($sumCp['woo_done']);
+    $wooErr = (string)($sumCp['woo_error'] ?? '');
+    suffixProgress(['log_add' => [$wooDone ? '↻ ووکامرس از checkpoint خوانده شد' : '📥 دریافت ووکامرس...'], 'phase' => 'woo']);
+    if (!$wooDone) {
+        try {
+            if (!empty($w['store_url']) || function_exists('wc_get_products')) {
+                $wooRows = function_exists('suffixFetchWoo') ? suffixFetchWoo($w) : (function_exists('reconFetchWoo') ? reconFetchWoo($w) : []);
+            } else {
+                $wooErr = 'تنظیمات ووکامرس ناقص';
+            }
+        } catch (Throwable $e) {
+            $wooErr = $e->getMessage();
         }
-    } catch (Throwable $e) {
-        $wooErr = $e->getMessage();
+        $wooDone = true;
+        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => 'woo', 'woo_rows' => $wooRows,
+            'woo_done' => true, 'woo_error' => $wooErr, 'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+            'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
     }
     $wooIdMap = function_exists('remoteMapById') ? remoteMapById('woo') : [];
     $claimedWoo = [];
@@ -39795,15 +40522,21 @@ function profileStatsSummary(array $cn): array {
             'log_add' => ['🏪 غرفه ' . $sN . '/' . $sTot . ' — ' . $sname],
             'phase' => 'bsl', 'cur' => $sN, 'cur_total' => $sTot,
         ]);
-        $remote = [];
+        $hasSavedShop = is_array($sumCp['shops'] ?? null) && array_key_exists((string)$vid, $sumCp['shops']);
+        $savedShopRows = $hasSavedShop && is_array($sumCp['shops'][(string)$vid]) ? $sumCp['shops'][(string)$vid] : [];
+        $remote = array_values(array_filter($savedShopRows, 'is_array'));
         try {
-            if ($tok !== '' && $vid > 0) {
+            if (!$hasSavedShop && $tok !== '' && $vid > 0) {
                 $remote = function_exists('suffixFetchBsl') ? suffixFetchBsl($tok, $vid)
                     : (function_exists('reconFetchBsl') ? reconFetchBsl($tok, $vid) : []);
             }
         } catch (Throwable $e) {
             $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
         }
+        $sumCp['shops'][(string)$vid] = $remote;
+        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => 'bsl', 'woo_rows' => $wooRows,
+            'woo_done' => $wooDone, 'woo_error' => $wooErr, 'shops' => $sumCp['shops'], 'shop_index' => $sN,
+            'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
         $seenIds = [];
         // map counts for default already applied; for extra shops map is in shards with same 'bsl' keys per shard
         // recount live for this shop
@@ -40412,6 +41145,25 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             'expected' => 0, 'remote' => 0, 'extra' => [], 'price_diff' => [],
             'missing' => [], // v10.107: در مبدأ هست، در مقصد نیست
             'matched' => 0, 'matched_items' => [], 'deleted' => 0, 'repriced' => 0, 'failed' => 0];
+    /* v10.129: اعمالِ مغایرت هم محصول‌به‌محصول checkpoint می‌شود؛ واکشیِ
+       دوباره فقط داده را می‌سازد و شناسه‌های انجام‌شده دوباره PUT/DELETE نمی‌شوند. */
+    $reconPriceDone = array_values(array_filter(array_map('intval', (array)($cp['price_done_ids'] ?? [])), fn($x) => $x > 0));
+    $reconExtraDone = array_values(array_filter(array_map('intval', (array)($cp['extra_done_ids'] ?? [])), fn($x) => $x > 0));
+    $reconPriceSet = $reconPriceDone ? array_fill_keys($reconPriceDone, true) : [];
+    $reconExtraSet = $reconExtraDone ? array_fill_keys($reconExtraDone, true) : [];
+    $reconStartedAt = (int)($cp['started_at'] ?? time());
+    $saveReconApplyCp = function (string $phase, int $cur, int $total) use (&$reconPriceDone, &$reconExtraDone,
+        &$out, $target, $vendorId, $allProfiles, $apply, $mode, $fixPrice, $reconStartedAt): void {
+        reconProgress(['checkpoint' => ['target' => $target, 'vendor_id' => $vendorId,
+            'all_profiles' => $allProfiles, 'apply' => $apply, 'mode' => $mode, 'fix_price' => $fixPrice,
+            'phase' => $phase, 'price_done_ids' => $reconPriceDone, 'extra_done_ids' => $reconExtraDone,
+            'repriced' => (int)$out['repriced'], 'deleted' => (int)$out['deleted'],
+            'failed' => (int)$out['failed'], 'cur' => $cur, 'cur_total' => $total,
+            'started_at' => $reconStartedAt,
+            'vendor_index' => (int)($cp['vendor_index'] ?? 0),
+            'vendors' => is_array($cp['vendors'] ?? null) ? $cp['vendors'] : [],
+            'aggregate' => is_array($cp['aggregate'] ?? null) ? $cp['aggregate'] : null]]);
+    };
 
     reconProgress(['phase' => 'profiles', 'log_add' => [
         ($shopName !== '' ? ('🏪 غرفه: ' . $shopName . ( $vendorId > 0 ? ' (#' . $vendorId . ')' : '')) : '')
@@ -40592,6 +41344,11 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
     // --- اصلاح قیمت ---
     if ($fixPrice && $out['price_diff']) {
         foreach ($out['price_diff'] as $i => $d) {
+            $did = (int)($d['id'] ?? 0);
+            if ($did > 0 && isset($reconPriceSet[$did])) {
+                $out['price_diff'][$i]['done'] = true;
+                continue;
+            }
             $okRow = false;
             if ($target === 'woo') {
                 $r = wooReq($cn['woocommerce']['store_url'], $cn['woocommerce']['consumer_key'],
@@ -40607,11 +41364,15 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             }
             if ($okRow) $out['repriced']++; else $out['failed']++;
             $out['price_diff'][$i]['done'] = $okRow;
+            if ($did > 0 && !isset($reconPriceSet[$did])) {
+                $reconPriceDone[] = $did; $reconPriceSet[$did] = true;
+            }
             reconProgress(['phase' => 'apply', 'step' => 'price',
                 'repriced' => $out['repriced'], 'failed' => $out['failed'],
                 'cur' => $i + 1, 'cur_total' => count($out['price_diff']),
                 'log_add' => [($okRow ? '💰 ' : '❌ ') . mb_substr($d['title'], 0, 40)
                     . ' — ' . number_format($d['from']) . ' → ' . number_format($d['to'])]]);
+            $saveReconApplyCp('price', $i + 1, count($out['price_diff']));
             usleep(200000);
         }
     }
@@ -40627,6 +41388,11 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             return $out;
         }
         foreach ($out['extra'] as $i => $d) {
+            $did = (int)($d['id'] ?? 0);
+            if ($did > 0 && isset($reconExtraSet[$did])) {
+                $out['extra'][$i]['done'] = true;
+                continue;
+            }
             $okRow = false;
             if ($target === 'woo') {
                 $w = $cn['woocommerce'];
@@ -40654,10 +41420,14 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             }
             if ($okRow) $out['deleted']++; else $out['failed']++;
             $out['extra'][$i]['done'] = $okRow;
+            if ($did > 0 && !isset($reconExtraSet[$did])) {
+                $reconExtraDone[] = $did; $reconExtraSet[$did] = true;
+            }
             reconProgress(['phase' => 'apply', 'step' => 'extra',
                 'deleted' => $out['deleted'], 'failed' => $out['failed'],
                 'cur' => $i + 1, 'cur_total' => count($out['extra']),
                 'log_add' => [($okRow ? '🗑 ' : '❌ ') . mb_substr($d['title'], 0, 45)]]);
+            $saveReconApplyCp('extra', $i + 1, count($out['extra']));
             usleep(200000);
         }
     }
@@ -40702,63 +41472,61 @@ function reconRun(array $cn, string $target, bool $apply = false,
         return ['ok' => false, 'error' => 'هیچ غرفهٔ فعالی برای مغایرت‌گیری نیست', 'target' => 'bsl'];
     }
 
-    $agg = ['ok' => true, 'target' => 'bsl', 'apply' => $apply, 'mode' => $mode,
+    /* v10.129: هر غرفه checkpoint و جمع‌بندیِ مستقل دارد. */
+    $seedAgg = is_array($cp['aggregate'] ?? null) ? $cp['aggregate'] : [];
+    $agg = array_merge(['ok' => true, 'target' => 'bsl', 'apply' => $apply, 'mode' => $mode,
             'all_profiles' => $allProfiles, 'all_vendors' => true,
             'shops' => [], 'expected' => 0, 'remote' => 0,
-            'extra' => [], 'price_diff' => [], 'missing' => [],
-            'matched' => 0, 'matched_items' => [],
+            'extra' => [], 'price_diff' => [], 'missing' => [], 'matched' => 0, 'matched_items' => [],
             'deleted' => 0, 'repriced' => 0, 'failed' => 0,
-            'missing_total' => 0, 'extra_total' => 0, 'price_diff_total' => 0];
-
+            'missing_total' => 0, 'extra_total' => 0, 'price_diff_total' => 0], $seedAgg);
+    $vendorState = is_array($cp['vendors'] ?? null) ? $cp['vendors'] : [];
+    $currentCp = is_array($cp) && (int)($cp['vendor_id'] ?? 0) > 0 ? $cp : null;
     reconProgress(['log_add' => ['🚚 مغایرت‌گیری همهٔ غرفه‌ها — ' . count($shops) . ' غرفه']]);
 
     foreach ($shops as $si => $sh) {
         $vid = (int)$sh['vendor_id'];
         $name = (string)$sh['shop_name'];
         $tok = (string)$sh['token'];
+        $vs = is_array($vendorState[(string)$vid] ?? null) ? $vendorState[(string)$vid] : [];
+        if (!empty($vs['done'])) continue;
+        $oneCp = is_array($vs['checkpoint'] ?? null) ? $vs['checkpoint'] : null;
+        if ($oneCp === null && $currentCp !== null && (int)($currentCp['vendor_id'] ?? 0) === $vid) $oneCp = $currentCp;
         reconProgress(['log_add' => ['——— غرفه ' . ($si + 1) . '/' . count($shops) . ': ' . $name . ' (#' . $vid . ') ———']]);
-        $one = reconRunOne($cn, 'bsl', $apply, $mode, $fixPrice, $allProfiles, $vid, $name, $tok, $cp);
-        $agg['shops'][] = [
-            'vendor_id' => $vid, 'shop_name' => $name, 'ok' => !empty($one['ok']),
-            'error' => (string)($one['error'] ?? ''),
-            'remote' => (int)($one['remote'] ?? 0),
-            'extra' => count($one['extra'] ?? []),
-            'diff' => count($one['price_diff'] ?? []),
+        $childCp = is_array($oneCp) ? $oneCp : [];
+        $childCp['vendor_id'] = $vid; $childCp['vendor_index'] = $si;
+        $childCp['vendors'] = $vendorState; $childCp['aggregate'] = $agg;
+        $one = reconRunOne($cn, 'bsl', $apply, $mode, $fixPrice, $allProfiles, $vid, $name, $tok, $childCp);
+        $oneSummary = ['vendor_id' => $vid, 'shop_name' => $name, 'ok' => !empty($one['ok']),
+            'error' => (string)($one['error'] ?? ''), 'remote' => (int)($one['remote'] ?? 0),
+            'extra' => count($one['extra'] ?? []), 'diff' => count($one['price_diff'] ?? []),
             'missing' => (int)($one['missing_total'] ?? count($one['missing'] ?? [])),
-            'matched' => (int)($one['matched'] ?? 0),
-            'repriced' => (int)($one['repriced'] ?? 0),
-            'deleted' => (int)($one['deleted'] ?? 0),
-        ];
+            'matched' => (int)($one['matched'] ?? 0), 'repriced' => (int)($one['repriced'] ?? 0),
+            'deleted' => (int)($one['deleted'] ?? 0)];
+        $agg['shops'][] = $oneSummary;
         if (empty($one['ok']) && empty($agg['error'])) $agg['error'] = (string)($one['error'] ?? '');
-        // اگر حداقل یکی ok باشد، agg.ok می‌ماند true مگر همه fail
         $agg['remote'] += (int)($one['remote'] ?? 0);
         $agg['expected'] = max($agg['expected'], (int)($one['expected'] ?? 0));
-        $agg['matched'] += (int)($one['matched'] ?? 0);
-        $agg['repriced'] += (int)($one['repriced'] ?? 0);
-        $agg['deleted'] += (int)($one['deleted'] ?? 0);
-        $agg['failed'] += (int)($one['failed'] ?? 0);
+        $agg['matched'] += (int)($one['matched'] ?? 0); $agg['repriced'] += (int)($one['repriced'] ?? 0);
+        $agg['deleted'] += (int)($one['deleted'] ?? 0); $agg['failed'] += (int)($one['failed'] ?? 0);
         $agg['missing_total'] += (int)($one['missing_total'] ?? count($one['missing'] ?? []));
-        foreach (['extra', 'price_diff', 'missing', 'matched_items'] as $k) {
-            foreach ((array)($one[$k] ?? []) as $row) {
-                if (count($agg[$k]) < 900) $agg[$k][] = $row;
-            }
-        }
-        if (!empty($one['profile_stats']) && empty($agg['profile_stats']))
-            $agg['profile_stats'] = $one['profile_stats'];
+        foreach (['extra', 'price_diff', 'missing', 'matched_items'] as $k)
+            foreach ((array)($one[$k] ?? []) as $row) if (count($agg[$k]) < 900) $agg[$k][] = $row;
+        if (!empty($one['profile_stats']) && empty($agg['profile_stats'])) $agg['profile_stats'] = $one['profile_stats'];
         $agg['matched_by_id'] = (int)($agg['matched_by_id'] ?? 0) + (int)($one['matched_by_id'] ?? 0);
         $agg['no_src_price'] = (int)($agg['no_src_price'] ?? 0) + (int)($one['no_src_price'] ?? 0);
+        $vendorState[(string)$vid] = ['done' => true, 'checkpoint' => null, 'summary' => $oneSummary];
+        reconProgress(['checkpoint' => ['target' => 'bsl', 'vendor_id' => 0, 'vendor_index' => $si + 1,
+            'vendors' => $vendorState, 'aggregate' => $agg, 'started_at' => (int)($cp['started_at'] ?? time())]]);
     }
 
     $anyOk = false;
-    foreach ($agg['shops'] as $s) if (!empty($s['ok'])) { $anyOk = true; break; }
+    foreach ($agg['shops'] as $shopRow) if (!empty($shopRow['ok'])) { $anyOk = true; break; }
     $agg['ok'] = $anyOk;
     if (!$anyOk && empty($agg['error'])) $agg['error'] = 'مغایرت‌گیری هیچ غرفه‌ای موفق نبود';
-
     reconProgress(['log_add' => ['🏁 جمع همهٔ غرفه‌ها: مقصد ' . $agg['remote']
-        . ' · اضافی ' . count($agg['extra'])
-        . ' · مغایرت ' . count($agg['price_diff'])
+        . ' · اضافی ' . count($agg['extra']) . ' · مغایرت ' . count($agg['price_diff'])
         . ' · در مقصد نیست ' . $agg['missing_total']]]);
-
     return $agg;
 }
 
@@ -41069,9 +41837,17 @@ function reconAutoTick(array $cn, int $now = 0): array {
     if (empty($cfg['enabled'])) { $out['skipped'] = 'disabled'; return $out; }
 
     $st = reconAutoStateLoad();
+    /* v10.130: یک اجرای دوره‌ای که وسط کار مرده، نباید به‌خاطر فاصلهٔ
+       زمانیِ تنظیم‌شده تا چند ساعت نادیده بماند یا از صفحهٔ اول شروع شود.
+       checkpoint مقصد/غرفه را پیش از نوشتنِ state تازه می‌خوانیم. */
+    $oldRecon = function_exists('reconProgressRead') ? reconProgressRead() : [];
+    $oldReconCp = is_array($oldRecon['checkpoint'] ?? null) ? $oldRecon['checkpoint'] : null;
+    $resumeTarget = (string)($oldRecon['target'] ?? ($oldReconCp['target'] ?? ''));
+    $resumeRecon = $oldReconCp !== null && $resumeTarget !== ''
+        && (empty($oldRecon['done']) || !empty($oldRecon['stale']));
     $last = (int)($st['last_run'] ?? 0);
     $ivSec = max(3600, (int)$cfg['interval_h'] * 3600);
-    if ($last > 0 && ($now - $last) < $ivSec) {
+    if (!$resumeRecon && $last > 0 && ($now - $last) < $ivSec) {
         $out['skipped'] = 'not_due';
         $out['next_in'] = $ivSec - ($now - $last);
         return $out;
@@ -41083,26 +41859,45 @@ function reconAutoTick(array $cn, int $now = 0): array {
         $out['skipped'] = 'busy'; return $out;
     }
 
-    $st['last_run'] = $now;
-    $st['last_start'] = $now;
-    reconAutoStateSave($st);
+    /* v10.130: the mtime check above is only a fast path; flock is the
+       actual protection against a manual/recovery recon starting alongside
+       this scheduled run. Hold it through matrix build/fix as well. */
+    $reconLockFp = @fopen($lockFile, 'c');
+    if (!$reconLockFp || !flock($reconLockFp, LOCK_EX | LOCK_NB)) {
+        if ($reconLockFp) @fclose($reconLockFp);
+        $out['skipped'] = 'busy'; return $out;
+    }
+    try {
+        $st['last_run'] = $now;
+        $st['last_start'] = $now;
+        reconAutoStateSave($st);
 
-    $results = [];
+        $results = [];
     $targets = [];
     if (!empty($cfg['woo'])) $targets[] = 'woo';
     if (!empty($cfg['bsl'])) $targets[] = 'bsl';
+    /* اجرای نیمه‌کاره اولویت دارد؛ پس از پایان آن، مقصد بعدی طبق تنظیمات
+       اجرا می‌شود. فقط checkpoint همان مقصد به reconRun داده می‌شود. */
+    if ($resumeRecon && in_array($resumeTarget, $targets, true)) {
+        $targets = array_values(array_unique(array_merge([$resumeTarget], $targets)));
+    }
 
+    $reconBlocked = false;
     foreach ($targets as $t) {
         try {
+            $reconCp = ($resumeRecon && $resumeTarget === $t) ? $oldReconCp : null;
             reconProgress(['running' => true, 'done' => false, 'target' => $t,
-                'apply' => !empty($cfg['apply']), 'started_at' => time(),
-                'log_add' => ['⏰ مغایرت‌گیری دوره‌ای — ' . ($t === 'woo' ? 'ووکامرس' : 'باسلام')]]);
+                'apply' => !empty($cfg['apply']), 'started_at' => (int)($reconCp['started_at'] ?? time()),
+                'phase' => $reconCp !== null ? 'resume' : 'start', 'checkpoint' => $reconCp ?: [
+                    'target' => $t, 'all_profiles' => !empty($cfg['all_profiles']), 'started_at' => time()],
+                'log_add' => ['⏰ ' . ($reconCp !== null ? 'ادامه مغایرت‌گیری دوره‌ای — ' : 'مغایرت‌گیری دوره‌ای — ')
+                    . ($t === 'woo' ? 'ووکامرس' : 'باسلام')]]);
             /* v10.121: با matrix_fix روشن، apply/قیمت legacy خاموش تا دو بار حذف نشود */
             $_legacyApply = !empty($cfg['apply']) && empty($cfg['matrix_fix']);
             $_legacyFixP = !empty($cfg['fix_price']) && empty($cfg['matrix_fix']);
             $res = reconRun($cn, $t, $_legacyApply, (string)$cfg['extra_mode'],
                 $_legacyFixP, !empty($cfg['all_profiles']),
-                $t === 'bsl' && !empty($cfg['all_vendors']), 0);
+                $t === 'bsl' && !empty($cfg['all_vendors']), 0, $reconCp);
             foreach (['extra', 'price_diff', 'matched_items', 'missing'] as $k) {
                 $res[$k . '_total'] = $k === 'missing'
                     ? (int)($res['missing_total'] ?? count($res[$k] ?? []))
@@ -41147,13 +41942,30 @@ function reconAutoTick(array $cn, int $now = 0): array {
             }
             @file_put_contents(__DIR__ . '/recon_result.json',
                 json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
-            reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
+            $reconFailed = empty($res['ok']);
+            if ($reconFailed) $reconBlocked = true;
+            $reconEndState = function_exists('reconProgressRead') ? reconProgressRead() : [];
+            reconProgress(['running' => false, 'done' => true, 'phase' => $reconFailed ? 'partial' : 'done',
+                'stale' => $reconFailed,
                 'extra' => (int)$results[$t]['extra'], 'diff' => (int)$results[$t]['diff'],
                 'matched' => (int)$results[$t]['matched'], 'missing' => (int)$results[$t]['missing'],
-                'result_ok' => !empty($res['ok']), 'error' => $res['error'] ?? '',
-                'log_add' => ['✅ پایان مغایرت‌گیری دوره‌ای ' . $t]]);
+                'result_ok' => !$reconFailed, 'error' => $res['error'] ?? '',
+                'checkpoint' => $reconFailed && is_array($reconEndState['checkpoint'] ?? null)
+                    ? $reconEndState['checkpoint'] : null,
+                'log_add' => [$reconFailed ? ('⚠️ مغایرت‌گیری دوره‌ای ' . $t
+                    . ' ناقص ماند — checkpoint حفظ شد') : ('✅ پایان مغایرت‌گیری دوره‌ای ' . $t)]]);
+            /* فایل progress فقط یک checkpoint دارد؛ مقصد بعدی نباید checkpoint
+               مقصد ناموفق را بپوشاند. کران بعدی همان مقصد را resume می‌کند. */
+            if ($reconFailed) break;
         } catch (\Throwable $e) {
             $results[$t] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 200)];
+            $errState = function_exists('reconProgressRead') ? reconProgressRead() : [];
+            reconProgress(['running' => false, 'done' => true, 'stale' => true,
+                'error' => $e->getMessage(),
+                'checkpoint' => is_array($errState['checkpoint'] ?? null) ? $errState['checkpoint'] : null,
+                'log_add' => ['❌ مغایرت‌گیری دوره‌ای: ' . mb_substr($e->getMessage(), 0, 180)
+                    . ' — checkpoint حفظ شد']]);
+            break;
         }
     }
 
@@ -41166,7 +41978,7 @@ function reconAutoTick(array $cn, int $now = 0): array {
     /* v10.121: مسیر اصلی مغایرت دوره‌ای = جدول + matrixFix */
     $wantMatrix = !empty($cfg['build_matrix']) || !empty($cfg['apply']) || !empty($cfg['fix_price'])
         || !empty($cfg['enqueue_missing']) || (isset($cfg['matrix_fix']) ? !empty($cfg['matrix_fix']) : true);
-    if ($wantMatrix && function_exists('matrixJobRun')) {
+    if (!$reconBlocked && $wantMatrix && function_exists('matrixJobRun')) {
         try {
             reconProgress(['log_add' => ['📊 ساخت جدول مقایسه (مسیر ماتریس)…']]);
             $mx = matrixJobRun(['source' => 'recon_auto', 'background' => false, 'profile' => 'all']);
@@ -41194,7 +42006,7 @@ function reconAutoTick(array $cn, int $now = 0): array {
 
     $doFix = !empty($cfg['apply']) || !empty($cfg['fix_price']) || !empty($cfg['enqueue_missing'])
         || !empty($cfg['matrix_fix']);
-    if ($doFix && !empty($out['matrix']['ok']) && function_exists('matrixFixRun')) {
+    if (!$reconBlocked && $doFix && !empty($out['matrix']['ok']) && function_exists('matrixFixRun')) {
         try {
             $scope = 'all';
             if (!empty($cfg['woo']) && empty($cfg['bsl'])) $scope = 'woo';
@@ -41279,20 +42091,6 @@ function catfixAutoTick(array $cn, int $now = 0): array {
     if (empty($cfg['enabled'])) { $out['skipped'] = 'disabled'; return $out; }
 
     $st = catfixAutoStateLoad();
-    $last = (int)($st['last_run'] ?? 0);
-    $ivSec = max(3600, (int)$cfg['interval_h'] * 3600);
-    if ($last > 0 && ($now - $last) < $ivSec) {
-        $out['skipped'] = 'not_due';
-        $out['next_in'] = $ivSec - ($now - $last);
-        return $out;
-    }
-    if (is_file(CATFIX_LOCK_FILE) && (time() - (int)@filemtime(CATFIX_LOCK_FILE)) < 900) {
-        $out['skipped'] = 'busy'; return $out;
-    }
-
-    $st['last_run'] = $now;
-    catfixAutoStateSave($st);
-
     $mode = (string)$cfg['mode'];
     $opts = [
         'quorum' => (int)$cfg['quorum'],
@@ -41300,18 +42098,50 @@ function catfixAutoTick(array $cn, int $now = 0): array {
         'all_vendors' => !empty($cfg['all_vendors']),
         'periodic' => true,
     ];
+    // learned-only mode: force use_learn and light AI fallback
+    if ($mode === 'learned') {
+        $opts['use_learn'] = true;
+        $mode = 'master'; // AI fallback when learn misses
+        $opts['learn_first'] = true;
+    }
+    $oldCat = is_file(CATFIX_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
+    $oldCatCp = is_array($oldCat['checkpoint'] ?? null) ? $oldCat['checkpoint'] : null;
+    $catResume = $oldCatCp !== null && (string)($oldCat['mode'] ?? $mode) === $mode
+        && (empty($oldCat['done']) || !empty($oldCat['stale']) || !empty($oldCat['stopped']));
+    $last = (int)($st['last_run'] ?? 0);
+    $ivSec = max(3600, (int)$cfg['interval_h'] * 3600);
+    if (!$catResume && $last > 0 && ($now - $last) < $ivSec) {
+        $out['skipped'] = 'not_due';
+        $out['next_in'] = $ivSec - ($now - $last);
+        return $out;
+    }
+    if (is_file(CATFIX_LOCK_FILE) && (time() - (int)@filemtime(CATFIX_LOCK_FILE)) < 900) {
+        $out['skipped'] = 'busy'; return $out;
+    }
+    /* v10.130: scheduled catfix uses the same exclusive lock and checkpoint
+       as the manual endpoint, so a stale manual worker cannot be replaced
+       by a fresh periodic run and two category PATCH loops cannot overlap. */
+    $catLockFp = @fopen(CATFIX_LOCK_FILE, 'c');
+    if (!$catLockFp || !flock($catLockFp, LOCK_EX | LOCK_NB)) {
+        if ($catLockFp) @fclose($catLockFp);
+        $out['skipped'] = 'busy'; return $out;
+    }
+    $st['last_run'] = $now;
+    catfixAutoStateSave($st);
+    $catStartedAt = (int)($oldCatCp['started_at'] ?? time());
+    catfixProgress(['running' => true, 'done' => false, 'stale' => false, 'mode' => $mode,
+        'started_at' => $catStartedAt, 'phase' => $catResume ? 'resume' : 'start',
+        'checkpoint' => $oldCatCp ?: ['started_at' => $catStartedAt],
+        'log_add' => [$catResume ? '↻ ادامهٔ خودکار اصلاح دسته از checkpoint' : '⏰ شروع اصلاح دوره‌ای دسته']]);
+    /* یک stop قدیمی نباید resume خودکارِ کران بعدی را فوراً متوقف کند. */
+    catfixClearStop();
 
     try {
         if (!function_exists('catfixRun')) {
             $out['ok'] = false; $out['error'] = 'catfixRun missing'; return $out;
         }
-        // learned-only mode: force use_learn and light AI fallback
-        if ($mode === 'learned') {
-            $opts['use_learn'] = true;
-            $mode = 'master'; // AI fallback when learn misses
-            $opts['learn_first'] = true;
-        }
-        $rep = catfixRun($cn, $mode, $opts);
+        $rep = catfixRun($cn, $mode, $opts, $catResume ? $oldCatCp : null);
         $out['ran'] = true;
         $out['report'] = [
             'ok' => !empty($rep['ok']),
@@ -41339,8 +42169,31 @@ function catfixAutoTick(array $cn, int $now = 0): array {
     } catch (\Throwable $e) {
         $out['ok'] = false;
         $out['error'] = mb_substr($e->getMessage(), 0, 200);
+        $catErr = is_file(CATFIX_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
+        catfixProgress(['running' => false, 'done' => true, 'stale' => true,
+            'error' => $out['error'],
+            'checkpoint' => is_array($catErr['checkpoint'] ?? null) ? $catErr['checkpoint'] : null,
+            'log_add' => ['❌ اصلاح دوره‌ای دسته: ' . $out['error'] . ' — checkpoint حفظ شد']]);
+    } finally {
+        @flock($catLockFp, LOCK_UN); @fclose($catLockFp); @unlink(CATFIX_LOCK_FILE);
     }
-    return $out;
+    /* catfixRun itself is also used by the manual endpoint and therefore
+       returns a report rather than closing the task card. Close this periodic
+       invocation explicitly, retaining a stopped/failed checkpoint. */
+    if (isset($rep) && is_array($rep)) {
+        $catLast = is_file(CATFIX_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
+        $catKeep = empty($rep['ok']) || !empty($rep['stopped']) || !empty($rep['partial']);
+        catfixProgress(['running' => false, 'done' => true, 'stale' => $catKeep,
+            'stopped' => !empty($rep['stopped']), 'result_ok' => !empty($rep['ok']),
+            'checkpoint' => $catKeep && is_array($catLast['checkpoint'] ?? null)
+                ? $catLast['checkpoint'] : null]);
+    }
+        return $out;
+    } finally {
+        @flock($reconLockFp, LOCK_UN); @fclose($reconLockFp); @unlink($lockFile);
+    }
 }
 
 
@@ -43204,7 +44057,7 @@ if (!empty($st['running']) && empty($st['done'])) {
     $stAt = (int)($st['updated_at'] ?? $st['started_at'] ?? 0);
     $idle = $stAt > 0 ? (time() - $stAt) : PHP_INT_MAX;
     $stall = max(120, (int)(loadConnections()['ai_test_stall_sec'] ?? 300));
-    if ($idle > $stall) {
+    if ($idle > $stall && !aiTestLockHeld()) {
         $st['running'] = false;
         $st['done'] = true;
         $st['stopped'] = true;
@@ -44241,6 +45094,13 @@ function aiRunTestBackground(int $per, bool $onlyUntested, string $testMsg = 'س
  * ===================================================================== */
 if (isset($_GET['ai_test_unstick'])) {
 header('Content-Type: application/json; charset=UTF-8');
+$aiTestLockFp = aiTestLockOpen();
+if (!$aiTestLockFp) {
+    echo json_encode(['ok' => false, 'running' => true,
+        'error' => 'تستِ مدل‌ها هنوز قفلِ فعال دارد — اجرای موازی ساخته نشد'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+register_shutdown_function(function () use ($aiTestLockFp) { aiTestLockClose($aiTestLockFp); });
 $st = aiTestStateLoad();
 $stAt = (int)($st['updated_at'] ?? $st['started_at'] ?? 0);
 $idle = $stAt > 0 ? (time() - $stAt) : PHP_INT_MAX;
@@ -44283,6 +45143,13 @@ exit;
 
 if (isset($_GET['ai_test_start']) || isset($_GET['ai_test_all'])) {
 header('Content-Type: application/json; charset=UTF-8');
+$aiTestLockFp = aiTestLockOpen();
+if (!$aiTestLockFp) {
+    echo json_encode(['ok' => false, 'running' => true,
+        'error' => 'تستِ مدل‌ها هنوز قفلِ فعال دارد — اجرای موازی ساخته نشد'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+register_shutdown_function(function () use ($aiTestLockFp) { aiTestLockClose($aiTestLockFp); });
 $per = max(1, min(500, (int)($_GET['per_provider'] ?? 50)));
 $onlyUntested = !empty($_GET['only_untested']);
 // v9.52: پیام تست و دستهٔ تستِ قابل‌تنظیم (پیش‌فرض «سلام» و «ادو پرفیوم»)
@@ -44491,13 +45358,22 @@ if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_s
     aicontentClearStop();
     $cn = loadConnections();
     $lim = max(1, min(80, (int)($_REQUEST['limit'] ?? (aiContentAutoCfg($cn)['per_run'] ?? 8))));
+    $contentCp = null;
+    if (!empty($_REQUEST['resume']) && is_file(AICONTENT_PROGRESS_FILE)) {
+        $oldContent = json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true);
+        $oldContentCp = is_array($oldContent['checkpoint'] ?? null) ? $oldContent['checkpoint'] : null;
+        if (is_array($oldContentCp) && (int)($oldContentCp['limit'] ?? $lim) === $lim) $contentCp = $oldContentCp;
+    }
     @unlink(AICONTENT_PROGRESS_FILE);
     @unlink(AICONTENT_RESULT_FILE);
     aicontentProgress([
-        'running' => true, 'done' => false, 'started_at' => time(),
-        'total' => 0, 'current' => 0, 'filled' => 0, 'failed' => 0, 'skipped' => 0,
-        'phase' => 'start', 'limit' => $lim,
-        'log_add' => ['🚀 صف توضیح‌ساز آماده شد (سقف ' . $lim . ')'],
+        'running' => true, 'done' => false, 'started_at' => (int)($contentCp['started_at'] ?? time()),
+        'total' => 0, 'current' => (int)($contentCp['current'] ?? 0),
+        'filled' => (int)($contentCp['filled'] ?? 0), 'failed' => (int)($contentCp['failed'] ?? 0),
+        'skipped' => (int)($contentCp['skipped'] ?? 0), 'phase' => 'start', 'limit' => $lim,
+        'checkpoint' => $contentCp ?: ['limit' => $lim, 'started_at' => time(), 'scanned' => 0,
+            'filled' => 0, 'failed' => 0, 'skipped' => 0, 'current' => 0],
+        'log_add' => ['🚀 ' . ($contentCp ? 'ادامه صف توضیح‌ساز از checkpoint' : 'صف توضیح‌ساز آماده شد') . ' (سقف ' . $lim . ')'],
     ]);
     $early = json_encode(['ok' => true, 'started' => true, 'limit' => $lim], JSON_UNESCAPED_UNICODE);
     header('Connection: close');
@@ -44510,24 +45386,33 @@ if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_s
     });
     try {
         $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
-        $rep = aicontentRun($cn, $lim);
+        $rep = aicontentRun($cn, $lim, $contentCp);
     } catch (Throwable $e) {
-        aicontentProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
+        $contentErrState = is_file(AICONTENT_PROGRESS_FILE)
+            ? json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true) : [];
+        aicontentProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+            'checkpoint' => is_array($contentErrState['checkpoint'] ?? null) ? $contentErrState['checkpoint'] : null,
             'log_add' => ['❌ ' . $e->getMessage()]]);
         aicontentClearStop();
         exit;
     }
     @file_put_contents(AICONTENT_RESULT_FILE, json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $stopped = aicontentStopRequested();
+    $contentLastState = is_file(AICONTENT_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true) : [];
+    $contentKeepCp = $stopped || empty($rep['ok']);
     aicontentClearStop();
     aicontentProgress([
         'running' => false, 'done' => true, 'stopped' => $stopped,
+        'stale' => $contentKeepCp,
         'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
         'filled' => $rep['filled'] ?? 0, 'failed' => $rep['failed'] ?? 0,
         'skipped' => $rep['skipped'] ?? 0,
         'total' => max((int)($rep['needed'] ?? 0), (int)($rep['scanned'] ?? 0)),
         'current' => (int)($rep['scanned'] ?? 0),
         'phase' => 'done',
+        'checkpoint' => $contentKeepCp && is_array($contentLastState['checkpoint'] ?? null)
+            ? $contentLastState['checkpoint'] : null,
         'log_add' => [empty($rep['ok']) ? ('❌ ' . ($rep['error'] ?? 'ناموفق')) : ('🏁 ' . ($rep['msg'] ?? 'پایان'))],
     ]);
     exit;
@@ -48747,7 +49632,7 @@ if($i<$startIndex){continue;}
 $pTitle=trim($p['title']??$p['name']??'');
 $pKey=$p['key']??'';
 $n=$i+1;
-if($i===0){bslUpdateProgress($sent,$updated,$skipped,$fail,$total,$n,mb_substr($pTitle,0,40),null,['debug_title'=>$p['title']??'MISSING','debug_name'=>$p['name']??'MISSING','computed'=>$pTitle]);}
+
 if($pTitle===''){$fail++;$bslFailedList[]=['title'=>'','key'=>$pKey,'error'=>'عنوان خالی'];bslUpdateProgress($sent,$updated,$skipped,$fail,$total,$n,'',"[{$n}] ❌ عنوان خالی - محصول رد شد");continue;}
 $titleWords=preg_split('/\s+/u',$pTitle);
 if(mb_strlen($pTitle)<6||count($titleWords)<2){$fail++;$bslFailedList[]=['title'=>$pTitle,'key'=>$pKey,'error'=>'عنوان کوتاه ('.count($titleWords).' کلمه, '.mb_strlen($pTitle).' حرف)'];bslUpdateProgress($sent,$updated,$skipped,$fail,$total,$n,mb_substr($pTitle,0,30),"[{$n}] ❌ عنوان کوتاه: '".$pTitle."' (".count($titleWords).' کلمه');continue;}
@@ -50456,38 +51341,75 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
     if ($allVendors && empty($opts['product_id'])) {
         $shops = function_exists('bslAllShops') ? bslAllShops($cn) : [];
         if (count($shops) > 1) {
-            catfixProgress(['log_add' => ['🚚 اصلاح دسته برای ' . count($shops) . ' غرفه']]);
-            $agg = ['ok' => true, 'mode' => $mode, 'total' => 0, 'fixed' => 0, 'failed' => 0,
+            /* v10.129: checkpointِ چندغرفه‌ای یک‌جا برای همهٔ غرفه‌ها نیست.
+               هر غرفه وضعیتِ مستقلِ خود (done_ids و شمارنده‌ها) دارد؛ بنابراین
+               قطع وسطِ غرفهٔ دوم نه غرفهٔ اول را دوباره PATCH می‌کند و نه باعث
+               می‌شود غرفهٔ دوم از اولِ فهرست شروع شود. */
+            $seedAgg = is_array($cp['aggregate'] ?? null) ? $cp['aggregate'] : [];
+            $agg = array_merge(['ok' => true, 'mode' => $mode, 'total' => 0, 'fixed' => 0, 'failed' => 0,
                     'no_ai' => 0, 'no_cat' => 0, 'skip_same' => 0, 'skip_tried' => 0,
                     'asked' => 0, 'cache_hits' => 0, 'learned_hits' => 0, 'items' => [],
-                    'shops' => [], 'took' => 0, 'at' => time()];
-            foreach ($shops as $sh) {
-                $ov = $opts;
-                $ov['all_vendors'] = false;
-                $ov['vendor_id'] = (int)$sh['vendor_id'];
-                $ov['_shop_token'] = (string)$sh['token'];
-                $ov['_shop_name'] = (string)$sh['shop_name'];
-                catfixProgress(['log_add' => ['——— ' . $sh['shop_name'] . ' (#' . $sh['vendor_id'] . ') ———']]);
-                // temporarily swap default vendor into a shallow cn copy
-                $cn2 = $cn;
-                $cn2['basalam'] = is_array($cn['basalam'] ?? null) ? $cn['basalam'] : [];
-                $cn2['basalam']['token'] = (string)$sh['token'];
-                $cn2['basalam']['vendor_id'] = (int)$sh['vendor_id'];
-                $one = catfixRun($cn2, $mode, $ov);
-                $agg['shops'][] = ['vendor_id' => (int)$sh['vendor_id'], 'shop_name' => (string)$sh['shop_name'],
+                    'shops' => [], 'took' => 0, 'at' => time()], $seedAgg);
+            $vendorState = is_array($cp['vendors'] ?? null) ? $cp['vendors'] : [];
+            $addVendor = function (array $one, array $sh) use (&$agg): void {
+                $vid0 = (int)($sh['vendor_id'] ?? 0);
+                $nm0 = (string)($sh['shop_name'] ?? ('غرفهٔ ' . $vid0));
+                $agg['shops'][] = ['vendor_id' => $vid0, 'shop_name' => $nm0,
                     'ok' => !empty($one['ok']), 'fixed' => (int)($one['fixed'] ?? 0),
                     'total' => (int)($one['total'] ?? 0), 'failed' => (int)($one['failed'] ?? 0),
                     'learned_hits' => (int)($one['learned_hits'] ?? 0)];
                 foreach (['total','fixed','failed','no_ai','no_cat','skip_same','skip_tried','asked','cache_hits','learned_hits'] as $k)
                     $agg[$k] += (int)($one[$k] ?? 0);
                 foreach ((array)($one['items'] ?? []) as $it) {
-                    if (count($agg['items']) < 500) {
-                        $it['shop_name'] = (string)$sh['shop_name'];
-                        $it['vendor_id'] = (int)$sh['vendor_id'];
-                        $agg['items'][] = $it;
-                    }
+                    if (count($agg['items']) >= 500) break;
+                    $it['shop_name'] = $nm0; $it['vendor_id'] = $vid0; $agg['items'][] = $it;
                 }
                 if (empty($one['ok']) && empty($agg['error'])) $agg['error'] = (string)($one['error'] ?? '');
+            };
+            $currentCp = is_array($cp) && (int)($cp['vendor_id'] ?? 0) > 0 ? $cp : null;
+            foreach ($shops as $shopIndex => $sh) {
+                if (!is_array($sh)) continue;
+                $vid0 = (int)($sh['vendor_id'] ?? 0);
+                $tok0 = trim((string)($sh['token'] ?? ''));
+                if ($vid0 <= 0 || $tok0 === '') continue;
+                $state0 = is_array($vendorState[(string)$vid0] ?? null) ? $vendorState[(string)$vid0] : [];
+                if (!empty($state0['done'])) continue; // already included in aggregate
+                $vendorCp = is_array($state0['checkpoint'] ?? null) ? $state0['checkpoint'] : null;
+                if ($vendorCp === null && $currentCp !== null && (int)($currentCp['vendor_id'] ?? 0) === $vid0)
+                    $vendorCp = $currentCp;
+                $ov = $opts;
+                $ov['all_vendors'] = false; $ov['vendor_id'] = $vid0;
+                $ov['_shop_token'] = $tok0; $ov['_shop_name'] = (string)($sh['shop_name'] ?? '');
+                $ov['_vendor_index'] = (int)$shopIndex;
+                $ov['_parent_vendors'] = $vendorState;
+                $ov['_parent_aggregate'] = $agg;
+                catfixProgress(['log_add' => ['——— ' . ($sh['shop_name'] ?? ('غرفهٔ ' . $vid0)) . ' (#' . $vid0 . ') ———']]);
+                $cn2 = $cn;
+                $cn2['basalam'] = is_array($cn['basalam'] ?? null) ? $cn['basalam'] : [];
+                $cn2['basalam']['token'] = $tok0; $cn2['basalam']['vendor_id'] = $vid0;
+                $one = catfixRun($cn2, $mode, $ov, $vendorCp);
+                $isDone = !empty($one['ok']) && empty($one['stopped']) && empty($one['partial']);
+                if ($isDone) {
+                    $addVendor($one, $sh);
+                    $vendorState[(string)$vid0] = ['done' => true, 'checkpoint' => null,
+                        'summary' => ['ok' => !empty($one['ok']), 'total' => (int)($one['total'] ?? 0),
+                            'fixed' => (int)($one['fixed'] ?? 0), 'failed' => (int)($one['failed'] ?? 0),
+                            'learned_hits' => (int)($one['learned_hits'] ?? 0)]];
+                } else {
+                    /* فرزند آخرین checkpoint خود را در فایل نوشته است؛ همان را
+                       زیرِ شناسهٔ غرفه نگه می‌داریم تا resume دقیقاً همان‌جا باشد. */
+                    $curCat = json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true);
+                    $childCp = is_array($curCat['checkpoint'] ?? null) ? $curCat['checkpoint'] : null;
+                    $vendorState[(string)$vid0] = ['done' => false, 'checkpoint' => $childCp,
+                        'summary' => ['total' => (int)($one['total'] ?? 0), 'fixed' => (int)($one['fixed'] ?? 0),
+                            'failed' => (int)($one['failed'] ?? 0)]];
+                    $agg['partial'] = true;
+                    $agg['stopped'] = !empty($one['stopped']);
+                    break;
+                }
+                $parentCp = ['phase' => 'vendors', 'vendor_id' => 0, 'vendor_index' => $shopIndex + 1,
+                    'vendors' => $vendorState, 'aggregate' => $agg, 'started_at' => (int)($cp['started_at'] ?? time())];
+                catfixProgress(['checkpoint' => $parentCp]);
             }
             $agg['took'] = round(microtime(true) - $t0, 1);
             $agg['msg'] = 'اصلاح چندغرفه: ' . (int)$agg['fixed'] . ' از ' . (int)$agg['total']
@@ -50610,7 +51532,13 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             'no_ai' => $noAi, 'no_cat' => $noCat, 'skip_same' => $skipSame,
             'skip_tried' => $skipTried, 'asked' => $asked, 'cache_hits' => $cacheHits,
             'learned_hits' => $learnedHits, 'prof_hits' => $profHits, 'idx' => $idx,
-            'items' => $items, 'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time())]]);
+            'items' => $items, 'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
+            /* چندغرفه‌ای: والد و وضعیت غرفه‌های تمام‌شده را در همان checkpoint
+               نگه دار تا اگر child وسط کار کشته شد، parent هم قابل‌بازیابی باشد. */
+            'vendor_id' => (int)($opts['vendor_id'] ?? 0),
+            'vendor_index' => (int)($opts['_vendor_index'] ?? 0),
+            'vendors' => is_array($opts['_parent_vendors'] ?? null) ? $opts['_parent_vendors'] : [],
+            'aggregate' => is_array($opts['_parent_aggregate'] ?? null) ? $opts['_parent_aggregate'] : null]]);
     };
 
     foreach ($products as $p) {
@@ -50621,10 +51549,11 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             break;
         }
         $pId   = (int)($p['id'] ?? 0);
-        /* v10.126: محصولِ ازقبل‌پردازش‌شده رد می‌شود */
+        /* v10.126: محصولِ ازقبل‌پردازش‌شده رد می‌شود. شناسه فقط بعد از
+           پایانِ امنِ این محصول به done_ids می‌رود؛ ثبتِ آن پیش از PATCH
+           باعث می‌شد قطع‌شدنِ پردازه بین checkpoint و درخواست، محصول را
+           برای همیشه جا بیندازد. */
         if ($pId > 0 && isset($cpDoneSet[$pId])) continue;
-        $cpDoneIds[] = $pId;
-        $cpSave();
         $pName = trim((string)($p['title'] ?? ($p['name'] ?? '')));
         $rev   = $p['revision'] ?? [];
         $curCat = bslProductCatId($p);
@@ -50632,6 +51561,13 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             if (count($items) < 500)
                 $items[] = ['id' => $pId, 'title' => $pName, 'status' => $status,
                             'cat_id' => $catId, 'cat_name' => $catName, 'msg' => $msg];
+        };
+        $cpMark = function () use (&$cpDoneIds, &$cpDoneSet, $pId, &$cpSave): void {
+            if ($pId > 0 && !isset($cpDoneSet[$pId])) {
+                $cpDoneIds[] = $pId;
+                $cpDoneSet[$pId] = true;
+            }
+            $cpSave();
         };
         catfixProgress(['current' => $idx, 'last_title' => mb_substr($pName, 0, 50, 'UTF-8'),
             'fixed' => $fixed, 'failed' => $failed, 'no_ai' => $noAi, 'no_cat' => $noCat,
@@ -50641,6 +51577,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
         if ($pName === '' && $mode !== 'ai_text') {
             $failed++; $push('failed', 'عنوانِ محصول خالی است');
             catfixProgress(['log_add' => ['❌ [' . $idx . '/' . $total . '] عنوانِ خالی — #' . $pId]]);
+            $cpMark();
             continue;
         }
 
@@ -50678,6 +51615,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             if ($aiText === '') {
                 $noAi++; $push('no_ai', 'متنِ بررسیِ باسلام برای این محصول وجود ندارد');
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — متنِ AI ندارد']]);
+                $cpMark();
                 continue;
             }
             $res = extractAiCategoryFromTextEx($aiText, $cats);
@@ -50685,6 +51623,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             if ($catId <= 0) {
                 $noCat++; $push('no_cat', 'از متنِ بررسی هیچ دسته‌ای استخراج نشد');
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — دسته از متن درنیامد']]);
+                $cpMark();
                 continue;
             }
             $catId = findLeafCategory($catId, $cats);
@@ -50771,6 +51710,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
                      . ($err !== '' ? ' — ' . $err : '');
                 $push('no_cat', $m);
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — ' . $m]]);
+                $cpMark();
                 continue;
             }
         }
@@ -50783,6 +51723,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             catTriedRecord($pId, $catId, $catName, $mode, 'skipped', $pName, $curCat);
             $push('skipped', 'پیشنهاد همان دستهٔ فعلی است («' . $catName . '»)', $catId, $catName);
             catfixProgress(['log_add' => ['⏭️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — همان دستهٔ فعلی']]);
+            $cpMark();
             continue;
         }
         if (catTriedHas($pId, $catId)) {
@@ -50790,6 +51731,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             catTriedRecord($pId, $catId, $catName, $mode, 'skipped', $pName, $curCat);
             $push('skipped', '«' . $catName . '» قبلاً برای این محصول امتحان و رد شده', $catId, $catName);
             catfixProgress(['log_add' => ['⏭️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — «' . $catName . '» قبلاً امتحان شده']]);
+            $cpMark();
             continue;
         }
 
@@ -50815,6 +51757,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             catfixProgress(['log_add' => ['❌ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8')
                 . ' — ' . mb_substr($err, 0, 70, 'UTF-8')]]);
         }
+        $cpMark();
         usleep(500000);
     }
 
@@ -51387,10 +52330,12 @@ function agentSystemPrompt(string $mode): string {
  * $mode: sim | dry | live
  * خروجی: گزارشِ کامل برای AGENT_RESULT_FILE
  */
-function agentRun(array $cn, string $task, string $mode, string $model = ''): array {
+function agentRun(array $cn, string $task, string $mode, string $model = '', ?array $checkpoint = null): array {
     $t0  = microtime(true);
     $ctx = ['cn' => $cn, 'mode' => $mode];
     $tools = agentToolSpecs();
+    $resumeCp = is_array($checkpoint) && is_array($checkpoint['messages'] ?? null)
+        && count($checkpoint['messages']) >= 2 ? $checkpoint : null;
     /* v10.08: اگر کار مدلِ دلخواه دارد و آن مدل در اتصال‌های کاربر پیدا
        شد، همهٔ گام‌های همین اجرا با همان مدل زده می‌شوند. پیدا نشد ⇒
        بی‌صدا به مدلِ فعالِ پیش‌فرض برمی‌گردیم تا کار زمین نماند. */
@@ -51399,23 +52344,45 @@ function agentRun(array $cn, string $task, string $mode, string $model = ''): ar
         agentProgress(['log_add' => ['⚠️ مدلِ «' . $model . '» در اتصال‌ها پیدا نشد؛ مدلِ پیش‌فرض استفاده می‌شود']]);
     }
 
-    $messages = [
+    $messages = $resumeCp !== null ? array_values($resumeCp['messages']) : [
         ['role' => 'system', 'content' => agentSystemPrompt($mode)],
         ['role' => 'user',   'content' => $task],
     ];
-    /* v10.26 (۳۹ب): همان دو پیامِ آغازین را در جریانِ گفتگو هم بگذار تا
-       کاربر ببیند ایجنت با چه دستوری راه افتاده است. */
-    agentProgress(['convo_add' => [
-        ['role' => 'system', 'text' => agentConvoTrim(agentSystemPrompt($mode), 700)],
-        ['role' => 'user',   'text' => agentConvoTrim($task)],
-    ]]);
+    $calls = $resumeCp !== null ? (int)($resumeCp['calls'] ?? 0) : 0;
+    $changes = $resumeCp !== null && is_array($resumeCp['changes'] ?? null) ? $resumeCp['changes'] : [];
+    $finalText = $resumeCp !== null ? (string)($resumeCp['final_text'] ?? '') : '';
+    $stoppedBy = '';
+    $usedTools = $resumeCp !== null && is_array($resumeCp['used_tools'] ?? null) ? $resumeCp['used_tools'] : [];
+    $nativeTools = $resumeCp !== null && array_key_exists('native_tools', $resumeCp) ? $resumeCp['native_tools'] : null;
+    $startStep = $resumeCp !== null ? max(1, (int)($resumeCp['next_step'] ?? 1)) : 1;
+    $startedAt = (int)($resumeCp['started_at'] ?? time());
+    /* v10.26 (۳۹ب): اجرای تازه پیام‌های آغازین را به جریان گفتگو اضافه می‌کند؛
+       در resume همان گفتگو از checkpoint خوانده می‌شود تا پیام‌ها دوباره تکرار نشوند. */
+    if ($resumeCp === null) {
+        agentProgress(['convo_add' => [
+            ['role' => 'system', 'text' => agentConvoTrim(agentSystemPrompt($mode), 700)],
+            ['role' => 'user',   'text' => agentConvoTrim($task)],
+        ]]);
+    }
+    $saveCp = function (int $nextStep) use (&$messages, &$calls, &$changes, &$usedTools,
+        &$nativeTools, &$finalText, $startedAt): void {
+        agentProgress(['checkpoint' => [
+            'messages' => $messages, 'calls' => $calls, 'changes' => $changes,
+            'used_tools' => $usedTools, 'native_tools' => $nativeTools,
+            'final_text' => $finalText, 'next_step' => $nextStep,
+            'last_step' => max(0, $nextStep), 'started_at' => (int)($startedAt ?: time())]]);
+    };
+    /* v10.130: حتی اگر نخستین تماس مدل با خطای شبکه/timeout قطع شود،
+       تاریخچهٔ system/user از قبل در checkpoint هست و کران بعدی می‌تواند
+       همان کار را resume کند؛ بدون این ذخیره، خطای اولین تماس قابل‌ادامه نبود. */
+    if ($resumeCp === null) $saveCp(1);
 
-    $calls = 0; $changes = []; $finalText = ''; $stoppedBy = '';
-    $usedTools = []; $nativeTools = null;
-
-    for ($step = 1; $step <= AGENT_MAX_STEPS; $step++) {
+    for ($step = $startStep; $step <= AGENT_MAX_STEPS; $step++) {
         if (agentStopRequested()) { $stoppedBy = 'کاربر'; break; }
         agentProgress(['step' => $step, 'phase' => 'think',
+            'checkpoint' => ['messages' => $messages, 'calls' => $calls, 'changes' => $changes,
+                'used_tools' => $usedTools, 'native_tools' => $nativeTools, 'final_text' => $finalText,
+                'next_step' => $step, 'last_step' => $step, 'started_at' => $startedAt],
             'log_add' => ['🤔 گامِ ' . aiFaNum($step) . ' — پرسش از مدل...']]);
 
         $payload = ['messages' => $messages, 'tools' => $tools, 'tool_choice' => 'auto',
@@ -51474,6 +52441,10 @@ function agentRun(array $cn, string $task, string $mode, string $model = ''): ar
                                    'arguments' => json_encode($c['args'], JSON_UNESCAPED_UNICODE)],
                 ], $tcs)];
         }
+        /* پاسخِ assistant پیش از اجرای ابزارها ذخیره می‌شود؛ اگر پردازه در
+           تماسِ یک ابزار قطع شد، resume همان نوبت را با تاریخچهٔ معتبر ادامه
+           می‌دهد و فقط همان ابزارِ درحال‌انجام ممکن است یک بار تکرار شود. */
+        $saveCp($step);
 
         $finished = false;
         foreach ($tcs as $c) {
@@ -51513,6 +52484,7 @@ function agentRun(array $cn, string $task, string $mode, string $model = ''): ar
             $messages[] = ['role' => 'tool', 'tool_call_id' => $c['id'], 'name' => $c['name'],
                            'content' => json_encode($res, JSON_UNESCAPED_UNICODE)];
             agentProgress(['convo_add' => [agentConvoTool($c['name'], $res)]]);
+            $saveCp($step);
 
             if ($c['name'] === 'finish') {
                 $finalText = (string)($res['summary'] ?? '');
@@ -52618,17 +53590,21 @@ function selagentSystemPrompt(string $kind, string $url, ?array $override = null
  * که tools ندارند، همان سقف‌ها، همان الگوی ثبتِ پیشرفت) تا نگهداری‌اش یک
  * چیز باشد نه دو چیز.
  */
-function selagentRun(string $url, string $kind, string $model = '', string $pk = '', string $listUrl = ''): array {
+function selagentRun(string $url, string $kind, string $model = '', string $pk = '', string $listUrl = '', ?array $checkpoint = null): array {
     $t0 = microtime(true);
     $kind = ($kind === 'detail') ? 'detail' : 'list';
     $url = trim($url); $listUrl = trim($listUrl);
     if ($pk === '') $pk = profileKey($url !== '' ? $url : $listUrl);
-    $seeded = null;
+    $resumeCp = is_array($checkpoint) && is_array($checkpoint['messages'] ?? null)
+        && count($checkpoint['messages']) >= 2 ? $checkpoint : null;
+    if ($resumeCp !== null && filter_var((string)($resumeCp['effective_url'] ?? ''), FILTER_VALIDATE_URL))
+        $url = (string)$resumeCp['effective_url'];
+    $seeded = $resumeCp !== null && is_array($resumeCp['seeded'] ?? null) ? $resumeCp['seeded'] : null;
 
     /* v10.27 (۴۰ب): ایجنتِ جزئیات بدونِ هیچ محصولی هم باید بتواند شروع کند.
        آدرسِ صفحهٔ نمونه خالی است ⇒ خودمان می‌سازیمش: سلکتورِ فهرست (از
        پروفایل یا با اجرای ایجنتِ فهرست) ← استخراجِ چند محصول ← لینکِ اولی. */
-    if ($kind === 'detail' && ($url === '' || !filter_var($url, FILTER_VALIDATE_URL))) {
+    if ($resumeCp === null && $kind === 'detail' && ($url === '' || !filter_var($url, FILTER_VALIDATE_URL))) {
         $seed = selagentSeedProducts($listUrl, $pk, $model);
         if (empty($seed['ok'])) {
             $err = 'برای کشفِ سلکتورهای جزئیات صفحهٔ محصولی در دست نبود و ساختنش هم نشد — '
@@ -52682,23 +53658,41 @@ function selagentRun(string $url, string $kind, string $model = '', string $pk =
     }
 
     $tools = selagentToolSpecs($kind);
-    $messages = [
+    $messages = $resumeCp !== null ? array_values($resumeCp['messages']) : [
         ['role' => 'system', 'content' => selagentSystemPrompt($kind, $url)],
         ['role' => 'user',   'content' => "نقشهٔ ساختارِ این صفحه:\n\n" . $map
             . "\n\nحالا سلکتورها را پیدا کن. هر حدس را با probe_selector بسنج و در پایان submit_selectors را صدا بزن."],
     ];
     /* v10.26 (۳۹ب): نقشهٔ DOM می‌تواند ده‌ها کیلوبایت باشد؛ فقط سرش را
-       در گفتگو نشان می‌دهیم تا معلوم باشد مدل چه دیده است. */
-    selagentProgress(['convo_add' => [
+       در اجرای تازه در گفتگو نشان می‌دهیم. resume تاریخچهٔ واقعی را نگه می‌دارد. */
+    if ($resumeCp === null) selagentProgress(['convo_add' => [
         ['role' => 'system', 'text' => agentConvoTrim(selagentSystemPrompt($kind, $url), 700)],
         ['role' => 'user',   'text' => agentConvoTrim("نقشهٔ ساختارِ این صفحه:\n\n" . $map, 900)],
     ]]);
 
-    $calls = 0; $probes = 0; $confirmed = []; $submitted = null; $note = '';
-    $stoppedBy = ''; $nativeTools = null; $finalText = '';
+    $calls = $resumeCp !== null ? (int)($resumeCp['calls'] ?? 0) : 0;
+    $probes = $resumeCp !== null ? (int)($resumeCp['probes'] ?? 0) : 0;
+    $confirmed = $resumeCp !== null && is_array($resumeCp['confirmed'] ?? null) ? $resumeCp['confirmed'] : [];
+    $submitted = $resumeCp !== null && is_array($resumeCp['submitted'] ?? null) ? $resumeCp['submitted'] : null;
+    $note = $resumeCp !== null ? (string)($resumeCp['note'] ?? '') : '';
+    $stoppedBy = ''; $nativeTools = $resumeCp !== null && array_key_exists('native_tools', $resumeCp) ? $resumeCp['native_tools'] : null;
+    $finalText = $resumeCp !== null ? (string)($resumeCp['final_text'] ?? '') : '';
+    $startStep = $resumeCp !== null ? max(1, (int)($resumeCp['next_step'] ?? 1)) : 1;
+    $startedAt = (int)($resumeCp['started_at'] ?? time());
+    $saveCp = function (int $nextStep) use (&$messages, &$calls, &$probes, &$confirmed,
+        &$submitted, &$note, &$nativeTools, &$finalText, $url, $kind, $pk, $listUrl, $seeded, $startedAt): void {
+        selagentProgress(['checkpoint' => [
+            'messages' => $messages, 'calls' => $calls, 'probes' => $probes,
+            'confirmed' => $confirmed, 'submitted' => $submitted, 'note' => $note,
+            'native_tools' => $nativeTools, 'final_text' => $finalText,
+            'next_step' => $nextStep, 'last_step' => $nextStep, 'effective_url' => $url,
+            'kind' => $kind, 'pk' => $pk, 'list_url' => $listUrl, 'seeded' => $seeded,
+            'started_at' => $startedAt]]);
+    };
 
-    for ($step = 1; $step <= SELAGENT_MAX_STEPS; $step++) {
+    for ($step = $startStep; $step <= SELAGENT_MAX_STEPS; $step++) {
         if (selagentStopRequested()) { $stoppedBy = 'کاربر'; break; }
+        $saveCp($step);
         selagentProgress(['step' => $step, 'phase' => 'think',
             'log_add' => ['🤔 گامِ ' . aiFaNum($step) . ' — پرسش از مدل…']]);
 
@@ -52757,6 +53751,9 @@ function selagentRun(string $url, string $kind, string $model = '', string $pk =
                                    'arguments' => json_encode($c['args'], JSON_UNESCAPED_UNICODE)],
                 ], $tcs)];
         }
+        /* checkpoint پیش از اجرای ابزارها؛ در صورت قطع، گفتگوی مدل از همین
+           نوبت ادامه پیدا می‌کند و صفحه دوباره فقط برای اجرای ابزار در حافظه ساخته شده است. */
+        $saveCp($step);
 
         $finished = false;
         foreach ($tcs as $c) {
@@ -52840,6 +53837,7 @@ function selagentRun(string $url, string $kind, string $model = '', string $pk =
             $messages[] = ['role' => 'tool', 'tool_call_id' => $c['id'], 'name' => $c['name'],
                            'content' => json_encode($out, JSON_UNESCAPED_UNICODE)];
             selagentProgress(['convo_add' => [agentConvoTool($c['name'], $out)]]);
+            $saveCp($step);
             if ($finished) break;
         }
         if ($finished || $stoppedBy !== '') break;
@@ -55986,9 +56984,6 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#cbd5e1;cursor:pointer">
 <input type="checkbox" id="sfxNotify" style="width:14px;height:14px">
 <span>📤 گزارش را به پیام‌رسان‌ها هم بفرست</span></label>
-<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#fbbf24;cursor:pointer" title="مسیر تطبیق هر محصول، روش پسوند/شناسه و متفرقه‌ها را نشان می‌دهد">
-<input type="checkbox" id="sfxDebug" style="width:14px;height:14px">
-<span>🐞 نمایش دیباگ تطبیق</span></label>
 </div>
 <div id="sfxR" style="margin-top:10px"></div>
 </div></div>
@@ -64147,10 +65142,21 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.130', t:'🛡 ادامهٔ ترتیبی و قفل‌محورِ همهٔ کارهای سرورساید', items:[
+    'همهٔ ردیف‌های قابل‌ادامهٔ مدیر وظیفه، شامل صف‌های ارسال، استخراج، همگام‌سازی دستی، حذف تکراری، اصلاح دسته، ایجنت‌ها، تست AI، مغایرت‌گیری، گزارش پسوند، ماتریس، بازسازی عکس، تولید محتوا و ویرایش گروهی، در فهرست و نگهبان کران پوشش داده می‌شوند.',
+    'به‌جای فاصلهٔ ثابت، هر تیک فقط یک worker را dispatch می‌کند و صف/کارهای بعدی پس از آزادشدنِ قبلی در کران بعدی ادامه می‌یابند؛ پاسخ زودهنگام دیگر باعث هم‌پوشانی نمی‌شود.',
+    'قفل واقعیِ همگام‌سازی دستی و تست AI اضافه شد و قفلِ workerهای stale هرگز با unlink از پردازهٔ زنده جدا نمی‌شود؛ checkpoint و retry بدون پیشرفت حفظ شدند.',
+    'خروجی‌ها و لاگ‌های دیباگِ آمار/قیمت حذف شدند؛ گزارش معمولی، تطبیق suffix، فهرست متفرقه‌ها و modal مقصدی حفظ شدند.',
+  ]},
+  {v:'10.129', t:'♻️ ادامهٔ خودکارِ یکپارچه برای همهٔ کارهای سرورساید', items:[
+    'همهٔ ردیف‌های قابل‌ادامهٔ مدیر وظیفه، شامل صف‌های ارسال، استخراج، همگام‌سازی دستی، حذف تکراری، اصلاح دسته، ایجنت‌ها، تست AI، مغایرت‌گیری، گزارش پسوند، ماتریس، بازسازی عکس، تولید محتوا و ویرایش گروهی، با پارامترهای اجرای قبلی قابل ادامه‌اند.',
+    'نگهبان کران همان ردیف‌های stale را به ترتیب اولویت پیدا می‌کند؛ نسخهٔ ۱۰.۱۳۰ ترتیب را به قفلِ واقعی و ادامهٔ تیک بعدی می‌بندد.',
+    'پارامترهای مهم، checkpoint و دامنهٔ اجرای قبلی برای هر کار حفظ می‌شوند؛ صف و استخراج از مسیرهای checkpoint-aware اختصاصی خودشان استفاده می‌کنند.',
+    'گزینه و خروجی دیباگ رابط آمار محصولات حذف شد؛ تطبیق suffix، fallback شناسه، جدول متفرقه‌ها و modal مقصدی حفظ شدند.',
+  ]},
   {v:'10.128', t:'🏷 تفکیک دقیق آمار پروفایل + گزارش مودالی اصلاح مغایرت', items:[
     'محصولات مقصد بر اساس پسوند انتهایی «کد:ایکس» و با نرمال‌سازی ارقام/فاصله‌ها فقط به یک پروفایل نسبت داده می‌شوند؛ پسوندهای هم‌پوشان از بلندترین شروع می‌شوند.',
     'محصولاتی که نه پسوند و نه شناسهٔ ثبت‌شده دارند در فهرست واقعیِ «متفرقه‌ها» ذخیره و به‌صورت جدول با شناسه و وضعیت نمایش داده می‌شوند.',
-    'تیک «نمایش دیباگ تطبیق» مسیر هر محصول (پسوند، شناسه یا متفرقه) را در جدول بازشونده نشان می‌دهد.',
     'در اصلاح مغایرت، گزارش موفقیت‌ها بر اساس مقصد شمارندهٔ کلیک‌پذیر دارد؛ کلیک روی ووکامرس یا هر غرفه، فهرست محصولات اصلاح‌شدهٔ همان مقصد را در مودال باز می‌کند.',
   ]},
   {v:'10.127', t:'🗂 گزارش حذف/بایگانی‌شده‌ها در شمارنده و کارت‌های ارسال', items:[
@@ -64198,7 +65204,7 @@ const CHANGELOG = [
   {v:'10.120', t:'🔧 مغایرت‌گیری: گزارش همیشه پیدا + تشخیص job صفر', items:[
     'باکس گزارش بالای جدول (نه فقط صفحهٔ آخر) + پرش به صفحهٔ آخر بعد از اتمام.',
     'جمع‌آوری کارها قوی‌تر (flags/status + کلید غرفه string/int).',
-    'اگر ۰ کار باشد، گزارش تشخیصی با نمونه ردیف‌ها می‌نویسد تا علت معلوم شود.',
+    'اگر ۰ کار باشد، یک پیام عادیِ «مغایرت قابل اجرا نیست» در گزارش ثبت می‌شود.',
   ]},
   {v:'10.119', t:'🩹 رفع SyntaxError در pkApplyState (else اضافه)', items:[
     'یک }}else اضافه در پنل picker کل JS را می‌شکست → vcFilterFile/vcDirty تعریف نمی‌شدند.',
@@ -68143,10 +69149,9 @@ const SFX_SLICES=[
 
 function sfxRun(target){
   const notify=($('sfxNotify')||{}).checked?1:0;
-  const debug=($('sfxDebug')||{}).checked?1:0;
   const box=$('sfxR');
   if(box)box.innerHTML='<div style="color:#93c5fd;font-size:11px">⏳ شروع...</div>';
-  fetch('?suffix_report=1&target='+encodeURIComponent(target)+'&notify='+notify+'&debug='+debug)
+  fetch('?suffix_report=1&target='+encodeURIComponent(target)+'&notify='+notify)
     .then(r=>r.json()).then(d=>{
       if(!d.ok){
         if(box)box.innerHTML='<div style="color:#fca5a5;font-size:11px;background:#7f1d1d20;'
@@ -68348,27 +69353,6 @@ function sfxRenderMisc(rep,target){
   h+='</tbody></table></div></details>';
   return h;
 }
-function sfxRenderDebug(rep,target){
-  const rows=Array.isArray(rep.debug)?rep.debug:[];
-  if(!rows.length) return rep.debug_enabled
-    ?'<div style="color:#94a3b8;font-size:10.5px;margin:8px 0">🐞 دیباگ روشن بود، اما ردیفی برای نمایش ثبت نشد.</div>':'';
-  let h='<details style="margin:8px 0 10px;border:1px solid #365314;border-radius:9px;background:#17210f">';
-  h+='<summary style="cursor:pointer;padding:8px 10px;color:#bef264;font-weight:900">🐞 دیباگ تطبیق ('+toFa(rows.length)+' محصول)</summary>';
-  h+='<div style="overflow:auto;max-height:330px;border-top:1px solid #365314"><table style="width:100%;border-collapse:collapse;min-width:860px;font-size:10px">';
-  h+='<thead style="position:sticky;top:0;background:#1a2e05;z-index:1"><tr>';
-  h+='<th style="padding:6px;text-align:right">#</th><th style="padding:6px;text-align:right">عنوان</th><th style="padding:6px;text-align:center">پروفایل</th><th style="padding:6px;text-align:center">روش</th><th style="padding:6px;text-align:center">پسوند</th><th style="padding:6px;text-align:center">جزئیات</th><th style="padding:6px;text-align:center">وضعیت</th></tr></thead><tbody>';
-  rows.forEach((r,i)=>{
-    const method=r.method==='id'?'شناسهٔ ثبت‌شده':(r.method==='suffix'?'پسوندِ انتهای عنوان':'متفرقه');
-    const prof=r.profile||'🗂 متفرقه‌ها';
-    h+='<tr style="border-top:1px solid #365314">';
-    h+='<td style="padding:6px;color:#a3a3a3">'+toFa(i+1)+'</td><td style="padding:6px;color:#f5f5f4;word-break:break-word">'+esc(r.title||'—')+'</td>';
-    h+='<td style="padding:6px;color:#d9f99d">'+esc(prof)+'</td><td style="padding:6px;color:#bef264">'+method+'</td>';
-    h+='<td style="padding:6px;color:#c4b5fd">'+esc(r.suffix||'—')+'</td><td style="padding:6px;color:#a3e635">'+esc(r.reason||'—')+'</td><td style="padding:6px;text-align:center">'+sfxRemoteStatus(target==='bsl'?{status:r.status}:{wstatus:r.wstatus},target)+'</td></tr>';
-  });
-  h+='</tbody></table></div></details>';
-  return h;
-}
-
 function sfxRender(rep,target){
   if(rep && (rep.kind==='summary' || target==='summary' || target==='all')) return sfxRenderSummary(rep);
   const lbl=target==='woo'?'ووکامرس':'باسلام';
@@ -68404,7 +69388,6 @@ function sfxRender(rep,target){
     h+='</div></div>';
   });
   if(!(rep.profiles||[]).length)h+='<div style="color:#64748b">پروفایلی با پسوند نبود</div>';
-  h+=sfxRenderDebug(rep,target);
   return h+'</div>';
 }
 
@@ -74316,7 +75299,6 @@ function pollBslProgress() {
             if(logNodes.length>300){for(let j=0;j<logNodes.length-300;j++)logNodes[0].remove();}
             scrollElBottom(logDiv);
         }
-        if(d.debug_title||d.debug_name){console.log('BSL debug:',d.debug_title,d.debug_name,d.computed);}
         // v7.49: Improved progress display with elapsed + ETA + phase info
         if(running || !done) {
             let progText='';
@@ -74512,13 +75494,7 @@ const d=[];order.forEach(k=>{
     const priceUnit=priceStr.includes('ریال')||priceStr.includes('ر.ی')?'rial':'toman';
     d.push({key:k,title:getFinalTitle(rawTitle),final_price:String(fp),price_unit:priceUnit,image:p.image||'',images:p.images||[],sku:p.sku||'',short_desc:p.shortDesc||'',long_desc:p.longDesc||'',weight:p.weight||'',link:p.link||'',orig_price:p.origPrice||p.originalPrice||'',variations:p.variations||[],variation_groups:p.variation_groups||[],variations_text:p.variations_text||''});
 });
-if(d.length>0)console.log('getSendP: total='+d.length+', withPrice='+d.filter(x=>parseInt(x.final_price)>0).length);
-if(d.length>0){
-        console.log('getSendP: total='+d.length+', withPrice='+d.filter(x=>parseInt(x.final_price)>0).length+', products.size='+products.size+', order.length='+order.length);
-        // v7.41: Show in debug panel too
-        const dbg=$('_dbg');if(dbg)dbg.innerHTML+='<div>📊 getSendP: '+d.length+' محصول (products.size='+products.size+', order='+order.length+') | با قیمت: '+d.filter(x=>parseInt(x.final_price)>0).length+'</div>';
-    }
-    return d;
+return d;
 }
 function pSSE(ev){if(!ev.trim())return null;let t='',d='';ev.split('\n').forEach(l=>{if(l.startsWith('event:'))t=l.substring(6).trim();else if(l.startsWith('data:'))d=l.substring(5).trim();});if(!t||!d)return null;try{return{t,d:JSON.parse(d)};}catch(e){return null;}}
 // v8.17: queueWooSend — same pattern as queueBslSend (server-side processing)

@@ -302,7 +302,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.125';
+const APP_VERSION = '10.126';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -5321,6 +5321,20 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
     }
 
     $dirtyProfiles = [];
+    /* v10.126: ذخیرهٔ فوری پس از هر محصول — اگر پردازه وسطِ نوبت کشته شود،
+       فقط محصولِ در حالِ پردازش از دست می‌رود، نه کلِ دستاوردِ نوبت. */
+    $dirtyAll = [];
+    $flushProfiles = function () use (&$dirtyProfiles, &$dirtyAll, &$profiles, &$stats) {
+        if (!$dirtyProfiles) return;
+        $onDisk = loadProfiles();
+        foreach ($dirtyProfiles as $pk => $_) {
+            if (isset($profiles[$pk])) $onDisk[$pk] = $profiles[$pk];
+            $dirtyAll[$pk] = true;
+        }
+        saveProfiles($onDisk);
+        $dirtyProfiles = [];
+        $stats['saved'] = true;
+    };
     $itemsOut = aicontentItemsRead(); /* keep history; append new run marker */
     $runId = 'r' . $t0 . '_' . substr(md5((string)microtime(true)), 0, 6);
     aicontentItemPush([
@@ -5379,6 +5393,7 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
                 $profiles[$pk]['products'] = $products;
                 $profiles[$pk]['updatedAt'] = time();
                 $dirtyProfiles[$pk] = true;
+                $flushProfiles();   // v10.126: ذخیرهٔ فوری — نه فقط در پایانِ نوبت
                 $stats['filled']++;
                 $item['status'] = 'ok';
                 $item['short_description'] = (string)($p2['shortDesc'] ?? $p2['short_desc'] ?? '');
@@ -5423,16 +5438,8 @@ function aicontentRun(?array $cn = null, int $limit = 0): array {
         $stats['items'][] = ['id' => $itemId, 'title' => $title, 'status' => $item['status']];
     }
 
-    if ($dirtyProfiles) {
-        /* reload disk & merge only dirty profiles' products we hold */
-        $onDisk = loadProfiles();
-        foreach ($dirtyProfiles as $pk => $_) {
-            if (isset($profiles[$pk])) $onDisk[$pk] = $profiles[$pk];
-        }
-        saveProfiles($onDisk);
-        $stats['saved'] = true;
-    }
-    $stats['profiles'] = count($dirtyProfiles);
+    $flushProfiles();   // v10.126: ذخیرهٔ باقی‌مانده (معمولاً خالی)
+    $stats['profiles'] = count($dirtyAll);
     $stats['took'] = time() - $t0;
     $stats['msg'] = 'پر شد: ' . $stats['filled'] . ' · ناموفق: ' . $stats['failed']
         . ($stats['stopped'] ? ' · متوقف' : '');
@@ -20371,12 +20378,35 @@ if (isset($_GET['recon'])) {
         $allVendors = !empty($_GET['all_shops']);
     }
 
-    @unlink(RECON_PROGRESS_FILE);
+    /* v10.126: ادامهٔ واقعی از چک‌پوینت — اگر resume=1 و فایلِ پیشرفت برای
+       همین مقصد چک‌پوینت دارد، آن را نگه می‌داریم؛ واکشی از کشِ صفحه‌ای ادامه
+       می‌یابد. در غیر این صورت از نو. */
+    $cp = null;
+    if (!empty($_GET['resume']) && is_file(RECON_PROGRESS_FILE)) {
+        $old = json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true);
+        if (is_array($old) && (string)($old['target'] ?? '') === $target
+            && is_array($old['checkpoint'] ?? null)) {
+            $cp = $old['checkpoint'];
+        }
+    }
+    if ($cp === null) {
+        @unlink(RECON_PROGRESS_FILE);
+        @unlink(reconFetchCursorFile());
+        /* v10.126: در شروعِ تازه هم چک‌پوینتِ نازکی می‌سازیم تا مسیرِ
+           تکی از واکشیِ قابلِ ادامه (کشِ صفحه‌ای) استفاده کند. */
+        $cp = ['target' => $target, 'all_profiles' => $allProf, 'started_at' => time()];
+    }
+    $cpStartedAt = (int)($cp['started_at'] ?? 0);
     reconProgress(['running' => true, 'done' => false, 'target' => $target,
         'apply' => $apply, 'mode' => $mode, 'all_profiles' => $allProf,
         'all_vendors' => $allVendors, 'vendor_id' => $onlyVid,
-        'started_at' => time(), 'phase' => 'start',
-        'log_add' => [($apply ? '🚀 شروع اعمال تغییرات' : '🔍 شروع بررسی') . ' — '
+        'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
+        'phase' => (!empty($_GET['resume']) ? 'resume' : 'start'),
+        /* v10.126: چک‌پوینتِ همین کار برای ادامهٔ واکشی */
+        'checkpoint' => ['target' => $target, 'all_profiles' => $allProf,
+            'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
+            'was_resume' => !empty($_GET['resume'])],
+        'log_add' => [(!empty($_GET['resume']) ? '↻ ادامه از چک‌پوینت — ' : '') . (($apply ? '🚀 شروع اعمال تغییرات' : '🔍 شروع بررسی') . ' — ')
             . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
             . ($allProf ? ' · همهٔ پروفایل‌ها' : ' · فقط پروفایل‌های همگام‌شونده')
             . ($target === 'bsl' && $allVendors ? ' · همهٔ غرفه‌ها' : '')
@@ -20396,9 +20426,11 @@ if (isset($_GET['recon'])) {
     });
 
     try {
-        $res = reconRun($cn, $target, $apply, $mode, $fixPrice, $allProf, $allVendors, $onlyVid);
+        $res = reconRun($cn, $target, $apply, $mode, $fixPrice, $allProf, $allVendors, $onlyVid, $cp);
     } catch (Throwable $e) {
+        @unlink(reconFetchCursorFile());   // v10.126
         reconProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
+            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
             'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
         exit;
     }
@@ -20412,12 +20444,14 @@ if (isset($_GET['recon'])) {
     }
     @file_put_contents(__DIR__ . '/recon_result.json',
         json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    @unlink(reconFetchCursorFile());   // v10.126: کشِ واکشی دیگر لازم نیست
     reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
         'extra' => (int)$res['extra_total'], 'diff' => (int)$res['price_diff_total'],
         'missing' => (int)($res['missing_total'] ?? 0),
         'matched' => (int)($res['matched'] ?? 0), 'repriced' => (int)($res['repriced'] ?? 0),
         'deleted' => (int)($res['deleted'] ?? 0), 'failed' => (int)($res['failed'] ?? 0),
         'result_ok' => !empty($res['ok']), 'error' => $res['error'] ?? '',
+        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
         'log_add' => [empty($res['ok']) ? ('❌ ' . ($res['error'] ?? 'ناموفق')) : '✅ پایان']]);
     exit;
 }
@@ -21093,13 +21127,15 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             /* حالتِ حذف عمداً به «گزارش» برگردانده نمی‌شود: اگر کاربر حذف را
                شروع کرده بود، ادامه هم باید حذف باشد وگرنه کار نیمه می‌ماند. */
             $m = ((string)($p['mode'] ?? 'scan')) === 'delete' ? 'delete' : 'scan';
-            return $base . '&target=' . $t . '&mode=' . $m;
+            /* v10.126: &resume=1 — ادامه از چک‌پوینتِ فایلِ پیشرفت، نه از اول */
+            return $base . '&target=' . $t . '&mode=' . $m . '&resume=1';
         case 'catfix':
             $m = (string)($p['mode'] ?? 'ai_text');
             if (!in_array($m, ['ai_text', 'master', 'quorum', 'fallback'], true)) $m = 'ai_text';   /* v10.71 (85) */
             $q = $base . '&mode=' . $m;
             if ((int)($p['product_id'] ?? 0) > 0) $q .= '&product_id=' . (int)$p['product_id'];
-            return $q;
+            /* v10.126: &resume=1 — ادامه از چک‌پوینتِ فایلِ پیشرفت، نه از اول */
+            return $q . '&resume=1';
         case 'agent':
             $task = trim((string)($p['task'] ?? ''));
             if ($task === '') return '';
@@ -21123,7 +21159,8 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             $q = $base . '&target=' . $t;
             if (!empty($p['all_profiles'])) $q .= '&all_profiles=1';
             /* اعمالِ تغییرات هرگز خودکار تکرار نمی‌شود — فقط گزارش */
-            return $q;
+            /* v10.126: &resume=1 — ادامهٔ واکشیِ مقصد از صفحهٔ قطع‌شده */
+            return $q . '&resume=1';
         case 'suffix':
             $t = (string)($p['target'] ?? '');
             if ($t !== 'woo' && $t !== 'bsl') return '';
@@ -21343,13 +21380,17 @@ function tasksResumeOne(string $key): array {
     if ($url === '')
         return ['ok' => false, 'error' => 'برای این کار «ادامه» تعریف نشده — از تبِ خودش دوباره شروعش کنید'];
 
-    /* قفلِ جامانده و پیشرفتِ مرده کنار می‌روند، وگرنه شروعِ تازه پشتِ همان
-       قفل می‌ماند و کاربر پیامِ «در حال اجراست» می‌گیرد. */
+    /* قفلِ جامانده کنار می‌رود، وگرنه شروعِ تازه پشتِ همان قفل می‌ماند و
+       کاربر پیامِ «در حال اجراست» می‌گیرد. فایلِ پیشرفت فقط برای کارهایِ
+       چک‌پوینت‌دار (v10.126: dedup/catfix/recon) حفظ می‌شود — اندپوینتِ
+       خودشان با &resume=1 از داخلِ همان فایل ادامه می‌دهد؛ بقیهٔ کارها
+       مثل قبل از حالتِ تازه شروع می‌شوند. */
     $locks = ['dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE, 'catfix' => CATFIX_LOCK_FILE,
               'selagent' => SELAGENT_LOCK_FILE];   // v10.25 (۳۸د)
+    $cpKeep = ['dedup' => 1, 'catfix' => 1, 'recon' => 1];   // v10.126
     if ($row['state'] === 'stale') {
         if (isset($locks[$key])) @unlink($locks[$key]);
-        @unlink((string)$def['file']);
+        if (!isset($cpKeep[$key])) @unlink((string)$def['file']);
     }
     /* سیگنالِ توقفِ جامانده هم برداشته می‌شود؛ وگرنه کارِ تازه در اولین
        بررسی فوراً خودش را متوقف می‌کند. */
@@ -22322,12 +22363,28 @@ if (isset($_GET['dedup_start'])) {
     $cn  = loadConnections();
     $cfg = dedupCfg($cn);
 
-    @unlink(DEDUP_PROGRESS_FILE);
+    /* v10.126: ادامهٔ واقعی از چک‌پوینت — اگر resume=1 و فایلِ پیشرفت برای
+       همین مقصد چک‌پوینت دارد، آن را نگه می‌داریم و فقط پرچمِ اجرا را تازه
+       می‌کنیم؛ در غیر این صورت مثل قبل از نو شروع می‌شود. */
+    $cp = null;
+    if (!empty($_GET['resume']) && is_file(DEDUP_PROGRESS_FILE)) {
+        $old = json_decode((string)@file_get_contents(DEDUP_PROGRESS_FILE), true);
+        if (is_array($old) && (string)($old['target'] ?? '') === $target
+            && is_array($old['checkpoint'] ?? null)) {
+            $cp = $old['checkpoint'];
+        }
+    }
+    if ($cp === null) @unlink(DEDUP_PROGRESS_FILE);
+    $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
     dedupProgress(['running' => true, 'done' => false, 'target' => $target, 'mode' => $mode,
-        'started_at' => time(), 'total' => 0, 'groups' => 0, 'dups' => 0,
-        'deleted' => 0, 'failed' => 0, 'processed' => 0, 'phase' => 'start',
+        'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()), 'total' => 0,
+        'groups' => 0, 'dups' => 0,
+        'deleted' => (int)($cp['deleted'] ?? 0), 'failed' => (int)($cp['failed'] ?? 0),
+        'processed' => (int)($cp['done'] ?? 0),
+        'phase' => ($cp !== null ? 'resume' : 'start'),
         'keep' => $cfg['keep'],
-        'log_add' => ['🚀 شروع — ' . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
+        'log_add' => [($cp !== null ? '↻ ادامه از چک‌پوینت — ' : '🚀 شروع — ')
+            . ($target === 'woo' ? 'ووکامرس' : 'باسلام')
             . ' · ' . ($mode === 'delete' ? 'حذفِ واقعی' : 'فقط گزارش')
             . ' · نگه‌داری: ' . dedupKeepLabel($cfg['keep'])]]);
 
@@ -22345,9 +22402,10 @@ if (isset($_GET['dedup_start'])) {
     });
 
     try {
-        $rep = dedupRun($cn, $target, $cfg, $mode);
+        $rep = dedupRun($cn, $target, $cfg, $mode, $cp);
     } catch (Throwable $e) {
         dedupProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
+            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
             'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
         dedupClearStop();
         exit;
@@ -22361,6 +22419,7 @@ if (isset($_GET['dedup_start'])) {
         'deleted' => $rep['deleted'] ?? 0, 'failed' => $rep['failed'] ?? 0,
         'partial' => !empty($rep['partial']),          // v10.23 (۳۶ب)
         'partial_msg' => (string)($rep['partial_msg'] ?? ''),
+        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
         'log_add' => [empty($rep['ok'])
             ? ('❌ ' . ($rep['error'] ?? 'ناموفق'))
             : ('🏁 پایان در ' . $rep['took'] . ' ثانیه — '
@@ -22459,13 +22518,32 @@ if (isset($_GET['catfix_start'])) {
     catfixClearStop();
     $cn = loadConnections();
 
-    @unlink(CATFIX_PROGRESS_FILE);
-    @unlink(CATFIX_RESULT_FILE);
+    /* v10.126: ادامهٔ واقعی از چک‌پوینت — اگر resume=1 و فایلِ پیشرفت برای
+       همین روش چک‌پوینت دارد، آن را نگه می‌داریم؛ در غیر این صورت از نو. */
+    $cp = null;
+    if (!empty($_GET['resume']) && is_file(CATFIX_PROGRESS_FILE)) {
+        $old = json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true);
+        if (is_array($old) && (string)($old['mode'] ?? '') === $mode
+            && is_array($old['checkpoint'] ?? null)) {
+            $cp = $old['checkpoint'];
+        }
+    }
+    if ($cp === null) {
+        @unlink(CATFIX_PROGRESS_FILE);
+        @unlink(CATFIX_RESULT_FILE);
+    }
+    $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
     catfixProgress(['running' => true, 'done' => false, 'mode' => $mode,
-        'product_id' => (int)$opts['product_id'], 'started_at' => time(),
-        'total' => 0, 'current' => 0, 'fixed' => 0, 'failed' => 0, 'no_ai' => 0,
-        'no_cat' => 0, 'skip_same' => 0, 'skip_tried' => 0, 'asked' => 0, 'phase' => 'start',
-        'log_add' => ['🚀 شروعِ اصلاحِ دسته‌بندی — روش: ' . catfixModeLabel($mode)
+        'product_id' => (int)$opts['product_id'],
+        'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()),
+        'total' => 0, 'current' => (int)($cp['idx'] ?? 0),
+        'fixed' => (int)($cp['fixed'] ?? 0), 'failed' => (int)($cp['failed'] ?? 0),
+        'no_ai' => (int)($cp['no_ai'] ?? 0), 'no_cat' => (int)($cp['no_cat'] ?? 0),
+        'skip_same' => (int)($cp['skip_same'] ?? 0), 'skip_tried' => (int)($cp['skip_tried'] ?? 0),
+        'asked' => (int)($cp['asked'] ?? 0),
+        'phase' => ($cp !== null ? 'resume' : 'start'),
+        'log_add' => [($cp !== null ? '↻ ادامه از چک‌پوینت — ' : '🚀 شروعِ اصلاحِ دسته‌بندی — ')
+            . 'روش: ' . catfixModeLabel($mode)
             . ((int)$opts['product_id'] > 0 ? (' · فقط محصول #' . (int)$opts['product_id']) : ' · همهٔ محصولاتِ ردشده')]]);
 
     // پاسخِ فوری، سپس ادامهٔ کار در پس‌زمینه
@@ -22481,9 +22559,10 @@ if (isset($_GET['catfix_start'])) {
     });
 
     try {
-        $rep = catfixRun($cn, $mode, $opts);
+        $rep = catfixRun($cn, $mode, $opts, $cp);
     } catch (Throwable $e) {
         catfixProgress(['running' => false, 'done' => true, 'error' => $e->getMessage(),
+            'checkpoint' => null,   // v10.126: چک‌پوینتِ کارِ خطاخورده اعتبار ندارد
             'log_add' => ['❌ خطا: ' . $e->getMessage()]]);
         catfixClearStop();
         exit;
@@ -22497,6 +22576,7 @@ if (isset($_GET['catfix_start'])) {
         'no_ai' => $rep['no_ai'] ?? 0, 'no_cat' => $rep['no_cat'] ?? 0,
         'skip_same' => $rep['skip_same'] ?? 0, 'skip_tried' => $rep['skip_tried'] ?? 0,
         'asked' => $rep['asked'] ?? 0,
+        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
         'log_add' => [empty($rep['ok'])
             ? ('❌ ' . ($rep['error'] ?? 'ناموفق'))
             : ('🏁 پایان در ' . $rep['took'] . ' ثانیه — ' . $rep['msg'])]]);
@@ -39992,6 +40072,112 @@ function reconFetchBsl(string $tk, int $vid, int $maxPages = 0, bool $customerVi
     return $rows;
 }
 
+/* =====================================================================
+ *  v10.126: واکشیِ قابلِ ادامه برای مغایرت‌گیری.
+ *
+ *  مغایرت‌گیریِ گزارش (حالتِ پیش‌فرضِ «ادامهٔ خودکار») فقط می‌خواند؛ ولی
+ *  واکشیِ همهٔ صفحاتِ مقصد می‌تواند روی فروشگاهِ بزرگ از مهلتِ هاست بیشتر
+ *  شود. هر صفحه که می‌آید بلافاصله به فایلِ NDJSON چسبانده می‌شود تا اگر
+ *  پردازه وسطِ واکشی کشته شد، ادامهٔ بعدی از همان صفحه بردارد و صفحاتِ
+ *  قبلی را دوباره نخواند.
+ * ===================================================================== */
+function reconFetchCursorFile(): string { return __DIR__ . '/recon_fetch_cache.ndjson'; }
+
+/** خواندنِ صفحاتِ واکشی‌شدهٔ یک مقصد/غرفه از کشِ NDJSON.
+ *  v10.126: کش به ازای هر غرفه (vid) جداست تا مغایرت‌گیریِ چندغرفه‌ای پس از
+ *  ادامه، محصولاتِ غرفه‌های مختلف را قاطی نکند و صفحهٔ درستِ هر غرفه از
+ *  همان‌جا که قطع شده ادامه یابد. */
+function reconFetchCursorLoad(string $target, int $vid = 0): array {
+    $f = reconFetchCursorFile();
+    if (!is_file($f)) return ['rows' => [], 'page' => 0];
+    $rows = []; $page = 0;
+    foreach ((array)@file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $ln) {
+        $d = json_decode($ln, true);
+        if (!is_array($d) || (string)($d['target'] ?? '') !== $target) continue;
+        if ((int)($d['vid'] ?? 0) !== $vid) continue;   // v10.126: تفکیکِ غرفه
+        foreach ((array)($d['rows'] ?? []) as $r) if (is_array($r)) $rows[] = $r;
+        $page = max($page, (int)($d['page'] ?? 0));
+    }
+    return ['rows' => $rows, 'page' => $page];
+}
+
+/** چسباندنِ یک صفحه به کشِ واکشی (با تفکیکِ غرفه) */
+function reconFetchCursorAppend(string $target, int $vid, int $page, array $rows): void {
+    if (!$rows) return;
+    @file_put_contents(reconFetchCursorFile(),
+        json_encode(['target' => $target, 'vid' => $vid, 'page' => $page, 'rows' => $rows],
+            JSON_UNESCAPED_UNICODE) . "\n",
+        FILE_APPEND | LOCK_EX);
+}
+
+/** واکشیِ محصولاتِ مقصد، با ادامه از چک‌پوینتِ صفحه‌ایِ موجود */
+function reconFetchResumable(string $target, array $w, string $tk, int $vid): array {
+    $maxPages = (int)RECON_FETCH_MAX_PAGES;
+    $cur = reconFetchCursorLoad($target, $vid);
+    $rows = $cur['rows'];
+    $startPage = (int)$cur['page'] + 1;
+    if ($rows) {
+        reconProgress(['log_add' => ['↻ ادامهٔ واکشی از صفحهٔ ' . $startPage
+            . ' — ' . count($rows) . ' محصولِ قبلاً خوانده‌شده']]);
+    }
+    for ($page = $startPage; $page <= $maxPages; $page++) {
+        if ($target === 'woo') {
+            $r = wooReq((string)($w['store_url'] ?? ''), (string)($w['consumer_key'] ?? ''),
+                (string)($w['consumer_secret'] ?? ''), 'GET',
+                'products?per_page=100&status=any&page=' . $page);
+            $batch = (empty($r['ok']) || !is_array($r['body'])) ? [] : $r['body'];
+            if ($batch) {
+                $pageRows = [];
+                foreach ($batch as $pr) {
+                    $name = trim((string)($pr['name'] ?? ''));
+                    if ($name === '') continue;
+                    $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
+                        'price' => (int)preg_replace('~[^\\d]~', '', (string)($pr['regular_price'] ?? '0')),
+                        'status' => (string)($pr['status'] ?? ''), 'via' => 'api'];
+                }
+                $rows = array_merge($rows, $pageRows);
+                reconFetchCursorAppend($target, $vid, $page, $pageRows);
+                reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+                    'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
+            } else {
+                reconProgress(['log_add' => ['⚠️ صفحهٔ ' . $page . ' نیامد — واکشی با ' . count($rows) . ' محصول بسته شد']]);
+                break;
+            }
+            if (count($batch) < 100) break;
+        } else {
+            $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
+                 . '&per_page=100&statuses=2976&statuses=3790');
+            $batch = (empty($r['ok']) || !is_array($r['body']['data'] ?? null))
+                ? [] : $r['body']['data'];
+            if ($batch) {
+                $pageRows = [];
+                foreach ($batch as $pr) {
+                    if (!is_array($pr)) continue;
+                    $rev  = $pr['revision']['data'] ?? [];
+                    $name = trim((string)($pr['title'] ?? ($pr['name'] ?? ($rev['title'] ?? ''))));
+                    if ($name === '') continue;
+                    $st = (int)(is_array($pr['status'] ?? null)
+                        ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
+                    $rial = (int)($rev['primary_price'] ?? ($pr['primary_price'] ?? 0));
+                    $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
+                                   'price' => $rial, 'price_toman' => (int)round($rial / 10),
+                                   'status' => $st];
+                }
+                $rows = array_merge($rows, $pageRows);
+                reconFetchCursorAppend($target, $vid, $page, $pageRows);
+                reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+                    'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
+            } else {
+                reconProgress(['log_add' => ['⚠️ صفحهٔ ' . $page . ' نیامد — واکشی با ' . count($rows) . ' محصول بسته شد']]);
+                break;
+            }
+            if (count($batch) < 100) break;
+        }
+        usleep(150000);
+    }
+    return $rows;
+}
+
 /**
  * مقایسه و در صورت درخواست، اعمال تغییرات.
  * $mode برای موارد اضافی: off | draft | outofstock | delete
@@ -40070,7 +40256,8 @@ function catfixAutoStateSave(array $s): void {
  */
 function reconRunOne(array $cn, string $target, bool $apply = false,
                      string $mode = 'off', bool $fixPrice = true, bool $allProfiles = false,
-                     int $vendorId = 0, string $shopName = '', string $shopToken = ''): array {
+                     int $vendorId = 0, string $shopName = '', string $shopToken = '',
+                     ?array $cp = null): array {
     $out = ['ok' => true, 'target' => $target, 'apply' => $apply, 'mode' => $mode,
             'all_profiles' => $allProfiles,
             'vendor_id' => $vendorId, 'shop_name' => $shopName,
@@ -40111,16 +40298,26 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
 
     reconProgress(['phase' => 'fetch', 'log_add' => ['📥 دریافت محصولات '
         . ($target === 'woo' ? 'ووکامرس' : ('باسلام' . ($shopName !== '' ? ' · ' . $shopName : ''))) . '...']]);
+    /* v10.126: واکشی همیشه از مسیرِ قابلِ ادامه است تا کشِ صفحه‌ای ساخته شود؛
+       فقط مسیرِ DB مستقیمِ ووکامرس (سریع، بدونِ نیاز به کش) وقتی به کار می‌رود
+       که ادامه‌ای در کار نباشد. */
+    $resumeFetch = (is_array($cp) && (string)($cp['target'] ?? '') === $target
+        && is_file(reconFetchCursorFile()));
     if ($target === 'woo') {
         $w = $cn['woocommerce'] ?? [];
         if (empty($w['store_url'])) { $out['ok'] = false; $out['error'] = 'تنظیمات ووکامرس ناقص'; return $out; }
-        $remote = reconFetchWoo($w);
+        if (!$resumeFetch && function_exists('wooDirectAvailable') && wooDirectAvailable()) {
+            $direct = reconFetchWooDirect(0);
+            $remote = $direct ? $direct : reconFetchResumable('woo', $w, '', 0);
+        } else {
+            $remote = reconFetchResumable('woo', $w, '', 0);
+        }
         $tk = ''; $vid = 0;
     } else {
         $tk = $shopToken !== '' ? $shopToken : (string)($cn['basalam']['token'] ?? '');
         $vid = $vendorId > 0 ? $vendorId : (int)($cn['basalam']['vendor_id'] ?? 0);
         if ($tk === '' || $vid <= 0) { $out['ok'] = false; $out['error'] = 'تنظیمات باسلام ناقص'; return $out; }
-        $remote = reconFetchBsl($tk, $vid);
+        $remote = reconFetchResumable('bsl', [], $tk, $vid);
     }
     $out['remote'] = count($remote);
     reconProgress(['phase' => 'compare', 'remote' => count($remote),
@@ -40326,7 +40523,7 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
  */
 function reconRun(array $cn, string $target, bool $apply = false,
                   string $mode = 'off', bool $fixPrice = true, bool $allProfiles = false,
-                  bool $allVendors = false, int $onlyVendorId = 0): array {
+                  bool $allVendors = false, int $onlyVendorId = 0, ?array $cp = null): array {
     if ($target !== 'bsl' || (!$allVendors && $onlyVendorId <= 0)) {
         // سازگاری: یک غرفه/ووکامرس
         $shopName = ''; $shopTok = ''; $vid = 0;
@@ -40344,7 +40541,7 @@ function reconRun(array $cn, string $target, bool $apply = false,
                 $shopName = 'غرفهٔ پیش‌فرض';
             }
         }
-        return reconRunOne($cn, $target, $apply, $mode, $fixPrice, $allProfiles, $vid, $shopName, $shopTok);
+        return reconRunOne($cn, $target, $apply, $mode, $fixPrice, $allProfiles, $vid, $shopName, $shopTok, $cp);
     }
 
     $shops = bslAllShops($cn);
@@ -40372,7 +40569,7 @@ function reconRun(array $cn, string $target, bool $apply = false,
         $name = (string)$sh['shop_name'];
         $tok = (string)$sh['token'];
         reconProgress(['log_add' => ['——— غرفه ' . ($si + 1) . '/' . count($shops) . ': ' . $name . ' (#' . $vid . ') ———']]);
-        $one = reconRunOne($cn, 'bsl', $apply, $mode, $fixPrice, $allProfiles, $vid, $name, $tok);
+        $one = reconRunOne($cn, 'bsl', $apply, $mode, $fixPrice, $allProfiles, $vid, $name, $tok, $cp);
         $agg['shops'][] = [
             'vendor_id' => $vid, 'shop_name' => $name, 'ok' => !empty($one['ok']),
             'error' => (string)($one['error'] ?? ''),
@@ -49773,7 +49970,7 @@ function dedupFetchWoo(array $w, int $maxPages = DEDUP_MAX_PAGES, ?array &$parti
  *
  * $mode: 'scan' فقط گزارش · 'delete' واقعاً حذف/بایگانی کن
  */
-function dedupRun(array $cn, string $target, array $cfg, string $mode): array {
+function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $cp = null): array {
     $t0 = microtime(true);
     dedupProgress(['phase' => 'fetch', 'log_add' => ['🔍 دریافتِ فهرستِ محصولات...']]);
 
@@ -49811,6 +50008,25 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode): array {
         if ($mode === 'delete') $mode = 'scan';
     }
 
+    /* v10.126: ادامهٔ واقعی — شناسه‌هایی که در اجرای قبلی حذف/بایگانی شده‌اند
+       (done_ids) از فهرست کنار می‌روند تا دوباره پردازش نشوند. باسلام بایگانی
+       را حذف نمی‌کند و همین شناسه‌ها در واکشیِ بعدی هم برمی‌گردند. */
+    $cpDoneIds = [];
+    if (is_array($cp)) {
+        $cpDoneIds = array_values(array_filter(array_map('intval', (array)($cp['done_ids'] ?? [])), function ($x) { return $x > 0; }));
+        if ($cpDoneIds) {
+            $doneSet = array_fill_keys($cpDoneIds, true);
+            $before = count($rows);
+            $rows = array_values(array_filter($rows, function ($r) use ($doneSet) {
+                return !isset($doneSet[(int)($r['id'] ?? 0)]);
+            }));
+            if (count($rows) !== $before) {
+                dedupProgress(['log_add' => ['↻ ' . ($before - count($rows))
+                    . ' موردِ ازقبل‌پردازش‌شده از چک‌پوینت رد شد']]);
+            }
+        }
+    }
+
     dedupProgress(['phase' => 'group', 'total' => count($rows),
         'log_add' => ['🧮 ' . count($rows) . ' محصول دریافت شد؛ گروه‌بندی بر اساس عنوان...']]);
 
@@ -49832,9 +50048,14 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode): array {
         'log_add' => ['🔎 ' . count($dupGroups) . ' گروهِ هم‌نام با مجموعاً ' . $dupCount
             . ' نسخهٔ اضافی — معیارِ نگه‌داری: ' . dedupKeepLabel($cfg['keep'])]]);
 
-    $deleted = 0; $failed = 0; $errors = [];
+    /* v10.126: شمارنده‌ها از چک‌پوینت شروع می‌شوند تا جمعِ کل (نه فقط این
+       اجرا) دیده شود و امضای پیشرفتِ v10.125 هم یکنوا بالا برود. */
+    $deleted = (int)($cp['deleted'] ?? 0);
+    $failed  = (int)($cp['failed'] ?? 0);
+    $errors  = [];
+    $cpStartedAt = (is_array($cp) ? (int)($cp['started_at'] ?? 0) : 0);
     if ($mode === 'delete' && $dupCount > 0) {
-        $done = 0;
+        $done = (int)($cp['done'] ?? 0);
         foreach ($dupGroups as $gi => $g) {
             if (dedupStopRequested()) { dedupProgress(['log_add' => ['⏹ حذف با درخواستِ کاربر متوقف شد']]); break; }
             foreach ($g['drop'] as $d) {
@@ -49892,6 +50113,13 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode): array {
                     dedupProgress(['deleted' => $deleted, 'failed' => $failed, 'processed' => $done,
                         'log_add' => ['❌ #' . $did . ' — ' . mb_substr((string)$em, 0, 70, 'UTF-8')]]);
                 }
+                /* v10.126: چک‌پوینت پس از هر مورد — اگر پردازه همین‌جا کشته
+                   شود، ادامهٔ بعدی از این شناسه‌ها می‌گذرد و شمارنده‌ها حفظ
+                   می‌شوند. */
+                $cpDoneIds[] = $did;
+                dedupProgress(['checkpoint' => [
+                    'done_ids' => $cpDoneIds, 'deleted' => $deleted, 'failed' => $failed,
+                    'done' => $done, 'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time())]]);
                 usleep(250000);
             }
             if ($gi % 10 === 9) dedupProgress(['log_add' => ['— ' . ($gi + 1) . ' گروه پردازش شد —']]);
@@ -50032,7 +50260,7 @@ function catfixFetchRejected(string $tk, int $vid, ?array &$partial = null): arr
  *        'quorum' اجماعِ چند مدلِ کاندید
  * $opts: ['quorum'=>int, 'product_id'=>int (فقط همین یک محصول)]
  */
-function catfixRun(array $cn, string $mode, array $opts = []): array {
+function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null): array {
     $t0 = microtime(true);
     $bs = $cn['basalam'] ?? [];
     if (empty($bs['token']) || empty($bs['vendor_id']))
@@ -50153,9 +50381,14 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
     }
     $total = count($products);
     if ($total === 0) {
-        return ['ok' => true, 'mode' => $mode, 'total' => 0, 'fixed' => 0, 'failed' => 0,
-                'no_ai' => 0, 'no_cat' => 0, 'skip_same' => 0, 'skip_tried' => 0,
-                'asked' => 0, 'cache_hits' => 0, 'learned_hits' => 0, 'items' => [],
+        /* v10.126: در ادامهٔ چک‌پوینت، جمعِ قبلی حفظ می‌شود (نه صفر) */
+        return ['ok' => true, 'mode' => $mode, 'total' => 0,
+                'fixed' => (int)($cp['fixed'] ?? 0), 'failed' => (int)($cp['failed'] ?? 0),
+                'no_ai' => (int)($cp['no_ai'] ?? 0), 'no_cat' => (int)($cp['no_cat'] ?? 0),
+                'skip_same' => (int)($cp['skip_same'] ?? 0), 'skip_tried' => (int)($cp['skip_tried'] ?? 0),
+                'asked' => (int)($cp['asked'] ?? 0), 'cache_hits' => (int)($cp['cache_hits'] ?? 0),
+                'learned_hits' => (int)($cp['learned_hits'] ?? 0),
+                'items' => is_array($cp['items'] ?? null) ? $cp['items'] : [],
                 'partial' => !empty($partial['partial']),
                 'took' => round(microtime(true) - $t0, 1), 'at' => time(),
                 'msg' => 'هیچ محصولِ ردشده‌ای پیدا نشد'];
@@ -50163,13 +50396,42 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
     catfixProgress(['phase' => 'run', 'total' => $total, 'current' => 0,
         'log_add' => ['🚀 شروعِ اصلاح — ' . aiFaNum($total) . ' محصول · روش: ' . catfixModeLabel($mode)]]);
 
-    $fixed = 0; $failed = 0; $noAi = 0; $noCat = 0; $skipSame = 0; $skipTried = 0;
-    $asked = 0; $cacheHits = 0; $idx = 0; $items = []; $stopped = false;
+    /* v10.126: ادامهٔ واقعی — شمارنده‌ها و اقلامِ گزارش از چک‌پوینت می‌آیند */
+    $fixed = (int)($cp['fixed'] ?? 0);
+    $failed = (int)($cp['failed'] ?? 0);
+    $noAi = (int)($cp['no_ai'] ?? 0);
+    $noCat = (int)($cp['no_cat'] ?? 0);
+    $skipSame = (int)($cp['skip_same'] ?? 0);
+    $skipTried = (int)($cp['skip_tried'] ?? 0);
+    $asked = (int)($cp['asked'] ?? 0);
+    $cacheHits = (int)($cp['cache_hits'] ?? 0);
+    $idx = (int)($cp['idx'] ?? 0);
+    $items = is_array($cp['items'] ?? null) ? $cp['items'] : [];
+    $learnedHits = (int)($cp['learned_hits'] ?? 0);
+    $stopped = false;
     $fbRescued = 0;   // v10.71 (85): چند محصول با زنجیرهٔ پشتیبان نجات یافت
+    $cpStartedAt = (is_array($cp) ? (int)($cp['started_at'] ?? 0) : 0);
     /* v10.36 (۴۹ه): نامِ پروفایلِ هر محصول به‌عنوان بافت به مدل داده می‌شود.
        یک بار ساخته می‌شود و در حلقه هزینه‌ای ندارد. */
     $profOf = catProfileResolver('bsl');
-    $profHits = 0;
+    $profHits = (int)($cp['prof_hits'] ?? 0);
+
+    /* v10.126: شناسه‌هایِ ازقبل‌پردازش‌شده برای رد شدن در حلقه + ثبتِ چک‌پوینت */
+    $cpDoneIds = [];
+    if (is_array($cp)) {
+        $cpDoneIds = array_values(array_filter(array_map('intval', (array)($cp['done_ids'] ?? [])), function ($x) { return $x > 0; }));
+    }
+    $cpDoneSet = $cpDoneIds ? array_fill_keys($cpDoneIds, true) : [];
+    $cpSave = function () use (&$cpDoneIds, &$fixed, &$failed, &$noAi, &$noCat,
+        &$skipSame, &$skipTried, &$asked, &$cacheHits, &$learnedHits, &$profHits,
+        &$idx, &$items, $cpStartedAt) {
+        catfixProgress(['checkpoint' => [
+            'done_ids' => $cpDoneIds, 'fixed' => $fixed, 'failed' => $failed,
+            'no_ai' => $noAi, 'no_cat' => $noCat, 'skip_same' => $skipSame,
+            'skip_tried' => $skipTried, 'asked' => $asked, 'cache_hits' => $cacheHits,
+            'learned_hits' => $learnedHits, 'prof_hits' => $profHits, 'idx' => $idx,
+            'items' => $items, 'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time())]]);
+    };
 
     foreach ($products as $p) {
         $idx++;
@@ -50179,6 +50441,10 @@ function catfixRun(array $cn, string $mode, array $opts = []): array {
             break;
         }
         $pId   = (int)($p['id'] ?? 0);
+        /* v10.126: محصولِ ازقبل‌پردازش‌شده رد می‌شود */
+        if ($pId > 0 && isset($cpDoneSet[$pId])) continue;
+        $cpDoneIds[] = $pId;
+        $cpSave();
         $pName = trim((string)($p['title'] ?? ($p['name'] ?? '')));
         $rev   = $p['revision'] ?? [];
         $curCat = bslProductCatId($p);
@@ -63695,6 +63961,14 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.126', t:'⏯ ادامهٔ واقعیِ کارهای طولانی از چک‌پوینت (نه از اول)', items:[
+    'dedup: شناسه‌هایِ ازقبل‌حذف/بایگانی‌شده در ادامه رد می‌شوند و شمارنده‌ها جمعِ کل را نگه می‌دارند (باسلام بایگانی را از فهرست حذف نمی‌کند، پس بدونِ این ادامه دوباره همان‌ها را برمی‌داشت).',
+    'catfix: محصولِ ازقبل‌پردازش‌شده در ادامه رد می‌شود؛ شمارنده‌ها و اقلامِ گزارش از چک‌پوینت ادامه می‌یابند.',
+    'recon: واکشیِ صفحاتِ مقصد صفحه‌به‌صفحه در کشِ NDJSON ذخیره می‌شود؛ ادامه از صفحهٔ قطع‌شده برمی‌دارد و صفحاتِ قبلی را دوباره نمی‌خواند.',
+    'aicontent: محصولِ پرشده بلافاصله ذخیره می‌شود — کشته‌شدنِ وسطِ نوبت فقط محصولِ در حالِ پردازش را از دست می‌دهد، نه کلِ دستاوردِ نوبت.',
+    'tasksResumeOne دیگر فایلِ پیشرفتِ کارِ رهاشده را پاک نمی‌کند تا چک‌پوینتِ داخلش بماند؛ اندپوینت‌ها با &resume=1 ادامهٔ واقعی می‌دهند.',
+    'افزونه v13.3.43: همگام نسخه با اسکرپر (بدون تغییر رفتاری در افزونه).',
+  ]},
   {v:'10.125', t:'♻️ ادامهٔ خودکارِ همهٔ کارهای طولانی، پیشرفت‌آگاه (مثل استخراج)', items:[
     'گذرِ عمومیِ «ادامهٔ خودکار» (v10.39) که بقیهٔ کارهای رهاشده (همگام‌سازیِ دستی، حذفِ تکراری، اصلاحِ دسته، ایجنت، کشفِ سلکتور و…) را برمی‌گرداند، دیگر با سقفِ ساعتیِ کور مهار نمی‌شود.',
     'امضای پیشرفتِ هر کار از فایلِ پیشرفتش ساخته می‌شود: تا وقتی کار جلو می‌رود در هر تیکِ کران ادامه می‌یابد؛ فقط تکرارِ بدونِ پیشرفت مهار می‌شود.',

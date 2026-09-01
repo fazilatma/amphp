@@ -45,6 +45,8 @@ const BSL_STOP_FILE = __DIR__ . '/bsl_stop_signal.json';
 const BSL_STOP_HOLD_SEC = 900;
 const WOO_PROGRESS_FILE = __DIR__ . '/woo_progress.json';
 const WOO_STOP_FILE = __DIR__ . '/woo_stop_signal.json';
+// هم‌تراز با باسلام: توقف دستی باید در برابر kick/poll بعدی باقی بماند.
+const WOO_STOP_HOLD_SEC = 900;
 const SYNC_STATE_FILE = __DIR__ . '/sync_state.json';
 const BSL_PRODUCTS_FILE = __DIR__ . '/bsl_products_temp.json';
 const WOO_QUEUE_FILE = __DIR__ . '/woo_queue.json';
@@ -311,7 +313,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.161';
+const APP_VERSION = '10.162';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -37597,6 +37599,20 @@ function fireAndForget(string $qs, int $timeoutMs = 1200, ?array $post = null): 
     return true;
 }
 
+/** قفل مشترکِ worker و mutationهای حساسِ صف؛ فایل عمداً حذف نمی‌شود. */
+function queueBackendLock(string $which) {
+    $file = __DIR__ . ($which === 'bsl' ? '/bsl_backend.lock' : '/woo_backend.lock');
+    $fp = @fopen($file, 'c');
+    if (!$fp || !@flock($fp, LOCK_EX | LOCK_NB)) {
+        if (is_resource($fp)) @fclose($fp);
+        return null;
+    }
+    return $fp;
+}
+function queueBackendUnlock($fp): void {
+    if (is_resource($fp)) { @flock($fp, LOCK_UN); @fclose($fp); }
+}
+
 /**
  * بررسی می‌کند صف ارسال گیر کرده یا نه.
  * گیر کرده = ردیفی در حال اجراست ولی از آخرین پیشرفتش بیش از
@@ -37678,6 +37694,20 @@ function queueStallCheck(string $which, int $staleAfter = 300, bool $includePaus
             if (!$lockFresh) @flock($fp, LOCK_UN);
             @fclose($fp);
         }
+    }
+
+    if ($running !== null && !$lockFresh
+        && (!empty($prog['stopped']) || !empty($prog['cancelled']) || !empty($prog['failed_resume'])
+            || (!empty($prog['partial']) && !empty($prog['done'])))
+        && empty($prog['running'])) {
+        /* stop/error checkpoint بعد از مرگِ worker نباید ۵ دقیقهٔ دیگر پشتِ
+           سنِ heartbeat بماند؛ lock آزاد + state ناقص یعنی همین cron باید
+           آن را به queueStallRecover تحویل بدهد. */
+        $stopCur = max((int)($running['current'] ?? 0), (int)($prog['current'] ?? 0));
+        return ['stalled' => true, 'kind' => 'running', 'idle' => 0,
+            'queue_id' => $running['id'] ?? '', 'lock_held' => false,
+            'beat_from' => 'stopped_checkpoint', 'current' => $stopCur,
+            'resume_from' => $stopCur, 'total' => (int)($running['total'] ?? 0)];
     }
 
     if ($running !== null) {
@@ -46368,6 +46398,19 @@ exit;
 }
 register_shutdown_function(function()use($wooLockFp,$wooLockFile){@flock($wooLockFp,LOCK_UN);@fclose($wooLockFp);});
 
+/* توقف تازه بدون resume نباید با یک kick معمولی بلعیده شود. */
+if (file_exists(WOO_STOP_FILE)) {
+    $wooExplicitResume = !empty($_GET['resume']) || !empty($_POST['resume']);
+    $wooStopAge = time() - (int)@filemtime(WOO_STOP_FILE);
+    if (!$wooExplicitResume && $wooStopAge <= WOO_STOP_HOLD_SEC) {
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['ok'=>true,'stopped'=>true,'started'=>false,
+            'msg'=>'ارسال توسط کاربر متوقف شده — برای ادامه از دکمهٔ ادامه استفاده کنید'],JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    @unlink(WOO_STOP_FILE);
+}
+
 header('Content-Type: application/json; charset=UTF-8');
 header('Connection: close');
 header('Content-Length: '.strlen(json_encode(['ok'=>true,'msg'=>'woo_backend started'],JSON_UNESCAPED_UNICODE)));
@@ -46376,7 +46419,6 @@ echo json_encode(['ok'=>true,'msg'=>'woo_backend started'],JSON_UNESCAPED_UNICOD
 if(function_exists('fastcgi_finish_request')){fastcgi_finish_request();}
 
 $startedAt=time();$GLOBALS['startedAt']=$startedAt;
-@unlink(WOO_STOP_FILE);
 $wooSentList=[];$wooUpdatedList=[];$wooSkippedList=[];$wooFailedList=[];$wooLog=[];
 
 function wooBackendProgress($s,$u,$sk,$f,$t,$c,$lt,$log=null,$extra=[]){
@@ -46795,12 +46837,18 @@ taskMarkPartial(BSL_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>t
 // v8.57: «توقف» یعنی همه چیز بایستد. قبلاً فقط ردیف در حال اجرا بسته
 // می‌شد و ردیف‌های منتظر سر جایشان می‌ماندند، پس اولین پینگ بعدی صف را
 // دوباره راه می‌انداخت و کاربر می‌دید ارسال متوقف نشده.
+/* workerِ زنده خودش ردیف را هنگام دیدنِ stop می‌بندد؛ اگر lock آزاد است
+   این درخواستِ توقف می‌تواند ردیف‌های باقی‌مانده را اتمیکاً paused کند. */
+$bslStopFp=queueBackendLock('bsl');
+if(is_resource($bslStopFp)){
+register_shutdown_function(function() use ($bslStopFp){queueBackendUnlock($bslStopFp);});
 $queue=bslReadQueue();
-$stopPaused=0;
+$stopPaused=0;$stopQid=(string)($prevProgress['queue_id']??'');
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'){
+if($e['status']==='running' && ($stopQid==='' || (string)($e['id']??'')===$stopQid)){
 $e['status']='paused';$e['paused_at']=time();
 $e['sent']=$prevProgress['sent']??0;$e['updated']=$prevProgress['updated']??0;$e['skipped']=$prevProgress['skipped']??0;$e['failed']=$prevProgress['failed']??0;$e['current']=$prevProgress['current']??0;
+$stopPaused++;
 }elseif($e['status']==='waiting'){
 $e['status']='paused';
 $e['paused_at']=time();
@@ -46809,6 +46857,7 @@ $stopPaused++;
 }
 unset($e);
 bslWriteQueue($queue);
+} else { $stopPaused=0; }
 echo json_encode(['ok'=>true,'paused'=>$stopPaused,
 'msg'=>$stopPaused>0
 ?('فرآیند متوقف شد — '.$stopPaused.' ردیف صف هم موقتاً نگه داشته شد')
@@ -46871,15 +46920,22 @@ taskMarkPartial(WOO_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>t
     ['queue_id'=>(string)($prevProgress['queue_id']??''), 'current'=>(int)($prevProgress['current']??0), 'total'=>(int)($prevProgress['total']??0),
      'sent'=>(int)($prevProgress['sent']??0), 'updated'=>(int)($prevProgress['updated']??0), 'skipped'=>(int)($prevProgress['skipped']??0), 'failed'=>(int)($prevProgress['failed']??0)]);
 
+/* اگر worker زنده است، stop فقط signal/progress را می‌نویسد؛ mutation صف
+   باید یا به خودِ worker واگذار شود یا بعد از آزادشدنِ lock انجام گیرد. */
+$wooStopFp=queueBackendLock('woo');
+if(is_resource($wooStopFp)){
+register_shutdown_function(function() use ($wooStopFp){queueBackendUnlock($wooStopFp);});
 $queue=wooReadQueue();
+$stopQid=(string)($prevProgress['queue_id']??'');
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'){
+if($e['status']==='running' && ($stopQid==='' || (string)($e['id']??'')===$stopQid)){
 $e['status']='paused';$e['paused_at']=time();
 $e['sent']=$prevProgress['sent']??0;$e['updated']=$prevProgress['updated']??0;$e['skipped']=$prevProgress['skipped']??0;$e['failed']=$prevProgress['failed']??0;$e['current']=$prevProgress['current']??0;
 }
 }
 unset($e);
 wooWriteQueue($queue);
+}
 echo json_encode(['ok'=>true,'msg'=>'فرآیند ووکامرس متوقف شد'],JSON_UNESCAPED_UNICODE);
 exit;
 }
@@ -46919,10 +46975,13 @@ if(isset($_GET['woo_queue_status'])){
 header('Content-Type: application/json; charset=UTF-8');
 /* v10.59 (۷۳): همان بستنِ خودکارِ ردیفِ تمام‌شدهٔ بسته‌نشده برای ووکامرس. */
 try { $stW = loadConnections(); queueStallCheck('woo', max(120, (int)($stW['stall_after'] ?? 300))); } catch (Throwable $eW) {}
+$wooStatusFp = queueBackendLock('woo');
+if (is_resource($wooStatusFp)) register_shutdown_function(function() use ($wooStatusFp) { queueBackendUnlock($wooStatusFp); });
 $queue=wooReadQueue();
 $progress=readProgress(WOO_PROGRESS_FILE);
+$progressQueueId=(string)($progress['queue_id']??'');
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'){
+if($e['status']==='running' && ($progressQueueId==='' || (string)($e['id']??'')===$progressQueueId)){
 $e['sent']=$progress['sent']??0;
 $e['updated']=$progress['updated']??0;
 $e['skipped']=$progress['skipped']??0;
@@ -46930,11 +46989,14 @@ $e['failed']=$progress['failed']??0;
 $e['current']=$progress['current']??0;
 $e['total']=$progress['total']??$e['total']??0;
 $e['done']=$progress['done']??false;
-if($progress['done']){$e['status']='done';$e['done_at']=time();}
+$progressIncomplete=!empty($progress['stopped']) || !empty($progress['partial'])
+    || !empty($progress['cancelled']) || !empty($progress['stale']) || !empty($progress['failed_resume']);
+if($progressIncomplete){$e['status']='paused';$e['paused_at']=time();}
+else if(!empty($progress['done'])){$e['status']='done';$e['done_at']=time();}
 }
 }
 unset($e);
-wooWriteQueue($queue);
+if (is_resource($wooStatusFp)) wooWriteQueue($queue);
 echo json_encode($queue,JSON_UNESCAPED_UNICODE);
 exit;
 }
@@ -47016,11 +47078,16 @@ exit;
 
 if(isset($_GET['woo_queue_start_next'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('woo');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queue=wooReadQueue();
 
 $progress=readProgress(WOO_PROGRESS_FILE);
+$progressQueueId=(string)($progress['queue_id']??'');
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'&&($progress['done']??false)){
+if($e['status']==='running' && ($progressQueueId==='' || (string)($e['id']??'')===$progressQueueId) && !empty($progress['done'])){
 $e['status']='done';
 $e['sent']=$progress['sent']??0;
 $e['updated']=$progress['updated']??0;
@@ -47059,6 +47126,10 @@ exit;
 
 if(isset($_GET['woo_queue_cancel'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('woo');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 $queue=wooReadQueue();
 $found=false;
@@ -47076,6 +47147,10 @@ exit;
 
 if(isset($_GET['woo_queue_clear_done'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('woo');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queue=wooReadQueue();
 foreach($queue['entries'] as $i=>$e){
 if($e['status']==='done'){
@@ -47090,6 +47165,10 @@ exit;
 
 if(isset($_GET['woo_queue_start_server'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('woo');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 if($queueId===''){echo json_encode(['ok'=>false,'error'=>'queue_id خالی'],JSON_UNESCAPED_UNICODE);exit;}
 $queue=wooReadQueue();
@@ -47103,11 +47182,13 @@ unset($e);
 if(!$entry){echo json_encode(['ok'=>false,'error'=>'ورودی یافت نشد'],JSON_UNESCAPED_UNICODE);exit;}
 if($entry['status']!=='waiting'&&$entry['status']!=='running'){echo json_encode(['ok'=>false,'error'=>'وضعیت ورودی مناسب نیست: '.$entry['status']],JSON_UNESCAPED_UNICODE);exit;}
 
+@unlink(WOO_STOP_FILE); /* شروعِ صریحِ کاربر، hold قبلی را مصرف می‌کند */
 @unlink(WOO_PRODUCTS_FILE);
 $copyOk=@copy($entry['products_file'],WOO_PRODUCTS_FILE);
 if(!$copyOk){echo json_encode(['ok'=>false,'error'=>'خطا در کپی فایل محصولات'],JSON_UNESCAPED_UNICODE);exit;}
 $entry['status']='running';
 $entry['started_at']=time();
+$entry['resume_requested_at']=0;
 wooWriteQueue($queue);
 
 echo json_encode(['ok'=>true,'queue_id'=>$queueId,'msg'=>'شروع پردازش سرورساید'],JSON_UNESCAPED_UNICODE);
@@ -47146,6 +47227,10 @@ exit;
 
 if(isset($_GET['woo_queue_delete'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('woo');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 $queue=wooReadQueue();
 $found=false;
@@ -48194,11 +48279,14 @@ header('Content-Type: application/json; charset=UTF-8');
    queueStallCheck دقیقاً همین ردیف را فوراً «done» می‌کند؛ پس قبل از
    رندرِ رابط، یک بار بچکش تا کاربر دیگر وظیفهٔ تمام‌شدهٔ «فعال» نبیند. */
 try { $stB = loadConnections(); queueStallCheck('bsl', max(120, (int)($stB['stall_after'] ?? 300))); } catch (Throwable $eB) {}
+$bslStatusFp = queueBackendLock('bsl');
+if (is_resource($bslStatusFp)) register_shutdown_function(function() use ($bslStatusFp) { queueBackendUnlock($bslStatusFp); });
 $queue=bslReadQueue();
 
 $progress=readProgress(BSL_PROGRESS_FILE);
+$progressQueueId=(string)($progress['queue_id']??'');
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'){
+if($e['status']==='running' && ($progressQueueId==='' || (string)($e['id']??'')===$progressQueueId)){
 $e['sent']=$progress['sent']??0;
 $e['updated']=$progress['updated']??0;
 $e['skipped']=$progress['skipped']??0;
@@ -48209,12 +48297,14 @@ $e['done']=$progress['done']??false;
 /* v10.23 (۳۶ه): شمارنده‌های تفکیکیِ غرفه‌ها زنده به صف می‌رسند */
 if(is_array($progress['shop_stats']??null))$e['shop_stats']=$progress['shop_stats'];
 
-if($progress['paused']){$e['status']='paused';$e['paused_at']=time();}
-else if($progress['done']){$e['status']='done';$e['done_at']=time();}
+$progressIncomplete=!empty($progress['stopped']) || !empty($progress['partial'])
+    || !empty($progress['cancelled']) || !empty($progress['stale']) || !empty($progress['failed_resume']);
+if(!empty($progress['paused']) || $progressIncomplete){$e['status']='paused';$e['paused_at']=time();}
+else if(!empty($progress['done'])){$e['status']='done';$e['done_at']=time();}
 }
 }
 unset($e);
-bslWriteQueue($queue);
+if (is_resource($bslStatusFp)) bslWriteQueue($queue);
 echo json_encode($queue,JSON_UNESCAPED_UNICODE);
 exit;
 }
@@ -48586,6 +48676,10 @@ exit;
 
 if(isset($_GET['bsl_queue_delete'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('bsl');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 if($queueId===''){echo json_encode(['ok'=>false,'error'=>'queue_id خالی'],JSON_UNESCAPED_UNICODE);exit;}
 $queue=bslReadQueue();
@@ -48608,6 +48702,10 @@ exit;
 
 if(isset($_GET['bsl_queue_start_server'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('bsl');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 if($queueId===''){echo json_encode(['ok'=>false,'error'=>'queue_id خالی'],JSON_UNESCAPED_UNICODE);exit;}
 $queue=bslReadQueue();
@@ -48623,6 +48721,7 @@ foreach($queue['entries'] as $qeR){if(($qeR['status']??'')==='running'){echo jso
 if(!file_exists($entry['products_file'])){echo json_encode(['ok'=>false,'error'=>'فایل محصولات یافت نشد'],JSON_UNESCAPED_UNICODE);exit;}
 @copy($entry['products_file'],BSL_PRODUCTS_FILE);
 $queue['entries'][$entryIdx]['status']='running';$queue['entries'][$entryIdx]['started_at']=time();
+$queue['entries'][$entryIdx]['resume_requested_at']=0;
 bslWriteQueue($queue);
 // v8.57: تنظیمات عمومی بازنویسی نمی‌شود — ارسال‌کننده از config همین ردیف می‌خواند
 echo json_encode(['ok'=>true,'queue_id'=>$queueId,'total'=>$entry['total']],JSON_UNESCAPED_UNICODE);exit;
@@ -48630,6 +48729,10 @@ echo json_encode(['ok'=>true,'queue_id'=>$queueId,'total'=>$entry['total']],JSON
 
 if(isset($_GET['bsl_queue_restart_server'])){
 header('Content-Type: application/json; charset=UTF-8');
+$__queueRouteFp = queueBackendLock('bsl');
+if (!is_resource($__queueRouteFp)) { echo json_encode(['ok'=>false,'running'=>true,'error'=>'یک پردازش صف در حال اجراست'],JSON_UNESCAPED_UNICODE); exit; }
+register_shutdown_function(function() use ($__queueRouteFp) { queueBackendUnlock($__queueRouteFp); });
+
 $queueId=trim($_GET['queue_id']??'');
 if($queueId===''){echo json_encode(['ok'=>false,'error'=>'queue_id خالی'],JSON_UNESCAPED_UNICODE);exit;}
 $queue=bslReadQueue();

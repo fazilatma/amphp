@@ -67,18 +67,22 @@ const CATLEARN_MAX_WORDS = 5;
 const CATTRIED_FILE = __DIR__ . '/category_attempts.json';
 const CATTRIED_MAX_PRODUCTS = 2000;   // سقفِ حجم؛ قدیمی‌ترها هرس می‌شوند
 const RECON_PROGRESS_FILE = __DIR__ . '/recon_progress.json'; // v8.49
+const RECON_STOP_FILE     = __DIR__ . '/recon_stop.json'; // v10.131
 const RECON_AUTO_STATE_FILE = __DIR__ . '/recon_auto_state.json'; // v10.107
 const SYNC_MATRIX_PROGRESS_FILE = __DIR__ . '/sync_matrix_progress.json'; // v10.113
 const SYNC_MATRIX_RESULT_FILE   = __DIR__ . '/sync_matrix_result.json';   // v10.113
 const SYNC_MATRIX_LOCK_FILE     = __DIR__ . '/sync_matrix.lock';          // v10.113
+const SYNC_MATRIX_STOP_FILE     = __DIR__ . '/sync_matrix_stop.json';      // v10.131
 const SYNC_MATRIX_FIX_PROGRESS_FILE = __DIR__ . '/sync_matrix_fix_progress.json'; // v10.118
 const SYNC_MATRIX_FIX_LOCK_FILE     = __DIR__ . '/sync_matrix_fix.lock';          // v10.117
 const SYNC_MATRIX_FIX_STOP_FILE     = __DIR__ . '/sync_matrix_fix_stop.json';     // v10.117
 const CATFIX_AUTO_STATE_FILE = __DIR__ . '/catfix_auto_state.json'; // v10.107
 const RECON_FETCH_MAX_PAGES = 400; // v10.107: غرفه‌های بزرگ
 const SUFFIX_PROGRESS_FILE = __DIR__ . '/suffix_progress.json'; // v8.53
+const SUFFIX_STOP_FILE     = __DIR__ . '/suffix_stop.json';     // v10.131
 // v10.02 (۱۶): حذفِ هوشمندِ محصولاتِ تکراری — کارِ بلندمدتِ سمتِ سرور
 const DEDUP_PROGRESS_FILE = __DIR__ . '/dedup_progress.json';
+const DEDUP_FETCH_CURSOR_FILE = __DIR__ . '/dedup_fetch_cursor.ndjson'; // v10.132
 const DEDUP_RESULT_FILE   = __DIR__ . '/dedup_result.json';
 const DEDUP_STOP_FILE     = __DIR__ . '/dedup_stop.json';
 const DEDUP_LOCK_FILE     = __DIR__ . '/dedup.lock';
@@ -114,6 +118,7 @@ const CATFIX_RESULT_FILE   = __DIR__ . '/catfix_result.json';
 const CATFIX_STOP_FILE     = __DIR__ . '/catfix_stop.json';
 const CATFIX_LOCK_FILE     = __DIR__ . '/catfix.lock';
 const CATFIX_MAX_PAGES     = 40;   // صفحاتِ فهرستِ محصولاتِ ردشده
+const CATFIX_FETCH_CURSOR_FILE = __DIR__ . '/catfix_fetch_cursor.ndjson'; // v10.133
 
 /* v10.97: توضیح‌ساز هوشمند — کارِ پس‌زمینهٔ سرور با صف/گزارش کارتی */
 const AICONTENT_PROGRESS_FILE = __DIR__ . '/aicontent_progress.json';
@@ -233,8 +238,10 @@ const VAPID_PRIVATE_KEY_B64  = 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg
 const VAPID_PUBLIC_KEY_B64URL = 'BBaeLmkwi914ePh09ho2OaQM0fg1Rs3I3GDcsLk1GWISzaiQ6qGtVyO4e94T2DtVcZIFNpn34e_gLrAakV6sFZo';
 const VAPID_SUBJECT = 'mailto:push@local';
 const BULKEDIT_PROGRESS_FILE = __DIR__ . '/bulkedit_progress.json';   // v8.62
+const BULKEDIT_STOP_FILE     = __DIR__ . '/bulkedit_stop.json';         // v10.131
 const BULKEDIT_RESULT_FILE   = __DIR__ . '/bulkedit_result.json';     // v8.62
 const PHOTOFIX_PROGRESS_FILE = __DIR__ . '/photofix_progress.json';   // v8.62
+const PHOTOFIX_STOP_FILE     = __DIR__ . '/photofix_stop.json';         // v10.131
 const DIGEST_STATE_FILE      = __DIR__ . '/digest_state.json';        // v8.62
 // v8.64: سقف تصاویر هر محصول. باید بالای فایل باشد — const سطح بالا در PHP
 // بالا برده نمی‌شود و اندپوینت‌هایی که زودتر اجرا می‌شوند به آن نیاز دارند.
@@ -304,7 +311,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.130';
+const APP_VERSION = '10.161';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -857,26 +864,130 @@ function extractWriteQueue(array $queue): void {
 /* =====================================================================
  *  v10.32 (۴۵ب): قفلِ سراسریِ استخراج
  *
- *  چرا لازم شد: استخراج تنها زیرسیستمِ سنگینی بود که قفل نداشت. محافظِ
- *  «این پروفایل الان در صف است» فقط هم‌پروفایلی را می‌گرفت؛ دو پروفایلِ
- *  متفاوت می‌توانستند هم‌زمان بدوند. ولی فایلِ پیشرفت یکی بیشتر نیست، پس
- *  اجرای دوم queue_id اولی را بازنویسی می‌کرد و از آن لحظه:
- *    • نگهبان و extract_queue_status، ردیفِ اولی را «غریبه» می‌دیدند و
- *      بی‌حرکتی‌اش را از started_at حساب می‌کردند ⇒ «خطا»ی دروغین.
- *    • نوارِ پیشرفتِ رابط، اعدادِ دو اجرا را قاطی نشان می‌داد.
- *    • نگهبان ردیفِ زندهٔ اولی را از صف برمی‌داشت ⇒ استخراج نیمه‌کاره رها.
- *
- *  عمداً flock نیست: روی بعضی هاست‌های اشتراکی (NFS) flock بی‌صدا موفق
- *  می‌شود و هیچ‌چیز را قفل نمی‌کند. اینجا با فایلِ نشانه‌دار + PID + TTL
- *  کار می‌کنیم که همه‌جا رفتارِ یکسان دارد.
+ *  قفلِ استخراج یک فایلِ دائمی با flock است. فایلِ قفل هرگز هنگام آزادشدن
+ *  unlink نمی‌شود: حذفِ مسیر بعد از unlock یک پنجرهٔ race می‌سازد که در آن
+ *  worker دیگری می‌تواند فایلِ تازه‌ای بسازد و دو اجرا هم‌زمان شوند. مالکیت
+ *  با خودِ handle تا پایانِ پردازه زنده می‌ماند؛ metadata فقط برای گزارش است.
  * ===================================================================== */
 
+/** metadata را زیرِ همان handle می‌نویسد؛ caller باید flock داشته باشد. */
+function extractLockWriteMeta($fp, array $meta): bool {
+    if (!is_resource($fp)) return false;
+    $json = json_encode($meta, JSON_UNESCAPED_UNICODE);
+    if ($json === false) return false;
+    if (!@ftruncate($fp, 0) || !@rewind($fp)) return false;
+    $n = @fwrite($fp, $json);
+    @fflush($fp);
+    return $n === strlen($json);
+}
+
 /** قفل را برمی‌دارد. اگر قفلِ زنده‌ای هست، اطلاعاتش را برمی‌گرداند. */
+function extractLockAcquire(string $queueId, string $profileKey): array {
+    $now = time();
+    /* رزروِ آماده‌سازی ممکن است در همین request به runBackendExtract منتقل شود؛
+       همان handle را دوباره باز نکن، وگرنه مالکیتِ اتمیکِ رزرو از بین می‌رود. */
+    $ownedFp = $GLOBALS['_extractLockFp'] ?? null;
+    $ownedId = (string)($GLOBALS['_extractLockQueueId'] ?? '');
+    if (is_resource($ownedFp) && $ownedId !== '') {
+        if ($ownedId === $queueId) return ['ok' => true, 'reused' => true];
+        $ownedMeta = is_array($GLOBALS['_extractLockMeta'] ?? null) ? $GLOBALS['_extractLockMeta'] : [];
+        return ['ok' => false, 'busy' => true, 'age' => max(0, $now - (int)($ownedMeta['at'] ?? $now)),
+            'queue_id' => $ownedId, 'profile_key' => (string)($ownedMeta['profile_key'] ?? ''),
+            'profile_name' => (string)($ownedMeta['profile_name'] ?? '')];
+    }
+    $file = EXTRACT_LOCK_FILE;
+    $fp = @fopen($file, 'c');
+    if (!$fp) return ['ok' => false, 'busy' => true, 'reason' => 'lock_open'];
+    if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+        /* خواندنِ metadata فقط برای پیام است؛ نتیجهٔ واقعیِ busy همان flock است. */
+        $cur = @json_decode((string)@file_get_contents($file), true);
+        @fclose($fp);
+        return ['ok' => false, 'busy' => true,
+            'age' => is_array($cur) ? max(0, $now - (int)($cur['at'] ?? $now)) : 0,
+            'queue_id' => (string)($cur['queue_id'] ?? ''),
+            'profile_key' => (string)($cur['profile_key'] ?? ''),
+            'profile_name' => (string)($cur['profile_name'] ?? '')];
+    }
+
+    $profileName = $profileKey;
+    try {
+        $profiles = loadProfiles();
+        if (is_array($profiles[$profileKey] ?? null))
+            $profileName = (string)($profiles[$profileKey]['name'] ?? $profileKey);
+    } catch (Throwable $e) { /* metadata is best-effort */ }
+    $meta = ['queue_id' => $queueId, 'profile_key' => $profileKey,
+        'profile_name' => $profileName, 'pid' => (int)@getmypid(), 'at' => $now];
+    if (!extractLockWriteMeta($fp, $meta)) {
+        @flock($fp, LOCK_UN); @fclose($fp);
+        return ['ok' => false, 'busy' => false, 'reason' => 'lock_write'];
+    }
+    /* این handle و metadata فقط در همین worker معتبرند. */
+    $GLOBALS['_extractLockFp'] = $fp;
+    $GLOBALS['_extractLockQueueId'] = $queueId;
+    $GLOBALS['_extractLockMeta'] = $meta;
+    return ['ok' => true, 'stale_cleared' => true];
+}
+
+/** قفل را فقط اگر مالِ خودمان باشد آزاد می‌کند؛ مسیرِ lock دائمی می‌ماند. */
+function extractLockRelease(string $queueId): void {
+    $fp = $GLOBALS['_extractLockFp'] ?? null;
+    $owner = (string)($GLOBALS['_extractLockQueueId'] ?? '');
+    if (is_resource($fp) && ($owner === '' || $owner === $queueId)) {
+        unset($GLOBALS['_extractLockFp'], $GLOBALS['_extractLockQueueId'], $GLOBALS['_extractLockMeta']);
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+        return;
+    }
+    /* سازگاری با workerهای قدیمیِ بدون handle: فقط وقتی lock واقعاً آزاد است
+       metadata خنثی می‌شود. هرگز مسیرِ lock را حذف نمی‌کنیم. */
+    $probe = @fopen(EXTRACT_LOCK_FILE, 'c');
+    if (!$probe) return;
+    if (@flock($probe, LOCK_EX | LOCK_NB)) {
+        $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
+        if (is_array($cur) && (string)($cur['queue_id'] ?? '') === $queueId) {
+            $cur['released_at'] = time();
+            $cur['queue_id'] = '';
+            $cur['at'] = 0;
+            extractLockWriteMeta($probe, $cur);
+        }
+        @flock($probe, LOCK_UN);
+    }
+    @fclose($probe);
+}
+
+/** ضربانِ قفل — metadata مالک و profile را حفظ می‌کند. */
+function extractLockTouch(string $queueId): void {
+    $fp = $GLOBALS['_extractLockFp'] ?? null;
+    $owner = (string)($GLOBALS['_extractLockQueueId'] ?? '');
+    if (is_resource($fp) && $owner === $queueId) {
+        $meta = is_array($GLOBALS['_extractLockMeta'] ?? null) ? $GLOBALS['_extractLockMeta'] : [];
+        $meta['queue_id'] = $queueId;
+        $meta['profile_key'] = (string)($meta['profile_key'] ?? '');
+        $meta['profile_name'] = (string)($meta['profile_name'] ?? $meta['profile_key']);
+        $meta['pid'] = (int)($meta['pid'] ?? @getmypid());
+        $meta['at'] = time();
+        if (extractLockWriteMeta($fp, $meta)) $GLOBALS['_extractLockMeta'] = $meta;
+        return;
+    }
+    /* legacy fallback هم باید مالکیت را با flock ثابت کند؛ file_put_contents
+       بدون probe می‌توانست metadata یک worker زنده را بازنویسی کند. */
+    $legacyFp = @fopen(EXTRACT_LOCK_FILE, 'c');
+    if (!$legacyFp || !@flock($legacyFp, LOCK_EX | LOCK_NB)) {
+        if ($legacyFp) @fclose($legacyFp);
+        return;
+    }
+    $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
+    if (is_array($cur) && (string)($cur['queue_id'] ?? '') === $queueId) {
+        $cur['at'] = time();
+        extractLockWriteMeta($legacyFp, $cur);
+    }
+    @flock($legacyFp, LOCK_UN);
+    @fclose($legacyFp);
+}
 
 /**
- * v10.80: پاک‌سازی ردیف‌های مردهٔ صف استخراج و قفل کهنه.
- * همگام‌سازی دستی و خودکار هر دو از اینجا استفاده می‌کنند تا
- * «duplicate/locked» خاموش جلوی enqueue را نگیرد.
+ * v10.80: پاک‌سازی ردیف‌های مردهٔ صف استخراج و metadata قفلِ کهنه.
+ * قفلِ آزاد فقط metadataاش خنثی می‌شود؛ قفلِ held حتی خوانده/لمس نمی‌شود.
  *
  * @param string $profileKey خالی = همهٔ پروفایل‌ها
  * @param array  $opts       max_idle, clear_waiting, reason
@@ -888,13 +999,20 @@ function extractClearStaleBlockers(string $profileKey = '', array $opts = []): i
     $stall = max(90, (int)(loadConnections()['stall_after'] ?? 300));
     $maxIdle = (int)($opts['max_idle'] ?? $stall);
     if ($maxIdle < 60) $maxIdle = 60;
-    $clearWaiting = !empty($opts['clear_waiting']); // waiting/paused همیشه (دستی) یا فقط کهنه
+    $clearWaiting = !empty($opts['clear_waiting']);
     $reason = (string)($opts['reason'] ?? 'پاک‌سازی خودکار');
+
+    /* v10.149: probe و mutation هر دو زیرِ یک handle. صرفاً فراخوانیِ
+       extractLockIsHeld() و بعد نوشتنِ صف، بین دو request پنجرهٔ race داشت. */
+    $lockFp = @fopen(EXTRACT_LOCK_FILE, 'c');
+    if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if (is_resource($lockFp)) @fclose($lockFp);
+        return 0;
+    }
     try {
         $q = extractReadQueue();
         $entries = is_array($q['entries'] ?? null) ? $q['entries'] : [];
         $prog = readProgress(EXTRACT_PROGRESS_FILE);
-        $dirty = false;
         foreach ($entries as &$e) {
             if (!is_array($e)) continue;
             $pk = (string)($e['profile_key'] ?? '');
@@ -904,99 +1022,41 @@ function extractClearStaleBlockers(string $profileKey = '', array $opts = []): i
             $mine = ((string)($prog['queue_id'] ?? '')) === ((string)($e['id'] ?? ''));
             $ts = $mine ? (int)($prog['last_progress_ts'] ?? 0) : 0;
             if ($ts <= 0) $ts = (int)($e['started_at'] ?? 0);
-            // waiting بدون started_at — از done_at/id time حدس نزن؛ کهنه فرض کن اگر clear_waiting
             $idle = $ts > 0 ? ($now - $ts) : ($clearWaiting || $st !== 'running' ? PHP_INT_MAX : 0);
-            $kill = false;
-            if ($st === 'waiting' || $st === 'paused') {
-                $kill = $clearWaiting || ($idle > $maxIdle);
-            } elseif ($st === 'running' && $idle > $maxIdle) {
-                $kill = true;
-            }
+            $kill = $st === 'waiting' || $st === 'paused'
+                ? ($clearWaiting || $idle > $maxIdle) : ($idle > $maxIdle);
             if (!$kill) continue;
             $e['status'] = 'failed';
             $e['error'] = $reason . ' (' . ($idle === PHP_INT_MAX ? 'بدون پیشرفت' : ($idle . 'ث بی‌حرکت')) . ')';
             $e['done_at'] = $now;
+            $e['resumable'] = true;
+            $e['partial'] = true;
             $cleared++;
-            $dirty = true;
         }
         unset($e);
-        if ($dirty) {
-            $q['entries'] = $entries;
-            extractWriteQueue($q);
-        }
-        if (defined('EXTRACT_LOCK_FILE') && is_file(EXTRACT_LOCK_FILE)) {
-            $lk = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
-            $lkAge = is_array($lk) ? ($now - (int)($lk['at'] ?? 0)) : ($now - (int)@filemtime(EXTRACT_LOCK_FILE));
+        $q['entries'] = $entries;
+        @file_put_contents(EXTRACT_QUEUE_FILE, json_encode($q, JSON_UNESCAPED_UNICODE), LOCK_EX);
+
+        /* metadata فقط گزارش است؛ اکنون همین handle مالک lock است، پس
+           خنثی‌کردنش در این نقطه دیگر worker زنده را لمس نمی‌کند. */
+        $lk = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
+        if (is_array($lk) && (string)($lk['queue_id'] ?? '') !== '') {
+            $lkAge = (int)($lk['at'] ?? 0) > 0 ? max(0, $now - (int)$lk['at']) : 0;
             $progRunning = !empty($prog['running']) && empty($prog['done']);
             $progIdle = $now - (int)($prog['last_progress_ts'] ?? 0);
-            $lkMine = $profileKey !== '' && is_array($lk) && (string)($lk['profile_key'] ?? '') === $profileKey;
+            $lkProfile = (string)($lk['profile_key'] ?? '');
+            $lkMine = $profileKey !== '' && $lkProfile === $profileKey;
             if ($lkMine || !$progRunning || $progIdle > $maxIdle || $lkAge > $maxIdle) {
-                // اگر قفل مال پروفایل دیگری است و پیشرفت زنده است، دست نزن
-                if ($profileKey !== '' && is_array($lk) && !$lkMine && $progRunning && $progIdle <= $maxIdle) {
-                    // keep
-                } else {
-                    @unlink(EXTRACT_LOCK_FILE);
-                    $cleared++;
-                }
+                $lk['queue_id'] = '';
+                $lk['at'] = 0;
+                $lk['released_at'] = $now;
+                if (extractLockWriteMeta($lockFp, $lk)) $cleared++;
             }
         }
     } catch (Throwable $ex) { /* never block */ }
+    @flock($lockFp, LOCK_UN);
+    @fclose($lockFp);
     return $cleared;
-}
-
-function extractLockAcquire(string $queueId, string $profileKey): array {
-    $now = time();
-    $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
-    if (is_array($cur) && !empty($cur['queue_id'])) {
-        /* v10.32 (۴۵ب): قفل نسبت به صاحبِ خودش بازورودی است. اگر همین
-           اجرا دوباره درخواست بدهد (تلاشِ مجدد، یا مسیری که دو بار از
-           همین‌جا رد می‌شود) نباید خودش را قفل‌شده ببیند — فقط ضربان
-           می‌زنیم و اجازه می‌دهیم ادامه دهد. */
-        if ((string)$cur['queue_id'] === $queueId) {
-            $cur['at'] = $now;
-            @file_put_contents(EXTRACT_LOCK_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
-            return ['ok' => true, 'reentrant' => true];
-        }
-        $age = $now - (int)($cur['at'] ?? 0);
-        /* قفلِ کهنه یعنی پردازه‌اش مرده و فرصت نکرده آزادش کند. مهلت را
-           با همان stall_after کاربر هماهنگ می‌کنیم تا دو عدد جدا نداشته
-           باشیم، ولی هرگز از یک ساعت بیشتر نشود. */
-        $ttl = max(120, min((int)EXTRACT_LOCK_TTL,
-                            (int)(loadConnections()['stall_after'] ?? 300) * 3));
-        $prog = readProgress(EXTRACT_PROGRESS_FILE);
-        /* اگر فایلِ پیشرفت مالِ همین قفل است و تازه نوشته شده، اجرا قطعاً
-           زنده است — حتی اگر خودِ قفل قدیمی باشد (استخراجِ طولانیِ سالم). */
-        $mine = ((string)($prog['queue_id'] ?? '')) === ((string)$cur['queue_id']);
-        $beat = $mine ? (int)($prog['last_progress_ts'] ?? 0) : 0;
-        if ($beat > 0 && ($now - $beat) < $ttl) $age = $now - $beat;
-        if ($age < $ttl) {
-            return ['ok' => false, 'busy' => true, 'age' => $age,
-                    'queue_id' => (string)$cur['queue_id'],
-                    'profile_key' => (string)($cur['profile_key'] ?? ''),
-                    'profile_name' => (string)($cur['profile_name'] ?? '')];
-        }
-        $stale = true;
-    }
-    $ok = @file_put_contents(EXTRACT_LOCK_FILE, json_encode(
-        ['queue_id' => $queueId, 'profile_key' => $profileKey, 'pid' => (int)@getmypid(),
-         'at' => $now], JSON_UNESCAPED_UNICODE), LOCK_EX);
-    return ['ok' => $ok !== false, 'stale_cleared' => !empty($stale)];
-}
-
-/** قفل را فقط اگر مالِ خودمان باشد آزاد می‌کند (قفلِ دیگری را نمی‌دزدد). */
-function extractLockRelease(string $queueId): void {
-    $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
-    if (!is_array($cur)) { @unlink(EXTRACT_LOCK_FILE); return; }
-    if ((string)($cur['queue_id'] ?? '') !== $queueId) return;   // مالِ ما نیست
-    @unlink(EXTRACT_LOCK_FILE);
-}
-
-/** ضربانِ قفل — تا استخراجِ طولانیِ سالم «کهنه» حساب نشود. */
-function extractLockTouch(string $queueId): void {
-    $cur = @json_decode((string)@file_get_contents(EXTRACT_LOCK_FILE), true);
-    if (!is_array($cur) || (string)($cur['queue_id'] ?? '') !== $queueId) return;
-    $cur['at'] = time();
-    @file_put_contents(EXTRACT_LOCK_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
 }
 
 /* =====================================================================
@@ -1084,6 +1144,12 @@ function queueRowSig(array $row, array $prog = []): string {
 function queueRowIdle(string $kind, array $row, array $prog, int $now, array $extraBeats = []): array {
     $rowId = (string)($row['id'] ?? '');
     $beats = [];
+    /* بعد از reservation، parent lock را پیش از fire آزاد می‌کند؛ این مهر
+       پنجرهٔ کوتاهِ handoff را می‌پوشاند تا watchdog دوم همان ردیف را دوباره
+       dispatch نکند. */
+    $resumeAt = (int)($row['resume_requested_at'] ?? 0);
+    if ($resumeAt > 0 && $now >= $resumeAt && ($now - $resumeAt) <= QUEUE_RESUME_HANDOFF_SEC)
+        $beats['resume_request'] = $resumeAt;
 
     /* ۱) فایلِ پیشرفت — فقط وقتی مالِ همین ردیف است */
     $pid = (string)($prog['queue_id'] ?? '');
@@ -1743,6 +1809,17 @@ function readProgress(string $file): array {
 if (!file_exists($file)) return ['running'=>false,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,'last_title'=>'','last_index'=>0,'done'=>false,'started_at'=>0,'total_log_count'=>0];
 $d = @json_decode(@file_get_contents($file) ?: '', true);
 return is_array($d) ? $d : ['running'=>false,'total_log_count'=>0];
+}
+
+/** v10.134: snapshotِ توقف برای resume در کران بعدی. */
+function taskMarkPartial(string $file, array $patch, array $cursor = []): void {
+    $state = readProgress($file);
+    if (!is_array($state)) $state = [];
+    $oldCp = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
+    $state = array_merge($state, $patch);
+    if ($cursor || $oldCp) $state['checkpoint'] = array_merge($oldCp, $cursor);
+    $state['last_progress_ts'] = time();
+    writeProgress($file, $state);
 }
 /**
  * v9.06: پاسخ را همین حالا ببند و کار را جدا از مرورگر/کران ادامه بده.
@@ -3235,7 +3312,7 @@ function aiTestLockClose($fp): void {
     if (is_resource($fp)) {
         @flock($fp, LOCK_UN); @fclose($fp);
     }
-    @unlink(AI_TEST_LOCK_FILE);
+    /* AI_TEST_LOCK_FILE مسیرِ دائمی دارد؛ مالکیت با flock آزاد شد. */
 }
 /* v9.45: آیا «توقف تست مدل‌ها» درخواست شده؟ کش stat را پاک می‌کند تا فایلِ
    تازه‌ساخته‌شده هم دیده شود (همان الگوی bslReq). این یک نقطهٔ مشترک است تا
@@ -5274,9 +5351,12 @@ function aicontentProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log;
     $cur['ts'] = time();
-    @file_put_contents(AICONTENT_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(AICONTENT_PROGRESS_FILE, $cur);
 }
 function aicontentStopRequested(): bool { return is_file(AICONTENT_STOP_FILE); }
 function aicontentClearStop(): void { @unlink(AICONTENT_STOP_FILE); }
@@ -5481,16 +5561,21 @@ function aicontentRun(?array $cn = null, int $limit = 0, ?array $resume = null):
     $flushProfiles();   // v10.126: ذخیرهٔ باقی‌مانده (معمولاً خالی)
     $stats['profiles'] = count($dirtyAll);
     $stats['took'] = time() - $t0;
+    /* تا وقتی محصولِ ناموفق باقی مانده یا سقفِ صف پر شده، این نوبت
+       «کامل» نیست: اجرای cron بعدی باید همان صفِ باقی‌مانده را بگیرد. */
+    $stats['partial'] = $stats['stopped'] || $stats['failed'] > 0 || $total >= $per;
     $stats['msg'] = 'پر شد: ' . $stats['filled'] . ' · ناموفق: ' . $stats['failed']
-        . ($stats['stopped'] ? ' · متوقف' : '');
+        . ($stats['stopped'] ? ' · متوقف' : ($stats['partial'] ? ' · ادامه‌دار' : ''));
+    $contentCheckpoint = $stats['partial'] ? ['limit' => $per, 'started_at' => $contentStartedAt,
+        'scanned' => $stats['scanned'], 'filled' => $stats['filled'], 'failed' => $stats['failed'],
+        'skipped' => $stats['skipped'], 'current' => (int)($stats['scanned'])] : null;
     aicontentProgress([
         'phase' => 'done',
         'filled' => $stats['filled'], 'failed' => $stats['failed'],
         'current' => min($total, (int)($stats['scanned'])),
-        'checkpoint' => $stats['stopped'] ? ['limit' => $per, 'started_at' => $contentStartedAt,
-            'scanned' => $stats['scanned'], 'filled' => $stats['filled'], 'failed' => $stats['failed'],
-            'skipped' => $stats['skipped'], 'current' => (int)($stats['scanned'])] : null,
-        'stale' => $stats['stopped'],
+        'partial' => $stats['partial'], 'incomplete' => $stats['partial'],
+        'checkpoint' => $contentCheckpoint,
+        'stale' => $stats['partial'],
         'log_add' => ['🏁 ' . $stats['msg'] . ' · ' . $stats['took'] . 'ث'],
     ]);
     return $stats;
@@ -14043,9 +14128,22 @@ echo json_encode(['ok'=>true,'removed'=>$before-count($queue['entries'])],JSON_U
 
 if(isset($_GET['extract_stop'])){
 header('Content-Type: application/json; charset=UTF-8');
-@file_put_contents(EXTRACT_STOP_FILE,json_encode(['stop'=>true,'time'=>time()],LOCK_EX));
 $prev=readProgress(EXTRACT_PROGRESS_FILE);
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'total'=>$prev['total']??0,'current'=>$prev['current']??0,'started_at'=>$prev['started_at']??0,'recent_log'=>['❌ متوقف شد'],'total_log_count'=>1,'extracted'=>$prev['extracted']??0,'new'=>$prev['new']??0,'price_changed'=>$prev['price_changed']??0,'removed'=>$prev['removed']??0,'unchanged'=>$prev['unchanged']??0,'products_saved'=>false]);
+$stopQid=trim((string)($_GET['queue_id']??''));
+/* v10.134: توقف فقط signal نیست؛ آخرین progress/phase/profile را هم نگه می‌داریم
+   تا اگر worker پیش از دیدنِ signal مرد، مدیر وظیفه همان checkpoint را ببیند. */
+$stopPhase=(string)($prev['phase']??'list');
+if($stopPhase!=='detail')$stopPhase='list';
+$stopPatch=['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,
+    'resumable'=>true,'resume_phase'=>$stopPhase,'total'=>$prev['total']??0,'current'=>$prev['current']??0,
+    'started_at'=>$prev['started_at']??0,'last_progress_ts'=>time(),
+    'recent_log'=>array_merge((array)($prev['recent_log']??[]),['❌ متوقف شد — checkpoint حفظ شد']),
+    'total_log_count'=>($prev['total_log_count']??0)+1,'extracted'=>$prev['extracted']??0,'new'=>$prev['new']??0,
+    'price_changed'=>$prev['price_changed']??0,'removed'=>$prev['removed']??0,'unchanged'=>$prev['unchanged']??0,
+    'products_saved'=>true];
+if($stopQid!=='')$stopPatch['queue_id']=$stopQid;
+writeProgress(EXTRACT_PROGRESS_FILE,array_merge($prev,$stopPatch));
+@file_put_contents(EXTRACT_STOP_FILE,json_encode(['stop'=>true,'time'=>time(),'queue_id'=>$stopQid],LOCK_EX));
 
 /* v8.91: خودِ ردیف صف هم بسته شود.
    تا اینجا «توقف» فقط یک فایل سیگنال می‌نوشت و فایل پیشرفت را می‌بست.
@@ -14055,7 +14153,6 @@ writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>
    می‌ماند و چون محافظ تکراری‌نبودن همان پروفایل را در صف می‌دید، اجرای
    بعدی هم رد می‌شد. یعنی دقیقاً همان «با دکمهٔ توقف هم متوقف نمی‌شود».
    حالا توقف صریحاً ردیف را «متوقف» علامت می‌زند. */
-$stopQid=trim((string)($_GET['queue_id']??''));
 $queue=extractReadQueue();
 $stopped=[];$now=time();
 foreach($queue['entries'] as &$qe){
@@ -14069,6 +14166,27 @@ foreach($queue['entries'] as &$qe){
 }
 unset($qe);
 if($stopped)extractWriteQueue($queue);
+/* اگر worker دیگر وجود نداشته باشد، همین snapshotِ روی دیسک باید قابل resume بماند. */
+$stopPk=trim((string)($prev['profile_key']??''));
+if($stopPk!==''){
+    try{
+        $stopProfiles=loadProfiles();
+        if(is_array($stopProfiles[$stopPk]??null)){
+            $stopProducts=extractPrevMap($stopProfiles[$stopPk]);
+            $stopExtra=['_extract_stage'=>'stopped','_extract_stage_at'=>time(),
+                '_extract_resume_phase'=>$stopPhase,'_extract_list_incomplete'=>$stopPhase==='list',
+                '_extract_detail_done'=>(int)($prev['detail_current']??$prev['detail_done']??0),
+                '_extract_detail_total'=>(int)($prev['detail_total']??0)];
+            if($stopPhase==='list'){
+                $stopPage=max(1,(int)($prev['page']??$prev['current']??1));
+                $stopExtra['_extract_list_page_try']=$stopPage;
+                $stopExtra['_extract_list_page_ok']=max(0,$stopPage-1);
+                $stopExtra['_extract_resume_from']=max(1,$stopPage-1);
+            }
+            extractCheckpoint($stopPk,$stopProducts,$stopExtra);
+        }
+    }catch(Throwable $stopEx){}
+}
 echo json_encode(['ok'=>true,'stopped'=>$stopped],JSON_UNESCAPED_UNICODE);exit;
 }
 
@@ -14099,39 +14217,15 @@ if (isset($_GET['extract_resume']) || (($_POST['action'] ?? '') === 'extract_res
         exit;
     }
     $pr = $profiles[$pk];
-    $meta = extractListResumeMeta($pr);
-    $stage = (string)($pr['_extract_stage'] ?? '');
-    /* اگر وسط جزئیات مانده → phase=detail؛ وگرنه all با start_page */
-    $phase = ($stage === 'detail') ? 'detail' : 'all';
-    try {
-        extractClearStaleBlockers($pk, [
-            'max_idle' => 60,
-            'clear_waiting' => true,
-            'reason' => 'پاک‌سازی پیش از ادامهٔ استخراج',
-        ]);
-    } catch (Throwable $e) {}
-    /* ردیف failed/paused قبلی را ببند تا duplicate گیر ندهد */
-    $q = extractReadQueue();
-    $dirty = false;
-    foreach ($q['entries'] as &$e) {
-        if ((string)($e['profile_key'] ?? '') !== $pk) continue;
-        if (!in_array((string)($e['status'] ?? ''), ['failed', 'paused', 'running'], true)) continue;
-        $e['status'] = 'done';
-        $e['done_at'] = time();
-        $e['error'] = 'جایگزین با ادامه از صفحه ' . (int)$meta['start_page'];
-        $e['superseded_by_resume'] = true;
-        $dirty = true;
+    /* v10.136: آماده‌سازی، بستن blocker و mutation پروفایل فقط زیرِ
+       reservation انجام می‌شود؛ بعد worker همان handle را مصرف می‌کند. */
+    $prep = extractResumePrepare($pk, loadConnections());
+    if (empty($prep['ok'])) {
+        echo json_encode(['ok' => false, 'error' => 'استخراجِ دیگری در حال اجراست — اجرای موازی ساخته نشد'], JSON_UNESCAPED_UNICODE);
+        exit;
     }
-    unset($e);
-    if ($dirty) extractWriteQueue($q);
-
-    /* پرچم resume روی پروفایل */
-    $profiles = loadProfiles();
-    if (isset($profiles[$pk]) && is_array($profiles[$pk])) {
-        $profiles[$pk]['_extract_resume_req'] = time();
-        $profiles[$pk]['_extract_resume_from'] = (int)$meta['start_page'];
-        saveProfiles($profiles);
-    }
+    $meta = extractListResumeMeta(loadProfiles()[$pk] ?? $pr);
+    $phase = (string)$prep['phase'];
 
     $early = json_encode([
         'ok' => true, 'started' => true, 'resuming' => true,
@@ -14148,12 +14242,17 @@ if (isset($_GET['extract_resume']) || (($_POST['action'] ?? '') === 'extract_res
     if (function_exists('fastcgi_finish_request')) @fastcgi_finish_request();
 
     try {
-        runBackendExtract($pk, 'manual_resume', false, $phase, false);
+        runBackendExtract($pk, 'manual_resume', false, $phase, false, (string)($prep['queue_id'] ?? ''));
     } catch (Throwable $e) {
-        writeProgress(EXTRACT_PROGRESS_FILE, [
-            'running' => false, 'done' => true, 'error' => $e->getMessage(),
-            'recent_log' => ['❌ ادامه ناموفق: ' . $e->getMessage()],
-        ]);
+        $failed = readProgress(EXTRACT_PROGRESS_FILE);
+        if (!$failed) $failed = $pr;
+        $failed['running'] = false; $failed['done'] = true;
+        $failed['stale'] = true; $failed['partial'] = true; $failed['resumable'] = true;
+        $failed['error'] = 'ادامه ناموفق: ' . $e->getMessage();
+        $failed['last_progress_ts'] = time();
+        $failed['recent_log'] = array_slice(array_merge((array)($failed['recent_log'] ?? []),
+            ['❌ ادامه ناموفق؛ checkpoint حفظ شد: ' . $e->getMessage()]), -40);
+        writeProgress(EXTRACT_PROGRESS_FILE, $failed);
     }
     exit;
 }
@@ -14284,45 +14383,72 @@ function extractListResumeMeta(array $profile): array {
     ];
 }
 
+/** فقط flock می‌گوید extraction واقعاً در حال اجراست. */
+function extractLockIsHeld(): bool {
+    $fp = @fopen(EXTRACT_LOCK_FILE, 'c');
+    if (!$fp) return true; // در ابهام، duplicate نساز
+    $held = !@flock($fp, LOCK_EX | LOCK_NB);
+    if (!$held) @flock($fp, LOCK_UN);
+    @fclose($fp);
+    return $held;
+}
+
 /**
  * v10.123: آماده‌سازیِ «ادامهٔ خودکار» برای یک پروفایلِ رهاشده.
  *
  *  همان کاری که دکمهٔ «▶ ادامه» می‌کند، ولی سرورساید و در تیکِ کران:
  *  فازِ مناسب را برمی‌گرداند (detail اگر وسطِ جزئیات مانده، وگرنه all)،
- *  پرچمِ resume را روی پروفایل می‌نشاند و ردیف‌های مرده / قفلِ کهنهٔ همان
- *  پروفایل را می‌بندد تا محافظِ تکراری جلوی ادامه را نگیرد.
+ *  پرچمِ resume را روی پروفایل می‌نشاند؛ worker بعد از گرفتنِ همان lock،
+ *  blockerهای صف را زیرِ مالکیتِ اتمیک می‌بندد تا محافظِ تکراری جلوی ادامه را نگیرد.
  *
  *  @return ['ok'=>bool, 'phase'=>string, 'reason'=>string]
  */
 function extractResumePrepare(string $profileKey, array $cn): array {
-    $out = ['ok' => false, 'phase' => 'all', 'reason' => ''];
+    $out = ['ok' => false, 'phase' => 'all', 'reason' => '', 'queue_id' => ''];
     if ($profileKey === '') { $out['reason'] = 'no_key'; return $out; }
     $profiles = loadProfiles();
     $pr = is_array($profiles[$profileKey] ?? null) ? $profiles[$profileKey] : null;
     if ($pr === null) { $out['reason'] = 'no_profile'; return $out; }
+    /* v10.136: probe و mutation پشتِ یک reservation واقعی.
+       صرفاً probe کردن و بعداً flock گرفتن، بین دو resume پنجرهٔ race می‌ساخت. */
+    $resumeQueueId = 'exresume_' . $profileKey . '_' . time() . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
+    $lk = extractLockAcquire($resumeQueueId, $profileKey);
+    if (empty($lk['ok'])) {
+        $out['reason'] = 'lock_held';
+        $out['busy_queue_id'] = (string)($lk['queue_id'] ?? '');
+        return $out;
+    }
     $stage = (string)($pr['_extract_stage'] ?? '');
-    $age   = time() - (int)($pr['_extract_stage_at'] ?? 0);
-    $stale = max(120, (int)($cn['stall_after'] ?? 300));
-    /* وسطِ جزئیات مانده و هنوز «تازه» است → فقط ادامهٔ فاز جزئیات؛
-       وگرنه فاز all که فهرست را از صفحهٔ ذخیره‌شده ادامه می‌دهد. */
-    $phase = ($stage === 'detail' && $age <= $stale) ? 'detail' : 'all';
+    /* stage=stopped نوعِ آخرین توقف را نگه می‌دارد؛ از روی آن و stage=list_done
+       فاز دقیق را انتخاب کن تا resume نه از صفر و نه با فازِ اشتباه اجرا شود. */
+    $savedPhase = (string)($pr['_extract_resume_phase'] ?? '');
+    if (!in_array($savedPhase, ['list', 'detail'], true)) $savedPhase = '';
+    if ($stage === 'stopped' && $savedPhase !== '') {
+        $phase = $savedPhase;
+    } elseif (in_array($stage, ['detail', 'list_done'], true)) {
+        $phase = 'detail';
+    } else {
+        /* فهرستِ ناقص با phase=all از cursor صفحه‌ای ادامه می‌یابد. */
+        $phase = 'all';
+    }
     $pr['_extract_resume_req'] = time();
     if (empty($pr['_extract_resume_from'])) {
         $pr['_extract_resume_from'] = extractResumeStartPage($pr);
     }
     $pr['_extract_list_incomplete'] = true;
     $profiles[$profileKey] = $pr;
-    saveProfiles($profiles);
-    /* ردیفِ مردهٔ همین پروفایل و قفلِ کهنه بسته می‌شوند — مثل دکمهٔ ادامه. */
     try {
-        extractClearStaleBlockers($profileKey, [
-            'max_idle'      => $stale,
-            'clear_waiting' => true,
-            'reason'        => 'ادامهٔ خودکار استخراج رهاشده',
-        ]);
-    } catch (Throwable $e) { /* ادامه نباید به‌خاطرِ پاک‌سازی بیفتد */ }
-    $out['ok']    = true;
+        saveProfiles($profiles);
+    } catch (Throwable $e) {
+        extractLockRelease($resumeQueueId);
+        $out['reason'] = 'profile_save';
+        return $out;
+    }
+    /* runBackendExtract با همین handle ردیف stale را زیر مالکیت lock می‌بندد؛
+       cleanup جداگانه بعد از probe لازم نیست و خودش race ایجاد می‌کرد. */
+    $out['ok'] = true;
     $out['phase'] = $phase;
+    $out['queue_id'] = $resumeQueueId;
     return $out;
 }
 
@@ -14435,13 +14561,20 @@ function extractProductDetailInline(array &$allProducts, string $key, array $det
     return $out;
 }
 
-function runBackendExtract(string $profileKey, string $trigger = 'manual', bool $emitEarlyResponse = false, string $phase = 'all', bool $forceAll = false): array {
+function runBackendExtract(string $profileKey, string $trigger = 'manual', bool $emitEarlyResponse = false, string $phase = 'all', bool $forceAll = false, string $reservedLockQueueId = ''): array {
 if (!in_array($phase, ['all', 'list', 'detail'], true)) $phase = 'all';
 @set_time_limit(0); @ignore_user_abort(true);
-@unlink(EXTRACT_PROGRESS_FILE); @unlink(EXTRACT_STOP_FILE);
+/* v10.134: فایل‌های مشترکِ پیشرفت/توقف فقط بعد از گرفتنِ lock پاک می‌شوند؛
+   درخواستِ تکراری نباید پیشرفتِ workerِ زنده را محو کند. */
 
 $startedAt=time();
 $profiles=loadProfiles();
+$releaseResumeReservation = function () use ($reservedLockQueueId): void {
+    if ($reservedLockQueueId === '') return;
+    $fp = $GLOBALS['_extractLockFp'] ?? null;
+    if (is_resource($fp) && (string)($GLOBALS['_extractLockQueueId'] ?? '') === $reservedLockQueueId)
+        extractLockRelease($reservedLockQueueId);
+};
 
 $profile=isset($profiles[$profileKey])?$profiles[$profileKey]:null;
 // v9.67: اتصال غیرمستقیمِ به‌ازای هر پروفایل — آفلاینِ هر فراخوانیِ استخراج
@@ -14449,6 +14582,7 @@ $profile=isset($profiles[$profileKey])?$profiles[$profileKey]:null;
 $GLOBALS['_srcNetProfileIndirect'] = netIndirectOn($profile['net_indirect'] ?? false);
 if(!$profile){
 writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>'پروفایل یافت نشد','total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ پروفایل یافت نشد'],'total_log_count'=>1]);
+$releaseResumeReservation();
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'error'=>'پروفایل یافت نشد'];
 }
 
@@ -14463,6 +14597,7 @@ $prevOrder=$profile['productsOrder']??[];
 
 if(!filter_var($url,FILTER_VALIDATE_URL)){
 writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>'URL نامعتبر','total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ URL نامعتبر'],'total_log_count'=>1]);
+$releaseResumeReservation();
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'error'=>'URL نامعتبر'];
 }
 /* v10.21 (۳۴الف): سلکتورِ «فهرست» فقط برای پیمایشِ صفحهٔ دسته لازم است.
@@ -14473,13 +14608,37 @@ return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'error'=>'URL نامعت
 if($phase==='detail'){
 if(empty($detailSelectors)){
 writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>'سلکتورِ جزئیات ذخیره نشده','total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ سلکتورِ جزئیات ذخیره نشده'],'total_log_count'=>1]);
+$releaseResumeReservation();
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'error'=>'سلکتورِ جزئیات ذخیره نشده'];
 }
 } elseif(empty($selectors)||empty($selectors['container'])){
 writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>'سلکتورها ذخیره نشده — ابتدا با فرانت‌اند استخراج کنید','total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['❌ سلکتورها ذخیره نشده'],'total_log_count'=>1]);
+$releaseResumeReservation();
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>false,'error'=>'سلکتورها ذخیره نشده'];
 }
 
+/* قفل باید پیش از هر probe/تغییرِ صف گرفته شود؛ وگرنه دو درخواست هر دو
+   ردیفِ قبلی را stale می‌دیدند و یکی را می‌بستند، پیش از آنکه flock دوم رد شود.
+   اگر آماده‌سازیِ resume همین request را رزرو کرده، همان handle و queue_id را
+   مصرف کن؛ worker فرزندِ جداگانه reservation را در action backend می‌گیرد. */
+$queueId = trim($reservedLockQueueId);
+if ($queueId === '') $queueId='ex_'.$profileKey.'_'.time().'_'.substr(bin2hex(random_bytes(3)),0,6);
+$_reservedOwn = $queueId !== ''
+    && is_resource($GLOBALS['_extractLockFp'] ?? null)
+    && (string)($GLOBALS['_extractLockQueueId'] ?? '') === $queueId
+    && (string)(($GLOBALS['_extractLockMeta']['profile_key'] ?? '')) === $profileKey;
+$_lk = $_reservedOwn ? ['ok' => true, 'reused' => true] : extractLockAcquire($queueId,$profileKey);
+if(empty($_lk['ok'])){
+    $_lkWho=trim((string)($_lk['profile_name']??''));
+    if($_lkWho==='')$_lkWho=trim((string)($_lk['profile_key']??''));
+    $msg='استخراجِ دیگری در حال اجراست'.($_lkWho!==''?(' («'.$_lkWho.'»)'):'')
+        .' — '.(int)($_lk['age']??0).' ثانیه پیش شروع شده. برای اینکه دو اجرا'
+        .' نتایج همدیگر را خراب نکنند، این نوبت رد شد.';
+    writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>$msg,
+    'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['⏭ '.$msg],'total_log_count'=>1]);
+    return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$msg,
+    'locked'=>true,'busy_queue_id'=>(string)($_lk['queue_id']??'')];
+}
 $queue=extractReadQueue();
 /* v8.55: اگر همین پروفایل هنوز در صف استخراج است، دوباره اضافه نشود.
    v9.03: ولی گام جزئیات استثناست. کران عمداً بلافاصله بعد از گام فهرست
@@ -14501,12 +14660,15 @@ if($dup!==null){
     $_dupMax=max(120,(int)(loadConnections()['stall_after']??300));
     /* v10.79/v10.80: دستی = آستانهٔ کوتاه؛ خودکار هم waiting/paused و running مرده را برمی‌دارد
        (قبلاً waiting با started_at=0 تا ابد جلوی enqueue می‌ایستاد). */
-    $_dupIsManual = in_array((string)$trigger, ['manual', 'manual_sync'], true);
+    $_dupIsManual = in_array((string)$trigger, ['manual', 'manual_sync', 'manual_resume'], true);
     $_dupIsAuto   = in_array((string)$trigger, ['auto', 'cron', 'watchdog_resume'], true);
     $_dupSt = (string)($dup['status'] ?? '');
     if ($_dupIsManual) {
         $_dupMax = min($_dupMax, 90);
-        if ($_dupSt === 'waiting' || $_dupSt === 'paused') {
+        if ((string)$trigger === 'manual_resume'
+            || $_dupSt === 'waiting' || $_dupSt === 'paused') {
+            /* lock همین resume گرفته شده؛ running قبلی اگر مانده، worker ندارد
+               و باید جایگزین شود، نه اینکه از checkpoint جدید جلوگیری کند. */
             $_dupIdle = PHP_INT_MAX; // force replace
         }
     } elseif ($_dupIsAuto) {
@@ -14535,6 +14697,7 @@ if($dup!==null){
 $msg='این پروفایل هم‌اکنون در صف استخراج است ('.($dup['status']??'').')';
 writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>$msg,
 'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['⏭ '.$msg],'total_log_count'=>1]);
+extractLockRelease($queueId);
 return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$msg,
 'duplicate'=>true,'queue_id'=>$dup['id']??''];
 }
@@ -14543,24 +14706,10 @@ return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$msg,
    (که وقتی اجرای اول فوراً شکست می‌خورد کاملاً عادی است) شناسهٔ یکسان
    می‌گرفتند؛ آن‌وقت به‌روزرسانی وضعیت روی ردیف اشتباهی می‌نشست و گزارش
    هر کدام گزارش دیگری را بازنویسی می‌کرد. */
-$queueId='ex_'.$profileKey.'_'.time().'_'.substr(bin2hex(random_bytes(3)),0,6);
-/* v10.32 (۴۵ب): قفلِ سراسری. محافظِ بالا فقط «همین پروفایل» را می‌دید؛
-   این یکی هر استخراجِ هم‌زمانِ دیگری را هم می‌گیرد. فازِ جزئیات استثناست:
-   کران بلافاصله بعد از فازِ فهرست صدایش می‌زند و قفل هنوز دستِ همان اجراست. */
-if($phase!=='detail'){
-    $_lk=extractLockAcquire($queueId,$profileKey);
-    if(empty($_lk['ok'])){
-        $_lkWho=trim((string)($_lk['profile_name']??''));
-        if($_lkWho==='')$_lkWho=trim((string)($_lk['profile_key']??''));
-        $msg='استخراجِ دیگری در حال اجراست'.($_lkWho!==''?(' («'.$_lkWho.'»)'):'')
-            .' — '.(int)($_lk['age']??0).' ثانیه پیش شروع شده. برای اینکه دو اجرا'
-            .' نتایج همدیگر را خراب نکنند، این نوبت رد شد.';
-        writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'error'=>$msg,
-        'total'=>0,'current'=>0,'started_at'=>$startedAt,'recent_log'=>['⏭ '.$msg],'total_log_count'=>1]);
-        return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$msg,
-        'locked'=>true,'busy_queue_id'=>(string)($_lk['queue_id']??'')];
-    }
-}
+/* queueId و lock پیش از dedup ساخته شدند تا probe و بستنِ ردیف بدون مالکیت
+   انجام نشود؛ اکنون فقط workerِ صاحبِ lock فایلِ مشترک را آغاز می‌کند. */
+@unlink(EXTRACT_PROGRESS_FILE);
+@unlink(EXTRACT_STOP_FILE);
 $queue['entries'][]=['id'=>$queueId,'status'=>'running','profile_key'=>$profileKey,'url'=>$url,'profile_name'=>$profile['name']??$profileKey,'started_at'=>time(),'products_count'=>0,'total'=>0,'current'=>0,'new'=>0,'price_changed'=>0,'removed'=>0,'unchanged'=>0,'trigger'=>$trigger,'phase'=>$phase];
 extractWriteQueue($queue);
 
@@ -14650,7 +14799,7 @@ if($phase==='detail'){
            پروفایل روی دیسک محصولی ندارد. */
         foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='done';$qe['done_at']=time();$qe['products_count']=0;$qe['detail_skip_why']='no_products';$qe['detail_total']=0;$qe['detail_no_link']=0;$qe['detail_already']=0;break;}}unset($qe);
         extractWriteQueue($queue);
-        if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
+        extractLockRelease($queueId);   // v10.32 (۴۵ب)
         return ['__early_sent'=>$emitEarlyResponse,'ok'=>true,'extracted'=>0,'phase'=>'detail','note'=>'فهرستی وجود ندارد'];
     }
 }
@@ -14675,15 +14824,21 @@ for($page=$_startPage;$phase!=='detail'&&$page<=$maxPages;$page++){
 /* v10.121 FAIL-SAFE: if بدون {} فقط unlink بود و cancel همیشه اجرا می‌شد */
 if(file_exists(EXTRACT_STOP_FILE)){
 @unlink(EXTRACT_STOP_FILE);
-if(!empty($allProducts)){
 $pkTmp=$profileKey!==''?$profileKey:profileKey($url);
-extractCheckpoint($pkTmp,$allProducts,['_extract_stage'=>'stopped','_extract_stage_at'=>time()]);
-}
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'total'=>count($allProducts),'current'=>$page,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>['⏹ توقف کاربر — تا اینجا ذخیره شد','   • '.count($allProducts).' محصول'],'total_log_count'=>2,'extracted'=>count($allProducts)]);
+extractCheckpoint($pkTmp,$allProducts,[
+    '_extract_stage'=>'stopped','_extract_stage_at'=>time(),
+    '_extract_resume_phase'=>'list','_extract_list_incomplete'=>true,
+    '_extract_list_page_try'=>$page,'_extract_list_page_ok'=>max(0,$page-1),
+    '_extract_resume_from'=>max(1,$page-1),
+    '_extract_list_next_url'=>$nextUrl?:'','_extract_list_last_url'=>'']);
+writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,
+    'resumable'=>true,'resume_phase'=>'list','total'=>count($allProducts),'current'=>$page,'page'=>$page,
+    'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'profile_key'=>$pkTmp,
+    'recent_log'=>['⏹ توقف کاربر — تا اینجا ذخیره شد','   • '.count($allProducts).' محصول'],'total_log_count'=>2,'extracted'=>count($allProducts)]);
 $queue=extractReadQueue();
-foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='done';$qe['done_at']=time();$qe['products_count']=count($allProducts);break;}}unset($qe);
+foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='paused';$qe['done_at']=time();$qe['resumable']=true;$qe['partial']=true;$qe['resume_phase']='list';$qe['resume_page']=max(1,$page-1);$qe['products_count']=count($allProducts);break;}}unset($qe);
 extractWriteQueue($queue);
-if($phase!=='detail')extractLockRelease($queueId);
+extractLockRelease($queueId);
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'partial'=>true];
 }
 /* v10.122: بودجهٔ فهرست — تمیز بایست تا نوبت بعد از صفحهٔ قبلی ادامه دهد */
@@ -14716,7 +14871,7 @@ if($_listDeadline>0 && $page>$_startPage && time()>=$_listDeadline && count($all
         }
     }unset($qe);
     extractWriteQueue($queue);
-    if($phase!=='detail')extractLockRelease($queueId);
+    extractLockRelease($queueId);
     return ['__early_sent'=>$emitEarlyResponse,'ok'=>true,'extracted'=>count($allProducts),
         'ran_out'=>true,'resume_needed'=>true,'resume_page'=>max(1,$page-1),'partial'=>true,
         'products_saved'=>true,'profile_key'=>$pkFinal];
@@ -14775,7 +14930,7 @@ if($_pageFailStreak>=2 && count($allProducts)>0){
         }
     }unset($qe);
     extractWriteQueue($queue);
-    if($phase!=='detail')extractLockRelease($queueId);
+    extractLockRelease($queueId);
     return ['__early_sent'=>$emitEarlyResponse,'ok'=>true,'extracted'=>count($allProducts),'partial'=>true,'resume_needed'=>true,'resume_page'=>$_rpF,'products_saved'=>true,'profile_key'=>$pkFinal];
 }
 continue;
@@ -14959,7 +15114,7 @@ notifRunFailure(loadConnections(),'استخراج',$profile['name']??$profileKey
   ($_kept>0
     ?'استخراج هیچ محصولی برنگرداند و متوقف شد تا داده‌های قبلی پاک نشوند. علت: '
     :'استخراج هیچ محصولی پیدا نکرد. علت: ').$_why);
-if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
+extractLockRelease($queueId);   // v10.32 (۴۵ب)
 return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>'استخراج بی‌نتیجه — '.$_why,
         'guard'=>'empty_result','kept'=>count($prevByKey)];
 }
@@ -14988,7 +15143,7 @@ if($_prevN>=8 && $_newN>0 && $_newN < (int)max(3, floor($_prevN * 0.45))){
     $queue=extractReadQueue();
     foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='failed';$qe['done_at']=time();$qe['error']=$_why;$qe['products_count']=$_prevN;break;}}unset($qe);
     extractWriteQueue($queue);
-    if($phase!=='detail')extractLockRelease($queueId);
+    extractLockRelease($queueId);
     return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$_why,'guard'=>'soft_collapse','kept'=>$_prevN,'extracted'=>$_newN];
 }
 
@@ -15154,12 +15309,17 @@ if(file_exists(EXTRACT_STOP_FILE)){
 @unlink(EXTRACT_STOP_FILE);
 extractCheckpoint($pkFinal,$allProducts,
     ['_extract_stage'=>'stopped','_extract_stage_at'=>time(),
+     '_extract_resume_phase'=>'detail','_extract_list_incomplete'=>false,
      '_extract_detail_done'=>$detailDone,'_extract_detail_total'=>$detailTotal]);
-writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$queueId,'recent_log'=>['⏹ توقف کاربر — جزئیات ذخیره شد','   • '.$detailDone.' / '.$detailTotal],'total_log_count'=>$totalPages+$detailDone+1]);
+writeProgress(EXTRACT_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,
+    'resumable'=>true,'resume_phase'=>'detail','extracted'=>count($allProducts),'started_at'=>$startedAt,
+    'last_progress_ts'=>time(),'queue_id'=>$queueId,'profile_key'=>$pkFinal,'phase'=>'detail',
+    'detail_current'=>$detailDone,'detail_total'=>$detailTotal,
+    'recent_log'=>['⏹ توقف کاربر — جزئیات ذخیره شد','   • '.$detailDone.' / '.$detailTotal],'total_log_count'=>$totalPages+$detailDone+1]);
 $queue=extractReadQueue();
-foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='done';$qe['done_at']=time();$qe['products_count']=count($allProducts);$qe['detail_done']=$detailDone;break;}}unset($qe);
+foreach($queue['entries'] as &$qe){if(($qe['id']??'')===$queueId){$qe['status']='paused';$qe['done_at']=time();$qe['resumable']=true;$qe['partial']=true;$qe['resume_phase']='detail';$qe['products_count']=count($allProducts);$qe['detail_done']=$detailDone;break;}}unset($qe);
 extractWriteQueue($queue);
-if($phase!=='detail')extractLockRelease($queueId);
+extractLockRelease($queueId);
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'cancelled'=>true,'extracted'=>count($allProducts),'partial'=>true,'detail_done'=>$detailDone];
 }
 $detailDone++;
@@ -15434,6 +15594,7 @@ if(empty($_ranOut)&&empty($_listRanOut)&&$phase!=='list'){
     $profileOnDisk['_extract_list_incomplete']=false;
     $profileOnDisk['_extract_resume_req']=0;
     $profileOnDisk['_extract_resume_from']=0;
+    $profileOnDisk['_extract_resume_phase']='';
 }
 if(!empty($_listRanOut)){
     $profileOnDisk['_extract_stage']='list';
@@ -15536,7 +15697,7 @@ extractWriteQueue($queue);
 
 // v10.21 (۳۴الف): سینکِ «بدون استخراج» باید بداند چند صفحه واقعاً باز شد و
 // آیا بودجهٔ زمانی تمام شد (تا در نوبتِ بعدی از همان‌جا ادامه دهد)
-if($phase!=='detail')extractLockRelease($queueId);   // v10.32 (۴۵ب)
+extractLockRelease($queueId);   // v10.32 (۴۵ب)
 return ['__early_sent'=>$emitEarlyResponse, 'ok'=>true,'extracted'=>count($allProducts),'new'=>$newCount,'price_changed'=>$priceChanged,'removed'=>$removedCount,'unchanged'=>$unchanged,'price_up'=>$priceUp,'price_down'=>$priceDown,'new_items'=>$newItems,'changed_items'=>$changedItems,'removed_items'=>$removedItems,'products_saved'=>true,'profile_key'=>$profileKey??profileKey($url),'detail_done'=>$detailDone,'detail_total'=>$detailTotal,'detail_ok'=>$detailOk,'detail_fail'=>$detailFail,'ran_out'=>!empty($_ranOut),'resume_needed'=>!empty($_ranOut),'extract_stage'=>(!empty($_ranOut)?'detail':(($phase==='list')?'list_done':'complete')),'stock_out'=>$_stockOut??0,'stock_back'=>$_stockBack??0];
 }
 
@@ -15550,9 +15711,23 @@ if($u!==''&&filter_var($u,FILTER_VALIDATE_URL))$profileKey=profileKey($u);
    ?phase=list | detail | all — پیش‌فرض all، پس رفتار دکمهٔ دستی عوض نمی‌شود. */
 $phaseIn = (string)($_GET['phase'] ?? $_POST['phase'] ?? 'all');
 if (!in_array($phaseIn, ['all','list','detail'], true)) $phaseIn = 'all';
+$resumeLockQueueId = '';
+/* v10.136: resumeِ فرزند باید خودش، در همان process که worker را می‌سازد،
+   lock بگیرد؛ parent فقط دیگر probe و mutation جداگانه انجام نمی‌دهد. */
+if (!empty($_GET['resume']) || !empty($_POST['resume'])) {
+    $resumePrep = extractResumePrepare($profileKey, loadConnections());
+    if (empty($resumePrep['ok'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['ok' => false, 'locked' => ($resumePrep['reason'] ?? '') === 'lock_held',
+            'error' => 'checkpoint استخراج قابل رزرو نیست — اجرای موازی ساخته نشد'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $phaseIn = (string)$resumePrep['phase'];
+    $resumeLockQueueId = (string)($resumePrep['queue_id'] ?? '');
+}
 /* v9.11: دامنهٔ «همهٔ محصولات» از دکمهٔ اجرای فوریِ استخراج دوره‌ای */
 $forceAllIn = !empty($_GET['force_all']) || !empty($_POST['force_all']);
-$res=runBackendExtract($profileKey,'manual',true,$phaseIn,$forceAllIn);
+$res=runBackendExtract($profileKey,'manual',true,$phaseIn,$forceAllIn,$resumeLockQueueId);
 // v8.30: همان اعلان‌های تغییر مبدأ که کران‌جاب می‌فرستد
 if(!empty($res['ok'])){
 $cnNow=loadConnections();
@@ -16503,7 +16678,9 @@ function cronWatchdogs(array $cn): array {
            است زودتر جان می‌گیرد — روی هاستِ اشتراکی که یک نوبتِ کران فقط
            برای یکی‌شان وقت دارد، این تفاوتِ واقعی می‌سازد. */
         foreach (cronWatchdogQueueOrder() as $wq) {
-            $w = queueStallRecover($wq, $stallCfg);
+            /* توقفِ تمیز هم باید در کران بعدی از checkpoint برگردد؛
+               includePaused فقط در همین watchdogِ کران فعال است. */
+            $w = queueStallRecover($wq, $stallCfg, false, 1500, true);
             if (!empty($w['stalled'])) {
                 $results['watchdog'][] = $w;
                 notifRunFailure($cn, 'نگهبان صف',
@@ -16523,13 +16700,23 @@ function cronWatchdogs(array $cn): array {
             }
         }
     }
-    
+
     /* v8.87: نگهبان استخراج.
        صف ارسال از ۸.۳۳ نگهبان داشت ولی استخراج نداشت: اگر اجرای خودکار وسط
        کار می‌مُرد (تایم‌اوت هاست، ری‌استارت PHP، قطع شبکه)، ردیف برای همیشه
        «در حال اجرا» می‌ماند و ردیف‌های بعدی هم راه نمی‌افتادند. علامت‌خوردنِ
        «خطا» هم فقط وقتی اتفاق می‌افتاد که کسی صفحهٔ صف را باز کند. */
     if ($stallWake && empty($results['resume_blocking'])) {
+        /* v10.148: بررسی و برداشتنِ ردیف stale باید زیرِ خودِ flock باشد؛
+           metadata/سنِ lock به‌تنهایی مالکیت را ثابت نمی‌کند و بین probe و
+           mutation پنجرهٔ race می‌سازد. */
+        $exWatchFp = @fopen(EXTRACT_LOCK_FILE, 'c');
+        $exWatchOwned = $exWatchFp && @flock($exWatchFp, LOCK_EX | LOCK_NB);
+        if (!$exWatchOwned) {
+            if (is_resource($exWatchFp)) @fclose($exWatchFp);
+            $exWatchFp = null;
+        }
+        if ($exWatchOwned) {
         $exProg = readProgress(EXTRACT_PROGRESS_FILE);
         $exQ = extractReadQueue();
         $exNow = time();
@@ -16578,6 +16765,8 @@ function cronWatchdogs(array $cn): array {
             notifRunFailure($cn, 'نگهبان استخراج', $exStuck['profile'] ?: 'استخراج',
                 'استخراج ' . (int)$exStuck['idle'] . ' ثانیه بی‌حرکت بود — ردیفش برداشته شد و '
                 . 'همان پروفایل در همین نوبت ادامه داده می‌شود (از همان مرحله‌ای که مانده بود).');
+        }
+        @flock($exWatchFp, LOCK_UN); @fclose($exWatchFp); $exWatchFp = null;
         }
     }
 
@@ -17775,6 +17964,8 @@ if (isset($_GET['manual_sync_status'])) {
             $msSt['running']   = false;
             $msSt['done']      = true;
             $msSt['cancelled'] = false;
+            $msSt['partial'] = true; $msSt['resumable'] = true; $msSt['stale'] = true;
+            if (!is_array($msSt['checkpoint'] ?? null)) $msSt['checkpoint'] = [];
             $msSt['phase']     = 'نیمه‌کاره ماند';
             $msSt['error']     = 'اجرا نیمه‌کاره رها شد (' . $msIdleD . ' ثانیه بی‌حرکت) — احتمالاً هاست پردازه را قطع کرده. بخشِ انجام‌شده روی دیسک است؛ دوباره اجرا کنید تا از چک‌پوینت ادامه دهد.';
             $msLgD = is_array($msSt['recent_log'] ?? null) ? $msSt['recent_log'] : [];
@@ -17800,7 +17991,7 @@ if (isset($_GET['manual_sync'])) {
         exit;
     }
     register_shutdown_function(function () use ($_msLockFp) {
-        @flock($_msLockFp, LOCK_UN); @fclose($_msLockFp); @unlink(MANUAL_SYNC_LOCK_FILE);
+        @flock($_msLockFp, LOCK_UN); @fclose($_msLockFp);
     });
     /* =====================================================================
      *  v10.81: همگام‌سازی دستی = همان دکمهٔ «استخراج بک‌اند» + بقیهٔ کارها
@@ -17875,17 +18066,26 @@ if (isset($_GET['manual_sync'])) {
     @ignore_user_abort(true);
 
     $_msName = (string)($_msProf['name'] ?? $_msKey);
+    $_msResumeSameProfile = $_msResumeRequested
+        && (string)($_msResumeCp['profile_key'] ?? '') === $_msKey;
+    $_msResumeExtractDone = $_msResumeSameProfile
+        && (int)($_msResumeCp['current'] ?? 0) >= 2
+        && is_array($_msResumeCp['extract'] ?? null);
+    $_msResumeQueueDone = $_msResumeSameProfile
+        && is_array($_msResumeCp['enqueue'] ?? null);
+    $_msInitialCurrent = $_msResumeQueueDone ? 3 : ($_msResumeExtractDone ? 2 : 1);
+    $_msInitialPhase = $_msResumeQueueDone ? 'صف ارسال تمام' : ($_msResumeExtractDone ? 'استخراج تمام' : 'استخراج بک‌اند');
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, [
         'running' => true, 'done' => false, 'cancelled' => false,
-        'phase' => 'استخراج بک‌اند', 'started_at' => (int)($_msResumeCp['started_at'] ?? time()), 'ts' => time(),
+        'phase' => $_msInitialPhase, 'started_at' => (int)($_msResumeCp['started_at'] ?? time()), 'ts' => time(),
         'last_progress_ts' => time(),
-        'total' => 4, 'current' => 1,
+        'total' => 4, 'current' => $_msInitialCurrent,
         'profile_key' => $_msKey, 'profile_name' => $_msName,
         /* v10.130: فیلدهای extract/enqueue/retire اجرای قبلی باید از همان
            اولین write هم بمانند؛ وگرنه resume=1 پیش از رسیدن به manualSyncProgress
            checkpoint ارکستراسیون را کوتاه می‌کرد. */
         'checkpoint' => array_merge($_msResumeCp, ['profile_key' => $_msKey, 'profile_name' => $_msName,
-            'phase' => 'استخراج بک‌اند', 'current' => 1, 'total' => 4,
+            'phase' => $_msInitialPhase, 'current' => $_msInitialCurrent, 'total' => 4,
             'started_at' => (int)($_msResumeCp['started_at'] ?? time())]),
         'recent_log' => [
             '▶ همگام‌سازی دستی — همان مسیر «استخراج بک‌اند»',
@@ -17907,9 +18107,6 @@ if (isset($_GET['manual_sync'])) {
     $_msResults = ['ok' => true, 'manual_sync' => true, 'profile' => $_msKey, 'via' => 'backend_extract'];
 
     /* ── ۱) استخراج = عین دکمهٔ استخراج بک‌اند ── */
-    manualSyncProgress(['phase' => 'استخراج بک‌اند', 'current' => 1],
-        '⚡ استخراج بک‌اند: ' . $_msName);
-    msAlive('extract');
     $_msSyncCfg = is_array($_msProf['syncConfig'] ?? null) ? $_msProf['syncConfig'] : [];
     $_msNoEx = !empty($_msSyncCfg['noExtract']);
     $_msPhase = 'all';
@@ -17917,15 +18114,15 @@ if (isset($_GET['manual_sync'])) {
         $_msPhase = 'detail';
         manualSyncProgress([], '📋 پروفایل بدون‌استخراج فهرست — فاز detail');
     }
-    /* emitEarlyResponse=false چون خودمان پاسخ را فرستادیم؛ trigger=manual_sync.
-       در resume اگر استخراج قبلاً تمام و نتیجه‌اش در checkpoint ثبت شده،
-       دوباره صفِ استخراج نمی‌سازیم و مستقیم سراغ صف/ارسال می‌رویم. */
-    $_msCanReuseExtract = $_msResumeRequested && (string)($_msResumeCp['profile_key'] ?? '') === $_msKey
-        && (int)($_msResumeCp['current'] ?? 0) >= 2 && is_array($_msResumeCp['extract'] ?? null);
-    if ($_msCanReuseExtract) {
+    if ($_msResumeExtractDone && (string)($_msResumeCp['profile_key'] ?? '') === $_msKey) {
         $_msEx = $_msResumeCp['extract'];
-        manualSyncProgress([], '↻ استخراجِ کاملِ checkpoint دوباره اجرا نشد');
+        manualSyncProgress(['phase' => 'استخراج تمام', 'current' => 2],
+            '↻ استخراجِ کاملِ checkpoint دوباره اجرا نشد');
     } else {
+        manualSyncProgress(['phase' => 'استخراج بک‌اند', 'current' => 1],
+            '⚡ استخراج بک‌اند: ' . $_msName);
+        msAlive('extract');
+        /* emitEarlyResponse=false چون خودمان پاسخ را فرستادیم؛ trigger=manual_sync */
         $_msEx = runBackendExtract($_msKey, 'manual_sync', false, $_msPhase, true);
     }
     manualSyncProgress(['checkpoint' => ['extract' => $_msEx]], '');
@@ -17977,6 +18174,7 @@ if (isset($_GET['manual_sync'])) {
     if (manualSyncStopped()) {
         writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
             'running' => false, 'done' => true, 'stale' => true, 'cancelled' => true,
+            'partial' => true, 'resumable' => true,
             'phase' => 'متوقف شد', 'checkpoint' => array_merge(
                 (array)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['checkpoint'] ?? []),
                 ['profile_key' => $_msKey, 'phase' => 'متوقف شد',
@@ -17990,6 +18188,15 @@ if (isset($_GET['manual_sync'])) {
     }
 
     /* ── ۲) صف‌سازی ارسال (باسلام / ووکامرس) — همان منطق کران برای یک پروفایل ── */
+    if ($_msResumeQueueDone && (string)($_msResumeCp['profile_key'] ?? '') === $_msKey) {
+        $_msTarget = (string)($_msResumeCp['target'] ?? ($_msSyncCfg['target'] ?? 'woo'));
+        if (!in_array($_msTarget, ['woo', 'bsl', 'both', 'none'], true)) $_msTarget = 'woo';
+        $_msResults['target'] = $_msTarget;
+        $_msResults['enqueue'] = $_msResumeCp['enqueue'];
+        if (is_array($_msResumeCp['extract'] ?? null)) $_msEx = $_msResumeCp['extract'];
+        manualSyncProgress(['phase' => 'صف ارسال تمام', 'current' => 3],
+            '↻ صف ارسالِ checkpoint دوباره ساخته نشد');
+    } else {
     manualSyncProgress(['phase' => 'صف ارسال', 'current' => 3], '📤 آماده‌سازی صف ارسال…');
     msAlive('queue_send');
     try {
@@ -18080,10 +18287,12 @@ if (isset($_GET['manual_sync'])) {
         manualSyncProgress([], '⚠️ صف ارسال: ' . mb_substr($e->getMessage(), 0, 200));
         $_msResults['enqueue_error'] = $e->getMessage();
     }
+    }
 
     if (manualSyncStopped()) {
         writeProgress(MANUAL_SYNC_PROGRESS_FILE, array_merge(readProgress(MANUAL_SYNC_PROGRESS_FILE), [
             'running' => false, 'done' => true, 'stale' => true, 'cancelled' => true,
+            'partial' => true, 'resumable' => true,
             'phase' => 'متوقف شد', 'checkpoint' => array_merge(
                 (array)(readProgress(MANUAL_SYNC_PROGRESS_FILE)['checkpoint'] ?? []),
                 ['profile_key' => $_msKey, 'phase' => 'متوقف شد',
@@ -18128,6 +18337,7 @@ if (isset($_GET['manual_sync'])) {
         $_msPartialP['running'] = false; $_msPartialP['done'] = true;
         $_msSendStopped = !empty($_msResults['ms_server_send']['stopped']);
         $_msPartialP['stale'] = true; $_msPartialP['cancelled'] = $_msSendStopped;
+        $_msPartialP['partial'] = true; $_msPartialP['resumable'] = true;
         $_msPartialP['phase'] = $_msSendStopped ? 'متوقف شد' : 'نیمه‌کاره ماند';
         $_msPartialP['error'] = $_msSendStopped ? 'ارسال با درخواست کاربر متوقف شد'
             : 'بخشی از همگام‌سازی ناموفق بود — checkpoint برای ادامه حفظ شد';
@@ -18281,143 +18491,40 @@ if (!isCliRun()) {
 }
 if ($_cronBg) define('CRON_BG', true);
 
-// قفل ضد هم‌پوشانی — یک اجرای طولانی نباید با اجرای بعدی تداخل کند
+/* قفلِ واقعیِ کران: وجود یا سنِ فایل معیار مالکیت نیست. مسیر دائمی است و
+   همان handle تا پایانِ اجرا flock را نگه می‌دارد؛ مرگِ worker هم قفل را
+   خودکار آزاد می‌کند و اجرای کران بعدی بلافاصله می‌تواند ادامه دهد. */
 $cronLock = __DIR__ . '/.cron_run.lock';
-/* v9.08: سنِ قفل از «محتوای» فایل خوانده می‌شود و اگر نبود از mtime.
-   قفل هنگام ساخته شدن time() را داخل خودش می‌نویسد؛ این مقدار قابل
-   اعتمادتر از mtime است، چون بعضی محیط‌ها (کش فایل‌سیستم، همگام‌سازی
-   بکاپ، برخی کانتینرها) mtime را دست‌کاری یا بازنشانی می‌کنند و آن‌وقت
-   یک قفلِ کهنه «تازه» به نظر می‌رسد و تا ابد جلوی اجرا را می‌گیرد. */
-$lockAge = PHP_INT_MAX;
-if (is_file($cronLock)) {
-    $_lkStamp = (int)trim((string)@file_get_contents($cronLock));
-    if ($_lkStamp <= 0) $_lkStamp = (int)@filemtime($cronLock);
-    if ($_lkStamp > 0) $lockAge = time() - $_lkStamp;
-    if ($lockAge < 0) $lockAge = 0;
+$cronLockFp = @fopen($cronLock, 'c');
+$cronLockHeld = $cronLockFp && @flock($cronLockFp, LOCK_EX | LOCK_NB);
+if (!$cronLockHeld) {
+    if ($cronLockFp) @fclose($cronLockFp);
+    $cronLockFp = null;
 }
-$cronLockSec = max(60, (int)(loadConnections()['cron_lock_min'] ?? 30) * 60);
-
-/* v9.08: قفل با «زنده بودن» سنجیده می‌شود، نه با سن.
-
-   این علتِ باقیماندهٔ «کران گام جزئیات را اجرا نمی‌کند» بود.
-
-   وقتی هاست پردازه را می‌کشد (SIGKILL سرِ سقف وب‌سرور)،
-   register_shutdown_function اجرا نمی‌شود و .cron_run.lock سرِ جایش
-   می‌ماند. پیش‌فرض cron_lock_min برابر ۳۰ دقیقه است، پس هر تیک کران تا
-   نیم ساعت بعد «اجرای قبلی هنوز تمام نشده» می‌گرفت و کل پروفایل‌ها رد
-   می‌شدند — گام جزئیات هرگز شروع نمی‌شد. و چون تیکِ بعدی که بالاخره رد
-   می‌شد دوباره از فهرست شروع می‌کرد و باز کشته می‌شد، پنجره از نو
-   می‌افتاد. نتیجه دقیقاً همان چیزی است که کاربر می‌دید: فهرست می‌آید،
-   جزئیات هیچ‌وقت.
-
-   معیار درست همان است که نگهبان استخراج از ۸.۹۱ استفاده می‌کند: یک
-   اجرا وقتی زنده است که فایل پیشرفتش تازه نوشته باشد. اگر بیش از
-   stall_after ثانیه هیچ بایتی ننوشته، آن پردازه مرده و قفلش بی‌اعتبار
-   است. سقف cron_lock_min به‌عنوان مرز نهایی می‌ماند. */
-if (is_file($cronLock) && $lockAge < $cronLockSec) {
-    $_lkProg  = readProgress(EXTRACT_PROGRESS_FILE);
-    $_lkTs    = (int)($_lkProg['last_progress_ts'] ?? 0);
-    if ($_lkTs <= 0) $_lkTs = (int)($_lkProg['started_at'] ?? 0);
-    $_lkIdleMax = max(120, (int)(loadConnections()['stall_after'] ?? 300));
-    /* اگر اجرا تمام شده، یا فایل پیشرفت مدت‌هاست بی‌حرکت است، قفل مالِ
-       یک پردازهٔ مرده است. مهلت سخاوتمندانه: خودِ قفل هم باید از
-       بی‌حرکتی گذشته باشد تا اجرایی که تازه شروع شده قربانی نشود. */
-    $_lkDead = (!empty($_lkProg['done']) || empty($_lkProg['running']))
-               ? ($lockAge > $_lkIdleMax)
-               : ($_lkTs > 0 && (time() - $_lkTs) > $_lkIdleMax && $lockAge > $_lkIdleMax);
-    if ($_lkDead) {
-        @unlink($cronLock);
-        $lockAge = PHP_INT_MAX;
-        $results_lockReaped = true;
-    }
+if ($cronLockHeld) {
+    @ftruncate($cronLockFp, 0); @rewind($cronLockFp);
+    @fwrite($cronLockFp, (string)time()); @fflush($cronLockFp);
 }
-/* v10.35 (۴۷ه): همگام‌سازیِ دستی پشتِ قفلِ کران معطل نمی‌ماند.
-
-   کاربر خودش دکمه را زده و انتظار دارد همین حالا کاری بشود؛ اگر پیامِ
-   «اجرای قبلی هنوز تمام نشده» بگیرد، دکمه از نظرِ او خراب است. خطرِ
-   هم‌پوشانی هم اینجا مهار شده: فیلترِ only فقط یک پروفایل را می‌گیرد و
-   محافظِ تکراریِ صف (queueHasProfile) جلوی صف‌شدنِ دوباره‌اش را می‌گیرد. */
-if ($lockAge < $cronLockSec && manualSyncActive()) {
-    $lockAge = PHP_INT_MAX;
-    $results_manualBypass = true;
-}
-if ($lockAge < $cronLockSec) {
-    // v8.37: حتی وقتی به‌خاطر قفل رد می‌شویم هم پینگ بفرست — وگرنه یک قفلِ
-    // گیرکرده دقیقاً شبیه «کران‌جاب اصلاً اجرا نمی‌شود» به نظر می‌رسد.
-    $cnLock = loadConnections();
-    /* v8.89: نگهبان‌ها را حتی وقتی قفل هست هم اجرا کن.
-       قفل یعنی «اجرای قبلی تمام نشده» — که یا واقعاً در حال کار است (آن‌وقت
-       نگهبان چیزی پیدا نمی‌کند و هزینه‌اش چند خط خواندن فایل است)، یا مرده و
-       قفلش مانده. حالت دوم دقیقاً همان چیزی است که نگهبان برایش ساخته شده،
-       ولی تا حالا همین‌جا رد می‌شدیم و تا ۳۰ دقیقه هیچ‌کس سراغش نمی‌رفت. */
-    $wdLock = cronWatchdogs($cnLock);
-    $lockOut = ['ok' => true, 'skipped' => true, 'profiles' => [],
-        'reason' => 'اجرای قبلی هنوز تمام نشده (' . $lockAge . ' ثانیه)'];
-    foreach ($wdLock as $k => $v) { if (!empty($v)) $lockOut[$k] = $v; }
-    /* اگر نگهبان کار گیرکرده‌ای را بست، خودِ قفل هم مالِ همان اجرای مرده
-       بوده؛ پس برش دار تا اجرای بعدی معطل نماند. */
-    if (!empty($lockOut['extract_watchdog']) || !empty($lockOut['watchdog'])) {
-        @unlink($cronLock);
-        $lockOut['lock_cleared'] = true;
-    }
-    /* v9.13: «استخراج دوره‌ای جزئیات» پشت این قفل نماند.
-
-       علتِ «دکمهٔ اجرای حالا کار می‌کند ولی کران نه» همین بود. دکمه
-       مستقیم backend_extract را صدا می‌زند و اصلاً به این قفل نمی‌رسد؛
-       کران‌جاب باید از آن رد شود. اگر اجرای قبلی هنوز تمام نشده — یا
-       بدتر، هاست کشته باشدش و قفلش مانده باشد ولی هنوز به آستانهٔ
-       بی‌حرکتی نرسیده باشد — کل تیک همین‌جا خارج می‌شد و حلقهٔ جزئیات
-       که پایین‌تر است هرگز اجرا نمی‌شد. روی هاستی که هر چند دقیقه
-       پردازه را می‌کشد، این وضعیت می‌تواند بی‌پایان تکرار شود.
-
-       چرا امن است که این یکی را اجرا کنیم: قفل برای جلوگیری از
-       هم‌پوشانی «ارسال» است — دو بار فرستادن یک محصول به مقصد. فاز
-       جزئیات چیزی نمی‌فرستد؛ فقط صفحهٔ محصول را می‌خواند و روی دیسک
-       می‌نویسد، و خودش با محافظ تکراری‌نبودنِ صف و نشانهٔ مرحله در
-       برابر اجرای هم‌زمان محافظت می‌شود. ارسال همچنان پشت قفل می‌ماند. */
-    /* v10.21 (۳۴ج): نتیجهٔ پینگ در گزارش هم بنشیند. تا حالا این فراخوانی
-       خروجی‌اش دور ریخته می‌شد، پس اگر پینگ در همین مسیر شکست می‌خورد
-       (مثلاً توکن پیام‌رسان پاک شده بود) هیچ‌جا ردی نمی‌ماند. */
-    try {
-        $_lp = notifCronPing($cnLock, ['profiles' => [], 'locked' => $lockAge]);
-        if (!empty($_lp['sent']))          $lockOut['ping'] = 'sent';
-        elseif (!empty($_lp['skipped']))   $lockOut['ping'] = $_lp['skipped'];
-        elseif (!empty($_lp['error']))     $lockOut['ping'] = ['error' => $_lp['error']];
-    } catch (Throwable $e) {
-        $lockOut['ping'] = ['error' => mb_substr($e->getMessage(), 0, 200)];
-    }
-    /* v10.61 (۷۵): اگر این یک همگام‌سازیِ دستی بود، وضعیتش را
-       «در حال اجرا» جا نگذار — علتِ رد شدن را بنویس و ببند. */
-    if (manualSyncActive()) {
-        $_msSk = readProgress(MANUAL_SYNC_PROGRESS_FILE);
-        $_msSk['running'] = false; $_msSk['done'] = true; $_msSk['cancelled'] = false;
-        $_msSk['phase'] = 'رد شد';
-        $_msSk['error'] = (string)($lockOut['reason'] ?? 'رد شد: اجرای قبلی هنوز تمام نشده است');
-        $_msSk['ts'] = time(); $_msSk['last_progress_ts'] = time();
-        writeProgress(MANUAL_SYNC_PROGRESS_FILE, $_msSk);
-    }
-    // v9.06: اتصال بالاتر بسته شده — خروجی به فایل می‌رود، نه به اتصالِ مرده
+/* اگر handle را نگرفتیم، این تیک فقط گزارشِ «اجرای قبلی فعال است» می‌دهد.
+   watchdog/worker دیگری در کنار کرانِ زنده اجرا نمی‌شود؛ قفل‌های اختصاصیِ
+   هر کار فقط لایهٔ دومِ محافظت‌اند. */
+if (!$cronLockHeld) {
+    $lockOut = ['ok' => true, 'skipped' => true, 'locked' => true,
+        'reason' => 'اجرای قبلی کران هنوز قفلِ واقعی را در اختیار دارد'];
     cronEmit($lockOut);
     exit;
 }
-/* v10.35 (۴۷ه): اجرای دستی که از قفل رد شده، نباید قفلِ اجرای زندهٔ کران
-   را بازنویسی و بعد در پایانِ کارِ خودش پاکش کند — آن‌وقت دو اجرا واقعاً
-   روی هم می‌افتادند. پس فقط اجرایی که قفل را «گرفته» آن را می‌نویسد و
-   برمی‌دارد. */
-if (empty($results_manualBypass)) {
-    @file_put_contents($cronLock, (string)time());
-    register_shutdown_function(function () use ($cronLock) { @unlink($cronLock); });
-} else {
-    /* v10.55 (۶۹): اجرایِ دستی قفلِ «زندهٔ» کران را بازنویسی نمی‌کند (همان
-       قانونِ v10.35) ولی اگر قفلی در کار نباشد، برمی‌دارد: همگام‌سازیِ دستی
-       می‌تواند ساعت‌ها طول بکشد (زنجیرهٔ ارسالِ سرورساید) و اگر قفل آزاد
-       باشد، کرانِ دوره‌ای همان لحظه موازی راه می‌افتد — دو اجرا روی صفِ
-       یک‌پوشه (خواندن/نوشتنِ صف بدون قفل) و تکرارِ کارِ همان پروفایل‌ها. */
-    if (!is_file($cronLock)) {
-        @file_put_contents($cronLock, (string)time());
-        register_shutdown_function(function () use ($cronLock) { @unlink($cronLock); });
+
+/* فقط اجرای صاحبِ handle به حلقهٔ کران می‌رسد؛ اجرای هم‌زمان در guard بالا
+   بدون هیچ probe یا حذفِ path متوقف شد. */
+/* handle از همین‌جا تا shutdown در اختیارِ همین اجرای کران است؛ path
+   دائمی می‌ماند تا worker بعدی همیشه روی همان inode قفل بگیرد. */
+register_shutdown_function(function () use ($cronLockFp) {
+    if (is_resource($cronLockFp)) {
+        @flock($cronLockFp, LOCK_UN);
+        @fclose($cronLockFp);
     }
-}
+});
 
 /* =====================================================================
    v10.21 (۳۴ج): «نبضِ کران» — علتِ قطع‌شدنِ اعلانِ دوره‌ای
@@ -18455,9 +18562,6 @@ $syncState = loadSyncState();
 $cn = loadConnections();
 // v8.37: ok صریح، تا ابزارهای بیرونی بتوانند موفقیت اجرا را تشخیص دهند
 $results = ['ok' => true, 'time' => $now, 'profiles' => []];
-/* v9.08: اگر قفلِ یک اجرای مرده برداشته شد، در گزارش بماند. بدون این،
-   کاربر فقط می‌دید کران گاهی کار می‌کند و گاهی نه، بدون هیچ توضیحی. */
-if (!empty($results_lockReaped)) $results['lock_reaped'] = true;
 // v10.21 (۳۴ج): نبضِ ابتدای اجرا در گزارش هم بماند
 if (!empty($results_heartbeat)) $results['heartbeat'] = $results_heartbeat;
 
@@ -18608,13 +18712,13 @@ $_rQueueNow = extractReadQueue();
 foreach ($profiles as $_rk => $_prR) {
     if (!is_array($_prR)) continue;
     $_rStage = (string)($_prR['_extract_stage'] ?? '');
-    $_rMid   = in_array($_rStage, ['list', 'list_done', 'detail'], true);
+    $_rMid   = in_array($_rStage, ['list', 'list_done', 'detail', 'stopped'], true);
     $_rInc   = !empty($_prR['_extract_list_incomplete']) || !empty($_prR['_extract_resume_req'])
                || (int)($_prR['_extract_resume_from'] ?? 0) > 0;
     if (!$_rMid && !$_rInc) continue;
     /* اگر همین پروفایل ردیفِ running یا waiting دارد، یا الان کار می‌کند یا
        در نوبت است — خودش می‌رود؛ اینجا دوباره شروعش نکن (اجرای موازی). */
-    $_rBusy = false;
+    $_rBusy = extractLockIsHeld();
     foreach ((array)($_rQueueNow['entries'] ?? []) as $_qe) {
         if (!is_array($_qe)) continue;
         if ((string)($_qe['profile_key'] ?? '') !== $_rk) continue;
@@ -18664,13 +18768,18 @@ if ($_resumeCandidates) {
         cronMarkRun($_rk, 'extract_resume');
         $syncState = loadSyncState();
         try {
-            $_rr = runBackendExtract($_rk, 'watchdog_resume', false, $_prep['phase']);
+            $_rr = runBackendExtract($_rk, 'watchdog_resume', false, $_prep['phase'], false, (string)($_prep['queue_id'] ?? ''));
             $results['extract_resumed'][] = ['key' => $_rk, 'phase' => $_prep['phase'], 'ok' => !empty($_rr['ok'])];
+            /* worker پاسخِ زودهنگام دارد؛ کارِ دیگری در همین تیک dispatch
+               نشود تا ترتیب و مرزِ قفل قابل اتکا بماند. */
+            $results['resume_blocking'] = true;
         } catch (Throwable $_rEx) {
             $results['extract_resumed'][] = ['key' => $_rk, 'phase' => $_prep['phase'], 'ok' => false,
                 'error' => mb_substr($_rEx->getMessage(), 0, 160)];
+            $results['resume_blocking'] = true;
         }
         $_resumeRan++;
+        break;
     }
     // پروفایل‌ها و وضعیت را بعد از ادامه‌دادن دوباره بخوان تا حلقهٔ پایین نسخهٔ تازه ببیند
     $profiles  = loadProfiles();
@@ -19788,15 +19897,21 @@ if (isset($_GET['notif_health'])) {
          $killed ? 'کران شروع می‌شود ولی به پایان نمی‌رسد — هاست پردازه را وسطِ کار می‌کُشد'
                  : 'اجراها تا پایان می‌روند');
 
-    // ۷) قفلِ جامانده
+    // ۷) وضعیتِ قفل — مالکیت فقط با probe واقعیِ flock مشخص می‌شود، نه mtime
     $lockF = __DIR__ . '/.cron_run.lock';
-    $lockAgeH = is_file($lockF) ? ($now - max((int)trim((string)@file_get_contents($lockF)), (int)@filemtime($lockF))) : -1;
-    $lockStuck = $lockAgeH > 1800;
-    $add('lock', !$lockStuck,
-         $lockAgeH < 0 ? 'قفلی وجود ندارد'
-                       : ($lockStuck ? ('قفلِ جامانده از ' . (int)round($lockAgeH / 60) . ' دقیقه پیش — اجراها رد می‌شوند')
-                                     : ('قفلِ فعال، سنِ ' . $lockAgeH . ' ثانیه')),
-         ['age_sec' => $lockAgeH]);
+    $lockProbeFp = @fopen($lockF, 'c');
+    $lockFree = false; $lockProbeUnknown = !$lockProbeFp;
+    if ($lockProbeFp) {
+        $lockFree = @flock($lockProbeFp, LOCK_EX | LOCK_NB);
+        if ($lockFree) @flock($lockProbeFp, LOCK_UN);
+        @fclose($lockProbeFp);
+    }
+    $lockBusy = !$lockFree && !$lockProbeUnknown;
+    $add('lock', $lockFree,
+         $lockProbeUnknown ? 'وضعیتِ قفل نامعلوم است — دسترسی به فایل قفل ممکن نیست'
+                           : ($lockBusy ? 'قفل در اختیارِ یک اجرای فعال است'
+                                        : 'قفل آزاد است'),
+         ['locked' => $lockBusy, 'probe_ok' => !$lockProbeUnknown]);
 
     /* ۸) v10.45 (۵۹): آخرین اجرای کران خطای اعلان داشته؟
        خطاها در cron_last_run.json می‌نشینند و در پینگِ بعدی هم
@@ -19914,6 +20029,7 @@ if (isset($_GET['bulk_edit'])) {
         echo json_encode(['ok' => false, 'error' => 'یک ویرایش گروهی در حال اجراست', 'running' => true], JSON_UNESCAPED_UNICODE); exit;
     }
     @set_time_limit(0); @ignore_user_abort(true);
+    bulkStopClear();
     $cn = loadConnections();
     $target = (string)($_POST['target'] ?? 'woo');
     $ids = json_decode((string)($_POST['ids'] ?? '[]'), true);
@@ -19939,7 +20055,7 @@ if (isset($_GET['bulk_edit'])) {
         }
     }
     if ($target !== 'woo' && $target !== 'bsl') {
-        flock($lockFp, LOCK_UN); fclose($lockFp); @unlink($lockFile);
+        flock($lockFp, LOCK_UN); fclose($lockFp);
         echo json_encode(['ok' => false, 'error' => 'مقصد نامعتبر'], JSON_UNESCAPED_UNICODE); exit;
     }
 
@@ -19958,7 +20074,7 @@ if (isset($_GET['bulk_edit'])) {
     echo $early; @ob_flush(); @flush();
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
     register_shutdown_function(function () use ($lockFp, $lockFile) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink($lockFile);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     try { $res = bulkEditRun($cn, $target, $ids, $ops, $dry, $bulkResume); }
@@ -19978,7 +20094,8 @@ if (isset($_GET['bulk_edit'])) {
     @file_put_contents(BULKEDIT_RESULT_FILE, json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $bulkLastState = is_file(BULKEDIT_PROGRESS_FILE)
         ? json_decode((string)@file_get_contents(BULKEDIT_PROGRESS_FILE), true) : [];
-    $bulkKeepCp = !empty($res['stopped']) || empty($res['ok']);
+    $bulkKeepCp = !empty($res['stopped']) || !empty($res['partial']) || empty($res['ok']);
+    bulkStopClear();
     bulkProgress(['running' => false, 'done' => true, 'changed' => $res['changed'],
         'deleted' => $res['deleted'], 'failed' => $res['failed'], 'skipped' => $res['skipped'],
         'stale' => $bulkKeepCp,
@@ -20014,6 +20131,7 @@ if (isset($_GET['photo_fix'])) {
         echo json_encode(['ok' => false, 'error' => 'یک اجرا در جریان است', 'running' => true], JSON_UNESCAPED_UNICODE); exit;
     }
     @set_time_limit(0); @ignore_user_abort(true);
+    photoStopClear();
     $cn = loadConnections();
     $dry = !empty($_GET['dry']);
     $onlyProfile = trim((string)($_GET['profile'] ?? ''));
@@ -20046,7 +20164,7 @@ if (isset($_GET['photo_fix'])) {
     echo $early; @ob_flush(); @flush();
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
     register_shutdown_function(function () use ($lockFp, $lockFile) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink($lockFile);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     $photoRunCp = is_array($photoCp) ? $photoCp : ['notify' => $notify];
@@ -20067,8 +20185,10 @@ if (isset($_GET['photo_fix'])) {
     @file_put_contents(__DIR__ . '/photofix_result.json', json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $photoLastState = is_file(PHOTOFIX_PROGRESS_FILE)
         ? json_decode((string)@file_get_contents(PHOTOFIX_PROGRESS_FILE), true) : [];
-    $photoKeepCp = !empty($res['stopped']) || empty($res['ok']);
-    photoFixProgress(['running' => false, 'done' => true, 'fixed' => $res['fixed'] ?? 0,
+    $photoKeepCp = !empty($res['stopped']) || !empty($res['partial']) || empty($res['ok']);
+    photoStopClear();
+    photoFixProgress(['running' => false, 'done' => true, 'stopped' => !empty($res['stopped']),
+        'fixed' => $res['fixed'] ?? 0,
         'failed' => $res['failed'] ?? 0, 'unmatched' => $res['unmatched'] ?? 0,
         'result_ok' => !empty($res['ok']), 'stale' => $photoKeepCp,
         'checkpoint' => $photoKeepCp && is_array($photoLastState['checkpoint'] ?? null)
@@ -20581,6 +20701,7 @@ if (isset($_GET['recon'])) {
             'running' => true], JSON_UNESCAPED_UNICODE); exit;
     }
     @set_time_limit(0); @ignore_user_abort(true);
+    reconStopClear();
 
     $apply = !empty($_GET['apply']);
     $cn = loadConnections();
@@ -20643,7 +20764,7 @@ if (isset($_GET['recon'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($fp, $lockFile) {
-        @flock($fp, LOCK_UN); @fclose($fp); @unlink($lockFile);
+        @flock($fp, LOCK_UN); @fclose($fp);
     });
 
     try {
@@ -20653,7 +20774,7 @@ if (isset($_GET['recon'])) {
            از صفحهٔ اول و با PUT/DELETEهای تکراری شروع می‌شود. */
         $reconErrState = is_file(RECON_PROGRESS_FILE)
             ? json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true) : [];
-        reconProgress(['running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(),
+        reconProgress(['running' => false, 'done' => true, 'stale' => true, 'partial' => true, 'error' => $e->getMessage(),
             'checkpoint' => is_array($reconErrState['checkpoint'] ?? null) ? $reconErrState['checkpoint'] : null,
             'log_add' => ['❌ خطا: ' . $e->getMessage() . ' — checkpoint حفظ شد']]);
         exit;
@@ -20668,15 +20789,23 @@ if (isset($_GET['recon'])) {
     }
     @file_put_contents(__DIR__ . '/recon_result.json',
         json_encode($res, JSON_UNESCAPED_UNICODE), LOCK_EX);
-    @unlink(reconFetchCursorFile());   // v10.126: کشِ واکشی دیگر لازم نیست
-    reconProgress(['running' => false, 'done' => true, 'phase' => 'done',
-        'extra' => (int)$res['extra_total'], 'diff' => (int)$res['price_diff_total'],
+    $reconLastState = is_file(RECON_PROGRESS_FILE)
+        ? json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true) : [];
+    $reconKeepCp = !empty($res['stopped']) || !empty($res['partial']) || empty($res['ok']);
+    if (!$reconKeepCp) @unlink(reconFetchCursorFile());   // فقط اجرای کامل cache را مصرف می‌کند
+    reconStopClear();
+    reconProgress(['running' => false, 'done' => true, 'stopped' => !empty($res['stopped']),
+        'partial' => !empty($res['partial']), 'stale' => $reconKeepCp,
+        'phase' => $reconKeepCp ? 'stopped' : 'done',
+        'extra' => (int)($res['extra_total'] ?? count($res['extra'] ?? [])),
+        'diff' => (int)($res['price_diff_total'] ?? count($res['price_diff'] ?? [])),
         'missing' => (int)($res['missing_total'] ?? 0),
         'matched' => (int)($res['matched'] ?? 0), 'repriced' => (int)($res['repriced'] ?? 0),
         'deleted' => (int)($res['deleted'] ?? 0), 'failed' => (int)($res['failed'] ?? 0),
         'result_ok' => !empty($res['ok']), 'error' => $res['error'] ?? '',
-        'checkpoint' => null,   // v10.126: کار تمام شد؛ چک‌پوینت پاک می‌شود
-        'log_add' => [empty($res['ok']) ? ('❌ ' . ($res['error'] ?? 'ناموفق')) : '✅ پایان']]);
+        'checkpoint' => $reconKeepCp && is_array($reconLastState['checkpoint'] ?? null)
+            ? $reconLastState['checkpoint'] : null,
+        'log_add' => [$reconKeepCp ? ('⏸ توقف/ناقص — checkpoint حفظ شد') : '✅ پایان']]);
     exit;
 }
 
@@ -21071,14 +21200,18 @@ function autoTick(array $cn, int $now = 0): array {
     $jobs = autoLoadJobs();
     if (!$jobs) return $out;
 
-    // قفلِ اختصاصی: نگذار دو تیکِ هم‌زمان یک کار را دوبار بدوانند
+    /* قفلِ واقعیِ تیک: وجود/سنِ path معیار مالکیت نیست. با fopen(c)+flock
+       همان inode در تمام عمرِ قفل ثابت می‌ماند و مرگِ پردازه آن را خودکار
+       آزاد می‌کند؛ پس probe و worker دوم پنجرهٔ unlink ندارند. */
     $lock = AUTO_LOCK_FILE;
-    if (is_file($lock)) {
-        $age = $now - (int)@filemtime($lock);
-        if ($age < AUTO_LOCK_TTL) { $out['locked'] = true; return $out; }
-        @unlink($lock);   // قفلِ مرده
+    $lockFp = @fopen($lock, 'c');
+    if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if ($lockFp) @fclose($lockFp);
+        $out['locked'] = true;
+        return $out;
     }
-    @file_put_contents($lock, (string)$now);
+    @ftruncate($lockFp, 0); @rewind($lockFp);
+    @fwrite($lockFp, (string)$now); @fflush($lockFp);
 
     try {
         $ran = 0;
@@ -21099,7 +21232,7 @@ function autoTick(array $cn, int $now = 0): array {
         }
         if ($out['ran'] > 0) autoSaveJobs($jobs);
     } finally {
-        @unlink($lock);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     }
     return $out;
 }
@@ -21273,7 +21406,7 @@ function tasksRegistry(): array {
         ],
         'recon' => [
             'title' => 'مغایرت‌گیریِ مبدأ و مقصد', 'icon' => '⚖', 'file' => RECON_PROGRESS_FILE,
-            'stop' => '', 'tab' => 'ابزارها',
+            'stop' => 'recon_stop', 'tab' => 'ابزارها',
             'pane' => 'settings', 'smenu' => 'مغایرت‌گیری با مقصد', 'resume' => 'recon=1',
             'stat' => function (array $p): array {
                 return ['بررسی‌شده' => (int)($p['checked'] ?? 0), 'مغایرت' => (int)($p['diffs'] ?? 0)];
@@ -21281,7 +21414,7 @@ function tasksRegistry(): array {
         ],
         'matrix_build' => [
             'title' => 'ساخت جدول مقایسه', 'icon' => '📊', 'file' => SYNC_MATRIX_PROGRESS_FILE,
-            'stop' => '', 'tab' => 'ابزارها',
+            'stop' => 'sync_matrix_stop', 'tab' => 'ابزارها',
             'pane' => 'settings', 'smenu' => 'مغایرت‌گیری با مقصد', 'resume' => 'sync_matrix_start=1',
             'stat' => function (array $p): array {
                 return ['ردیف' => (int)($p['row_count'] ?? 0), 'پروفایل' => (int)($p['cur'] ?? 0)];
@@ -21299,7 +21432,7 @@ function tasksRegistry(): array {
         ],
         'suffix' => [
             'title' => 'گزارشِ پسوندِ پروفایل', 'icon' => '🏷', 'file' => SUFFIX_PROGRESS_FILE,
-            'stop' => '', 'tab' => 'ابزارها',
+            'stop' => 'suffix_stop', 'tab' => 'ابزارها',
             'pane' => 'settings', 'smenu' => 'آمار محصولات هر پروفایل', 'resume' => 'suffix_report=1',
             'stat' => function (array $p): array {
                 return ['بررسی‌شده' => (int)($p['checked'] ?? 0), 'یافته' => (int)($p['found'] ?? 0)];
@@ -21307,7 +21440,7 @@ function tasksRegistry(): array {
         ],
         'bulkedit' => [
             'title' => 'ویرایشِ گروهی', 'icon' => '✏', 'file' => BULKEDIT_PROGRESS_FILE,
-            'stop' => '', 'tab' => 'ابزارها',
+            'stop' => 'bulkedit_stop', 'tab' => 'ابزارها',
             /* v10.129: پارامترهای انتخاب و عملیات داخلِ checkpoint ذخیره می‌شوند
                تا کارِ رهاشده بدونِ انتخابِ دوباره از همان فهرست ادامه یابد. */
             'pane' => 'settings', 'smenu' => 'ویرایش محصولات مقصد', 'resume' => 'bulk_edit=1&resume=1',
@@ -21317,7 +21450,7 @@ function tasksRegistry(): array {
         ],
         'photofix' => [
             'title' => 'بازسازیِ عکس‌ها', 'icon' => '🖼', 'file' => PHOTOFIX_PROGRESS_FILE,
-            'stop' => '', 'tab' => 'ابزارها',
+            'stop' => 'photofix_stop', 'tab' => 'ابزارها',
             'pane' => 'settings', 'smenu' => 'عکس‌دار کردن محصولات ووکامرس', 'resume' => 'photo_fix=1',
             'stat' => function (array $p): array {
                 return ['اصلاح‌شده' => (int)($p['fixed'] ?? 0), 'ناموفق' => (int)($p['failed'] ?? 0)];
@@ -21351,16 +21484,12 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
     $base = trim((string)($def['resume'] ?? ''));
     if ($base === '') return '';
     switch ($key) {
-        case 'manual_sync':
-            $pk = trim((string)($p['profile_key'] ?? ''));
-            if ($pk === '') return '';
-            return $base . '&profile=' . rawurlencode($pk) . '&resume=1';
         case 'bsl_send':
         case 'woo_send':
             $qid = trim((string)($p['queue_id'] ?? ''));
             if ($qid === '') return '';
             return $base . '&from_file=1&queue_id=' . rawurlencode($qid)
-                . '&start_index=' . max(0, (int)($p['current'] ?? 0));
+                . '&start_index=' . max(0, (int)($p['current'] ?? 0)) . '&resume=1';
         case 'matrix_build':
             $profile = trim((string)($p['profile'] ?? 'all')) ?: 'all';
             return $base . '&profile=' . rawurlencode($profile) . '&source=tasks_resume&resume=1';
@@ -21379,10 +21508,10 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             return $base . '&profile=' . rawurlencode($pk) . '&force=1&resume=1';
         case 'extract':
             $pk = trim((string)($p['profile_key'] ?? ''));
-            if ($pk !== '') return $base . '&profile_key=' . rawurlencode($pk);
+            if ($pk !== '') return $base . '&profile_key=' . rawurlencode($pk) . '&resume=1';
             $u = trim((string)($p['url'] ?? ''));
             if ($u === '') return '';
-            return $base . '&url=' . rawurlencode($u);
+            return $base . '&url=' . rawurlencode($u) . '&resume=1';
         case 'dedup':
             $t = (string)($p['target'] ?? '');
             if ($t !== 'woo' && $t !== 'bsl') return '';
@@ -21467,7 +21596,7 @@ function tasksResumeUrl(string $key, array $def, array $p): string {
             $cp = is_array($p['checkpoint'] ?? null) ? $p['checkpoint'] : [];
             if (!is_array($cp['ids'] ?? null) || !is_array($cp['ops'] ?? null)
                 || trim((string)($cp['target'] ?? '')) === '') return '';
-            return $base;
+            return $base . '&resume=1';
         default:
             return $base;
     }
@@ -21550,7 +21679,10 @@ function tasksState(array $p, int $now): string {
        باید برچسبِ اصلی باشد تا نگهبان کران آن را در نوبت بعد resume کند.
        ai_test نیز برای آزادکردنِ state قدیمی از stalled استفاده می‌کند و
        همگام‌سازیِ دستی cancelled را ثبت می‌کند؛ هر دو همان کارِ ناقص‌اند. */
-    if (!empty($p['stale']) || !empty($p['stalled']) || !empty($p['stopped']) || !empty($p['cancelled']))
+    if (!empty($p['stale']) || !empty($p['stalled']) || !empty($p['stopped']) || !empty($p['cancelled'])
+        || !empty($p['paused']) || !empty($p['partial']) || !empty($p['incomplete'])
+        || (array_key_exists('result_ok', $p) && !$p['result_ok'])
+        || (!empty($p['error']) && is_array($p['checkpoint'] ?? null) && !empty($p['checkpoint'])))
         return 'stale';
     /* بعضی workerها هنگام خاتمهٔ ناگهانی running=false می‌نویسند ولی done
        را false نگه می‌دارند؛ وجودِ checkpoint یعنی اجرای ناقص، نه idle/done. */
@@ -21632,17 +21764,7 @@ function tasksBuildRow(string $key, array $def, int $now): array {
     /* heartbeat کهنه نباید worker دارای flock را stale نشان دهد؛ همین گارد
        مرکزی، UI و هر دو مسیر resume/clear را از اجرای موازی بازمی‌دارد. */
     if ($st === 'stale') {
-        $taskLocks = [
-            'manual_sync' => MANUAL_SYNC_LOCK_FILE, 'bsl_send' => __DIR__ . '/bsl_backend.lock',
-            'woo_send' => __DIR__ . '/woo_backend.lock', 'extract' => EXTRACT_LOCK_FILE,
-            'dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE, 'catfix' => CATFIX_LOCK_FILE,
-            'selagent' => SELAGENT_LOCK_FILE, 'ai_test' => AI_TEST_LOCK_FILE,
-            'aicontent' => AICONTENT_LOCK_FILE, 'recon' => __DIR__ . '/recon.lock',
-            'suffix' => __DIR__ . '/suffix.lock', 'bulkedit' => __DIR__ . '/bulkedit.lock',
-            'photofix' => __DIR__ . '/photofix.lock', 'matrix_build' => SYNC_MATRIX_LOCK_FILE,
-            'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE,
-        ];
-        $taskLock = (string)($taskLocks[$key] ?? '');
+        $taskLock = tasksLockFile($key);
         if ($taskLock !== '' && is_file($taskLock) && !tasksResumeLockDead($taskLock)) $st = 'running';
     }
     $ts   = tasksHeartbeat($p);   // v10.36 (۴۹الف): همان ضربانی که وضعیت با آن سنجیده شد
@@ -21694,6 +21816,58 @@ function tasksBuildRow(string $key, array $def, int $now): array {
     ];
 }
 
+/**
+ * v10.131: نگاشتِ مرکزیِ قفل و سیگنالِ توقفِ وظایفِ مدیر.
+ *
+ * پیش از این چهار کارِ server-side (مغایرت‌گیری، گزارشِ پسوند، ساختِ
+ * ماتریس، ویرایش گروهی و عکس‌دار کردن) در رجیستری دیده می‌شدند، اما چون
+ * stop خالی داشتند، مسیرِ عمومیِ مدیر نمی‌توانست واقعاً متوقفشان کند.
+ * یک نگاشتِ واحد، stop/resume/clear را از هم واگرا نمی‌گذارد.
+ */
+function tasksLockFile(string $key): string {
+    $files = [
+        'manual_sync' => MANUAL_SYNC_LOCK_FILE,
+        'bsl_send' => __DIR__ . '/bsl_backend.lock',
+        'woo_send' => __DIR__ . '/woo_backend.lock',
+        'extract' => EXTRACT_LOCK_FILE,
+        'dedup' => DEDUP_LOCK_FILE,
+        'agent' => AGENT_LOCK_FILE,
+        'catfix' => CATFIX_LOCK_FILE,
+        'selagent' => SELAGENT_LOCK_FILE,
+        'ai_test' => AI_TEST_LOCK_FILE,
+        'aicontent' => AICONTENT_LOCK_FILE,
+        'recon' => __DIR__ . '/recon.lock',
+        'suffix' => __DIR__ . '/suffix.lock',
+        'bulkedit' => __DIR__ . '/bulkedit.lock',
+        'photofix' => __DIR__ . '/photofix.lock',
+        'matrix_build' => SYNC_MATRIX_LOCK_FILE,
+        'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE,
+    ];
+    return (string)($files[$key] ?? '');
+}
+
+function tasksStopFile(string $key): string {
+    $files = [
+        'manual_sync' => MANUAL_SYNC_STOP_FILE,
+        'bsl_send' => BSL_STOP_FILE,
+        'woo_send' => WOO_STOP_FILE,
+        'extract' => EXTRACT_STOP_FILE,
+        'dedup' => DEDUP_STOP_FILE,
+        'agent' => AGENT_STOP_FILE,
+        'catfix' => CATFIX_STOP_FILE,
+        'selagent' => SELAGENT_STOP_FILE,
+        'ai_test' => AI_TEST_STOP_FILE,
+        'aicontent' => AICONTENT_STOP_FILE,
+        'recon' => RECON_STOP_FILE,
+        'suffix' => SUFFIX_STOP_FILE,
+        'bulkedit' => BULKEDIT_STOP_FILE,
+        'photofix' => PHOTOFIX_STOP_FILE,
+        'matrix_build' => SYNC_MATRIX_STOP_FILE,
+        'matrix_fix' => SYNC_MATRIX_FIX_STOP_FILE,
+    ];
+    return (string)($files[$key] ?? '');
+}
+
 /** آیا قفلِ موتور واقعاً مرده است؟ unlink روی قفلِ در دستِ پردازه ممنوع است. */
 function tasksResumeLockDead(string $file): bool {
     if (!is_file($file)) return true;
@@ -21724,35 +21898,18 @@ function tasksResumeOne(string $key): array {
     if ($url === '')
         return ['ok' => false, 'error' => 'برای این کار «ادامه» تعریف نشده — از تبِ خودش دوباره شروعش کنید'];
 
-    /* v10.129: هر موتور قفل و checkpoint خودش را دارد. قفل مرده فقط وقتی
-       stale تشخیص داده شده پاک می‌شود؛ فایل پیشرفت عمداً نگه داشته می‌شود
+    /* v10.129: هر موتور قفل و checkpoint خودش را دارد. قفلِ آزادشده با پایانِ handle دوباره قابل گرفتن است؛ فایلِ lock حذف نمی‌شود و
+       فایل پیشرفت عمداً نگه داشته می‌شود
        تا پارامترها و نقطهٔ امنِ اجرای قبلی از بین نرود. */
-    $locks = [
-        'bsl_send' => __DIR__ . '/bsl_backend.lock', 'woo_send' => __DIR__ . '/woo_backend.lock',
-        'extract' => EXTRACT_LOCK_FILE, 'dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE,
-        'catfix' => CATFIX_LOCK_FILE, 'selagent' => SELAGENT_LOCK_FILE,
-        'manual_sync' => MANUAL_SYNC_LOCK_FILE, 'aicontent' => AICONTENT_LOCK_FILE,
-        'ai_test' => AI_TEST_LOCK_FILE, 'recon' => __DIR__ . '/recon.lock', 'suffix' => __DIR__ . '/suffix.lock',
-        'bulkedit' => __DIR__ . '/bulkedit.lock', 'photofix' => __DIR__ . '/photofix.lock',
-        'matrix_build' => SYNC_MATRIX_LOCK_FILE, 'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE,
-    ];
-    if ($row['state'] === 'stale' && isset($locks[$key]) && is_file($locks[$key])) {
-        /* stale heartbeat به‌تنهایی دلیلِ کشتنِ worker نیست؛ اگر flock
-           هنوز دستِ پردازه‌ای باشد، ادامهٔ دیگری نباید موازی شود. */
-        if (!tasksResumeLockDead($locks[$key]))
+    $taskLock = tasksLockFile($key);
+    if ($taskLock !== '' && is_file($taskLock)) {
+        /* stale/paused بودنِ progress به‌تنهایی دلیلِ کشتنِ worker نیست؛
+           هر resume فقط وقتی dispatch می‌شود که flock واقعاً آزاد باشد. */
+        if (!tasksResumeLockDead($taskLock))
             return ['ok' => false, 'error' => 'این کار هنوز قفلِ فعال دارد — اجرای موازی ساخته نشد'];
-        @unlink($locks[$key]);
+        /* stop signal را اینجا حذف نمی‌کنیم؛ worker پس از گرفتنِ lock خودش
+           آن را مصرف می‌کند تا بین probe و dispatch race ایجاد نشود. */
     }
-
-    $stopMap = [
-        'bsl_stop' => BSL_STOP_FILE, 'woo_stop' => WOO_STOP_FILE, 'extract_stop' => EXTRACT_STOP_FILE,
-        'dedup_stop' => DEDUP_STOP_FILE, 'agent_stop' => AGENT_STOP_FILE, 'ai_test_stop' => AI_TEST_STOP_FILE,
-        'catfix_stop' => CATFIX_STOP_FILE, 'selagent_stop' => SELAGENT_STOP_FILE,
-        'manual_sync_stop' => MANUAL_SYNC_STOP_FILE, 'aicontent_stop' => AICONTENT_STOP_FILE,
-        'sync_matrix_fix_stop' => SYNC_MATRIX_FIX_STOP_FILE,
-    ];
-    $sf = $stopMap[(string)($def['stop'] ?? '')] ?? '';
-    if ($sf !== '') @unlink($sf);
 
     /* صف‌های ارسال تنها از مسیرِ checkpoint-aware خودشان ادامه می‌یابند؛
        tasksResumeOne هرگز یک worker عمومیِ موازی برایشان شلیک نمی‌کند. */
@@ -21761,7 +21918,7 @@ function tasksResumeOne(string $key): array {
         if (!empty($GLOBALS['_queueResumeFired'][$which])) {
             return ['ok' => true, 'resumed' => $key, 'already_dispatched' => true];
         }
-        $rec = queueStallRecover($which, max(120, (int)(loadConnections()['stall_after'] ?? 300)), false, 2500);
+        $rec = queueStallRecover($which, max(120, (int)(loadConnections()['stall_after'] ?? 300)), false, 2500, true);
         if (!empty($rec['resumed'])) {
             return ['ok' => true, 'resumed' => $key, 'url' => $url,
                 'dispatched' => true, 'resume_from' => (int)($rec['resume_from'] ?? 0)];
@@ -21781,10 +21938,10 @@ function tasksResumeOne(string $key): array {
             if ($pk === '' && trim((string)($p['url'] ?? '')) !== '') $pk = profileKey((string)$p['url']);
         }
         if ($pk === '') return ['ok' => false, 'error' => 'کلید پروفایل استخراج در checkpoint نیست'];
-        $prep = extractResumePrepare($pk, loadConnections());
-        if (empty($prep['ok'])) return ['ok' => false, 'error' => 'checkpoint استخراج پیدا نشد'];
+        /* workerِ فرزند باید خودش reservation را بگیرد؛ parent نباید بین
+           probe و fireAndForget checkpoint را mutate کند. */
         $url = 'action=backend_extract&profile_key=' . rawurlencode($pk)
-             . '&phase=' . rawurlencode((string)$prep['phase']);
+             . '&resume=1';
     } elseif ($key === 'bulkedit') {
         $p = is_file((string)$def['file'])
             ? (array)json_decode((string)@file_get_contents((string)$def['file']), true) : [];
@@ -21975,16 +22132,17 @@ if (isset($_GET['tasks_stop'])) {
     $key = (string)($_GET['key'] ?? '');
     $reg = tasksRegistry();
     if (!isset($reg[$key])) { echo json_encode(['ok' => false, 'error' => 'کارِ ناشناخته'], JSON_UNESCAPED_UNICODE); exit; }
-    $map = ['bsl_stop' => BSL_STOP_FILE, 'woo_stop' => WOO_STOP_FILE, 'extract_stop' => EXTRACT_STOP_FILE,
-            'dedup_stop' => DEDUP_STOP_FILE, 'agent_stop' => AGENT_STOP_FILE, 'ai_test_stop' => AI_TEST_STOP_FILE,
-            'catfix_stop' => CATFIX_STOP_FILE,                 // v10.23 (۳۶د)
-            'selagent_stop' => SELAGENT_STOP_FILE,             // v10.25 (۳۸د)
-            'manual_sync_stop' => MANUAL_SYNC_STOP_FILE,      // v10.35 (۴۷ه)
-            'aicontent_stop' => AICONTENT_STOP_FILE,              // v10.97
-            'sync_matrix_fix_stop' => SYNC_MATRIX_FIX_STOP_FILE]; // v10.129
-    $sf = $map[(string)$reg[$key]['stop']] ?? '';
+    $sf = tasksStopFile($key);
     if ($sf === '') { echo json_encode(['ok' => false, 'error' => 'این کار توقفِ دستی ندارد'], JSON_UNESCAPED_UNICODE); exit; }
-    @file_put_contents($sf, json_encode(['at' => time()]));
+    $stopAt = time();
+    @file_put_contents($sf, json_encode(['at' => $stopAt], JSON_UNESCAPED_UNICODE), LOCK_EX);
+    /* همگام‌سازیِ دستی چند موتور را پشتِ سر هم اجرا می‌کند؛ stop آن باید
+       به همهٔ موتورهای درگیر برسد، نه فقط به orchestrator. */
+    if ($key === 'manual_sync') {
+        foreach ([BSL_STOP_FILE, WOO_STOP_FILE, EXTRACT_STOP_FILE] as $_sf) {
+            @file_put_contents($_sf, json_encode(['stop' => true, 'at' => $stopAt], JSON_UNESCAPED_UNICODE), LOCK_EX);
+        }
+    }
     echo json_encode(['ok' => true, 'stopped' => $key], JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -22088,20 +22246,12 @@ if (isset($_GET['tasks_clear'])) {
         echo json_encode(['ok' => false, 'error' => 'این کار در حال اجراست — اول متوقفش کنید'], JSON_UNESCAPED_UNICODE); exit;
     }
     /* کارِ رهاشده ممکن است قفلش هم جا مانده باشد */
-    $locks = ['dedup' => DEDUP_LOCK_FILE, 'agent' => AGENT_LOCK_FILE,
-              'catfix' => CATFIX_LOCK_FILE,                      // v10.23 (۳۶د)
-              'selagent' => SELAGENT_LOCK_FILE,                   // v10.25
-              'extract' => EXTRACT_LOCK_FILE, 'manual_sync' => MANUAL_SYNC_LOCK_FILE,
-              'aicontent' => AICONTENT_LOCK_FILE, 'ai_test' => AI_TEST_LOCK_FILE,
-              'recon' => __DIR__ . '/recon.lock',
-              'suffix' => __DIR__ . '/suffix.lock', 'bulkedit' => __DIR__ . '/bulkedit.lock',
-              'photofix' => __DIR__ . '/photofix.lock', 'matrix_build' => SYNC_MATRIX_LOCK_FILE,
-              'matrix_fix' => SYNC_MATRIX_FIX_LOCK_FILE];        // v10.129 (۳۸د)
-    if (isset($locks[$key]) && is_file($locks[$key])) {
-        if (!tasksResumeLockDead($locks[$key])) {
+    $taskLock = tasksLockFile($key);
+    if ($taskLock !== '' && is_file($taskLock)) {
+        if (!tasksResumeLockDead($taskLock)) {
             echo json_encode(['ok' => false, 'error' => 'قفلِ فعال وجود دارد — فایلِ پیشرفت پاک نشد'], JSON_UNESCAPED_UNICODE); exit;
         }
-        @unlink($locks[$key]);
+        /* lock مسیرش را حفظ می‌کند؛ فقط فایلِ progress پاک می‌شود. */
     }
     @unlink((string)$reg[$key]['file']);
     echo json_encode(['ok' => true, 'cleared' => 1], JSON_UNESCAPED_UNICODE);
@@ -22289,7 +22439,7 @@ if (isset($_GET['auto_run_now'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(AGENT_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     $now  = time();
@@ -22421,7 +22571,7 @@ if (isset($_GET['agent_start'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(AGENT_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     try {
@@ -22570,7 +22720,7 @@ if (isset($_GET['selagent_start'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($saLock) {
-        @flock($saLock, LOCK_UN); @fclose($saLock); @unlink(SELAGENT_LOCK_FILE);
+        @flock($saLock, LOCK_UN); @fclose($saLock);
     });
 
     try {
@@ -22759,6 +22909,7 @@ if (isset($_GET['suffix_report'])) {
             JSON_UNESCAPED_UNICODE); exit;
     }
     @set_time_limit(0); @ignore_user_abort(true);
+    suffixStopClear();
     $notify = !empty($_GET['notify']);
     $cn = loadConnections();
     /* v10.129: صفحاتِ خوانده‌شدهٔ گزارش هم checkpoint دارند؛ در resume
@@ -22795,7 +22946,7 @@ if (isset($_GET['suffix_report'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp, $lockFile) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink($lockFile);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     try {
@@ -22828,8 +22979,9 @@ if (isset($_GET['suffix_report'])) {
         json_encode($rep, JSON_UNESCAPED_UNICODE), LOCK_EX);
     $suffixLastState = is_file(SUFFIX_PROGRESS_FILE)
         ? json_decode((string)@file_get_contents(SUFFIX_PROGRESS_FILE), true) : [];
-    $suffixKeepCp = empty($rep['ok']);
-    suffixProgress(['running' => false, 'done' => true, 'stale' => $suffixKeepCp,
+    $suffixKeepCp = !empty($rep['stopped']) || !empty($rep['partial']) || empty($rep['ok']);
+    suffixStopClear();
+    suffixProgress(['running' => false, 'done' => true, 'stopped' => !empty($rep['stopped']), 'partial' => !empty($rep['partial']), 'stale' => $suffixKeepCp,
         'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
         'checkpoint' => $suffixKeepCp && is_array($suffixLastState['checkpoint'] ?? null)
             ? $suffixLastState['checkpoint'] : null,
@@ -22889,7 +23041,10 @@ if (isset($_GET['dedup_start'])) {
             $cp = $old['checkpoint'];
         }
     }
-    if ($cp === null) @unlink(DEDUP_PROGRESS_FILE);
+    if ($cp === null) {
+        @unlink(DEDUP_PROGRESS_FILE);
+        @unlink(DEDUP_FETCH_CURSOR_FILE);
+    }
     $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
     dedupProgress(['running' => true, 'done' => false, 'target' => $target, 'mode' => $mode,
         'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time()), 'total' => 0,
@@ -22913,7 +23068,7 @@ if (isset($_GET['dedup_start'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(DEDUP_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     try {
@@ -22933,6 +23088,7 @@ if (isset($_GET['dedup_start'])) {
         ? json_decode((string)@file_get_contents(DEDUP_PROGRESS_FILE), true) : [];
     $dedupKeepCp = $stopped || !empty($rep['partial']) || empty($rep['ok']);
     dedupClearStop();
+    if (!$dedupKeepCp) @unlink(DEDUP_FETCH_CURSOR_FILE);
     if (empty($rep['ok'])) {
         $dedupLog = '❌ ' . ($rep['error'] ?? 'ناموفق');
     } elseif ($dedupKeepCp) {
@@ -23057,6 +23213,7 @@ if (isset($_GET['catfix_start'])) {
     if ($cp === null) {
         @unlink(CATFIX_PROGRESS_FILE);
         @unlink(CATFIX_RESULT_FILE);
+        @unlink(CATFIX_FETCH_CURSOR_FILE);
     }
     $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
     catfixProgress(['running' => true, 'done' => false, 'mode' => $mode,
@@ -23083,7 +23240,7 @@ if (isset($_GET['catfix_start'])) {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(CATFIX_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     try {
@@ -23104,6 +23261,7 @@ if (isset($_GET['catfix_start'])) {
     $catLastState = is_file(CATFIX_PROGRESS_FILE)
         ? json_decode((string)@file_get_contents(CATFIX_PROGRESS_FILE), true) : [];
     $catKeepCp = $stopped || !empty($rep['partial']) || !empty($rep['stopped']) || empty($rep['ok']);
+    if (!$catKeepCp) @unlink(CATFIX_FETCH_CURSOR_FILE);
     catfixClearStop();
     catfixProgress(['running' => false, 'done' => true, 'stopped' => $stopped,
         'stale' => $catKeepCp, 'result_ok' => !empty($rep['ok']), 'error' => $rep['error'] ?? '',
@@ -23278,7 +23436,7 @@ if (($_POST['action'] ?? '') === 'dedup_delete_ids') {
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
 
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(DEDUP_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
 
     $done = 0; $fail = 0; $items = []; $seen = 0; $stopped = false;
@@ -23545,10 +23703,16 @@ function matrixProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log;
     $cur['ts'] = time();
-    @file_put_contents(SYNC_MATRIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(SYNC_MATRIX_PROGRESS_FILE, $cur);
 }
+function matrixStopRequested(): bool { return is_file(SYNC_MATRIX_STOP_FILE); }
+function matrixStopClear(): void { @unlink(SYNC_MATRIX_STOP_FILE); }
+
 function matrixProgressRead(): array {
     if (!is_file(SYNC_MATRIX_PROGRESS_FILE)) return [];
     $d = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
@@ -23586,19 +23750,27 @@ function matrixBuild(array $opts = []): array {
     $profilesDoneSet = $profilesDone ? array_fill_keys($profilesDone, true) : [];
     $matrixWooCp = is_array($resumeCp['woo_rows'] ?? null) ? $resumeCp['woo_rows'] : [];
     $matrixWooDone = !empty($resumeCp['woo_done']);
+    $matrixWooPage = (int)($resumeCp['woo_page'] ?? 0);
+    $matrixWooComplete = !empty($resumeCp['woo_complete']);
     $matrixShopCp = is_array($resumeCp['shop_rows'] ?? null) ? $resumeCp['shop_rows'] : [];
-    $matrixCp = static function (string $phase, array $rows, array $done, array $woo, array $shops, int $at, bool $wooDone = false) use ($profileFilter): array {
+    $matrixShopPages = is_array($resumeCp['shop_pages'] ?? null) ? $resumeCp['shop_pages'] : [];
+    $matrixShopDone = is_array($resumeCp['shop_done'] ?? null) ? $resumeCp['shop_done'] : [];
+    if (!array_key_exists('shop_done', $resumeCp) && $matrixShopCp) {
+        foreach ($matrixShopCp as $savedVid => $_savedRows) $matrixShopDone[(string)$savedVid] = true;
+    }
+    $matrixCp = static function (string $phase, array $rows, array $done, array $woo, array $shops, int $at, bool $wooDone = false) use ($profileFilter, &$matrixWooPage, &$matrixWooComplete, &$matrixShopPages, &$matrixShopDone): array {
         return ['phase' => $phase, 'profile_filter' => ($profileFilter ?: 'all'),
             'profile_rows' => $rows, 'profiles_done' => $done, 'woo_rows' => $woo,
-            'woo_done' => $wooDone, 'shop_rows' => $shops, 'started_at' => $at];
+            'woo_done' => $wooDone, 'woo_page' => $matrixWooPage, 'woo_complete' => $matrixWooComplete,
+            'shop_rows' => $shops, 'shop_pages' => $matrixShopPages, 'shop_done' => $matrixShopDone,
+            'started_at' => $at];
     };
 
     matrixProgress([
         'running' => true, 'done' => false, 'error' => '',
         'phase' => 'profiles', 'pct' => $profilesDone ? 2 : 2, 'source' => $source,
         'profile' => $profileFilter, 'started_at' => $startedAt,
-        'checkpoint' => ['phase' => 'profiles', 'profile_filter' => ($profileFilter ?: 'all'),
-            'profile_rows' => $profileRows, 'profiles_done' => $profilesDone, 'started_at' => $startedAt],
+        'checkpoint' => $matrixCp('profiles', $profileRows, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone),
         'log_add' => ['🚀 ' . ($profilesDone ? 'ادامه ساخت جدول مقایسه' : 'شروع ساخت جدول مقایسه')
             . ' (سرورساید) — منبع: ' . $source],
     ]);
@@ -23607,9 +23779,25 @@ function matrixBuild(array $opts = []): array {
     $bslCfg = destPriceCfg($cn, 'basalam');
 
     $rowsByKey = $profileRows;
+    $stopMatrix = static function (string $phase) use (&$rowsByKey, &$profilesDone, &$matrixWooCp,
+        &$matrixShopCp, &$startedAt, &$matrixWooDone, &$matrixWooPage, &$matrixWooComplete,
+        &$matrixShopPages, &$matrixShopDone, $profileFilter): array {
+        $cp = ['phase' => $phase, 'profile_filter' => ($profileFilter ?: 'all'),
+            'profile_rows' => $rowsByKey, 'profiles_done' => $profilesDone,
+            'woo_rows' => $matrixWooCp, 'woo_done' => $matrixWooDone,
+            'woo_page' => $matrixWooPage, 'woo_complete' => $matrixWooComplete,
+            'shop_rows' => $matrixShopCp, 'shop_pages' => $matrixShopPages, 'shop_done' => $matrixShopDone,
+            'started_at' => $startedAt];
+        matrixProgress(['running' => false, 'done' => true, 'stopped' => true, 'partial' => true,
+            'stale' => true, 'phase' => 'stopped', 'checkpoint' => $cp,
+            'log_add' => ['⏹ ساخت جدول متوقف شد — checkpoint حفظ شد']]);
+        matrixStopClear();
+        return ['ok' => true, 'stopped' => true, 'partial' => true, 'checkpoint' => $cp];
+    };
     $profiles = loadProfiles();
     $pN = 0; $pTot = max(1, count($profiles));
     foreach ($profiles as $pk => $profile) {
+        if (matrixStopRequested()) return $stopMatrix('profiles');
         $pN++;
         if ($profileFilter !== '' && $profileFilter !== 'all' && $profileFilter !== $pk) continue;
         if (isset($profilesDoneSet[(string)$pk])) continue;
@@ -23666,6 +23854,7 @@ function matrixBuild(array $opts = []): array {
     ]);
 
     // Woo
+    if (matrixStopRequested()) return $stopMatrix('woo_fetch');
     $wooErr = '';
     $wooRows = array_values(array_filter($matrixWooCp, 'is_array'));
     $w = $cn['woocommerce'] ?? [];
@@ -23675,18 +23864,32 @@ function matrixBuild(array $opts = []): array {
                 ? ' (مسیر ⚡ مستقیم DB — سریع)' : ' (مسیر 🌐 REST API — کندتر)')),
         ]]);
     if (!$matrixWooDone) {
+        $wooMeta = [];
         try {
             if (!empty($w['store_url']) || function_exists('wc_get_products')) {
                 // progress via reconProgress is separate; also tick matrix
-                $wooRows = reconFetchWoo(is_array($w) ? $w : []);
+                $wooRows = reconFetchWoo(is_array($w) ? $w : [], 0, $wooMeta);
             } else {
                 $wooErr = 'تنظیمات ووکامرس ناقص';
             }
         } catch (Throwable $e) {
             $wooErr = $e->getMessage();
+            $wooMeta = ['partial' => true, 'reason' => 'exception', 'page' => $matrixWooPage];
         }
-        $matrixWooCp = $wooRows; $matrixWooDone = true;
-        matrixProgress(['checkpoint' => $matrixCp('woo_map', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, true)]);
+        $matrixWooCp = $wooRows;
+        $matrixWooPage = (int)($wooMeta['page'] ?? $matrixWooPage);
+        $matrixWooComplete = empty($wooMeta) || !empty($wooMeta['complete']);
+        $matrixWooDone = $wooErr === '' && $matrixWooComplete;
+        matrixProgress(['checkpoint' => $matrixCp('woo_' . ($matrixWooDone ? 'map' : 'fetch'), $rowsByKey,
+            $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone)]);
+        if (!$matrixWooDone) {
+            $why = $wooErr ?: 'برداشت ووکامرس کامل نشد';
+            matrixProgress(['running' => false, 'done' => true, 'stale' => true, 'partial' => true,
+                'error' => $why, 'phase' => 'stopped',
+                'checkpoint' => $matrixCp('woo_fetch', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, false),
+                'log_add' => ['⚠️ ' . $why . ' — checkpoint حفظ شد']]);
+            return ['ok' => false, 'partial' => true, 'error' => $why];
+        }
     }
     matrixProgress([
         'phase' => 'woo_map', 'pct' => 48,
@@ -23725,6 +23928,7 @@ function matrixBuild(array $opts = []): array {
     $sTot = max(1, count($shopList));
     $sN = 0;
     foreach ($shopList as $sh) {
+        if (matrixStopRequested()) return $stopMatrix('bsl_fetch');
         if (!is_array($sh)) continue;
         $vid = (int)($sh['vendor_id'] ?? 0);
         $tok = trim((string)($sh['token'] ?? ($cn['basalam']['token'] ?? '')));
@@ -23737,19 +23941,32 @@ function matrixBuild(array $opts = []): array {
             'cur' => $sN, 'cur_total' => $sTot,
             'log_add' => ['🏪 دریافت غرفه ' . $sN . '/' . $sTot . ' — ' . $sname . ' (فقط فعال)'],
         ]);
-        $hasSavedShop = array_key_exists((string)$vid, $matrixShopCp);
-        $remote = $hasSavedShop && is_array($matrixShopCp[(string)$vid]) ? $matrixShopCp[(string)$vid] : [];
+        $shopDone = !empty($matrixShopDone[(string)$vid]);
+        $remote = is_array($matrixShopCp[(string)$vid] ?? null) ? $matrixShopCp[(string)$vid] : [];
+        $shopMeta = [];
         try {
-            if (!$hasSavedShop) {
-                /* v10.116: فقط محصولات فعال قابل‌مشاهدهٔ مشتری (2976) */
-                $remote = reconFetchBsl($tok, $vid, 0, true);
+            if (!$shopDone) {
+                /* v10.116: فقط محصولات فعال قابل‌مشاهدهٔ مشتری (2976)، با cursor صفحه‌ای */
+                $remote = reconFetchResumable('bsl', [], $tok, $vid, $shopMeta, true);
             }
         } catch (Throwable $e) {
             $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
-            $remote = [];
+            $shopMeta = ['partial' => true, 'reason' => 'exception', 'page' => (int)($matrixShopPages[(string)$vid] ?? 0)];
         }
         $matrixShopCp[(string)$vid] = $remote;
-        matrixProgress(['checkpoint' => $matrixCp('bsl_fetch', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone)]);
+        $matrixShopPages[(string)$vid] = (int)($shopMeta['page'] ?? ($matrixShopPages[(string)$vid] ?? 0));
+        $shopDone = $shopDone || (empty($shopMeta) || !empty($shopMeta['complete'])) && $bslErr === '';
+        $matrixShopDone[(string)$vid] = $shopDone;
+        matrixProgress(['checkpoint' => $matrixCp('bsl_' . ($shopDone ? 'map' : 'fetch'), $rowsByKey, $profilesDone,
+            $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone)]);
+        if (!$shopDone) {
+            $why = $bslErr ?: ('برداشت غرفهٔ ' . $sname . ' کامل نشد');
+            matrixProgress(['running' => false, 'done' => true, 'stale' => true, 'partial' => true,
+                'error' => $why, 'phase' => 'stopped',
+                'checkpoint' => $matrixCp('bsl_fetch', $rowsByKey, $profilesDone, $matrixWooCp, $matrixShopCp, $startedAt, $matrixWooDone),
+                'log_add' => ['⚠️ ' . $why . ' — checkpoint حفظ شد']]);
+            return ['ok' => false, 'partial' => true, 'error' => $why];
+        }
         $seen = [];
         foreach ($remote as $br) {
             $bare = matrixBareTitle((string)($br['title'] ?? ''), $suffixes);
@@ -23944,9 +24161,12 @@ function matrixFixProgress(array $patch): void {
         unset($patch['live_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log;
     $cur['ts'] = time();
-    @file_put_contents(SYNC_MATRIX_FIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(SYNC_MATRIX_FIX_PROGRESS_FILE, $cur);
 }
 
 function matrixFixProgressRead(): array {
@@ -24550,7 +24770,9 @@ function matrixFixAppendReportRows(array $stats): void {
 function matrixFixRun(array $opts = []): array {
     @set_time_limit(0);
     @ignore_user_abort(true);
-    matrixFixStopClear();
+    /* stop را caller پس از گرفتنِ lockِ واقعیِ همین کار مصرف می‌کند؛ این
+       تابع از recon_auto هم صدا زده می‌شود و نباید در شروع، درخواستِ تازهٔ
+       کاربر را بین lock و اولینِ probe پاک کند. */
     $scope = (string)($opts['scope'] ?? 'all');
     if (!in_array($scope, ['all', 'woo', 'bsl'], true)) $scope = 'all';
     $delayMs = max(50, min(2000, (int)($opts['delay_ms'] ?? 180)));
@@ -24634,8 +24856,8 @@ function matrixFixRun(array $opts = []): array {
     }
     $defTok = trim((string)($cn['basalam']['token'] ?? ''));
 
-    $okN = 0; $failN = 0;
-    $sentN = 0; $delN = 0; $priceN = 0;
+    $okN = (int)($fixCp['ok_n'] ?? 0); $failN = (int)($fixCp['fail_n'] ?? 0);
+    $sentN = (int)($fixCp['sent_n'] ?? 0); $delN = (int)($fixCp['del_n'] ?? 0); $priceN = (int)($fixCp['price_n'] ?? 0);
     $stopped = false;
     $details = [];
 
@@ -24648,6 +24870,7 @@ function matrixFixRun(array $opts = []): array {
             break;
         }
         $n = $ji + 1;
+        $jobOk = false;
         $pct = 5 + (int)round(90 * $n / max(1, $total));
         $title = mb_substr((string)$job['title'], 0, 48);
         $bare = (string)$job['bare'];
@@ -24663,7 +24886,7 @@ function matrixFixRun(array $opts = []): array {
             ]);
             $res = matrixFixWooPrice($cn, (int)$job['id'], $to);
             if (!empty($res['ok'])) {
-                $okN++; $priceN++;
+                $jobOk = true; $okN++; $priceN++;
                 matrixResultPatchRow($bare, [
                     'woo' => ['price' => $to, 'id' => (int)$job['id']],
                     'woo_tone' => 'ok', 'fix_woo_at' => time(), 'fix_woo_ok' => true,
@@ -24703,7 +24926,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $res = matrixFixBslPrice($tok, $vid, (int)$job['id'], $to);
                 if (!empty($res['ok'])) {
-                    $okN++; $priceN++;
+                    $jobOk = true; $okN++; $priceN++;
                     matrixResultPatchRow($bare, [
                         'shops' => [$vid => [
                             'price' => $to, 'price_rial' => $to * 10, 'tone' => 'ok',
@@ -24743,7 +24966,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $res = matrixFixSendWoo($cn, $found, (int)($job['expect'] ?? 0));
                 if (!empty($res['ok'])) {
-                    $okN++; $sentN++;
+                    $jobOk = true; $okN++; $sentN++;
                     $id = (int)($res['id'] ?? 0);
                     $price = (int)($res['price'] ?? 0);
                     matrixResultPatchRow($bare, [
@@ -24791,7 +25014,7 @@ function matrixFixRun(array $opts = []): array {
             } else {
                 $res = matrixFixSendBsl($cn, $found, $vid, $tok, (int)($job['expect'] ?? 0));
                 if (!empty($res['ok'])) {
-                    $okN++; $sentN++;
+                    $jobOk = true; $okN++; $sentN++;
                     $id = (int)($res['id'] ?? 0);
                     $price = (int)($res['price'] ?? 0);
                     matrixResultPatchRow($bare, [
@@ -24828,7 +25051,7 @@ function matrixFixRun(array $opts = []): array {
             ]);
             $res = matrixFixDelWoo($cn, (int)$job['id']);
             if (!empty($res['ok'])) {
-                $okN++; $delN++;
+                $jobOk = true; $okN++; $delN++;
                 matrixResultPatchRow($bare, [
                     'woo' => null, 'woo_tone' => 'na',
                     'status' => 'only_dest_removed',
@@ -24876,7 +25099,7 @@ function matrixFixRun(array $opts = []): array {
             ]);
             $res = matrixFixDelBsl($cn, (int)$job['id'], $vid);
             if (!empty($res['ok'])) {
-                $okN++; $delN++;
+                $jobOk = true; $okN++; $delN++;
                 matrixResultPatchRow($bare, [
                     'shops' => [$vid => null],
                     'fix_del_bsl_at' => time(),
@@ -24912,7 +25135,10 @@ function matrixFixRun(array $opts = []): array {
             }
         }
 
-        $doneJobs[] = $jk; $doneJobSet[$jk] = true;
+        /* فقط کارِ واقعاً موفق از صفِ checkpoint حذف می‌شود؛ شکست
+           باید در اجرای بعدی دوباره امتحان شود. */
+        if ($jobOk) { $doneJobs[] = $jk; $doneJobSet[$jk] = true; }
+        $incomplete = $stopped || count($doneJobs) < $total;
         matrixFixProgress(['done_jobs' => $doneJobs,
             'checkpoint' => ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
                 'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN, 'del_n' => $delN,
@@ -24939,9 +25165,11 @@ function matrixFixRun(array $opts = []): array {
         matrixResultSave($dataF);
     }
 
+    $incomplete = $stopped || count($doneJobs) < $total;
     $stats = [
         'at' => time(),
         'ok' => $okN, 'fail' => $failN, 'total' => $total,
+        'partial' => $incomplete,
         'sent' => $sentN, 'deleted' => $delN, 'priced' => $priceN,
         'stopped' => $stopped, 'scope' => $scope,
         'details' => $details,
@@ -24949,13 +25177,14 @@ function matrixFixRun(array $opts = []): array {
     matrixFixAppendReportRows($stats);
 
     matrixFixProgress([
-        'running' => false, 'done' => true, 'pct' => 100,
-        'phase' => $stopped ? 'stopped' : 'done',
+        'running' => false, 'done' => true, 'partial' => $incomplete,
+        'stale' => $incomplete, 'pct' => 100,
+        'phase' => $stopped ? 'stopped' : ($incomplete ? 'partial' : 'done'),
         'ok_n' => $okN, 'fail_n' => $failN, 'cur' => $n ?? $total, 'total' => $total,
         'sent_n' => $sentN, 'del_n' => $delN, 'price_n' => $priceN,
         'finished_at' => time(),
         'done_jobs' => $doneJobs,
-        'checkpoint' => $stopped ? ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
+        'checkpoint' => $incomplete ? ['scope' => $scope, 'done_jobs' => $doneJobs, 'started_at' => $fixStartedAt,
             'ok_n' => $okN, 'fail_n' => $failN, 'sent_n' => $sentN, 'del_n' => $delN, 'price_n' => $priceN,
             'cur' => $n ?? 0, 'total' => $total] : null,
         'log_add' => [
@@ -24967,7 +25196,7 @@ function matrixFixRun(array $opts = []): array {
     ]);
     matrixFixStopClear();
     return [
-        'ok' => true, 'total' => $total, 'ok_n' => $okN, 'fail_n' => $failN,
+        'ok' => true, 'partial' => $incomplete, 'total' => $total, 'ok_n' => $okN, 'fail_n' => $failN,
         'sent' => $sentN, 'deleted' => $delN, 'priced' => $priceN, 'stopped' => $stopped,
     ];
 }
@@ -24992,7 +25221,6 @@ function matrixJobRun(array $opts = []): array {
     $release = function () use ($fp, $lockFile) {
         @flock($fp, LOCK_UN);
         @fclose($fp);
-        @unlink($lockFile);
     };
     if ($bg) {
         // caller already sent early response
@@ -25158,7 +25386,7 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
         }
     }
     $opts['checkpoint'] = $matrixCp;
-    // قفل زود
+    // قفل زود — حذف cursor و مصرف stop فقط بعد از مالکیت واقعی انجام می‌شود.
     $lockFile = SYNC_MATRIX_LOCK_FILE;
     $fp = @fopen($lockFile, 'c');
     if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) {
@@ -25166,6 +25394,8 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
         echo json_encode(['ok' => false, 'error' => 'یک ساخت جدول در حال اجراست', 'running' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
+    if ($matrixCp === null && function_exists('reconFetchCursorFile')) @unlink(reconFetchCursorFile());
+    matrixStopClear();
     matrixProgress([
         'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
         'phase' => 'start', 'started_at' => (int)($matrixCp['started_at'] ?? time()),
@@ -25187,12 +25417,13 @@ if (isset($_GET['sync_matrix_start']) || (($_POST['action'] ?? '') === 'sync_mat
     register_shutdown_function(function () use ($fp, $lockFile) {
         @flock($fp, LOCK_UN);
         @fclose($fp);
-        @unlink($lockFile);
     });
     try {
         matrixBuild($opts);
+        matrixStopClear();
     } catch (Throwable $e) {
         $matrixErrState = matrixProgressRead();
+        matrixStopClear();
         matrixProgress([
             'running' => false, 'done' => true, 'stale' => true, 'error' => $e->getMessage(), 'pct' => 100,
             'checkpoint' => is_array($matrixErrState['checkpoint'] ?? null) ? $matrixErrState['checkpoint'] : null,
@@ -25293,6 +25524,9 @@ if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync
         echo json_encode(['ok' => false, 'error' => 'یک اصلاح در حال اجراست', 'running' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
+    /* stopِ قدیمی را فقط پس از مالکیتِ lock مصرف کن؛ stopی که بعد از این
+       خط نوشته شود دست‌نخورده می‌ماند و worker در اولینِ probe آن را می‌بیند. */
+    matrixFixStopClear();
     matrixFixProgress([
         'running' => true, 'done' => false, 'error' => '', 'pct' => 1,
         'phase' => 'queued', 'started_at' => (int)($matrixFixCp['started_at'] ?? time()), 'source' => $opts['source'],
@@ -25314,7 +25548,6 @@ if (isset($_GET['sync_matrix_fix_start']) || (($_POST['action'] ?? '') === 'sync
     register_shutdown_function(function () use ($fp, $lockFile) {
         @flock($fp, LOCK_UN);
         @fclose($fp);
-        @unlink($lockFile);
     });
     try {
         matrixFixRun($opts);
@@ -27106,12 +27339,13 @@ if (isset($_GET['selftest'])) {
          && strpos($selfSrc, 'if (!(\$_galDoneNow && !\$_fieldMissingNow)) {') !== false);
 
     /* ---------- v9.75: نگهبانِ ادامه‌یافتِ استخراج + اتصالِ مستقیمِ تبِ سلکتورها ---------- */
-    $add('9.75', 'نگهبانِ استخراج ردیفِ گیرکرده را برمی‌دارد و همان پروفایل را برای ادامه علامت می‌زند',
+    $add('10.136', 'نگهبانِ استخراج ادامه را با همان reservationِ قفل اجرا می‌کند',
          strpos($selfSrc, "\$exResumeKeys[] = \$exKey;") !== false
-         && strpos($selfSrc, "runBackendExtract(\$_rk, 'watchdog_resume', false, \$_prep['phase']);") !== false);
-    $add('9.75', 'فازِ ادامه از روی نشانهٔ مرحله انتخاب می‌شود (detail یا all)',
+         && strpos($selfSrc, "runBackendExtract(\$_rk, 'watchdog_resume', false, \$_prep['phase'], false, (string)(\$_prep['queue_id'] ?? ''));") !== false);
+    $add('10.136', 'آماده‌سازیِ resume قبل از mutation قفل واقعی می‌گیرد',
          strpos($selfSrc, "function extractResumePrepare(string \$profileKey, array \$cn): array {") !== false
-         && strpos($selfSrc, "\$phase = (\$stage === 'detail' && \$age <= \$stale) ? 'detail' : 'all';") !== false);
+         && strpos($selfSrc, "extractLockAcquire(\$resumeQueueId, \$profileKey)") !== false
+         && strpos($selfSrc, "\$pr['_extract_resume_req'] = time();") !== false);
     $add('9.75', 'بارگذاریِ صفحه در تبِ سلکتورها اتصالِش را مطابق «اتصال غیرمستقیم»ِ پروفایلِ فعلی می‌کند',
          strpos($selfSrc, 'function srcNetSet' . 'ProfileIndirect(?string $pk)') !== false
          && strpos($selfSrc, "srcNetSetProfileIndirect((string)(\$_GET['pk'] ?? ''));") !== false
@@ -29734,9 +29968,10 @@ if (isset($_GET['selftest'])) {
       && strpos($selfSrc, "\$results['ping'] = ['error' => mb_substr(\$e->getMessage(), 0, 200)];") !== false
       && strpos($selfSrc, "\$results['watchdog_error'] = mb_substr(\$e->getMessage(), 0, 200);") !== false);
 
-    $add('10.21', 'مسیرِ قفل هم نتیجهٔ پینگ را گزارش می‌کند',
-         strpos($selfSrc, "\$_lp = notifCronPing(\$cnLock, ['profiles' => [], 'locked' => \$lockAge]);") !== false
-      && strpos($selfSrc, "if (!empty(\$_lp['sent']))          \$lockOut['ping'] = 'sent';") !== false);
+    $add('10.136', 'رقابتِ قفل بدون probe یا حذفِ path گزارش می‌شود',
+         strpos($selfSrc, 'if (!$cronLockHeld) {') !== false
+      && strpos($selfSrc, 'cronEmit($lockOut);') !== false
+      && strpos($selfSrc, 'بدون هیچ probe یا حذفِ path') !== false);
 
     $add('10.22', 'پینگِ دوره‌ای به توکنِ باسلام وابسته نیست',
          strpos($selfSrc, "if (!\$_hasMsgr) return ['ok' => false, 'error' => 'هیچ پیام‌رسانی تنظیم نشده (بله/روبیکا/تلگرام)'];") !== false
@@ -29847,7 +30082,7 @@ if (isset($_GET['selftest'])) {
     $add('10.23', 'شروعِ اصلاحِ دسته قفل می‌گیرد و زودهنگام پاسخ می‌دهد',
          strpos($selfSrc, "\$lockFp = fopen(CATFIX_LOCK_FILE, 'c');") !== false
       && strpos($selfSrc, "'error' => 'یک اصلاحِ دسته‌بندی همین حالا در جریان است'") !== false
-      && strpos($selfSrc, '@flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(CATFIX_LOCK_FILE);') !== false);
+      && strpos($selfSrc, '@flock($lockFp, LOCK_UN); @fclose($lockFp);') !== false);
 
     $add('10.23', 'سه روشِ اصلاح شناخته می‌شوند و ناشناخته به متنِ باسلام برمی‌گردد',
          catfixModeLabel('ai_text') === 'متنِ بررسیِ باسلام'
@@ -30158,7 +30393,7 @@ if (isset($_GET['selftest'])) {
       && strpos($selfSrc, 'function catfixAutoTick') !== false
       && strpos($selfSrc, "missing_total") !== false);
 
-    
+
     $add('10.110', 'نسخهٔ ۱۰.۱۱۰',
          version_compare(APP_VERSION, '10.110', '>=')
       && strpos($selfSrc, "{v:'10.110',") !== false);
@@ -30760,7 +30995,7 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
          str_contains($selfSrc, "\$_pqRec = queueStallRecover(\$_pq, \$_pumpStall, false, 120000);")
       && str_contains($selfSrc, "\$results['send_pump'][\$_pq]"));
     $add('10.49.2', 'queueStallRecover مهلتِ انتظارِ قابل‌تنظیم دارد',
-         str_contains($selfSrc, "function queueStallRecover(string \$which, int \$staleAfter = 300, bool \$dryRun = false, int \$waitMs = 1500): array {")
+         str_contains($selfSrc, "function queueStallRecover(string \$which, int \$staleAfter = 300, bool \$dryRun = false, int \$waitMs = 1500, bool \$includePaused = false): array {")
       && str_contains($selfSrc, "\$chk['resumed'] = fireAndForget('action=' . \$action, \$waitMs, \$post);"));
     $add('10.49.3', 'پمپ در همگام‌سازیِ دستی اجرا نمی‌شود (مرورگر خودش می‌کوبد)',
          str_contains($selfSrc, "if (!manualSyncActive()) {"));
@@ -32252,13 +32487,14 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
       && strpos($selfSrc, 'function extractLock' . 'Touch(') !== false
       && defined('EXTRACT_LOCK_FILE') && defined('EXTRACT_LOCK_TTL'));
 
-    $add('10.32', 'قفل پیش از فازِ فهرست گرفته می‌شود و فازِ جزئیات دوباره قفل نمی‌گیرد',
+    $add('10.32', 'قفل پیش از همهٔ phaseها گرفته می‌شود و detail استثنا نیست',
          strpos($selfSrc, '$_lk=extractLock' . 'Acquire($queueId,$profileKey);') !== false
-      && strpos($selfSrc, "if(\$phase!=='detail'){") !== false
+      && strpos($selfSrc, 'v10.134: قفلِ واقعی برای همهٔ phaseها') !== false
       && strpos($selfSrc, 'استخراجِ دیگری در حال اجراست') !== false);
 
     $add('10.32', 'قفل در همهٔ مسیرهای خروجِ استخراج آزاد می‌شود',
-         substr_count($selfSrc, "if(\$phase!=='detail')extractLock" . 'Release($queueId);') >= 5);
+         substr_count($selfSrc, 'extractLock' . 'Release($queueId);') >= 5
+      && strpos($selfSrc, "if(\$phase!=='detail')extractLock" . 'Release($queueId);') === false);
 
     $add('10.32', 'حلقهٔ صفحه و حلقهٔ جزئیات به قفل ضربان می‌زنند',
          substr_count($selfSrc, 'extractLock' . 'Touch($queueId);') >= 2);
@@ -33739,20 +33975,13 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
     $add('9.09', 'مودال سلکتور کادر گالری را نشان می‌دهد',
          strpos($selfSrc, 'esc(e.gallery_box||' . "'(تنظیم نشده)')") !== false);
 
-    /* ---------- v9.08: قفلِ جامانده کل تیک کران را رد نکند ---------- */
-    /* پردازه‌ای که هاست می‌کشد، قفل را جا می‌گذارد؛ با معیار «سن»، هر
-       تیک تا ۳۰ دقیقه رد می‌شد و گام جزئیات هرگز شروع نمی‌شد. */
-    $add('9.08', 'سن قفل از محتوای فایل خوانده می‌شود نه فقط mtime',
-         strpos($selfSrc, '$_lkStamp = (int)trim((string)@file_get_contents($cron' . 'Lock));') !== false
-         && strpos($selfSrc, 'if ($_lkStamp <= 0) $_lkStamp = (int)@file' . 'mtime($cronLock);') !== false);
-    $add('9.08', 'قفل با زنده بودن اجرا سنجیده می‌شود',
-         strpos($selfSrc, '$_lkIdleMax = max(120, (int)(loadConnections()' . "['stall_after'] ?? 300));") !== false
-         && strpos($selfSrc, '$_lkDead = (!empty($_lkProg[\'done\'])') !== false);
-    $add('9.08', 'قفل مرده برداشته می‌شود و اجرا ادامه می‌یابد',
-         strpos($selfSrc, '$lockAge = PHP_INT_MAX;' . "\n" . '        $results_lockReaped = true;') !== false);
-    $add('9.08', 'برداشته شدن قفل در گزارش ثبت می‌شود',
-         strpos($selfSrc, "\$results['lock_rea" . "ped'] = true;") !== false);
-
+    /* ---------- v10.134: قفلِ کران فقط با flock سنجیده می‌شود ---------- */
+    $add('10.134', 'قفلِ کران با handle پایدار و flock گرفته می‌شود',
+         strpos($selfSrc, "\$cronLockFp = @fopen(\$cronLock, 'c');") !== false
+         && strpos($selfSrc, "@flock(\$cronLockFp, LOCK_EX | LOCK_NB)") !== false);
+    $add('10.134', 'قفلِ کران بعد از unlock حذف نمی‌شود',
+         strpos($selfSrc, "@flock(\$cronLockFp, LOCK_UN)") !== false
+         && strpos($selfSrc, '@unlink(\$cron' . 'Lock)') === false);
     $add('9.06', 'ذخیره بعد از هر محصول انجام می‌شود',
          strpos($selfSrc, 'if($detailDone%' . '5===0){') === false);
 
@@ -33775,8 +34004,8 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
     /* ---------- v9.01: کران سه گام جدا — فهرست، جزئیات، ارسال ---------- */
     /* v9.10: امضا یک پارامتر forceAll هم گرفت (دامنهٔ «همهٔ محصولات»
        در استخراج دوره‌ای جزئیات)، پس دیگر به 'all'): { ختم نمی‌شود. */
-    $add('9.01', 'موتور استخراج پارامتر مرحله دارد',
-         strpos($selfSrc, "string \$phase = 'all', bool \$forceAll = false): array {") !== false
+    $add('10.137', 'موتور استخراج پارامتر مرحله و reservation اختیاری دارد',
+         strpos($selfSrc, "string \$phase = 'all', bool \$forceAll = false, string \$reservedLockQueueId = ''): array {") !== false
          && strpos($selfSrc, "if (!in_array(\$phase, ['all', 'list', 'detail'], true)) \$phase = 'all';") !== false);
     $add('9.01', 'حالت فقط-فهرست فاز جزئیات را اجرا نمی‌کند',
          strpos($selfSrc, "if(\$phase!=='list'&&\$detailTotal>0&&") !== false);
@@ -33796,9 +34025,16 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
          && strpos($selfSrc, 'if ($stageOpen || $detailWas' . 'Unfinished) {') === false);
     /* v9.11: فراخوانی یک آرگومان force_all هم گرفت (دکمهٔ اجرای فوریِ
        استخراج دوره‌ای)، پس دیگر به $phaseIn); ختم نمی‌شود. */
-    $add('9.01', 'اندپوینت پارامتر phase را می‌پذیرد',
+    $add('10.137', 'اندپوینت resume را قبل از اجرای backend به reservation متصل می‌کند',
          strpos($selfSrc, "\$phaseIn = (string)(\$_GET['phase'] ?? \$_POST['phase'] ?? 'all');") !== false
-         && strpos($selfSrc, 'runBackendExtract($profileKey,' . "'manual',true,\$phaseIn,\$forceAllIn);") !== false);
+         && strpos($selfSrc, "if (!empty(\$_GET['resume']) || !empty(\$_POST['resume']))") !== false
+         && strpos($selfSrc, 'runBackendExtract($profileKey,' . "'manual',true,\$phaseIn,\$forceAllIn,\$resumeLockQueueId);") !== false);
+
+    $add('10.147', 'توقفِ ساخت جدول فقط بعد از lock مصرف می‌شود و صفِ paused خودکار resume نمی‌شود',
+         strpos($selfSrc, "function queueStallCheck(string \$which, int \$staleAfter = 300, bool \$includePaused = false): array {") !== false
+         && strpos($selfSrc, "function queueStallRecover(string \$which, int \$staleAfter = 300, bool \$dryRun = false, int \$waitMs = 1500, bool \$includePaused = false): array {") !== false
+         && strpos($selfSrc, "queueStallRecover(\$which, max(120, (int)(loadConnections()['stall_after'] ?? 300)), false, 2500, true);") !== false
+         && strpos($selfSrc, "if (\$matrixCp === null && function_exists('reconFetchCursorFile')) @unlink(reconFetchCursorFile());") !== false);
 
     /* ---------- v9.00: راه عبور برای سایت مبدأ ---------- */
     $add('9.00', 'تنظیمات عبور سایت مبدأ جدا از هوش مصنوعی',
@@ -37320,13 +37556,17 @@ function manualSyncProgress(array $patch, string $log = ''): void {
     /* v10.129: خودِ زنجیرهٔ دستی هم یک checkpoint ارکستراسیون دارد؛
        بنابراین قطع بین استخراج، صف‌سازی و پمپ ارسال در کران بعدی قابل تشخیص است. */
     $oldManualCp = is_array($p['checkpoint'] ?? null) ? $p['checkpoint'] : [];
-    $p['checkpoint'] = ['profile_key' => (string)($p['profile_key'] ?? ''),
-        'profile_name' => (string)($p['profile_name'] ?? ''), 'phase' => (string)($p['phase'] ?? ''),
-        'current' => (int)($p['current'] ?? 0), 'total' => (int)($p['total'] ?? 4),
-        'target' => (string)($p['target'] ?? ''), 'started_at' => (int)($p['started_at'] ?? time())];
-    foreach (['extract', 'enqueue', 'retire'] as $k) {
-        if (array_key_exists($k, $oldManualCp)) $p['checkpoint'][$k] = $oldManualCp[$k];
-    }
+    /* checkpoint یک snapshot است، نه فهرستِ محدودِ فیلدها: queue_id،
+       counters و phaseهای مقصدی را هم در resume نگه دار. */
+    $p['checkpoint'] = array_merge($oldManualCp, [
+        'profile_key' => (string)($p['profile_key'] ?? ($oldManualCp['profile_key'] ?? '')),
+        'profile_name' => (string)($p['profile_name'] ?? ($oldManualCp['profile_name'] ?? '')),
+        'phase' => (string)($p['phase'] ?? ($oldManualCp['phase'] ?? '')),
+        'current' => (int)($p['current'] ?? ($oldManualCp['current'] ?? 0)),
+        'total' => (int)($p['total'] ?? ($oldManualCp['total'] ?? 4)),
+        'target' => (string)($p['target'] ?? ($oldManualCp['target'] ?? '')),
+        'started_at' => (int)($p['started_at'] ?? ($oldManualCp['started_at'] ?? time())),
+    ]);
     writeProgress(MANUAL_SYNC_PROGRESS_FILE, $p);
 }
 
@@ -37346,11 +37586,15 @@ function fireAndForget(string $qs, int $timeoutMs = 1200, ?array $post = null): 
         $opt[CURLOPT_POSTFIELDS] = http_build_query($post);
     }
     curl_setopt_array($ch, $opt);
-    curl_exec($ch);
+    $body = curl_exec($ch);
     $err = curl_errno($ch);
     curl_close($ch);
-    // مهلت تمام‌شدن یعنی کار شروع شده و پس‌زمینه ادامه می‌دهد — خطا نیست
-    return $err === 0 || $err === CURLE_OPERATION_TIMEDOUT;
+    if ($err === CURLE_OPERATION_TIMEDOUT) return true;
+    if ($err !== 0) return false;
+    /* پاسخِ فوریِ workerِ موازی «already running» است، نه dispatch موفق. */
+    $reply = is_string($body) ? json_decode($body, true) : null;
+    if (is_array($reply) && empty($reply['ok']) && (!empty($reply['skipped']) || !empty($reply['running']))) return false;
+    return true;
 }
 
 /**
@@ -37358,7 +37602,7 @@ function fireAndForget(string $qs, int $timeoutMs = 1200, ?array $post = null): 
  * گیر کرده = ردیفی در حال اجراست ولی از آخرین پیشرفتش بیش از
  * $staleAfter ثانیه گذشته، یا ردیفی در انتظار مانده و هیچ‌کس نمی‌بردش.
  */
-function queueStallCheck(string $which, int $staleAfter = 300): array {
+function queueStallCheck(string $which, int $staleAfter = 300, bool $includePaused = false): array {
     $isBsl = $which === 'bsl';
     $qFile = $isBsl ? BSL_QUEUE_FILE : WOO_QUEUE_FILE;
     $pFile = $isBsl ? BSL_PROGRESS_FILE : WOO_PROGRESS_FILE;
@@ -37370,7 +37614,7 @@ function queueStallCheck(string $which, int $staleAfter = 300): array {
     foreach ($entries as $e) {
         $st = $e['status'] ?? '';
         if ($st === 'running' && $running === null) $running = $e;
-        if ($st === 'waiting' && $waiting === null) $waiting = $e;
+        if (($st === 'waiting' || ($includePaused && $st === 'paused')) && $waiting === null) $waiting = $e;
     }
     if ($running === null && $waiting === null) {
         return ['stalled' => false, 'reason' => 'صفی در جریان نیست'];
@@ -37386,22 +37630,39 @@ function queueStallCheck(string $which, int $staleAfter = 300): array {
         $cur = max((int)($running['current'] ?? 0), (int)($pg['current'] ?? 0));
         $finished = !empty($pg['done']) || ($tot > 0 && $cur >= $tot);
         if ($sameRow && $finished) {
-            foreach ($entries as $i => $e) {
-                if (($e['id'] ?? '') === ($running['id'] ?? '')) {
-                    $entries[$i]['status'] = 'done';
-                    $entries[$i]['done_at'] = time();
-                    $entries[$i]['current'] = $cur;
+            /* بسته‌کردنِ ردیفِ تمام‌شده هم mutation است؛ آن را با snapshot
+               قدیمی و بدونِ مالکیت ننویس، چون worker/دکمه ممکن است در همین
+               فاصله صف را عوض کرده باشد. */
+            $finishFp = @fopen($lock, 'c');
+            $finishOwned = $finishFp && @flock($finishFp, LOCK_EX | LOCK_NB);
+            if (!$finishOwned) {
+                if (is_resource($finishFp)) @fclose($finishFp);
+            } else {
+                $latestQ = json_decode((string)@file_get_contents($qFile), true);
+                $latestQ = is_array($latestQ) ? $latestQ : ['entries' => []];
+                $latestEntries = is_array($latestQ['entries'] ?? null) ? $latestQ['entries'] : [];
+                foreach ($latestEntries as $i => $e) {
+                    if (!is_array($e) || (string)($e['id'] ?? '') !== (string)($running['id'] ?? '')
+                        || (string)($e['status'] ?? '') !== 'running') continue;
+                    $latestEntries[$i]['status'] = 'done';
+                    $latestEntries[$i]['done_at'] = time();
+                    $latestEntries[$i]['current'] = max((int)($latestEntries[$i]['current'] ?? 0), $cur);
                     break;
                 }
+                $latestQ['entries'] = $latestEntries;
+                @file_put_contents($qFile, json_encode($latestQ, JSON_UNESCAPED_UNICODE), LOCK_EX);
+                $q = $latestQ; $entries = $latestEntries; $running = null;
+                @flock($finishFp, LOCK_UN); @fclose($finishFp);
             }
-            $q['entries'] = $entries;
-            @file_put_contents($qFile, json_encode($q, JSON_UNESCAPED_UNICODE), LOCK_EX);
-            $running = null;
-            foreach ($entries as $e) {
-                if (($e['status'] ?? '') === 'waiting') { $waiting = $e; break; }
-            }
-            if ($waiting === null) {
-                return ['stalled' => false, 'reason' => 'ردیف تمام‌شده بسته شد'];
+            if ($running === null) {
+                $waiting = null;
+                foreach ($entries as $e) {
+                    if (($e['status'] ?? '') === 'waiting'
+                        || ($includePaused && ($e['status'] ?? '') === 'paused')) { $waiting = $e; break; }
+                }
+                if ($waiting === null) {
+                    return ['stalled' => false, 'reason' => 'ردیف تمام‌شده بسته شد'];
+                }
             }
         }
     }
@@ -37457,6 +37718,11 @@ function queueStallCheck(string $which, int $staleAfter = 300): array {
 
     // فقط ردیف در انتظار — اگر پردازنده‌ای زنده نیست باید راهش انداخت
     if ($lockFresh) return ['stalled' => false, 'reason' => 'پردازنده فعال است'];
+    $pendingResumeAt = (int)($waiting['resume_requested_at'] ?? 0);
+    if ($pendingResumeAt > 0 && $now >= $pendingResumeAt
+        && ($now - $pendingResumeAt) <= QUEUE_RESUME_HANDOFF_SEC) {
+        return ['stalled' => false, 'reason' => 'درخواست ادامه در حال تحویل به worker است', 'idle' => 0];
+    }
     /* v10.104: ردیف waiting هم ممکن است current داشته باشد (ادامهٔ failed) */
     $__wCur = max(0, (int)($waiting['current'] ?? 0));
     return ['stalled' => true, 'kind' => 'waiting', 'idle' => 0,
@@ -37480,6 +37746,8 @@ const QUEUE_RESUME_MAX_TRIES = 3;
 const QUEUE_RESUME_COOLDOWN  = 90;
 /** فاصلهٔ بیکاری صف قبل از تلاش دوباره روی ردیف‌های failed_resume (ثانیه) */
 const QUEUE_IDLE_RETRY_AFTER = 300;
+/** مهلتِ رزروِ dispatch؛ بعد از آزادشدنِ lock فقط همین request مجاز به شروع است */
+const QUEUE_RESUME_HANDOFF_SEC = 120;
 
 /**
  * دفترچهٔ تلاش‌های ادامهٔ هر ردیف صف — کلید: which:queue_id
@@ -37509,98 +37777,117 @@ function queueResumeBook(string $which, string $qid, ?array $patch = null): arra
 function queueMarkEntryFailed(string $which, string $qid, string $reason = ''): bool {
     if ($qid === '') return false;
     $isBsl = $which === 'bsl';
+    $lockFile = __DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock');
+    $lockFp = @fopen($lockFile, 'c');
+    if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if (is_resource($lockFp)) @fclose($lockFp);
+        return false;
+    }
+    $found = false;
     $q = $isBsl
         ? (function_exists('bslReadQueue') ? bslReadQueue() : [])
         : (function_exists('wooReadQueue') ? wooReadQueue() : []);
-    if (!is_array($q) || empty($q['entries']) || !is_array($q['entries'])) return false;
-    $found = false;
-    foreach ($q['entries'] as &$e) {
-        if (!is_array($e) || (string)($e['id'] ?? '') !== $qid) continue;
-        $e['status'] = 'failed';
-        $e['fail_reason'] = $reason !== '' ? $reason : 'پس از ۳ تلاش ادامه، متوقف شد';
-        $e['done_at'] = time();
-        $e['resume_exhausted'] = 1;
-        $found = true;
-        break;
+    if (is_array($q) && !empty($q['entries']) && is_array($q['entries'])) {
+        foreach ($q['entries'] as &$e) {
+            if (!is_array($e) || (string)($e['id'] ?? '') !== $qid
+                || !in_array((string)($e['status'] ?? ''), ['running', 'waiting', 'paused'], true)) continue;
+            $e['status'] = 'failed';
+            $e['fail_reason'] = $reason !== '' ? $reason : 'پس از ۳ تلاش ادامه، متوقف شد';
+            $e['done_at'] = time();
+            $e['resume_exhausted'] = 1;
+            $found = true;
+            break;
+        }
+        unset($e);
     }
-    unset($e);
-    if (!$found) return false;
-    if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
-    elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
-    /* پیشرفت را هم ببند تا UI گیر نکند */
-    $pFile = $isBsl ? BSL_PROGRESS_FILE : WOO_PROGRESS_FILE;
-    $pg = readProgress($pFile);
-    if (is_array($pg) && ((string)($pg['queue_id'] ?? '') === $qid || empty($pg['queue_id']))) {
-        $pg['running'] = false;
-        $pg['done'] = true;
-        $pg['failed_resume'] = true;
-        $lg = is_array($pg['recent_log'] ?? null) ? $pg['recent_log'] : [];
-        $lg[] = '❌ ' . ($reason !== '' ? $reason : 'پس از ۳ تلاش ادامه متوقف شد');
-        $pg['recent_log'] = array_slice($lg, -40);
-        $pg['last_progress_ts'] = time();
-        writeProgress($pFile, $pg);
+    if ($found) {
+        if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
+        elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
+        /* پیشرفت را هم ببند تا UI گیر نکند؛ این write زیر همان lock صف است. */
+        $pFile = $isBsl ? BSL_PROGRESS_FILE : WOO_PROGRESS_FILE;
+        $pg = readProgress($pFile);
+        if (is_array($pg) && ((string)($pg['queue_id'] ?? '') === $qid || empty($pg['queue_id']))) {
+            $pg['running'] = false;
+            $pg['done'] = true;
+            $pg['failed_resume'] = true;
+            $lg = is_array($pg['recent_log'] ?? null) ? $pg['recent_log'] : [];
+            $lg[] = '❌ ' . ($reason !== '' ? $reason : 'پس از ۳ تلاش ادامه متوقف شد');
+            $pg['recent_log'] = array_slice($lg, -40);
+            $pg['last_progress_ts'] = time();
+            writeProgress($pFile, $pg);
+        }
     }
-    return true;
+    @flock($lockFp, LOCK_UN);
+    @fclose($lockFp);
+    return $found;
 }
 
 /**
  * v10.103: وقتی صف بیکار است، ردیف‌های failed_resume را دوباره تا ۳ بار آزمایش کن.
+ * v10.155: انتخاب، تبدیل به waiting و dispatch زیرِ همان flock انجام می‌شود.
  */
 function queueIdleRetryFailed(string $which): ?array {
     $isBsl = $which === 'bsl';
+    $lockFile = __DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock');
+    $lockFp = @fopen($lockFile, 'c');
+    if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if (is_resource($lockFp)) @fclose($lockFp);
+        return null;
+    }
     $q = $isBsl
         ? (function_exists('bslReadQueue') ? bslReadQueue() : [])
         : (function_exists('wooReadQueue') ? wooReadQueue() : []);
     $entries = is_array($q['entries'] ?? null) ? $q['entries'] : [];
-    /* اگر کاری در جریان است، دخالت نکن */
+    /* running و waiting active/pending هستند؛ paused عمداً متوقف است. */
     foreach ($entries as $e) {
-        if (!is_array($e)) continue;
-        if (in_array((string)($e['status'] ?? ''), ['running', 'waiting', 'paused'], true)) {
+        if (is_array($e) && in_array((string)($e['status'] ?? ''), ['running', 'waiting'], true)) {
+            @flock($lockFp, LOCK_UN); @fclose($lockFp);
             return null;
         }
     }
     $now = time();
     $picked = null;
     foreach ($entries as $e) {
-        if (!is_array($e)) continue;
-        if ((string)($e['status'] ?? '') !== 'failed') continue;
+        if (!is_array($e) || (string)($e['status'] ?? '') !== 'failed') continue;
         if (empty($e['resume_exhausted']) && empty($e['fail_reason'])) continue;
-        /* فقط failedهایی که به‌خاطر resume_exhausted هستند */
         $fr = (string)($e['fail_reason'] ?? '');
         if (strpos($fr, '۳ تلاش') === false && empty($e['resume_exhausted'])) continue;
         $qid = (string)($e['id'] ?? '');
         if ($qid === '') continue;
         $book = queueResumeBook($which, $qid);
-        /* بعد از failed، شمارنده را برای round جدید ریست می‌کنیم اگر فاصلهٔ بیکاری گذشته */
         $lastAt = (int)($book['at'] ?? 0);
         if ($lastAt > 0 && ($now - $lastAt) < QUEUE_IDLE_RETRY_AFTER) continue;
-        /* ریست تلاش‌ها برای round جدید در بیکاری */
         if ((string)($book['status'] ?? '') === 'exhausted') {
             queueResumeBook($which, $qid, ['tries' => 0, 'status' => 'idle_retry', 'at' => $now]);
         }
         $picked = $e;
         break;
     }
-    if ($picked === null) return null;
+    if ($picked === null) {
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
+        return null;
+    }
     $qid = (string)($picked['id'] ?? '');
     $start = max(0, (int)($picked['current'] ?? 0));
-    $idleLock = __DIR__ . ($isBsl ? '/bsl_backend.lock' : '/woo_backend.lock');
-    if (is_file($idleLock) && !tasksResumeLockDead($idleLock)) return null;
-    /* بازگردانی به waiting و ادامه مثل دکمهٔ «ادامه» */
     foreach ($q['entries'] as &$e) {
-        if ((string)($e['id'] ?? '') !== $qid) continue;
+        if (!is_array($e) || (string)($e['id'] ?? '') !== $qid) continue;
         $e['status'] = 'waiting';
+        $e['resume_requested_at'] = $now;
         unset($e['fail_reason'], $e['resume_exhausted'], $e['done_at']);
         break;
     }
     unset($e);
     if ($isBsl && function_exists('bslWriteQueue')) bslWriteQueue($q);
     elseif (!$isBsl && function_exists('wooWriteQueue')) wooWriteQueue($q);
-    @unlink($idleLock);
-    if ($isBsl && defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
-    if (!$isBsl && defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
+    /* v10.142: stop signal را parent پاک نمی‌کند؛ worker پس از گرفتنِ
+       flock واقعی آن را در یک resume صریح مصرف می‌کند. */
+    /* اکنون ردیف و مهرِ handoff ذخیره شده‌اند؛ lock را پیش از fire آزاد کن
+       تا child بتواند همان lock را بگیرد. مهرِ بالا جلوی dispatch موازی را
+       تا رسیدنِ child می‌گیرد. */
+    @flock($lockFp, LOCK_UN); @fclose($lockFp);
     $action = $isBsl ? 'bsl_backend' : 'woo_backend';
-    $post = ['from_file' => '1', 'start_index' => (string)$start, 'queue_id' => $qid];
+    $post = ['from_file' => '1', 'start_index' => (string)$start, 'queue_id' => $qid,
+             'resume' => '1'];
     $ok = fireAndForget('action=' . $action, 2000, $post);
     $book = queueResumeBook($which, $qid);
     $tries = (int)($book['tries'] ?? 0) + 1;
@@ -37609,8 +37896,8 @@ function queueIdleRetryFailed(string $which): ?array {
             'kind' => 'idle_retry', 'resume_from' => $start];
 }
 
-function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = false, int $waitMs = 1500): array {
-    $chk = queueStallCheck($which, $staleAfter);
+function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = false, int $waitMs = 1500, bool $includePaused = false): array {
+    $chk = queueStallCheck($which, $staleAfter, $includePaused);
     $chk['which'] = $which;
     if (empty($chk['stalled']) || $dryRun) {
         $chk['resumed'] = false;
@@ -37669,15 +37956,58 @@ function queueStallRecover(string $which, int $staleAfter = 300, bool $dryRun = 
         return $chk;
     }
 
-    // قفلِ رهاشدهٔ پردازهٔ مرده را پاک کن
-    if (empty($chk['lock_held'])) {
-        @unlink(__DIR__ . ($which === 'bsl' ? '/bsl_backend.lock' : '/woo_backend.lock'));
+    $resumeFp = null;
+    if ($qid !== '') {
+        /* paused را فقط زیرِ همان lock واقعی به running تبدیل کن؛ وگرنه یک
+           شروعِ همزمان می‌تواند بین probe و fire وضعیت توقف را برگرداند. */
+        $resumeLockFile = __DIR__ . ($which === 'bsl' ? '/bsl_backend.lock' : '/woo_backend.lock');
+        $resumeFp = @fopen($resumeLockFile, 'c');
+        if (!$resumeFp || !@flock($resumeFp, LOCK_EX | LOCK_NB)) {
+            if (is_resource($resumeFp)) @fclose($resumeFp);
+            $chk['resumed'] = false; $chk['deferred'] = true;
+            $chk['reason_defer'] = 'lock_held';
+            return $chk;
+        }
+        $rq = json_decode((string)@file_get_contents($which === 'bsl' ? BSL_QUEUE_FILE : WOO_QUEUE_FILE), true);
+        $rq = is_array($rq) ? $rq : ['entries' => []];
+        $ridx = -1; $rentry = null;
+        foreach (($rq['entries'] ?? []) as $ri => $re) {
+            if (is_array($re) && (string)($re['id'] ?? '') === $qid) {
+                $ridx = $ri; $rentry = $re; break;
+            }
+        }
+        if ($ridx < 0 || !is_array($rentry)
+            || !in_array((string)($rentry['status'] ?? ''), ['paused', 'waiting', 'running'], true)) {
+            @flock($resumeFp, LOCK_UN); @fclose($resumeFp); $resumeFp = null;
+            $chk['resumed'] = false; $chk['deferred'] = false;
+            $chk['reason_defer'] = 'queue_row_changed';
+            return $chk;
+        }
+        /* هر دو worker از اینجا با یک ردیفِ running شروع می‌شوند؛ مخصوصاً
+           woo_backend ردیفِ waiting را خودش انتخاب نمی‌کند. */
+        $rq['entries'][$ridx]['resume_requested_at'] = time();
+        if (in_array((string)($rentry['status'] ?? ''), ['paused', 'waiting'], true)) {
+            $rq['entries'][$ridx]['status'] = 'running';
+            $rq['entries'][$ridx]['started_at'] = time();
+            $rq['entries'][$ridx]['paused_at'] = 0;
+        }
+        $qFile = $which === 'bsl' ? BSL_QUEUE_FILE : WOO_QUEUE_FILE;
+        @file_put_contents($qFile, json_encode($rq, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        if ($which !== 'bsl') {
+            /* products_file همان row است؛ copy هم پیش از آزادکردنِ reservation
+               انجام می‌شود تا woo از فایلِ مقصدِ اشتباه شروع نکند. */
+            @copy((string)($rentry['products_file'] ?? ''), WOO_PRODUCTS_FILE);
+        }
+        /* child باید بتواند همین lock را بگیرد؛ جلوگیری از duplicate با مهرِ
+           resume_requested_at و سنِ شروعِ تازه انجام می‌شود، نه با held ماندنِ
+           lock هنگام fire (که child را خودش با already-running رد می‌کند). */
+        @flock($resumeFp, LOCK_UN); @fclose($resumeFp); $resumeFp = null;
     }
-    if ($which === 'bsl' && defined('BSL_STOP_FILE') && is_file(BSL_STOP_FILE)) @unlink(BSL_STOP_FILE);
-    if ($which !== 'bsl' && defined('WOO_STOP_FILE') && is_file(WOO_STOP_FILE)) @unlink(WOO_STOP_FILE);
 
+    /* v10.143: stop signal را parent پاک نمی‌کند؛ worker پس از گرفتنِ
+       flock واقعی آن را در یک resume صریح مصرف می‌کند. */
     $action = $which === 'bsl' ? 'bsl_backend' : 'woo_backend';
-    $post = ['from_file' => '1', 'start_index' => (string)$start];
+    $post = ['from_file' => '1', 'start_index' => (string)$start, 'resume' => '1'];
     if ($qid !== '') $post['queue_id'] = $qid;
 
     $chk['resume_from'] = $start;
@@ -39379,8 +39709,11 @@ function bulkProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['ts'] = time();
-    @file_put_contents(BULKEDIT_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(BULKEDIT_PROGRESS_FILE, $cur);
 }
 
 /**
@@ -39392,9 +39725,14 @@ function bulkProgress(array $patch): void {
  *           'desc'=>'...', 'short_desc'=>'...', 'delete'=>true, 'force'=>false]
  * $dry     فقط پیش‌نمایش، بدون تغییر واقعی
  */
+function bulkStopRequested(): bool { return is_file(BULKEDIT_STOP_FILE); }
+function bulkStopClear(): void { @unlink(BULKEDIT_STOP_FILE); }
+
 function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dry = false, array $resume = []): array {
     $allIds = array_values(array_filter(array_map('intval', $resume['ids'] ?? $ids), fn($v) => $v > 0));
-    $ids = array_values(array_filter(array_map('intval', $resume['remaining_ids'] ?? $ids), fn($v) => $v > 0));
+    $remainingIds = array_values(array_filter(array_map('intval', $resume['remaining_ids'] ?? $ids), fn($v) => $v > 0));
+    $retryFromCp = array_values(array_filter(array_map('intval', $resume['retry_ids'] ?? []), fn($v) => $v > 0));
+    $ids = array_values(array_unique(array_merge($retryFromCp, $remainingIds)));
     if (!$allIds) $allIds = $ids;
     $out = ['ok' => true, 'target' => $target,
             'total' => max(count($allIds), (int)($resume['total'] ?? 0)),
@@ -39407,12 +39745,14 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
        نتیجه قطع شود، resume همان مقدار مطلق را دوباره می‌فرستد و افزایشِ
        نسبیِ قیمت دوباره محاسبه نمی‌شود. */
     $plan = is_array($resume['plan'] ?? null) ? $resume['plan'] : [];
-    $saveCheckpoint = function (int $next) use (&$out, &$plan, $allIds, $ids, $target, $ops, $dry): void {
+    $retryIds = [];
+    $saveCheckpoint = function (int $next) use (&$out, &$plan, &$retryIds, $allIds, $ids, $target, $ops, $dry): void {
+        $remaining = array_values(array_unique(array_merge($retryIds, array_slice($ids, $next))));
         bulkProgress(['current' => $next, 'total' => $out['total'],
             'changed' => $out['changed'], 'deleted' => $out['deleted'],
             'failed' => $out['failed'], 'skipped' => $out['skipped'],
             'checkpoint' => ['target' => $target, 'ids' => $allIds, 'ops' => $ops, 'dry' => $dry,
-                'remaining_ids' => array_slice($ids, $next), 'plan' => $plan,
+                'remaining_ids' => $remaining, 'retry_ids' => $retryIds, 'plan' => $plan,
                 'changed' => $out['changed'], 'deleted' => $out['deleted'],
                 'skipped' => $out['skipped'], 'failed' => $out['failed'], 'total' => $out['total']]]);
     };
@@ -39424,8 +39764,18 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
     if ($target === 'bsl' && ($tk === '' || $vid <= 0)) { $out['ok'] = false; $out['error'] = 'تنظیمات باسلام ناقص'; return $out; }
 
     $wantDelete = !empty($ops['delete']);
-    $n = 0;
+    $n = 0; $stopped = false;
     foreach ($ids as $pid) {
+        if (bulkStopRequested()) {
+            $stopped = true;
+            bulkProgress(['running' => false, 'done' => true, 'stopped' => true,
+                'partial' => true, 'checkpoint' => ['target' => $target, 'ids' => $allIds,
+                    'ops' => $ops, 'dry' => $dry, 'remaining_ids' => array_values(array_unique(array_merge($retryIds, array_slice($ids, $n)))),
+                    'retry_ids' => $retryIds, 'plan' => $plan, 'changed' => $out['changed'], 'deleted' => $out['deleted'],
+                    'skipped' => $out['skipped'], 'failed' => $out['failed'], 'total' => $out['total']],
+                'log_add' => ['⏹ توقف توسط کاربر — checkpoint حفظ شد']]);
+            break;
+        }
         $n++;
         if ($n % 5 === 1 || $n === count($ids)) {
             bulkProgress(['current' => $n, 'total' => $out['total'],
@@ -39443,7 +39793,7 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
             if (is_array($planned['row'] ?? null)) $row = array_merge($row, $planned['row']);
         } elseif ($target === 'woo') {
             $g = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET', 'products/' . $pid);
-            if (empty($g['ok'])) { $out['failed']++; $row['error'] = 'یافت نشد (' . (int)$g['code'] . ')'; $out['items'][] = $row; $saveCheckpoint($n); continue; }
+            if (empty($g['ok'])) { $out['failed']++; $retryIds[] = $pid; $row['error'] = 'یافت نشد (' . (int)$g['code'] . ')'; $out['items'][] = $row; $saveCheckpoint($n); continue; }
             $gb = $g['body'] ?? [];
             $curPrice = (int)preg_replace('~[^0-9]~', '', (string)($gb['regular_price'] ?? '0'));
             $title = (string)($gb['name'] ?? '');
@@ -39477,7 +39827,7 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
                 $row['action'] = 'بایگانی (باسلام حذف همیشگی ندارد)';
             }
             if (!empty($r['ok'])) { $out['deleted']++; }
-            else { $out['failed']++; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0); }
+            else { $out['failed']++; $retryIds[] = $pid; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0); }
             $out['items'][] = $row;
             $saveCheckpoint($n);
             usleep(250000);
@@ -39541,11 +39891,13 @@ function bulkEditRun(array $cn, string $target, array $ids, array $ops, bool $dr
 
         $r = $target === 'woo' ? wooEditProduct($w, $pid, $fields) : bslEditProduct($tk, $vid, $pid, $fields);
         if (!empty($r['ok'])) { $out['changed']++; $row['action'] = 'انجام شد'; }
-        else { $out['failed']++; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0) . ' ' . mb_substr((string)($r['body']['message'] ?? ''), 0, 60); }
+        else { $out['failed']++; $retryIds[] = $pid; $row['error'] = 'خطا ' . (int)($r['code'] ?? 0) . ' ' . mb_substr((string)($r['body']['message'] ?? ''), 0, 60); }
         $out['items'][] = $row;
         $saveCheckpoint($n);
         usleep(250000);
     }
+    $out['stopped'] = $stopped;
+    $out['partial'] = $stopped || (int)$out['failed'] > 0;
     $out['finished_at'] = time();
     return $out;
 }
@@ -39598,8 +39950,11 @@ function photoFixProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['ts'] = time();
-    @file_put_contents(PHOTOFIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(PHOTOFIX_PROGRESS_FILE, $cur);
 }
 
 /** نگاشت «عنوان نرمال‌شده → تصویر» از روی همهٔ پروفایل‌ها */
@@ -39632,6 +39987,9 @@ function photoFixIndex(?string $onlyProfile = null, ?array &$byKey = null): arra
  * محصولات بی‌تصویر ووکامرس را پیدا و از روی پروفایل عکس‌دار می‌کند.
  * $dry فقط گزارش می‌دهد.
  */
+function photoStopRequested(): bool { return is_file(PHOTOFIX_STOP_FILE); }
+function photoStopClear(): void { @unlink(PHOTOFIX_STOP_FILE); }
+
 function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int $maxItems = 2000,
                      ?array $cp = null): array {
     $cp = is_array($cp) ? $cp : [];
@@ -39656,6 +40014,10 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
 
     $page = max(1, (int)($cp['page'] ?? 1));
     $startOffset = max(0, (int)($cp['offset'] ?? 0));
+    $runScanned = 0;
+    $stopped = false;
+    $incomplete = false;
+    $incompleteReason = '';
     $savePhotoCheckpoint = function (int $nextPage, int $nextOffset) use (&$out, $onlyProfile, $dry, $cp): void {
         photoFixProgress(['scanned' => $out['scanned'], 'missing' => $out['missing'],
             'matched' => $out['matched'], 'fixed' => $out['fixed'], 'failed' => $out['failed'],
@@ -39666,18 +40028,40 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
                 'profile' => $onlyProfile, 'dry' => $dry, 'notify' => !empty($cp['notify']),
                 'items' => $out['items'], 'started_at' => $out['started_at']]]);
     };
-    while ($page <= 100 && $out['scanned'] < $maxItems) {
+    /* maxItems محدودیتِ هر نوبت است، نه کلِ کار؛ شمارندهٔ تجمعی در
+       checkpoint می‌ماند و اجرای بعدی با همان page/offset ادامه می‌دهد. */
+    while ($runScanned < $maxItems) {
+        if (photoStopRequested()) {
+            $stopped = true;
+            photoFixProgress(['log_add' => ['⏹ توقف توسط کاربر — checkpoint حفظ شد']]);
+            break;
+        }
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
                     'products?per_page=100&page=' . $page . '&status=any');
-        if (empty($r['ok']) || !is_array($r['body'] ?? null) || empty($r['body'])) break;
+        if (empty($r['ok']) || !is_array($r['body'] ?? null)) {
+            $incomplete = true; $incompleteReason = 'http';
+            $savePhotoCheckpoint($page, 0);
+            photoFixProgress(['phase' => 'fetch', 'log_add' => ['⚠️ دریافت صفحهٔ ' . $page . ' ناموفق ماند — checkpoint حفظ شد']]);
+            break;
+        }
+        if (empty($r['body'])) break; // پایان طبیعی فهرست
         $itemOffset = 0;
         foreach ($r['body'] as $p) {
+            if (photoStopRequested()) {
+                $stopped = true;
+                photoFixProgress(['log_add' => ['⏹ توقف توسط کاربر — checkpoint حفظ شد']]);
+                break;
+            }
+            if ($runScanned >= $maxItems) {
+                $incomplete = true; $incompleteReason = 'run_limit';
+                break;
+            }
             if ($page === (int)($cp['page'] ?? 1) && $itemOffset < $startOffset) {
                 $itemOffset++;
                 continue;
             }
             $itemOffset++;
-            $out['scanned']++;
+            $out['scanned']++; $runScanned++;
             $imgs = $p['images'] ?? [];
             if (!empty($imgs) && is_array($imgs)) { $savePhotoCheckpoint($page, $itemOffset); continue; }    // تصویر دارد
             $out['missing']++;
@@ -39727,6 +40111,7 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
             $savePhotoCheckpoint($page, $itemOffset);
             usleep(200000);
         }
+        if ($stopped) break;
         photoFixProgress(['scanned' => $out['scanned'], 'missing' => $out['missing'],
             'fixed' => $out['fixed'], 'failed' => $out['failed'], 'unmatched' => $out['unmatched'],
             'log_add' => ['📄 صفحهٔ ' . $page . ' — بررسی‌شده ' . $out['scanned'] . '، بی‌تصویر ' . $out['missing'] . '، درست‌شده ' . $out['fixed']]]);
@@ -39734,6 +40119,20 @@ function photoFixRun(array $cn, bool $dry = false, string $onlyProfile = '', int
         if (count($r['body']) < 100) break;
         $page++;
     }
+    if (!$stopped && !$incomplete && $runScanned >= $maxItems) {
+        $incomplete = true; $incompleteReason = 'run_limit';
+    }
+    if ($incomplete && $incompleteReason === 'run_limit') {
+        /* اگر کلِ صفحه مصرف شده، checkpoint صفحهٔ بعد است؛ اگر وسطِ صفحه
+           قطع شد، همان offsetِ محصول بعدی را نگه می‌داریم. */
+        $bodyCount = isset($r['body']) && is_array($r['body']) ? count($r['body']) : 0;
+        $nextPage = ($bodyCount > 0 && (int)($itemOffset ?? 0) >= $bodyCount) ? $page + 1 : $page;
+        $nextOffset = $nextPage > $page ? 0 : (int)($itemOffset ?? 0);
+        $savePhotoCheckpoint($nextPage, $nextOffset);
+    }
+    $out['stopped'] = $stopped;
+    $out['partial'] = $stopped || $incomplete || (int)$out['failed'] > 0;
+    $out['partial_reason'] = $stopped ? 'stopped' : ($incompleteReason ?: ((int)$out['failed'] > 0 ? 'item_error' : ''));
     $out['finished_at'] = time();
     return $out;
 }
@@ -39938,8 +40337,11 @@ function suffixProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['ts'] = time();
-    @file_put_contents(SUFFIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(SUFFIX_PROGRESS_FILE, $cur);
 }
 
 /**
@@ -39947,18 +40349,64 @@ function suffixProgress(array $patch): void {
  * برخلاف reconFetchBsl که فقط فعال و غیرفعال را می‌گیرد، اینجا وضعیت
  * تأیید نشده و در انتظار هم لازم است.
  */
-function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80, ?array $cp = null): array {
+function suffixStopRequested(): bool { return is_file(SUFFIX_STOP_FILE); }
+function suffixStopClear(): void { @unlink(SUFFIX_STOP_FILE); }
+
+function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80, ?array $cp = null,
+                         ?array &$meta = null, string $checkpointTarget = 'bsl', array $summaryContext = []): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false,
+             'reason' => '', 'error' => '', 'page' => (int)($cp['page'] ?? 0)];
     $rows = is_array($cp['rows'] ?? null) && (string)($cp['target'] ?? '') === 'bsl'
         ? array_values(array_filter($cp['rows'], 'is_array')) : [];
-    if (($cp['phase'] ?? '') === 'match' && $rows) return $rows;
+    if (($cp['phase'] ?? '') === 'match' && (!empty($cp['complete']) || $rows)) {
+        $meta['complete'] = true;
+        return $rows;
+    }
     $startPage = max(1, (int)($cp['page'] ?? 0) + 1);
+    $lastPage = max(0, $startPage - 1);
     $statuses = '&statuses=2976&statuses=3790&statuses=3567&statuses=3568&statuses=4184';
-    for ($page = $startPage; $page <= $maxPages; $page++) {
+    $save = static function (int $page, array $rows, bool $complete = false) use
+        ($checkpointTarget, $summaryContext, $vid, $cp): void {
+        $base = $summaryContext;
+        $base['target'] = $checkpointTarget;
+        $base['phase'] = 'fetch';
+        $base['page'] = $page;
+        $base['rows'] = $rows;
+        $base['complete'] = $complete;
+        $base['current_vid'] = $vid;
+        $base['started_at'] = (int)($summaryContext['started_at'] ?? ($cp['started_at'] ?? time()));
+        $base['notify'] = !empty($summaryContext['notify']) || !empty($cp['notify']);
+        if ($checkpointTarget !== 'summary') {
+            $base = ['target' => $checkpointTarget, 'phase' => 'fetch', 'page' => $page,
+                'rows' => $rows, 'complete' => $complete, 'notify' => $base['notify'],
+                'started_at' => $base['started_at']];
+        }
+        suffixProgress(['phase' => 'fetch', 'page' => $page, 'fetched' => count($rows),
+            'checkpoint' => $base]);
+    };
+    $limit = $startPage + max(1, $maxPages);
+    for ($page = $startPage; $page < $limit; $page++) {
+        if (suffixStopRequested()) {
+            $meta['stopped'] = true; $meta['partial'] = true; $meta['reason'] = 'stopped';
+            $meta['page'] = $lastPage;
+            $save($lastPage, $rows, false);
+            break;
+        }
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
              . '&per_page=100' . $statuses);
-        if (empty($r['ok'])) break;
-        $batch = $r['body']['data'] ?? [];
-        if (!$batch) break;
+        if (empty($r['ok'])) {
+            $meta['partial'] = true; $meta['reason'] = 'http';
+            $meta['error'] = (string)($r['error'] ?? ('HTTP ' . ($r['code'] ?? 0)));
+            $meta['page'] = $page;
+            $save($lastPage, $rows, false); // retry this page on the next run
+            break;
+        }
+        $batch = bslRowsOf($r['body'] ?? []);
+        if (!$batch) {
+            $meta['complete'] = true; $meta['page'] = $lastPage;
+            $save($lastPage, $rows, true);
+            break;
+        }
         foreach ($batch as $pr) {
             if (!is_array($pr)) continue;
             $rev  = $pr['revision']['data'] ?? [];
@@ -39968,42 +40416,91 @@ function suffixFetchBsl(string $tk, int $vid, int $maxPages = 80, ?array $cp = n
             $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
                        'status' => (int)(is_array($st) ? ($st['value'] ?? 0) : $st)];
         }
+        $lastPage = $page; $meta['page'] = $page;
         suffixProgress(['log_add' => ['📄 باسلام صفحهٔ ' . $page . ': ' . count($batch)
             . ' محصول (مجموع ' . count($rows) . ')'], 'phase' => 'fetch', 'page' => $page,
-            'fetched' => count($rows), 'checkpoint' => ['target' => 'bsl', 'phase' => 'fetch',
-                'page' => $page, 'rows' => $rows, 'notify' => !empty($cp['notify']),
-                'started_at' => (int)($cp['started_at'] ?? time())]]);
-        if (count($batch) < 100) break;
+            'fetched' => count($rows)]);
+        if (count($batch) < 100) {
+            $meta['complete'] = true;
+            $save($page, $rows, true);
+            break;
+        }
+        $save($page, $rows, false);
         usleep(150000);
+    }
+    if (!$meta['complete'] && !$meta['partial']) {
+        $meta['partial'] = true; $meta['reason'] = 'max_pages'; $meta['page'] = $lastPage;
+        $save($lastPage, $rows, false);
     }
     return $rows;
 }
 
 /** همهٔ محصولات ووکامرس با وضعیتشان */
-function suffixFetchWoo(array $w, int $maxPages = 80, ?array $cp = null): array {
+function suffixFetchWoo(array $w, int $maxPages = 80, ?array $cp = null,
+                        ?array &$meta = null, string $checkpointTarget = 'woo', array $summaryContext = []): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false,
+             'reason' => '', 'error' => '', 'page' => (int)($cp['page'] ?? 0)];
     $rows = is_array($cp['rows'] ?? null) && (string)($cp['target'] ?? '') === 'woo'
         ? array_values(array_filter($cp['rows'], 'is_array')) : [];
-    if (($cp['phase'] ?? '') === 'match' && $rows) return $rows;
+    if (($cp['phase'] ?? '') === 'match' && (!empty($cp['complete']) || $rows)) {
+        $meta['complete'] = true;
+        return $rows;
+    }
     $startPage = max(1, (int)($cp['page'] ?? 0) + 1);
-    for ($page = $startPage; $page <= $maxPages; $page++) {
+    $lastPage = max(0, $startPage - 1);
+    $save = static function (int $page, array $rows, bool $complete = false) use
+        ($checkpointTarget, $summaryContext, $cp): void {
+        $base = $summaryContext;
+        $base['target'] = $checkpointTarget; $base['phase'] = 'fetch';
+        $base['page'] = $page; $base['rows'] = $rows; $base['complete'] = $complete;
+        $base['started_at'] = (int)($summaryContext['started_at'] ?? ($cp['started_at'] ?? time()));
+        $base['notify'] = !empty($summaryContext['notify']) || !empty($cp['notify']);
+        if ($checkpointTarget !== 'summary') {
+            $base = ['target' => $checkpointTarget, 'phase' => 'fetch', 'page' => $page,
+                'rows' => $rows, 'complete' => $complete, 'notify' => $base['notify'],
+                'started_at' => $base['started_at']];
+        }
+        suffixProgress(['phase' => 'fetch', 'page' => $page, 'fetched' => count($rows),
+            'checkpoint' => $base]);
+    };
+    $limit = $startPage + max(1, $maxPages);
+    for ($page = $startPage; $page < $limit; $page++) {
+        if (suffixStopRequested()) {
+            $meta['stopped'] = true; $meta['partial'] = true; $meta['reason'] = 'stopped';
+            $meta['page'] = $lastPage; $save($lastPage, $rows, false); break;
+        }
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
             'products?per_page=100&status=any&page=' . $page);
-        if (empty($r['ok']) || !is_array($r['body'])) break;
+        if (empty($r['ok']) || !is_array($r['body'])) {
+            $meta['partial'] = true; $meta['reason'] = 'http';
+            $meta['error'] = (string)($r['error'] ?? ('HTTP ' . ($r['code'] ?? 0)));
+            $meta['page'] = $page; $save($lastPage, $rows, false); break;
+        }
         $batch = $r['body'];
-        if (!$batch) break;
+        if (!$batch) {
+            $meta['complete'] = true; $meta['page'] = $lastPage;
+            $save($lastPage, $rows, true); break;
+        }
         foreach ($batch as $pr) {
+            if (!is_array($pr)) continue;
             $name = trim((string)($pr['name'] ?? ''));
             if ($name === '') continue;
             $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
                        'wstatus' => (string)($pr['status'] ?? '')];
         }
+        $lastPage = $page; $meta['page'] = $page;
         suffixProgress(['log_add' => ['📄 ووکامرس صفحهٔ ' . $page . ': ' . count($batch)
             . ' محصول (مجموع ' . count($rows) . ')'], 'phase' => 'fetch', 'page' => $page,
-            'fetched' => count($rows), 'checkpoint' => ['target' => 'woo', 'phase' => 'fetch',
-                'page' => $page, 'rows' => $rows, 'notify' => !empty($cp['notify']),
-                'started_at' => (int)($cp['started_at'] ?? time())]]);
-        if (count($batch) < 100) break;
+            'fetched' => count($rows)]);
+        if (count($batch) < 100) {
+            $meta['complete'] = true; $save($page, $rows, true); break;
+        }
+        $save($page, $rows, false);
         usleep(150000);
+    }
+    if (!$meta['complete'] && !$meta['partial']) {
+        $meta['partial'] = true; $meta['reason'] = 'max_pages'; $meta['page'] = $lastPage;
+        $save($lastPage, $rows, false);
     }
     return $rows;
 }
@@ -40090,17 +40587,27 @@ function suffixReport(array $cn, string $target, ?array $cp = null): array {
     });
     suffixProgress(['log_add' => ['🔎 ' . count($wanted) . ' پروفایل با پسوند پیدا شد']]);
 
+    $fetchMeta = [];
     if ($target === 'bsl') {
         $tk = (string)($cn['basalam']['token'] ?? '');
         $vid = (int)($cn['basalam']['vendor_id'] ?? 0);
         if ($tk === '' || $vid <= 0) return ['ok' => false, 'error' => 'تنظیمات باسلام ناقص'];
-        $rows = suffixFetchBsl($tk, $vid, 80, $cp);
+        $rows = suffixFetchBsl($tk, $vid, 80, $cp, $fetchMeta);
     } else {
         $w = $cn['woocommerce'] ?? [];
         if (empty($w['store_url'])) return ['ok' => false, 'error' => 'تنظیمات ووکامرس ناقص'];
-        $rows = suffixFetchWoo($w, 80, $cp);
+        $rows = suffixFetchWoo($w, 80, $cp, $fetchMeta);
     }
-    if (!$rows) return ['ok' => false, 'error' => 'هیچ محصولی از مقصد دریافت نشد'];
+    if (!empty($fetchMeta['partial']) || suffixStopRequested()) {
+        $stopped = !empty($fetchMeta['stopped']) || suffixStopRequested();
+        return ['ok' => false, 'stopped' => $stopped, 'partial' => true,
+                'error' => $stopped ? 'گزارش توسط کاربر متوقف شد'
+                    : ('برداشت ناقص ماند در صفحهٔ ' . (int)($fetchMeta['page'] ?? 0)
+                       . ($fetchMeta['error'] !== '' ? ': ' . $fetchMeta['error'] : ''))];
+    }
+    /* مقصد خالی، اگر برداشت واقعاً کامل شده باشد، گزارش معتبرِ صفر است. */
+    if (!$rows && empty($fetchMeta['complete'])) return ['ok' => false, 'partial' => true,
+        'error' => 'هیچ محصولی از مقصد دریافت نشد و کامل‌بودنِ برداشت تأیید نشد'];
 
     suffixProgress(['log_add' => ['⚖️ تفکیک بر اساس پسوند (کد:ایکس)...'],
         'phase' => 'match', 'current' => 0, 'total' => count($rows), 'remote' => count($rows),
@@ -40125,6 +40632,10 @@ function suffixReport(array $cn, string $target, ?array $cp = null): array {
     $claimed = []; $assigned = []; $byIdTotal = 0; $bySuffixTotal = 0;
 
     foreach ($rows as $i => $r) {
+        if (suffixStopRequested()) {
+            return ['ok' => false, 'stopped' => true, 'partial' => true,
+                    'error' => 'گزارش توسط کاربر متوقف شد'];
+        }
         $which = -1; $method = ''; $matchedSuffix = '';
         foreach ($wanted as $wi => $p) {
             if (suffixMatches((string)($r['title'] ?? ''), (string)$p['suffix'])) {
@@ -40251,7 +40762,11 @@ function profileStatsSummary(array $cn, ?array $cp = null): array {
         'phase' => 'start', 'checkpoint' => ['target' => $sumTarget,
             'phase' => 'local', 'woo_rows' => is_array($sumCp['woo_rows'] ?? null) ? $sumCp['woo_rows'] : [],
             'woo_done' => !empty($sumCp['woo_done']),
+            'woo_page' => (int)($sumCp['woo_page'] ?? 0),
+            'woo_complete' => !empty($sumCp['woo_complete']),
             'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+            'shop_pages' => is_array($sumCp['shop_pages'] ?? null) ? $sumCp['shop_pages'] : [],
+            'shop_done' => is_array($sumCp['shop_done'] ?? null) ? $sumCp['shop_done'] : [],
             'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
 
     $profiles = loadProfiles();
@@ -40280,6 +40795,8 @@ function profileStatsSummary(array $cn, ?array $cp = null): array {
     $titleOwner = []; // bare title => profile key (first wins)
     $suffixes = [];
     foreach ($profiles as $pk => $pv) {
+        if (suffixStopRequested()) return ['ok' => false, 'stopped' => true, 'partial' => true,
+            'error' => 'گزارش توسط کاربر متوقف شد', 'kind' => 'summary'];
         if (!is_array($pv)) continue;
         $name = (string)($pv['name'] ?? $pk);
         $sfx = trim((string)($pv['titleSuffix'] ?? ''));
@@ -40388,19 +40905,43 @@ function profileStatsSummary(array $cn, ?array $cp = null): array {
     $wooErr = (string)($sumCp['woo_error'] ?? '');
     suffixProgress(['log_add' => [$wooDone ? '↻ ووکامرس از checkpoint خوانده شد' : '📥 دریافت ووکامرس...'], 'phase' => 'woo']);
     if (!$wooDone) {
+        $wooMeta = [];
         try {
-            if (!empty($w['store_url']) || function_exists('wc_get_products')) {
-                $wooRows = function_exists('suffixFetchWoo') ? suffixFetchWoo($w) : (function_exists('reconFetchWoo') ? reconFetchWoo($w) : []);
+            if (!empty($w['store_url'])) {
+                $wooFetchCp = ['target' => 'woo', 'phase' => 'fetch', 'page' => (int)($sumCp['woo_page'] ?? 0),
+                    'rows' => $wooRows, 'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])];
+                $wooContext = ['target' => $sumTarget, 'phase' => 'woo_fetch', 'woo_rows' => $wooRows,
+                    'woo_done' => false, 'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+                    'shop_pages' => is_array($sumCp['shop_pages'] ?? null) ? $sumCp['shop_pages'] : [],
+                    'shop_done' => is_array($sumCp['shop_done'] ?? null) ? $sumCp['shop_done'] : [],
+                    'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])];
+                $wooRows = function_exists('suffixFetchWoo')
+                    ? suffixFetchWoo($w, 80, $wooFetchCp, $wooMeta, 'summary', $wooContext)
+                    : (function_exists('reconFetchWoo') ? reconFetchWoo($w) : []);
+                if (empty($wooMeta['complete']) && function_exists('suffixFetchWoo')) {
+                    $wooErr = 'برداشت ناقص در صفحهٔ ' . (int)($wooMeta['page'] ?? 0)
+                        . ($wooMeta['error'] !== '' ? ': ' . $wooMeta['error'] : '');
+                }
             } else {
                 $wooErr = 'تنظیمات ووکامرس ناقص';
             }
         } catch (Throwable $e) {
             $wooErr = $e->getMessage();
         }
-        $wooDone = true;
-        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => 'woo', 'woo_rows' => $wooRows,
-            'woo_done' => true, 'woo_error' => $wooErr, 'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+        $wooDone = $wooErr === '' && (empty($wooMeta) || !empty($wooMeta['complete']));
+        $sumCp['woo_rows'] = $wooRows; $sumCp['woo_done'] = $wooDone;
+        $sumCp['woo_error'] = $wooErr; $sumCp['woo_page'] = (int)($wooMeta['page'] ?? ($sumCp['woo_page'] ?? 0));
+        $sumCp['woo_complete'] = $wooDone;
+        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => $wooDone ? 'woo' : 'woo_fetch',
+            'woo_rows' => $wooRows, 'woo_done' => $wooDone, 'woo_complete' => $wooDone,
+            'woo_page' => $sumCp['woo_page'], 'woo_error' => $wooErr,
+            'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+            'shop_pages' => is_array($sumCp['shop_pages'] ?? null) ? $sumCp['shop_pages'] : [],
+            'shop_done' => is_array($sumCp['shop_done'] ?? null) ? $sumCp['shop_done'] : [],
             'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
+        if (!$wooDone) return ['ok' => false, 'partial' => true, 'stopped' => suffixStopRequested(),
+            'error' => suffixStopRequested() ? 'گزارش توسط کاربر متوقف شد' : ($wooErr ?: 'برداشت ووکامرس کامل نشد'),
+            'kind' => 'summary'];
     }
     $wooIdMap = function_exists('remoteMapById') ? remoteMapById('woo') : [];
     $claimedWoo = [];
@@ -40510,6 +41051,8 @@ function profileStatsSummary(array $cn, ?array $cp = null): array {
     $bslErr = '';
     $sN = 0; $sTot = max(1, count($shopMeta));
     foreach ($shopMeta as $sm) {
+        if (suffixStopRequested()) return ['ok' => false, 'stopped' => true, 'partial' => true,
+            'error' => 'گزارش توسط کاربر متوقف شد', 'kind' => 'summary'];
         $sN++;
         $vid = (int)$sm['vendor_id'];
         $tok = (string)$sm['token'];
@@ -40522,21 +41065,46 @@ function profileStatsSummary(array $cn, ?array $cp = null): array {
             'log_add' => ['🏪 غرفه ' . $sN . '/' . $sTot . ' — ' . $sname],
             'phase' => 'bsl', 'cur' => $sN, 'cur_total' => $sTot,
         ]);
-        $hasSavedShop = is_array($sumCp['shops'] ?? null) && array_key_exists((string)$vid, $sumCp['shops']);
-        $savedShopRows = $hasSavedShop && is_array($sumCp['shops'][(string)$vid]) ? $sumCp['shops'][(string)$vid] : [];
+        $shopDone = is_array($sumCp['shop_done'] ?? null) && !empty($sumCp['shop_done'][(string)$vid]);
+        $savedShopRows = is_array($sumCp['shops'] ?? null) && is_array($sumCp['shops'][(string)$vid] ?? null)
+            ? $sumCp['shops'][(string)$vid] : [];
         $remote = array_values(array_filter($savedShopRows, 'is_array'));
+        $shopMetaFetch = [];
         try {
-            if (!$hasSavedShop && $tok !== '' && $vid > 0) {
-                $remote = function_exists('suffixFetchBsl') ? suffixFetchBsl($tok, $vid)
+            if (!$shopDone && $tok !== '' && $vid > 0) {
+                $shopFetchCp = ['target' => 'bsl', 'phase' => 'fetch',
+                    'page' => (int)($sumCp['shop_pages'][(string)$vid] ?? 0), 'rows' => $remote,
+                    'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])];
+                $shopContext = ['target' => $sumTarget, 'phase' => 'bsl_fetch', 'woo_rows' => $wooRows,
+                    'woo_done' => $wooDone, 'woo_page' => (int)($sumCp['woo_page'] ?? 0),
+                    'woo_error' => $wooErr, 'shops' => is_array($sumCp['shops'] ?? null) ? $sumCp['shops'] : [],
+                    'shop_pages' => is_array($sumCp['shop_pages'] ?? null) ? $sumCp['shop_pages'] : [],
+                    'shop_done' => is_array($sumCp['shop_done'] ?? null) ? $sumCp['shop_done'] : [],
+                    'shop_index' => $sN, 'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])];
+                $remote = function_exists('suffixFetchBsl')
+                    ? suffixFetchBsl($tok, $vid, 80, $shopFetchCp, $shopMetaFetch, 'summary', $shopContext)
                     : (function_exists('reconFetchBsl') ? reconFetchBsl($tok, $vid) : []);
             }
         } catch (Throwable $e) {
             $bslErr .= $sname . ': ' . $e->getMessage() . '; ';
         }
+        if (!$shopDone && function_exists('suffixFetchBsl')
+            && (empty($shopMetaFetch['complete']) || !empty($shopMetaFetch['partial']))) {
+            $bslErr .= $sname . ': برداشت ناقص در صفحهٔ ' . (int)($shopMetaFetch['page'] ?? 0)
+                . ($shopMetaFetch['error'] !== '' ? ': ' . $shopMetaFetch['error'] : '') . '; ';
+        }
         $sumCp['shops'][(string)$vid] = $remote;
-        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => 'bsl', 'woo_rows' => $wooRows,
-            'woo_done' => $wooDone, 'woo_error' => $wooErr, 'shops' => $sumCp['shops'], 'shop_index' => $sN,
+        $sumCp['shop_pages'][(string)$vid] = (int)($shopMetaFetch['page'] ?? ($sumCp['shop_pages'][(string)$vid] ?? 0));
+        $sumCp['shop_done'][(string)$vid] = !$bslErr || empty($shopMetaFetch) || !empty($shopMetaFetch['complete']);
+        suffixProgress(['checkpoint' => ['target' => $sumTarget, 'phase' => $sumCp['shop_done'][(string)$vid] ? 'bsl' : 'bsl_fetch',
+            'woo_rows' => $wooRows, 'woo_done' => $wooDone, 'woo_complete' => $wooDone,
+            'woo_page' => (int)($sumCp['woo_page'] ?? 0), 'woo_error' => $wooErr, 'shops' => $sumCp['shops'],
+            'shop_pages' => $sumCp['shop_pages'], 'shop_done' => $sumCp['shop_done'], 'shop_index' => $sN,
             'started_at' => $sumStartedAt, 'notify' => !empty($sumCp['notify'])]]);
+        if (!$sumCp['shop_done'][(string)$vid] || suffixStopRequested()) return ['ok' => false,
+            'stopped' => suffixStopRequested(), 'partial' => true,
+            'error' => suffixStopRequested() ? 'گزارش توسط کاربر متوقف شد' : ('برداشت غرفهٔ ' . $sname . ' کامل نشد'),
+            'kind' => 'summary'];
         $seenIds = [];
         // map counts for default already applied; for extra shops map is in shards with same 'bsl' keys per shard
         // recount live for this shop
@@ -40691,10 +41259,18 @@ function reconProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log;
     $cur['ts'] = time();
-    @file_put_contents(RECON_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(RECON_PROGRESS_FILE, $cur);
 }
+
+function reconStopRequested(): bool {
+    return is_file(RECON_STOP_FILE) || (defined('SYNC_MATRIX_STOP_FILE') && is_file(SYNC_MATRIX_STOP_FILE));
+}
+function reconStopClear(): void { @unlink(RECON_STOP_FILE); }
 
 function reconProgressRead(): array {
     if (!is_file(RECON_PROGRESS_FILE)) return ['running' => false, 'done' => false, 'log' => []];
@@ -40776,130 +41352,141 @@ function reconExpected(string $target, bool $allProfiles = false, ?array &$stats
  * وقتی اسکرپر داخل همان وردپرس/ووکامرس لود شود، به‌جای REST API صدها برابر سریع‌تر است.
  * @return list<array{id:int,title:string,price:int,status:string}>
  */
-function reconFetchWooDirect(int $max = 0): array {
-    $rows = [];
+function reconFetchWooDirect(int $max = 0, ?array &$meta = null): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false, 'reason' => '', 'page' => 0];
+    $cur = reconFetchCursorLoad('woo', 0);
+    $rows = array_values(array_filter((array)($cur['rows'] ?? []), 'is_array'));
+    $startPage = max(1, (int)($cur['page'] ?? 0) + 1);
+    $limit = $max > 0 ? $max : 50000;
     if (!function_exists('wc_get_products') && !function_exists('get_posts')) {
+        $meta['partial'] = true; $meta['reason'] = 'unavailable';
         return $rows;
     }
-    $limit = $max > 0 ? $max : 50000;
     if (function_exists('wc_get_products')) {
-        $page = 1;
-        $per = 200;
-        $got = 0;
+        $per = 200; $got = 0; $page = $startPage;
         while ($got < $limit) {
+            if (reconStopRequested()) {
+                $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped';
+                $meta['page'] = max(0, $page - 1); break;
+            }
             $batch = wc_get_products([
-                'limit'  => $per,
-                'page'   => $page,
+                'limit' => $per, 'page' => $page,
                 'status' => ['publish', 'draft', 'pending', 'private'],
-                'orderby'=> 'ID',
-                'order'  => 'ASC',
-                'return' => 'objects',
-            ]);
-            if (!is_array($batch) || !$batch) break;
+                'orderby' => 'ID', 'order' => 'ASC', 'return' => 'objects']);
+            if (!is_array($batch)) {
+                $meta['partial'] = true; $meta['reason'] = 'http'; $meta['page'] = $page; break;
+            }
+            if (!$batch) { $meta['complete'] = true; $meta['page'] = max(0, $page - 1); break; }
+            $pageRows = [];
             foreach ($batch as $pr) {
+                if (reconStopRequested()) {
+                    $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped'; break 2;
+                }
                 if (!is_object($pr) || !method_exists($pr, 'get_id')) continue;
                 $name = trim((string)$pr->get_name());
                 if ($name === '') continue;
                 $reg = (string)$pr->get_regular_price();
                 if ($reg === '' || $reg === null) $reg = (string)$pr->get_price();
-                $rows[] = [
-                    'id'     => (int)$pr->get_id(),
-                    'title'  => $name,
-                    'price'  => (int)preg_replace('~\D~', '', (string)$reg),
-                    'status' => (string)$pr->get_status(),
-                    'via'    => 'direct',
-                ];
+                $pageRows[] = ['id' => (int)$pr->get_id(), 'title' => $name,
+                    'price' => (int)preg_replace('~\D~', '', $reg),
+                    'status' => (string)$pr->get_status(), 'via' => 'direct'];
                 $got++;
                 if ($got >= $limit) break;
             }
-            if (count($batch) < $per) break;
-            $page++;
-            if ($page % 5 === 0) {
-                reconProgress([
-                    'phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
-                    'log_add' => ['⚡ مستقیم WC: ' . count($rows) . ' محصول (صفحه ' . $page . ')'],
-                ]);
+            if ($pageRows) {
+                $rows = array_merge($rows, $pageRows);
+                reconFetchCursorAppend('woo', 0, $page, $pageRows);
             }
+            $meta['page'] = $page;
+            reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+                'log_add' => ['⚡ مستقیم WC: ' . count($rows) . ' محصول (صفحه ' . $page . ')']]);
+            if (count($batch) < $per) { $meta['complete'] = true; break; }
+            $page++;
         }
-        if ($rows) {
-            reconProgress([
-                'phase' => 'fetch', 'fetched' => count($rows),
-                'log_add' => ['⚡ ووکامرس مستقیم (DB): ' . count($rows) . ' محصول — بدون REST API'],
-            ]);
+        if (!$meta['complete'] && !$meta['partial']) {
+            $meta['partial'] = true; $meta['reason'] = 'run_limit'; $meta['page'] = $page;
         }
         return $rows;
     }
-    /* fallback get_posts */
-    $raw = get_posts([
-        'post_type'      => 'product',
-        'post_status'    => ['publish', 'draft', 'pending', 'private'],
-        'posts_per_page' => min($limit, 5000),
-        'orderby'        => 'ID',
-        'order'          => 'ASC',
-    ]);
-    foreach ((array)$raw as $post) {
-        if (!is_object($post)) continue;
-        $pid = (int)$post->ID;
-        $name = trim((string)($post->post_title ?? ''));
-        if ($name === '') continue;
-        $reg = (string)get_post_meta($pid, '_regular_price', true);
-        if ($reg === '') $reg = (string)get_post_meta($pid, '_price', true);
-        $rows[] = [
-            'id' => $pid, 'title' => $name,
-            'price' => (int)preg_replace('~\D~', '', $reg),
-            'status' => (string)($post->post_status ?? ''),
-            'via' => 'direct',
-        ];
+    /* fallback get_posts: page with offset and the same NDJSON cursor */
+    $per = 200; $page = $startPage; $got = 0;
+    while ($got < $limit) {
+        if (reconStopRequested()) {
+            $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped'; $meta['page'] = max(0, $page - 1); break;
+        }
+        $raw = get_posts(['post_type' => 'product',
+            'post_status' => ['publish', 'draft', 'pending', 'private'],
+            'posts_per_page' => $per, 'paged' => $page, 'orderby' => 'ID', 'order' => 'ASC']);
+        if (!$raw) { $meta['complete'] = true; $meta['page'] = max(0, $page - 1); break; }
+        $pageRows = [];
+        foreach ((array)$raw as $post) {
+            if (!is_object($post)) continue;
+            $pid = (int)$post->ID; $name = trim((string)($post->post_title ?? ''));
+            if ($name === '') continue;
+            $reg = (string)get_post_meta($pid, '_regular_price', true);
+            if ($reg === '') $reg = (string)get_post_meta($pid, '_price', true);
+            $pageRows[] = ['id' => $pid, 'title' => $name,
+                'price' => (int)preg_replace('~\D~', '', $reg),
+                'status' => (string)($post->post_status ?? ''), 'via' => 'direct'];
+            $got++; if ($got >= $limit) break;
+        }
+        if ($pageRows) { $rows = array_merge($rows, $pageRows); reconFetchCursorAppend('woo', 0, $page, $pageRows); }
+        $meta['page'] = $page;
+        reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+            'log_add' => ['⚡ مستقیم WC (posts): ' . count($rows) . ' محصول']]);
+        if (count($raw) < $per) { $meta['complete'] = true; break; }
+        $page++;
     }
-    if ($rows) {
-        reconProgress([
-            'phase' => 'fetch', 'fetched' => count($rows),
-            'log_add' => ['⚡ ووکامرس مستقیم (posts): ' . count($rows) . ' محصول'],
-        ]);
-    }
+    if (!$meta['complete'] && !$meta['partial']) { $meta['partial'] = true; $meta['reason'] = 'run_limit'; $meta['page'] = $page; }
     return $rows;
 }
 
-function reconFetchWoo(array $w, int $maxPages = 0): array {
-    /* v10.115: اگر داخل وردپرس هستیم، اول DB مستقیم — API خیلی کندتر است */
+function reconFetchWoo(array $w, int $maxPages = 0, ?array &$meta = null): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false, 'reason' => '', 'page' => 0];
+    /* v10.132: مسیر مستقیم هم با همان cursor صفحه‌ای ادامه‌پذیر است. */
     if (function_exists('wooDirectAvailable') && wooDirectAvailable()) {
-        $direct = reconFetchWooDirect($maxPages > 0 ? $maxPages * 100 : 0);
-        if ($direct) return $direct;
+        return reconFetchWooDirect($maxPages > 0 ? $maxPages * 100 : 0, $meta);
     }
     if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
     $url = rtrim(trim((string)($w['store_url'] ?? '')), '/');
-    $ck  = trim((string)($w['consumer_key'] ?? ''));
-    $cs  = trim((string)($w['consumer_secret'] ?? ''));
+    $ck = trim((string)($w['consumer_key'] ?? '')); $cs = trim((string)($w['consumer_secret'] ?? ''));
     if ($url === '' || $ck === '' || $cs === '') {
+        $meta['partial'] = true; $meta['reason'] = 'config';
         reconProgress(['log_add' => ['⚠️ تنظیمات API ووکامرس ناقص و اتصال مستقیم هم در دسترس نبود']]);
         return $rows;
     }
+    $cur = reconFetchCursorLoad('woo', 0);
+    $rows = array_values(array_filter((array)($cur['rows'] ?? []), 'is_array'));
+    $startPage = max(1, (int)($cur['page'] ?? 0) + 1);
     reconProgress(['log_add' => ['🌐 واکشی ووکامرس از REST API (کندتر از مستقیم)…']]);
-    for ($page = 1; $page <= $maxPages; $page++) {
+    $limit = $startPage + max(1, $maxPages);
+    for ($page = $startPage; $page < $limit; $page++) {
+        if (reconStopRequested()) { $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped'; $meta['page'] = $page; break; }
         $r = wooReq($w['store_url'], $w['consumer_key'], $w['consumer_secret'], 'GET',
             'products?per_page=100&status=any&page=' . $page);
-        if (empty($r['ok']) || !is_array($r['body'])) break;
+        if (empty($r['ok']) || !is_array($r['body'])) {
+            $meta['partial'] = true; $meta['reason'] = 'http'; $meta['page'] = $page;
+            reconProgress(['log_add' => ['⚠️ صفحهٔ ' . $page . ' نیامد — checkpoint حفظ شد']]); break;
+        }
         $batch = $r['body'];
-        if (!$batch) break;
+        if (!$batch) { $meta['complete'] = true; $meta['page'] = max(0, $page - 1); break; }
+        $pageRows = [];
         foreach ($batch as $pr) {
-            $name = trim((string)($pr['name'] ?? ''));
-            if ($name === '') continue;
-            $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
-                       'price' => (int)preg_replace('~[^\d]~', '', (string)($pr['regular_price'] ?? '0')),
-                       'status' => (string)($pr['status'] ?? ''),
-                       'via' => 'api'];
+            if (!is_array($pr)) continue;
+            $name = trim((string)($pr['name'] ?? '')); if ($name === '') continue;
+            $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
+                'price' => (int)preg_replace('~\D~', '', (string)($pr['regular_price'] ?? '0')),
+                'status' => (string)($pr['status'] ?? ''), 'via' => 'api'];
         }
-        // v8.64: نمونهٔ واقعی از عنوان‌های مقصد — برای وقتی تطبیق نمی‌خورد
-        $fLog = ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')'];
-        if ($page === 1) {
-            foreach (array_slice($rows, 0, 3) as $srow) $fLog[] = '  • ' . mb_substr($srow['title'], 0, 50);
-        }
+        $rows = array_merge($rows, $pageRows); reconFetchCursorAppend('woo', 0, $page, $pageRows);
+        $meta['page'] = $page;
         reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
-            'log_add' => $fLog]);
-        if (count($batch) < 100) break;
+            'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
+        if (count($batch) < 100) { $meta['complete'] = true; break; }
         usleep(150000);
     }
+    if (!$meta['complete'] && !$meta['partial']) { $meta['partial'] = true; $meta['reason'] = 'max_pages'; $meta['page'] = $page - 1; }
     return $rows;
 }
 
@@ -40913,11 +41500,9 @@ function reconFetchWoo(array $w, int $maxPages = 0): array {
 function reconFetchBsl(string $tk, int $vid, int $maxPages = 0, bool $customerVisibleOnly = false): array {
     if ($maxPages <= 0) $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $rows = [];
-    /* v10.116: ماتریس فقط محصولات فعال مشتری‌نما */
-    $stQ = $customerVisibleOnly
-        ? '&statuses=2976'
-        : '&statuses=2976&statuses=3790';
+    $stQ = $customerVisibleOnly ? '&statuses=2976' : '&statuses=2976&statuses=3790';
     for ($page = 1; $page <= $maxPages; $page++) {
+        if (reconStopRequested()) break;
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
              . '&per_page=100' . $stQ);
         if (empty($r['ok'])) break;
@@ -40925,43 +41510,24 @@ function reconFetchBsl(string $tk, int $vid, int $maxPages = 0, bool $customerVi
         if (!$batch) break;
         foreach ($batch as $pr) {
             if (!is_array($pr)) continue;
-            $rev  = $pr['revision']['data'] ?? [];
+            $rev = $pr['revision']['data'] ?? [];
             $name = trim((string)($pr['title'] ?? ($pr['name'] ?? ($rev['title'] ?? ''))));
             if ($name === '') continue;
-            $st = (int)(is_array($pr['status'] ?? null)
-                        ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
-            if ($customerVisibleOnly && $st !== 2976 && $st !== 0) {
-                /* اگر API status را جدا نداد، 0 می‌ماند — نگه می‌داریم */
-                if ($st > 0) continue;
-            }
+            $st = (int)(is_array($pr['status'] ?? null) ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
+            if ($customerVisibleOnly && $st !== 2976 && $st !== 0) { if ($st > 0) continue; }
             $rial = (int)($rev['primary_price'] ?? ($pr['primary_price'] ?? 0));
             $rows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
-                       'price' => $rial, 'price_toman' => (int)round($rial / 10),
-                       'status' => $st];
-        }
-        $fLog = ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول'
-            . ($customerVisibleOnly ? ' (فقط فعال 2976)' : '')
-            . ' (مجموع ' . count($rows) . ')'];
-        if ($page === 1) {
-            foreach (array_slice($rows, 0, 3) as $srow) $fLog[] = '  • ' . mb_substr($srow['title'], 0, 50);
+                'price' => $rial, 'price_toman' => (int)round($rial / 10), 'status' => $st];
         }
         reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
-            'log_add' => $fLog]);
+            'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول'
+                . ($customerVisibleOnly ? ' (فقط فعال 2976)' : '') . ' (مجموع ' . count($rows) . ')']]);
         if (count($batch) < 100) break;
         usleep(150000);
     }
     return $rows;
 }
 
-/* =====================================================================
- *  v10.126: واکشیِ قابلِ ادامه برای مغایرت‌گیری.
- *
- *  مغایرت‌گیریِ گزارش (حالتِ پیش‌فرضِ «ادامهٔ خودکار») فقط می‌خواند؛ ولی
- *  واکشیِ همهٔ صفحاتِ مقصد می‌تواند روی فروشگاهِ بزرگ از مهلتِ هاست بیشتر
- *  شود. هر صفحه که می‌آید بلافاصله به فایلِ NDJSON چسبانده می‌شود تا اگر
- *  پردازه وسطِ واکشی کشته شد، ادامهٔ بعدی از همان صفحه بردارد و صفحاتِ
- *  قبلی را دوباره نخواند.
- * ===================================================================== */
 function reconFetchCursorFile(): string { return __DIR__ . '/recon_fetch_cache.ndjson'; }
 
 /** خواندنِ صفحاتِ واکشی‌شدهٔ یک مقصد/غرفه از کشِ NDJSON.
@@ -40975,7 +41541,7 @@ function reconFetchCursorLoad(string $target, int $vid = 0): array {
     foreach ((array)@file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $ln) {
         $d = json_decode($ln, true);
         if (!is_array($d) || (string)($d['target'] ?? '') !== $target) continue;
-        if ((int)($d['vid'] ?? 0) !== $vid) continue;   // v10.126: تفکیکِ غرفه
+        if ((int)($d['vid'] ?? 0) !== $vid) continue;
         foreach ((array)($d['rows'] ?? []) as $r) if (is_array($r)) $rows[] = $r;
         $page = max($page, (int)($d['page'] ?? 0));
     }
@@ -40985,77 +41551,58 @@ function reconFetchCursorLoad(string $target, int $vid = 0): array {
 /** چسباندنِ یک صفحه به کشِ واکشی (با تفکیکِ غرفه) */
 function reconFetchCursorAppend(string $target, int $vid, int $page, array $rows): void {
     if (!$rows) return;
-    @file_put_contents(reconFetchCursorFile(),
-        json_encode(['target' => $target, 'vid' => $vid, 'page' => $page, 'rows' => $rows],
-            JSON_UNESCAPED_UNICODE) . "\n",
-        FILE_APPEND | LOCK_EX);
+    @file_put_contents(reconFetchCursorFile(), json_encode(['target' => $target, 'vid' => $vid, 'page' => $page, 'rows' => $rows], JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
 }
 
 /** واکشیِ محصولاتِ مقصد، با ادامه از چک‌پوینتِ صفحه‌ایِ موجود */
-function reconFetchResumable(string $target, array $w, string $tk, int $vid): array {
+function reconFetchResumable(string $target, array $w, string $tk, int $vid, ?array &$meta = null, bool $customerVisibleOnly = false): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false, 'reason' => '', 'page' => 0];
     $maxPages = (int)RECON_FETCH_MAX_PAGES;
     $cur = reconFetchCursorLoad($target, $vid);
-    $rows = $cur['rows'];
-    $startPage = (int)$cur['page'] + 1;
-    if ($rows) {
-        reconProgress(['log_add' => ['↻ ادامهٔ واکشی از صفحهٔ ' . $startPage
-            . ' — ' . count($rows) . ' محصولِ قبلاً خوانده‌شده']]);
-    }
-    for ($page = $startPage; $page <= $maxPages; $page++) {
+    $rows = array_values(array_filter((array)($cur['rows'] ?? []), 'is_array'));
+    $startPage = max(1, (int)($cur['page'] ?? 0) + 1);
+    if ($rows) reconProgress(['log_add' => ['↻ ادامهٔ واکشی از صفحهٔ ' . $startPage . ' — ' . count($rows) . ' محصولِ قبلاً خوانده‌شده']]);
+    $limit = $startPage + max(1, $maxPages);
+    for ($page = $startPage; $page < $limit; $page++) {
+        if (reconStopRequested()) { $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped'; $meta['page'] = $page; break; }
         if ($target === 'woo') {
-            $r = wooReq((string)($w['store_url'] ?? ''), (string)($w['consumer_key'] ?? ''),
-                (string)($w['consumer_secret'] ?? ''), 'GET',
-                'products?per_page=100&status=any&page=' . $page);
-            $batch = (empty($r['ok']) || !is_array($r['body'])) ? [] : $r['body'];
-            if ($batch) {
-                $pageRows = [];
-                foreach ($batch as $pr) {
-                    $name = trim((string)($pr['name'] ?? ''));
-                    if ($name === '') continue;
-                    $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
-                        'price' => (int)preg_replace('~[^\\d]~', '', (string)($pr['regular_price'] ?? '0')),
-                        'status' => (string)($pr['status'] ?? ''), 'via' => 'api'];
-                }
-                $rows = array_merge($rows, $pageRows);
-                reconFetchCursorAppend($target, $vid, $page, $pageRows);
-                reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
-                    'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
-            } else {
-                reconProgress(['log_add' => ['⚠️ صفحهٔ ' . $page . ' نیامد — واکشی با ' . count($rows) . ' محصول بسته شد']]);
-                break;
+            $r = wooReq((string)($w['store_url'] ?? ''), (string)($w['consumer_key'] ?? ''), (string)($w['consumer_secret'] ?? ''), 'GET', 'products?per_page=100&status=any&page=' . $page);
+            if (empty($r['ok']) || !is_array($r['body'])) { $meta['partial'] = true; $meta['reason'] = 'http'; $meta['page'] = $page; break; }
+            $batch = $r['body'];
+            if (!$batch) { $meta['complete'] = true; $meta['page'] = max(0, $page - 1); break; }
+            $pageRows = [];
+            foreach ($batch as $pr) {
+                if (!is_array($pr)) continue;
+                $name = trim((string)($pr['name'] ?? '')); if ($name === '') continue;
+                $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
+                    'price' => (int)preg_replace('~\D~', '', (string)($pr['regular_price'] ?? '0')),
+                    'status' => (string)($pr['status'] ?? ''), 'via' => 'api'];
             }
-            if (count($batch) < 100) break;
         } else {
-            $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page
-                 . '&per_page=100&statuses=2976&statuses=3790');
-            $batch = (empty($r['ok']) || !is_array($r['body']['data'] ?? null))
-                ? [] : $r['body']['data'];
-            if ($batch) {
-                $pageRows = [];
-                foreach ($batch as $pr) {
-                    if (!is_array($pr)) continue;
-                    $rev  = $pr['revision']['data'] ?? [];
-                    $name = trim((string)($pr['title'] ?? ($pr['name'] ?? ($rev['title'] ?? ''))));
-                    if ($name === '') continue;
-                    $st = (int)(is_array($pr['status'] ?? null)
-                        ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
-                    $rial = (int)($rev['primary_price'] ?? ($pr['primary_price'] ?? 0));
-                    $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name,
-                                   'price' => $rial, 'price_toman' => (int)round($rial / 10),
-                                   'status' => $st];
-                }
-                $rows = array_merge($rows, $pageRows);
-                reconFetchCursorAppend($target, $vid, $page, $pageRows);
-                reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
-                    'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
-            } else {
-                reconProgress(['log_add' => ['⚠️ صفحهٔ ' . $page . ' نیامد — واکشی با ' . count($rows) . ' محصول بسته شد']]);
-                break;
+            $stQ = $customerVisibleOnly ? '&statuses=2976' : '&statuses=2976&statuses=3790';
+            $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $page . '&per_page=100' . $stQ);
+            if (empty($r['ok']) || !is_array($r['body']['data'] ?? null)) { $meta['partial'] = true; $meta['reason'] = 'http'; $meta['page'] = $page; break; }
+            $batch = $r['body']['data'];
+            if (!$batch) { $meta['complete'] = true; $meta['page'] = max(0, $page - 1); break; }
+            $pageRows = [];
+            foreach ($batch as $pr) {
+                if (!is_array($pr)) continue;
+                $rev = $pr['revision']['data'] ?? [];
+                $name = trim((string)($pr['title'] ?? ($pr['name'] ?? ($rev['title'] ?? '')))); if ($name === '') continue;
+                $st = (int)(is_array($pr['status'] ?? null) ? ($pr['status']['value'] ?? 0) : ($pr['status'] ?? 0));
+                $rial = (int)($rev['primary_price'] ?? ($pr['primary_price'] ?? 0));
+                $pageRows[] = ['id' => (int)($pr['id'] ?? 0), 'title' => $name, 'price' => $rial,
+                    'price_toman' => (int)round($rial / 10), 'status' => $st];
             }
-            if (count($batch) < 100) break;
         }
+        $rows = array_merge($rows, $pageRows); reconFetchCursorAppend($target, $vid, $page, $pageRows);
+        $meta['page'] = $page;
+        reconProgress(['phase' => 'fetch', 'fetched' => count($rows), 'page' => $page,
+            'log_add' => ['📄 صفحهٔ ' . $page . ': ' . count($batch) . ' محصول (مجموع ' . count($rows) . ')']]);
+        if (count($batch) < 100) { $meta['complete'] = true; break; }
         usleep(150000);
     }
+    if (!$meta['complete'] && !$meta['partial']) { $meta['partial'] = true; $meta['reason'] = 'max_pages'; $meta['page'] = $limit - 1; }
     return $rows;
 }
 
@@ -41164,6 +41711,26 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             'vendors' => is_array($cp['vendors'] ?? null) ? $cp['vendors'] : [],
             'aggregate' => is_array($cp['aggregate'] ?? null) ? $cp['aggregate'] : null]]);
     };
+    $stopRecon = function () use (&$out, $target, $vendorId, $allProfiles, $apply, $mode, $fixPrice,
+        $reconStartedAt, &$reconPriceDone, &$reconExtraDone, $cp): array {
+        $out['ok'] = false;
+        $out['stopped'] = true;
+        $out['partial'] = true;
+        $out['error'] = 'مغایرت‌گیری توسط کاربر متوقف شد';
+        reconProgress(['running' => false, 'done' => true, 'stopped' => true, 'partial' => true,
+            'stale' => true, 'phase' => 'stopped', 'error' => $out['error'],
+            'checkpoint' => ['target' => $target, 'vendor_id' => $vendorId,
+                'all_profiles' => $allProfiles, 'apply' => $apply, 'mode' => $mode, 'fix_price' => $fixPrice,
+                'phase' => 'resume', 'price_done_ids' => $reconPriceDone, 'extra_done_ids' => $reconExtraDone,
+                'repriced' => (int)$out['repriced'], 'deleted' => (int)$out['deleted'],
+                'failed' => (int)$out['failed'], 'started_at' => $reconStartedAt,
+                'vendor_index' => (int)($cp['vendor_index'] ?? 0),
+                'vendors' => is_array($cp['vendors'] ?? null) ? $cp['vendors'] : [],
+                'aggregate' => is_array($cp['aggregate'] ?? null) ? $cp['aggregate'] : null],
+            'log_add' => ['⏹ توقف توسط کاربر — checkpoint حفظ شد']]);
+        return $out;
+    };
+    if (reconStopRequested()) return $stopRecon();
 
     reconProgress(['phase' => 'profiles', 'log_add' => [
         ($shopName !== '' ? ('🏪 غرفه: ' . $shopName . ( $vendorId > 0 ? ' (#' . $vendorId . ')' : '')) : '')
@@ -41196,6 +41763,7 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
         return $out;
     }
 
+    if (reconStopRequested()) return $stopRecon();
     reconProgress(['phase' => 'fetch', 'log_add' => ['📥 دریافت محصولات '
         . ($target === 'woo' ? 'ووکامرس' : ('باسلام' . ($shopName !== '' ? ' · ' . $shopName : ''))) . '...']]);
     /* v10.126: واکشی همیشه از مسیرِ قابلِ ادامه است تا کشِ صفحه‌ای ساخته شود؛
@@ -41203,21 +41771,27 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
        که ادامه‌ای در کار نباشد. */
     $resumeFetch = (is_array($cp) && (string)($cp['target'] ?? '') === $target
         && is_file(reconFetchCursorFile()));
+    $fetchMeta = [];
     if ($target === 'woo') {
         $w = $cn['woocommerce'] ?? [];
-        if (empty($w['store_url'])) { $out['ok'] = false; $out['error'] = 'تنظیمات ووکامرس ناقص'; return $out; }
-        if (!$resumeFetch && function_exists('wooDirectAvailable') && wooDirectAvailable()) {
-            $direct = reconFetchWooDirect(0);
-            $remote = $direct ? $direct : reconFetchResumable('woo', $w, '', 0);
+        if (empty($w['store_url']) && !(function_exists('wooDirectAvailable') && wooDirectAvailable())) { $out['ok'] = false; $out['error'] = 'تنظیمات ووکامرس ناقص'; return $out; }
+        if (function_exists('wooDirectAvailable') && wooDirectAvailable()) {
+            $remote = reconFetchWooDirect(0, $fetchMeta);
         } else {
-            $remote = reconFetchResumable('woo', $w, '', 0);
+            $remote = reconFetchResumable('woo', $w, '', 0, $fetchMeta);
         }
         $tk = ''; $vid = 0;
     } else {
         $tk = $shopToken !== '' ? $shopToken : (string)($cn['basalam']['token'] ?? '');
         $vid = $vendorId > 0 ? $vendorId : (int)($cn['basalam']['vendor_id'] ?? 0);
         if ($tk === '' || $vid <= 0) { $out['ok'] = false; $out['error'] = 'تنظیمات باسلام ناقص'; return $out; }
-        $remote = reconFetchResumable('bsl', [], $tk, $vid);
+        $remote = reconFetchResumable('bsl', [], $tk, $vid, $fetchMeta);
+    }
+    if (!empty($fetchMeta['partial']) || reconStopRequested()) {
+        if (!empty($fetchMeta['stopped']) || reconStopRequested()) return $stopRecon();
+        $out['ok'] = false; $out['partial'] = true;
+        $out['error'] = 'برداشت مقصد در صفحهٔ ' . (int)($fetchMeta['page'] ?? 0) . ' کامل نشد — checkpoint حفظ شد';
+        return $out;
     }
     $out['remote'] = count($remote);
     reconProgress(['phase' => 'compare', 'remote' => count($remote),
@@ -41236,6 +41810,7 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
     $hitKeys = [];
 
     foreach ($remote as $r) {
+        if (reconStopRequested()) return $stopRecon();
         $cmpN++;
         $rid = (int)($r['id'] ?? 0);
         $key = reconNormTitle($r['title']);
@@ -41342,8 +41917,10 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
     if (!$apply) return $out;
 
     // --- اصلاح قیمت ---
+    if (reconStopRequested()) return $stopRecon();
     if ($fixPrice && $out['price_diff']) {
         foreach ($out['price_diff'] as $i => $d) {
+            if (reconStopRequested()) return $stopRecon();
             $did = (int)($d['id'] ?? 0);
             if ($did > 0 && isset($reconPriceSet[$did])) {
                 $out['price_diff'][$i]['done'] = true;
@@ -41364,7 +41941,9 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             }
             if ($okRow) $out['repriced']++; else $out['failed']++;
             $out['price_diff'][$i]['done'] = $okRow;
-            if ($did > 0 && !isset($reconPriceSet[$did])) {
+            /* فقط PUT موفق مصرف شده است؛ خطای موقت باید در checkpoint
+               بماند تا اجرای بعدی دوباره همان محصول را امتحان کند. */
+            if ($okRow && $did > 0 && !isset($reconPriceSet[$did])) {
                 $reconPriceDone[] = $did; $reconPriceSet[$did] = true;
             }
             reconProgress(['phase' => 'apply', 'step' => 'price',
@@ -41388,6 +41967,7 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             return $out;
         }
         foreach ($out['extra'] as $i => $d) {
+            if (reconStopRequested()) return $stopRecon();
             $did = (int)($d['id'] ?? 0);
             if ($did > 0 && isset($reconExtraSet[$did])) {
                 $out['extra'][$i]['done'] = true;
@@ -41420,7 +42000,9 @@ function reconRunOne(array $cn, string $target, bool $apply = false,
             }
             if ($okRow) $out['deleted']++; else $out['failed']++;
             $out['extra'][$i]['done'] = $okRow;
-            if ($did > 0 && !isset($reconExtraSet[$did])) {
+            /* حذف/بازنشستگی ناموفق مصرف نشده است؛ retry باید در اجرای
+               بعدی ممکن بماند و هرگز به‌خاطر یک پاسخ خطا done نشود. */
+            if ($okRow && $did > 0 && !isset($reconExtraSet[$did])) {
                 $reconExtraDone[] = $did; $reconExtraSet[$did] = true;
             }
             reconProgress(['phase' => 'apply', 'step' => 'extra',
@@ -41485,6 +42067,11 @@ function reconRun(array $cn, string $target, bool $apply = false,
     reconProgress(['log_add' => ['🚚 مغایرت‌گیری همهٔ غرفه‌ها — ' . count($shops) . ' غرفه']]);
 
     foreach ($shops as $si => $sh) {
+        if (reconStopRequested()) {
+            $agg['stopped'] = true; $agg['partial'] = true; $agg['ok'] = false;
+            $agg['error'] = 'مغایرت‌گیری توسط کاربر متوقف شد';
+            break;
+        }
         $vid = (int)$sh['vendor_id'];
         $name = (string)$sh['shop_name'];
         $tok = (string)$sh['token'];
@@ -41515,6 +42102,11 @@ function reconRun(array $cn, string $target, bool $apply = false,
         if (!empty($one['profile_stats']) && empty($agg['profile_stats'])) $agg['profile_stats'] = $one['profile_stats'];
         $agg['matched_by_id'] = (int)($agg['matched_by_id'] ?? 0) + (int)($one['matched_by_id'] ?? 0);
         $agg['no_src_price'] = (int)($agg['no_src_price'] ?? 0) + (int)($one['no_src_price'] ?? 0);
+        if (!empty($one['stopped'])) {
+            $agg['stopped'] = true; $agg['partial'] = true; $agg['ok'] = false;
+            $agg['error'] = (string)($one['error'] ?? 'مغایرت‌گیری توسط کاربر متوقف شد');
+            break;
+        }
         $vendorState[(string)$vid] = ['done' => true, 'checkpoint' => null, 'summary' => $oneSummary];
         reconProgress(['checkpoint' => ['target' => 'bsl', 'vendor_id' => 0, 'vendor_index' => $si + 1,
             'vendors' => $vendorState, 'aggregate' => $agg, 'started_at' => (int)($cp['started_at'] ?? time())]]);
@@ -41522,8 +42114,9 @@ function reconRun(array $cn, string $target, bool $apply = false,
 
     $anyOk = false;
     foreach ($agg['shops'] as $shopRow) if (!empty($shopRow['ok'])) { $anyOk = true; break; }
-    $agg['ok'] = $anyOk;
-    if (!$anyOk && empty($agg['error'])) $agg['error'] = 'مغایرت‌گیری هیچ غرفه‌ای موفق نبود';
+    if (empty($agg['stopped'])) $agg['ok'] = $anyOk;
+    else $agg['ok'] = false;
+    if (!$agg['ok'] && empty($agg['error'])) $agg['error'] = 'مغایرت‌گیری هیچ غرفه‌ای موفق نبود';
     reconProgress(['log_add' => ['🏁 جمع همهٔ غرفه‌ها: مقصد ' . $agg['remote']
         . ' · اضافی ' . count($agg['extra']) . ' · مغایرت ' . count($agg['price_diff'])
         . ' · در مقصد نیست ' . $agg['missing_total']]]);
@@ -41853,11 +42446,8 @@ function reconAutoTick(array $cn, int $now = 0): array {
         return $out;
     }
 
-    // اگر مغایرت‌گیری دستی در جریان است، این دور را رد کن
+    // خودِ flock شاهدِ هم‌پوشانی است؛ mtime/وجودِ فایل به‌تنهایی معتبر نیست.
     $lockFile = __DIR__ . '/recon.lock';
-    if (is_file($lockFile) && (time() - (int)@filemtime($lockFile)) < 600) {
-        $out['skipped'] = 'busy'; return $out;
-    }
 
     /* v10.130: the mtime check above is only a fast path; flock is the
        actual protection against a manual/recovery recon starting alongside
@@ -42007,33 +42597,48 @@ function reconAutoTick(array $cn, int $now = 0): array {
     $doFix = !empty($cfg['apply']) || !empty($cfg['fix_price']) || !empty($cfg['enqueue_missing'])
         || !empty($cfg['matrix_fix']);
     if (!$reconBlocked && $doFix && !empty($out['matrix']['ok']) && function_exists('matrixFixRun')) {
-        try {
-            $scope = 'all';
-            if (!empty($cfg['woo']) && empty($cfg['bsl'])) $scope = 'woo';
-            elseif (!empty($cfg['bsl']) && empty($cfg['woo'])) $scope = 'bsl';
-            reconProgress(['log_add' => ['🔧 اصلاح از جدول — scope=' . $scope]]);
-            $fx = matrixFixRun(['scope' => $scope, 'source' => 'recon_auto', 'delay_ms' => 120]);
-            $out['matrix_fix'] = [
-                'ok' => !empty($fx['ok']),
-                'total' => (int)($fx['total'] ?? 0),
-                'ok_n' => (int)($fx['ok_n'] ?? 0),
-                'fail_n' => (int)($fx['fail_n'] ?? 0),
-                'sent' => (int)($fx['sent'] ?? 0),
-                'deleted' => (int)($fx['deleted'] ?? 0),
-                'priced' => (int)($fx['priced'] ?? 0),
-            ];
-            $st['last_matrix_fix'] = $out['matrix_fix'];
-            $st['last_matrix_fix_at'] = time();
-            reconAutoStateSave($st);
-            reconProgress(['log_add' => [
-                '✅ اصلاح جدول: ✅' . (int)$out['matrix_fix']['ok_n']
-                . ' · ❌' . (int)$out['matrix_fix']['fail_n']
-                . ' · 💰' . (int)$out['matrix_fix']['priced']
-                . ' · 📤' . (int)$out['matrix_fix']['sent']
-                . ' · 🗑' . (int)$out['matrix_fix']['deleted'],
-            ]]);
-        } catch (\Throwable $e) {
-            $out['matrix_fix'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
+        /* recon_auto قبلاً فقط recon.lock داشت و می‌توانست همزمان با دکمهٔ
+           «اصلاح جدول» روی همان نتیجه API بزند. مالکیتِ lock خودِ matrix_fix
+           را هم بگیر تا Task Manager و cron یک worker مشترک داشته باشند. */
+        $fxLockFile = SYNC_MATRIX_FIX_LOCK_FILE;
+        $fxLockFp = @fopen($fxLockFile, 'c');
+        if (!$fxLockFp || !@flock($fxLockFp, LOCK_EX | LOCK_NB)) {
+            if (is_resource($fxLockFp)) @fclose($fxLockFp);
+            $out['matrix_fix'] = ['ok' => false, 'running' => true, 'error' => 'یک اصلاح جدول در حال اجراست'];
+        } else {
+            /* stop قدیمی را زیرِ lock مصرف کن؛ stop تازه‌ای که کاربر بعد از
+               این نقطه بفرستد برای matrixFixRun باقی می‌ماند. */
+            matrixFixStopClear();
+            try {
+                $scope = 'all';
+                if (!empty($cfg['woo']) && empty($cfg['bsl'])) $scope = 'woo';
+                elseif (!empty($cfg['bsl']) && empty($cfg['woo'])) $scope = 'bsl';
+                reconProgress(['log_add' => ['🔧 اصلاح از جدول — scope=' . $scope]]);
+                $fx = matrixFixRun(['scope' => $scope, 'source' => 'recon_auto', 'delay_ms' => 120]);
+                $out['matrix_fix'] = [
+                    'ok' => !empty($fx['ok']),
+                    'total' => (int)($fx['total'] ?? 0),
+                    'ok_n' => (int)($fx['ok_n'] ?? 0),
+                    'fail_n' => (int)($fx['fail_n'] ?? 0),
+                    'sent' => (int)($fx['sent'] ?? 0),
+                    'deleted' => (int)($fx['deleted'] ?? 0),
+                    'priced' => (int)($fx['priced'] ?? 0),
+                ];
+                $st['last_matrix_fix'] = $out['matrix_fix'];
+                $st['last_matrix_fix_at'] = time();
+                reconAutoStateSave($st);
+                reconProgress(['log_add' => [
+                    '✅ اصلاح جدول: ✅' . (int)$out['matrix_fix']['ok_n']
+                    . ' · ❌' . (int)$out['matrix_fix']['fail_n']
+                    . ' · 💰' . (int)$out['matrix_fix']['priced']
+                    . ' · 📤' . (int)$out['matrix_fix']['sent']
+                    . ' · 🗑' . (int)$out['matrix_fix']['deleted'],
+                ]]);
+            } catch (\Throwable $e) {
+                $out['matrix_fix'] = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 160)];
+            } finally {
+                @flock($fxLockFp, LOCK_UN); @fclose($fxLockFp);
+            }
         }
     }
 
@@ -42080,7 +42685,7 @@ function reconAutoTick(array $cn, int $now = 0): array {
     }
     return $out;
     } finally {
-        @flock($reconLockFp, LOCK_UN); @fclose($reconLockFp); @unlink($lockFile);
+        @flock($reconLockFp, LOCK_UN); @fclose($reconLockFp);
     }
 }
 
@@ -42119,9 +42724,7 @@ function catfixAutoTick(array $cn, int $now = 0): array {
         $out['next_in'] = $ivSec - ($now - $last);
         return $out;
     }
-    if (is_file(CATFIX_LOCK_FILE) && (time() - (int)@filemtime(CATFIX_LOCK_FILE)) < 900) {
-        $out['skipped'] = 'busy'; return $out;
-    }
+    /* CATFIX_LOCK_FILE دائمی است؛ فقط flock مالکیت را تعیین می‌کند. */
     /* v10.130: scheduled catfix uses the same exclusive lock and checkpoint
        as the manual endpoint, so a stale manual worker cannot be replaced
        by a fresh periodic run and two category PATCH loops cannot overlap. */
@@ -42179,7 +42782,7 @@ function catfixAutoTick(array $cn, int $now = 0): array {
             'checkpoint' => is_array($catErr['checkpoint'] ?? null) ? $catErr['checkpoint'] : null,
             'log_add' => ['❌ اصلاح دوره‌ای دسته: ' . $out['error'] . ' — checkpoint حفظ شد']]);
     } finally {
-        @flock($catLockFp, LOCK_UN); @fclose($catLockFp); @unlink(CATFIX_LOCK_FILE);
+        @flock($catLockFp, LOCK_UN); @fclose($catLockFp);
     }
     /* catfixRun itself is also used by the manual endpoint and therefore
        returns a report rather than closing the task card. Close this periodic
@@ -45382,7 +45985,7 @@ if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_s
     @ob_flush(); @flush();
     if (function_exists('fastcgi_finish_request')) @fastcgi_finish_request();
     register_shutdown_function(function () use ($lockFp) {
-        @flock($lockFp, LOCK_UN); @fclose($lockFp); @unlink(AICONTENT_LOCK_FILE);
+        @flock($lockFp, LOCK_UN); @fclose($lockFp);
     });
     try {
         $cn['ai_content_auto'] = array_merge(aiContentAutoCfg($cn), ['enabled' => true]);
@@ -45400,7 +46003,7 @@ if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_s
     $stopped = aicontentStopRequested();
     $contentLastState = is_file(AICONTENT_PROGRESS_FILE)
         ? json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true) : [];
-    $contentKeepCp = $stopped || empty($rep['ok']);
+    $contentKeepCp = $stopped || !empty($rep['partial']) || empty($rep['ok']);
     aicontentClearStop();
     aicontentProgress([
         'running' => false, 'done' => true, 'stopped' => $stopped,
@@ -45756,14 +46359,14 @@ if(isset($_GET['action']) && $_GET['action'] === 'woo_backend'){
 set_time_limit(0); ignore_user_abort(true);
 
 $wooLockFile=__DIR__.'/woo_backend.lock';
-$wooLockFp=fopen($wooLockFile,'w');
+$wooLockFp=fopen($wooLockFile,'c');
 if(!flock($wooLockFp,LOCK_EX|LOCK_NB)){
 fclose($wooLockFp);
 header('Content-Type: application/json; charset=UTF-8');
 echo json_encode(['ok'=>false,'error'=>'woo_backend already running','skipped'=>true],JSON_UNESCAPED_UNICODE);
 exit;
 }
-register_shutdown_function(function()use($wooLockFp,$wooLockFile){@flock($wooLockFp,LOCK_UN);@fclose($wooLockFp);@unlink($wooLockFile);});
+register_shutdown_function(function()use($wooLockFp,$wooLockFile){@flock($wooLockFp,LOCK_UN);@fclose($wooLockFp);});
 
 header('Content-Type: application/json; charset=UTF-8');
 header('Connection: close');
@@ -45784,7 +46387,8 @@ $recentSlice=$totalLog>200?array_slice($wooLog,-200):$wooLog;
 /* v10.104: چک‌پوینت را با current=0 bootstrap پایین نیاور */
 $__floor=(int)($GLOBALS['_wooResumeFloor']??0);
 $cWrite=max((int)$c,$__floor);
-$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$wooSentList,'updated_details'=>$wooUpdatedList,'skipped_details'=>$wooSkippedList,'failed_details'=>$wooFailedList];
+$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$wooSentList,'updated_details'=>$wooUpdatedList,'skipped_details'=>$wooSkippedList,'failed_details'=>$wooFailedList,
+   'checkpoint'=>['queue_id'=>(string)($GLOBALS['_wooQueueIdNow']??''),'current'=>(int)$cWrite,'total'=>(int)$t,'sent'=>(int)$s,'updated'=>(int)$u,'skipped'=>(int)$sk,'failed'=>(int)$f,'started_at'=>(int)$GLOBALS['startedAt']]];
 /* v10.56 (۷۰): فایلِ پیشرفتِ ووکامرس هم مالکیتِ ردیفِ صف را نشان می‌دهد —
    برای اینکه ادامهٔ بعدی مطمئن باشد چک‌پوینت مالِ همین ردیف است. */
 if(!empty($GLOBALS['_wooQueueIdNow']))$d['queue_id']=$GLOBALS['_wooQueueIdNow'];
@@ -45942,9 +46546,10 @@ foreach($pd as $i=>$p){
 /* v10.56 (۷۰): محصولاتِ قبلِ چک‌پوینت را رد کن (در اجرأ قبلی انجام شده‌اند). */
 if(($i+1)<$wooResumeStart)continue;
 if(file_exists(WOO_STOP_FILE)){
-@unlink(WOO_STOP_FILE);
 wooBackendProgress($sent,$updated,$skipped,$fail,$total,$i,'',['❌ متوقف شد']);
-writeProgress(WOO_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'sent'=>$sent,'updated'=>$updated,'skipped'=>$skipped,'failed'=>$fail,'total'=>$total,'current'=>$i,'started_at'=>$startedAt,'recent_log'=>['❌ متوقف شد'],'total_log_count'=>1,'sent_details'=>$wooSentList,'updated_details'=>$wooUpdatedList,'skipped_details'=>$wooSkippedList,'failed_details'=>$wooFailedList]);
+taskMarkPartial(WOO_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,'resumable'=>true],
+    ['queue_id'=>(string)($GLOBALS['_wooQueueIdNow']??''), 'current'=>(int)$i, 'total'=>(int)$total,
+     'sent'=>(int)$sent, 'updated'=>(int)$updated, 'skipped'=>(int)$skipped, 'failed'=>(int)$fail]);
 exit;
 }
 
@@ -46181,7 +46786,11 @@ header('Content-Type: application/json; charset=UTF-8');
 @file_put_contents(BSL_STOP_FILE,json_encode(['stop'=>true,'time'=>time()],LOCK_EX));
 
 $prevProgress=readProgress(BSL_PROGRESS_FILE);
-writeProgress(BSL_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'sent'=>$prevProgress['sent']??0,'updated'=>$prevProgress['updated']??0,'skipped'=>$prevProgress['skipped']??0,'failed'=>$prevProgress['failed']??0,'total'=>$prevProgress['total']??0,'current'=>$prevProgress['current']??0,'last_title'=>'','started_at'=>$prevProgress['started_at']??0,'recent_log'=>['❌ ارسال توسط کاربر متوقف شد'],'total_log_count'=>($prevProgress['total_log_count']??0)+1,'sent_details'=>$prevProgress['sent_details']??[],'updated_details'=>$prevProgress['updated_details']??[],'skipped_details'=>$prevProgress['skipped_details']??[],'failed_details'=>$prevProgress['failed_details']??[]]);
+taskMarkPartial(BSL_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,'resumable'=>true,
+    'last_title'=>'','recent_log'=>array_merge((array)($prevProgress['recent_log']??[]), ['❌ ارسال توسط کاربر متوقف شد']),
+    'total_log_count'=>(int)($prevProgress['total_log_count']??0)+1],
+    ['queue_id'=>(string)($prevProgress['queue_id']??''), 'current'=>(int)($prevProgress['current']??0), 'total'=>(int)($prevProgress['total']??0),
+     'sent'=>(int)($prevProgress['sent']??0), 'updated'=>(int)($prevProgress['updated']??0), 'skipped'=>(int)($prevProgress['skipped']??0), 'failed'=>(int)($prevProgress['failed']??0)]);
 
 // v8.57: «توقف» یعنی همه چیز بایستد. قبلاً فقط ردیف در حال اجرا بسته
 // می‌شد و ردیف‌های منتظر سر جایشان می‌ماندند، پس اولین پینگ بعدی صف را
@@ -46190,7 +46799,7 @@ $queue=bslReadQueue();
 $stopPaused=0;
 foreach($queue['entries'] as &$e){
 if($e['status']==='running'){
-$e['status']='failed';
+$e['status']='paused';$e['paused_at']=time();
 $e['sent']=$prevProgress['sent']??0;$e['updated']=$prevProgress['updated']??0;$e['skipped']=$prevProgress['skipped']??0;$e['failed']=$prevProgress['failed']??0;$e['current']=$prevProgress['current']??0;
 }elseif($e['status']==='waiting'){
 $e['status']='paused';
@@ -46256,12 +46865,16 @@ if(isset($_GET['woo_stop'])){
 header('Content-Type: application/json; charset=UTF-8');
 @file_put_contents(WOO_STOP_FILE,json_encode(['stop'=>true,'time'=>time()],LOCK_EX));
 $prevProgress=readProgress(WOO_PROGRESS_FILE);
-writeProgress(WOO_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'sent'=>$prevProgress['sent']??0,'updated'=>$prevProgress['updated']??0,'skipped'=>$prevProgress['skipped']??0,'failed'=>$prevProgress['failed']??0,'total'=>$prevProgress['total']??0,'current'=>$prevProgress['current']??0,'last_title'=>'','started_at'=>$prevProgress['started_at']??0,'recent_log'=>['❌ ارسال ووکامرس توسط کاربر متوقف شد'],'total_log_count'=>($prevProgress['total_log_count']??0)+1,'sent_details'=>$prevProgress['sent_details']??[],'updated_details'=>$prevProgress['updated_details']??[],'skipped_details'=>$prevProgress['skipped_details']??[],'failed_details'=>$prevProgress['failed_details']??[]]);
+taskMarkPartial(WOO_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,'resumable'=>true,
+    'last_title'=>'','recent_log'=>array_merge((array)($prevProgress['recent_log']??[]), ['❌ ارسال ووکامرس توسط کاربر متوقف شد']),
+    'total_log_count'=>(int)($prevProgress['total_log_count']??0)+1],
+    ['queue_id'=>(string)($prevProgress['queue_id']??''), 'current'=>(int)($prevProgress['current']??0), 'total'=>(int)($prevProgress['total']??0),
+     'sent'=>(int)($prevProgress['sent']??0), 'updated'=>(int)($prevProgress['updated']??0), 'skipped'=>(int)($prevProgress['skipped']??0), 'failed'=>(int)($prevProgress['failed']??0)]);
 
 $queue=wooReadQueue();
 foreach($queue['entries'] as &$e){
 if($e['status']==='running'){
-$e['status']='failed';
+$e['status']='paused';$e['paused_at']=time();
 $e['sent']=$prevProgress['sent']??0;$e['updated']=$prevProgress['updated']??0;$e['skipped']=$prevProgress['skipped']??0;$e['failed']=$prevProgress['failed']??0;$e['current']=$prevProgress['current']??0;
 }
 }
@@ -48149,24 +48762,10 @@ exit;
 
 if(isset($_GET['action']) && $_GET['action'] === 'bsl_backend'){
 
-// v8.57: اگر کاربر تازه دکمهٔ توقف را زده، اصلاً شروع نکن.
-// باگ: این اندپوینت چند خط پایین‌تر سیگنال توقف را پاک می‌کرد و بعد کار را
-// از سر می‌گرفت. رابط کاربری هم بعد از توقف، برای «ادامهٔ صف» یا «بازیابی
-// کار گیرکرده» دوباره همین آدرس را صدا می‌زد. نتیجه: دکمهٔ توقف عملاً بی‌اثر
-// بود و ارسال با ردیف بعدی ادامه پیدا می‌کرد.
-if(file_exists(BSL_STOP_FILE)){
-$stopAge=time()-(int)@filemtime(BSL_STOP_FILE);
-if($stopAge<=BSL_STOP_HOLD_SEC){
-header('Content-Type: application/json; charset=UTF-8');
-echo json_encode(['ok'=>true,'stopped'=>true,'started'=>false,
-'msg'=>'ارسال توسط کاربر متوقف شده — برای شروع دوباره، از دکمهٔ صف استفاده کنید'],JSON_UNESCAPED_UNICODE);
-exit;
-}
-@unlink(BSL_STOP_FILE);   // سیگنال خیلی قدیمی، جامانده است
-}
-
+// v8.57: سیگنالِ توقف فقط بعد از گرفتنِ lock بررسی/پاک می‌شود؛
+// probe یا حذفِ زودهنگام نباید با workerِ موازی race بسازد.
 $bslLockFile=__DIR__.'/bsl_backend.lock';
-$bslLockFp=fopen($bslLockFile,'w');
+$bslLockFp=fopen($bslLockFile,'c');
 if(!flock($bslLockFp,LOCK_EX|LOCK_NB)){
 
 fclose($bslLockFp);
@@ -48176,7 +48775,22 @@ exit;
 }
 set_time_limit(0); ignore_user_abort(true);
 
-register_shutdown_function(function()use($bslLockFp,$bslLockFile){@flock($bslLockFp,LOCK_UN);@fclose($bslLockFp);@unlink($bslLockFile);});
+register_shutdown_function(function()use($bslLockFp,$bslLockFile){@flock($bslLockFp,LOCK_UN);@fclose($bslLockFp);});
+/* اکنون مالکیتِ واقعی داریم؛ سیگنال قدیمی را فقط همین worker مصرف می‌کند. */
+if(file_exists(BSL_STOP_FILE)){
+if(!empty($_GET['resume']) || !empty($_POST['resume'])){
+@unlink(BSL_STOP_FILE);
+}else{
+$stopAge=time()-(int)@filemtime(BSL_STOP_FILE);
+if($stopAge<=BSL_STOP_HOLD_SEC){
+header('Content-Type: application/json; charset=UTF-8');
+echo json_encode(['ok'=>true,'stopped'=>true,'started'=>false,
+'msg'=>'ارسال توسط کاربر متوقف شده — برای شروع دوباره، از دکمهٔ صف استفاده کنید'],JSON_UNESCAPED_UNICODE);
+exit;
+}
+@unlink(BSL_STOP_FILE);
+}
+}
 $startedAt=time();
 $GLOBALS['startedAt']=$startedAt;
 function bslBackendProgress($s,$u,$sk,$f,$t,$c,$lt,$log=null,$extra=[]){
@@ -48195,7 +48809,8 @@ $__rc=$GLOBALS['_bslResumeCounters'];
 $__sW=(int)($__rc['sent']??0);$__uW=(int)($__rc['updated']??0);
 $__skW=(int)($__rc['skipped']??0);$__fW=(int)($__rc['failed']??0);
 }
-$d=['running'=>true,'sent'=>$__sW,'updated'=>$__uW,'skipped'=>$__skW,'failed'=>$__fW,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList];
+$d=['running'=>true,'sent'=>$__sW,'updated'=>$__uW,'skipped'=>$__skW,'failed'=>$__fW,'total'=>$t,'last_title'=>$lt,'current'=>$cWrite,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList,
+   'checkpoint'=>['queue_id'=>(string)($bslQueueId??''),'current'=>(int)$cWrite,'total'=>(int)$t,'sent'=>(int)$__sW,'updated'=>(int)$__uW,'skipped'=>(int)$__skW,'failed'=>(int)$__fW,'started_at'=>(int)$GLOBALS['startedAt']]];
 if($bslQueueId!='')$d['queue_id']=$bslQueueId;
 /* v10.23 (۳۶ه): شمارنده‌های هر غرفه در هر ضربانِ پیشرفت هم می‌روند تا صف
    بتواند «زنده» نشانشان بدهد، نه فقط در پایانِ کار. */
@@ -48259,7 +48874,7 @@ $queue=bslReadQueue();
 
 $progress=readProgress(BSL_PROGRESS_FILE);
 foreach($queue['entries'] as &$e){
-if($e['status']==='running'&&($progress['done']??false)){
+if($e['status']==='running'&&($progress['done']??false) && empty($_GET['resume']) && empty($_POST['resume'])){
 $e['status']='done';
 $e['sent']=$progress['sent']??0;$e['updated']=$progress['updated']??0;
 $e['skipped']=$progress['skipped']??0;$e['failed']=$progress['failed']??0;
@@ -48560,8 +49175,10 @@ if(file_exists(BSL_STOP_FILE)){
 // بماند وگرنه اولین پینگ بعدی صف را دوباره راه می‌اندازد. دکمه‌های
 // «شروع» و «ادامه» خودشان آن را برمی‌دارند.
 bslBackendProgress($sent,$updated,$skipped,$fail,$total,$i,'',['❌ متوقف #'.($i+1)]);
-writeProgress(BSL_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'sent'=>$sent,'updated'=>$updated,'skipped'=>$skipped,'failed'=>$fail,'total'=>$total,'current'=>$i,'started_at'=>$startedAt,'last_progress_ts'=>time(),'queue_id'=>$bslQueueId,'recent_log'=>['❌ متوقف شد'],'total_log_count'=>count($bslLog),'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList]);
-$queue=bslReadQueue();foreach($queue['entries'] as &$qe){if($qe['id']===$bslQueueId&&$qe['status']==='running'){$qe['status']='failed';$qe['done_at']=time();break;}}unset($qe);bslWriteQueue($queue);
+taskMarkPartial(BSL_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,'resumable'=>true],
+    ['queue_id'=>(string)$bslQueueId, 'current'=>(int)$i, 'total'=>(int)$total,
+     'sent'=>(int)$sent, 'updated'=>(int)$updated, 'skipped'=>(int)$skipped, 'failed'=>(int)$fail]);
+$queue=bslReadQueue();foreach($queue['entries'] as &$qe){if($qe['id']===$bslQueueId&&$qe['status']==='running'){$qe['status']='paused';$qe['paused_at']=time();$qe['current']=(int)$i;$qe['sent']=$sent;$qe['updated']=$updated;$qe['skipped']=$skipped;$qe['failed']=$fail;break;}}unset($qe);bslWriteQueue($queue);
 @unlink(BSL_PRODUCTS_FILE);exit;
 }
 $pTitle=trim($p['title']??$p['name']??'');$pKey=$p['key']??'';$n=$i+1;$pn=(int)preg_replace("/[^0-9]/","",(string)($p['final_price']??'0'));
@@ -49576,7 +50193,8 @@ $totalLog=count($bslLog);
 
 $recentSlice=$totalLog>200?array_slice($bslLog,-200):$bslLog;
 
-$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$c,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList];
+$d=['running'=>true,'sent'=>$s,'updated'=>$u,'skipped'=>$sk,'failed'=>$f,'total'=>$t,'last_title'=>$lt,'current'=>$c,'done'=>false,'started_at'=>$GLOBALS['startedAt'],'last_progress_ts'=>time(),'recent_log'=>$recentSlice,'total_log_count'=>$totalLog,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList,
+   'checkpoint'=>['queue_id'=>(string)($bslQueueId??''),'current'=>(int)$c,'total'=>(int)$t,'sent'=>(int)$s,'updated'=>(int)$u,'skipped'=>(int)$sk,'failed'=>(int)$f,'started_at'=>(int)$GLOBALS['startedAt']]];
 if($bslQueueId!=='')$d['queue_id']=$bslQueueId;
 if(!empty($extra))$d=array_merge($d,$extra);
 writeProgress(BSL_PROGRESS_FILE,$d);
@@ -49607,7 +50225,9 @@ while($bslMore&&$bslPage<=$maxDupPages){
 clearstatcache(true,BSL_STOP_FILE);
 if(file_exists(BSL_STOP_FILE)){
 bslUpdateProgress($sent,$updated,$skipped,$fail,$total,0,'',['❌ فرآیند متوقف شد']);
-writeProgress(BSL_PROGRESS_FILE,['running'=>false,'done'=>true,'cancelled'=>true,'sent'=>$sent,'updated'=>$updated,'skipped'=>$skipped,'failed'=>$fail,'total'=>$total,'current'=>0,'started_at'=>$GLOBALS['startedAt'],'recent_log'=>['❌ فرآیند متوقف شد'],'total_log_count'=>1,'sent_details'=>$bslSentList,'updated_details'=>$bslUpdatedList,'skipped_details'=>$bslSkippedList,'failed_details'=>$bslFailedList]);
+taskMarkPartial(BSL_PROGRESS_FILE, ['running'=>false,'done'=>true,'cancelled'=>true,'stopped'=>true,'partial'=>true,'resumable'=>true],
+    ['queue_id'=>(string)($GLOBALS['_bslQueueIdNow']??''), 'current'=>0, 'total'=>(int)$total,
+     'page'=>(int)$bslPage, 'sent'=>(int)$sent, 'updated'=>(int)$updated, 'skipped'=>(int)$skipped, 'failed'=>(int)$fail]);
 exit;
 }
 $lr=bslReq($tk,'GET','vendors/'.$vid.'/products?page='.$bslPage.'&per_page=100&statuses=2976&statuses=3790');
@@ -50747,8 +51367,11 @@ function dedupProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['ts'] = time();
-    @file_put_contents(DEDUP_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(DEDUP_PROGRESS_FILE, $cur);
 }
 
 function dedupStopRequested(): bool { return is_file(DEDUP_STOP_FILE); }
@@ -50805,10 +51428,40 @@ function dedupFetchPage(callable $fetch, int $page, string $who): array {
  *  برمی‌گرداند و کسی نمی‌فهمید فهرست ناقص است — بعد گروه‌بندی روی نصفِ
  *  محصولات انجام می‌شد و «تکراری‌ها» ناقص گزارش می‌شدند. حالا این پرچم تا
  *  گزارشِ نهایی و رابط بالا می‌آید و در حالتِ حذف، از حذف جلوگیری می‌کند. */
+function dedupCursorLoad(string $target, int $vid = 0): array {
+    $f = DEDUP_FETCH_CURSOR_FILE;
+    if (!is_file($f)) return ['rows' => [], 'page' => 0];
+    $rows = []; $page = 0;
+    foreach ((array)@file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $d = json_decode($line, true);
+        if (!is_array($d) || (string)($d['target'] ?? '') !== $target
+            || (int)($d['vid'] ?? 0) !== $vid) continue;
+        foreach ((array)($d['rows'] ?? []) as $r) if (is_array($r)) $rows[] = $r;
+        $page = max($page, (int)($d['page'] ?? 0));
+    }
+    return ['rows' => $rows, 'page' => $page];
+}
+
+function dedupCursorAppend(string $target, int $vid, int $page, array $rows): void {
+    if (!$rows) return;
+    @file_put_contents(DEDUP_FETCH_CURSOR_FILE,
+        json_encode(['target' => $target, 'vid' => $vid, 'page' => $page, 'rows' => $rows], JSON_UNESCAPED_UNICODE) . "\n",
+        FILE_APPEND | LOCK_EX);
+}
+
+/** همهٔ محصولاتِ باسلام برای حذفِ تکراری (با قیمت/موجودی/وضعیت)
+ *
+ *  v10.23 (۳۶ب): $partial با ارجاع پر می‌شود. قبلاً وقتی برداشت وسطِ کار
+ *  می‌شکست (یا کاربر توقف می‌زد) تابع همان چیزی را که تا آن لحظه گرفته بود
+ *  برمی‌گرداند و کسی نمی‌فهمید فهرست ناقص است — بعد گروه‌بندی روی نصفِ
+ *  محصولات انجام می‌شد و «تکراری‌ها» ناقص گزارش می‌شدند. حالا این پرچم تا
+ *  گزارشِ نهایی و رابط بالا می‌آید و در حالتِ حذف، از حذف جلوگیری می‌کند. */
 function dedupFetchBsl(string $tk, int $vid, int $maxPages = DEDUP_MAX_PAGES, ?array &$partial = null): array {
-    $rows = [];
+    $cursor = dedupCursorLoad('bsl', $vid);
+    $rows = array_values(array_filter((array)($cursor['rows'] ?? []), 'is_array'));
+    $firstPage = max(1, (int)($cursor['page'] ?? 0) + 1);
     $statuses = '&statuses=2976&statuses=3790&statuses=3567&statuses=3568&statuses=4184';
-    for ($page = 1; $page <= $maxPages; $page++) {
+    for ($page = $firstPage; $page < $firstPage + $maxPages; $page++) {
         if (dedupStopRequested()) {
             dedupProgress(['log_add' => ['⏹ توقف در صفحهٔ ' . $page]]);
             if ($partial !== null) $partial = ['partial' => true, 'reason' => 'stopped', 'page' => $page];
@@ -50834,13 +51487,14 @@ function dedupFetchBsl(string $tk, int $vid, int $maxPages = DEDUP_MAX_PAGES, ?a
         $batch = bslRowsOf($r['body']);
         if (!$batch) break;
         $tp = bslMetaInt($r['body'], 'total_page', 0);
+        $pageRows = [];
         foreach ($batch as $p) {
             if (!is_array($p)) continue;
             $rev  = $p['revision']['data'] ?? [];
             $name = trim((string)($p['title'] ?? ($p['name'] ?? ($rev['title'] ?? ''))));
             if ($name === '') continue;
             $st = $p['status'] ?? null;
-            $rows[] = [
+            $pageRows[] = [
                 'id'     => (int)($p['id'] ?? 0),
                 'name'   => $name,
                 'status' => (int)(is_array($st) ? ($st['value'] ?? 0) : $st),
@@ -50849,6 +51503,8 @@ function dedupFetchBsl(string $tk, int $vid, int $maxPages = DEDUP_MAX_PAGES, ?a
                 'ts'     => (int)($p['id'] ?? 0),
             ];
         }
+        $rows = array_merge($rows, $pageRows);
+        dedupCursorAppend('bsl', $vid, $page, $pageRows);
         dedupProgress(['fetched' => count($rows), 'page' => $page, 'pages' => $tp,
             'log_add' => ['📄 باسلام صفحهٔ ' . $page . '/' . ($tp > 0 ? $tp : '?') . ': ' . count($batch)
                 . ' محصول (مجموع ' . count($rows) . ')']]);
@@ -50857,13 +51513,17 @@ function dedupFetchBsl(string $tk, int $vid, int $maxPages = DEDUP_MAX_PAGES, ?a
         if (count($batch) < 100) break;
         if ($tp > 0 && $page >= $tp) break;
         /* v10.23 (۳۶ب): رسیدن به سقفِ صفحات هم «برداشتِ ناقص» است */
-        if ($page >= $maxPages) {
+        if ($page >= $firstPage + $maxPages - 1) {
             dedupProgress(['log_add' => ['⚠️ سقفِ ' . $maxPages . ' صفحه پر شد ولی فروشگاه '
                 . ($tp > 0 ? $tp : 'بیش از این') . ' صفحه دارد — فهرست ناقص است']]);
             if ($partial !== null) $partial = ['partial' => true, 'reason' => 'max_pages',
                 'page' => $page, 'pages' => $tp];
         }
         usleep(150000);
+    }
+    if ($page >= $firstPage + $maxPages && $partial !== null && empty($partial)) {
+        $partial = ['partial' => true, 'reason' => 'max_pages', 'page' => $page - 1];
+        dedupProgress(['log_add' => ['⚠️ سقفِ برداشتِ باسلام رسید — checkpoint صفحهٔ ' . ($page - 1) . ' حفظ شد']]);
     }
     return $rows;
 }
@@ -50976,8 +51636,10 @@ function dedupAgeFa(int $sec): string {
 
 /** همهٔ محصولاتِ ووکامرس برای حذفِ تکراری (v10.23 (۳۶ب): با پرچمِ ناقص‌بودن) */
 function dedupFetchWoo(array $w, int $maxPages = DEDUP_MAX_PAGES, ?array &$partial = null): array {
-    $rows = [];
-    for ($page = 1; $page <= $maxPages; $page++) {
+    $cursor = dedupCursorLoad('woo', 0);
+    $rows = array_values(array_filter((array)($cursor['rows'] ?? []), 'is_array'));
+    $firstPage = max(1, (int)($cursor['page'] ?? 0) + 1);
+    for ($page = $firstPage; $page < $firstPage + $maxPages; $page++) {
         if (dedupStopRequested()) {
             dedupProgress(['log_add' => ['⏹ توقف در صفحهٔ ' . $page]]);
             if ($partial !== null) $partial = ['partial' => true, 'reason' => 'stopped', 'page' => $page];
@@ -51000,13 +51662,14 @@ function dedupFetchWoo(array $w, int $maxPages = DEDUP_MAX_PAGES, ?array &$parti
         }
         $batch = $r['body'];
         if (!$batch) break;
+        $pageRows = [];
         foreach ($batch as $p) {
             if (!is_array($p)) continue;
             $name = trim((string)($p['name'] ?? ''));
             if ($name === '') continue;
             $pr = $p['regular_price'] ?? '';
             if ($pr === '' || $pr === null) $pr = $p['price'] ?? '';
-            $rows[] = [
+            $pageRows[] = [
                 'id'      => (int)($p['id'] ?? 0),
                 'name'    => $name,
                 'wstatus' => (string)($p['status'] ?? ''),
@@ -51016,15 +51679,21 @@ function dedupFetchWoo(array $w, int $maxPages = DEDUP_MAX_PAGES, ?array &$parti
                 'sku'     => (string)($p['sku'] ?? ''),
             ];
         }
+        $rows = array_merge($rows, $pageRows);
+        dedupCursorAppend('woo', 0, $page, $pageRows);
         dedupProgress(['fetched' => count($rows), 'page' => $page,
             'log_add' => ['📄 ووکامرس صفحهٔ ' . $page . ': ' . count($batch)
                 . ' محصول (مجموع ' . count($rows) . ')']]);
         if (count($batch) < 100) break;
-        if ($page >= $maxPages) {
+        if ($page >= $firstPage + $maxPages - 1) {
             dedupProgress(['log_add' => ['⚠️ سقفِ ' . $maxPages . ' صفحه پر شد و صفحهٔ پُر هم آمد — فهرست ناقص است']]);
             if ($partial !== null) $partial = ['partial' => true, 'reason' => 'max_pages', 'page' => $page];
         }
         usleep(150000);
+    }
+    if ($page >= $firstPage + $maxPages && $partial !== null && empty($partial)) {
+        $partial = ['partial' => true, 'reason' => 'max_pages', 'page' => $page - 1];
+        dedupProgress(['log_add' => ['⚠️ سقفِ برداشتِ ووکامرس رسید — checkpoint صفحهٔ ' . ($page - 1) . ' حفظ شد']]);
     }
     return $rows;
 }
@@ -51051,7 +51720,18 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $c
         if (empty($w['store_url'])) return ['ok' => false, 'error' => 'تنظیمات ووکامرس ناقص است'];
         $rows = dedupFetchWoo($w, DEDUP_MAX_PAGES, $partial);
     }
-    if (!$rows) return ['ok' => false, 'error' => 'هیچ محصولی دریافت نشد'];
+    $cpStartedAt = (is_array($cp) ? (int)($cp['started_at'] ?? 0) : 0);
+    if (!$rows) {
+        if (!empty($partial['partial'])) {
+            $fetchCp = ['phase' => 'fetch', 'target' => $target, 'mode' => $mode,
+                'done_ids' => (array)($cp['done_ids'] ?? []), 'deleted' => (int)($cp['deleted'] ?? 0),
+                'failed' => (int)($cp['failed'] ?? 0), 'started_at' => $cpStartedAt > 0 ? $cpStartedAt : time()];
+            dedupProgress(['running' => false, 'done' => true, 'partial' => true, 'stale' => true,
+                'checkpoint' => $fetchCp, 'log_add' => ['⚠️ برداشت هنوز محصولی برنگردانده؛ checkpoint حفظ شد']]);
+            return ['ok' => false, 'partial' => true, 'error' => 'برداشت محصول ناقص ماند؛ در اجرای بعدی ادامه می‌یابد'];
+        }
+        return ['ok' => false, 'error' => 'هیچ محصولی دریافت نشد'];
+    }
 
     /* v10.23 (۳۶ب): اگر فهرست ناقص باشد، حذف بسیار خطرناک است — «تنها نسخهٔ
        باقی‌مانده» ممکن است در صفحه‌ای باشد که اصلاً دریافت نشده و آن‌وقت
@@ -51071,6 +51751,11 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $c
                 . ') — فقط ' . count($rows) . ' محصول دریافت شد'
                 . ($mode === 'delete' ? '؛ برای ایمنی حذف انجام نمی‌شود' : '')]]);
         if ($mode === 'delete') $mode = 'scan';
+        $fetchCp = ['phase' => 'fetch', 'target' => $target, 'mode' => $mode,
+            'done_ids' => (array)($cp['done_ids'] ?? []), 'deleted' => (int)($cp['deleted'] ?? 0),
+            'failed' => (int)($cp['failed'] ?? 0), 'started_at' => $cpStartedAt > 0 ? $cpStartedAt : time(),
+            'fetch_page' => (int)($partial['page'] ?? 0), 'fetch_reason' => (string)($partial['reason'] ?? '')];
+        dedupProgress(['checkpoint' => $fetchCp]);
     }
 
     /* v10.126: ادامهٔ واقعی — شناسه‌هایی که در اجرای قبلی حذف/بایگانی شده‌اند
@@ -51118,13 +51803,13 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $c
     $deleted = (int)($cp['deleted'] ?? 0);
     $failed  = (int)($cp['failed'] ?? 0);
     $errors  = [];
-    $cpStartedAt = (is_array($cp) ? (int)($cp['started_at'] ?? 0) : 0);
+    $stopDuringDelete = false;
     if ($mode === 'delete' && $dupCount > 0) {
         $done = (int)($cp['done'] ?? 0);
         foreach ($dupGroups as $gi => $g) {
-            if (dedupStopRequested()) { dedupProgress(['log_add' => ['⏹ حذف با درخواستِ کاربر متوقف شد']]); break; }
+            if (dedupStopRequested()) { $stopDuringDelete = true; dedupProgress(['log_add' => ['⏹ حذف با درخواستِ کاربر متوقف شد']]); break; }
             foreach ($g['drop'] as $d) {
-                if (dedupStopRequested()) break;
+                if (dedupStopRequested()) { $stopDuringDelete = true; break; }
                 $did = (int)($d['id'] ?? 0);
                 if ($did <= 0) continue;
                 /* v10.23 (۳۶ب): خودِ حذف/بایگانی هم تلاشِ مجدد دارد. تا اینجا
@@ -51181,7 +51866,7 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $c
                 /* v10.126: چک‌پوینت پس از هر مورد — اگر پردازه همین‌جا کشته
                    شود، ادامهٔ بعدی از این شناسه‌ها می‌گذرد و شمارنده‌ها حفظ
                    می‌شوند. */
-                $cpDoneIds[] = $did;
+                if ($ok) $cpDoneIds[] = $did;
                 dedupProgress(['checkpoint' => [
                     'done_ids' => $cpDoneIds, 'deleted' => $deleted, 'failed' => $failed,
                     'done' => $done, 'started_at' => ($cpStartedAt > 0 ? $cpStartedAt : time())]]);
@@ -51216,8 +51901,9 @@ function dedupRun(array $cn, string $target, array $cfg, string $mode, ?array $c
     return ['ok' => true, 'target' => $target, 'mode' => $mode, 'cfg' => $cfg,
             'total' => count($rows), 'groups' => count($dupGroups), 'duplicates' => $dupCount,
             'deleted' => $deleted, 'failed' => $failed, 'errors' => $errors,
-            'partial' => $isPartial,
-            'partial_reason' => $isPartial ? (string)($partial['reason'] ?? '') : '',
+            'partial' => $isPartial || $stopDuringDelete,
+            'stopped' => $stopDuringDelete,
+            'partial_reason' => $isPartial ? (string)($partial['reason'] ?? '') : ($stopDuringDelete ? 'stopped' : ''),
             'partial_msg' => $isPartial
                 ? ('فهرست ناقص دریافت شد — ' . ($partialReason[(string)($partial['reason'] ?? '')] ?? 'علتِ نامعلوم')
                    . '. گروه‌بندی روی همین ' . count($rows) . ' محصول انجام شد و برای ایمنی حذفی صورت نگرفت.')
@@ -51263,8 +51949,11 @@ function catfixProgress(array $patch): void {
         unset($patch['log_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['ts'] = time();
-    @file_put_contents(CATFIX_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(CATFIX_PROGRESS_FILE, $cur);
 }
 
 function catfixStopRequested(): bool { return is_file(CATFIX_STOP_FILE); }
@@ -51285,34 +51974,61 @@ function catfixFlatCats(string $tk): array {
 }
 
 /** فهرستِ محصولاتِ ردشده (وضعیت ۳۵۶۷) — با پرچمِ ناقص‌بودن، مثلِ dedup */
-function catfixFetchRejected(string $tk, int $vid, ?array &$partial = null): array {
-    $all = [];
-    for ($pg = 1; $pg <= CATFIX_MAX_PAGES; $pg++) {
+function catfixCursorLoad(int $vid): array {
+    if (!is_file(CATFIX_FETCH_CURSOR_FILE)) return ['rows' => [], 'page' => 0];
+    $rows = []; $page = 0;
+    foreach ((array)@file(CATFIX_FETCH_CURSOR_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $d = json_decode($line, true);
+        if (!is_array($d) || (int)($d['vid'] ?? 0) !== $vid) continue;
+        foreach ((array)($d['rows'] ?? []) as $r) if (is_array($r)) $rows[] = $r;
+        $page = max($page, (int)($d['page'] ?? 0));
+    }
+    return ['rows' => $rows, 'page' => $page];
+}
+function catfixCursorAppend(int $vid, int $page, array $rows): void {
+    if (!$rows) return;
+    @file_put_contents(CATFIX_FETCH_CURSOR_FILE,
+        json_encode(['vid' => $vid, 'page' => $page, 'rows' => $rows], JSON_UNESCAPED_UNICODE) . "\n",
+        FILE_APPEND | LOCK_EX);
+}
+
+/** فهرستِ محصولاتِ ردشده (وضعیت ۳۵۶۷) — با cursor صفحه‌ای و پرچمِ ناقص‌بودن */
+function catfixFetchRejected(string $tk, int $vid, ?array &$partial = null, ?array &$meta = null): array {
+    $meta = ['complete' => false, 'partial' => false, 'stopped' => false, 'reason' => '', 'page' => 0];
+    $cursor = catfixCursorLoad($vid);
+    $all = array_values(array_filter((array)($cursor['rows'] ?? []), 'is_array'));
+    $firstPage = max(1, (int)($cursor['page'] ?? 0) + 1);
+    for ($pg = $firstPage; $pg < $firstPage + CATFIX_MAX_PAGES; $pg++) {
         if (catfixStopRequested()) {
-            if ($partial !== null) $partial = ['partial' => true, 'reason' => 'stopped'];
-            catfixProgress(['log_add' => ['⏹ توقف هنگام دریافتِ صفحهٔ ' . $pg]]);
+            $meta['partial'] = true; $meta['stopped'] = true; $meta['reason'] = 'stopped'; $meta['page'] = $pg;
+            if ($partial !== null) $partial = ['partial' => true, 'reason' => 'stopped', 'page' => $pg];
+            catfixProgress(['log_add' => ['⏹ توقف هنگام دریافتِ صفحهٔ ' . $pg . ' — checkpoint حفظ شد']]);
             break;
         }
         $r = bslReq($tk, 'GET', 'vendors/' . $vid . '/products?page=' . $pg . '&per_page=100&statuses=3567');
         if (empty($r['ok'])) {
-            if ($partial !== null) $partial = ['partial' => true, 'reason' => 'http', 'code' => (int)($r['code'] ?? 0)];
-            catfixProgress(['log_add' => ['⚠️ صفحهٔ ' . $pg . ' نیامد (HTTP ' . ($r['code'] ?? '?')
-                . ') — فهرست با ' . count($all) . ' محصول بسته شد']]);
+            $meta['partial'] = true; $meta['reason'] = 'http'; $meta['page'] = $pg;
+            if ($partial !== null) $partial = ['partial' => true, 'reason' => 'http', 'page' => $pg, 'code' => (int)($r['code'] ?? 0)];
+            catfixProgress(['log_add' => ['⚠️ صفحهٔ ' . $pg . ' نیامد (HTTP ' . ($r['code'] ?? '?') . ') — checkpoint حفظ شد']]);
             break;
         }
-        /* v10.40 (۵۴الف): bslRowsOf + bslMetaInt — پیش از این، اگر باسلام
-           total_page را زیر meta می‌گذاشت، فهرستِ محصولاتِ ردشده در همان
-           صفحهٔ اول بسته می‌شد و «اصلاحِ دسته‌بندی» فقط ۱۰۰ محصولِ اول را
-           می‌دید. */
         $data = bslRowsOf($r['body']);
-        if (!$data) break;
+        if (!$data) { $meta['complete'] = true; $meta['page'] = max(0, $pg - 1); break; }
         $tp = bslMetaInt($r['body'], 'total_page', 0);
-        foreach ($data as $p) if (is_array($p)) $all[] = $p;
+        $pageRows = [];
+        foreach ($data as $item) if (is_array($item)) $pageRows[] = $item;
+        $all = array_merge($all, $pageRows);
+        catfixCursorAppend($vid, $pg, $pageRows);
+        $meta['page'] = $pg;
         catfixProgress(['fetched' => count($all), 'page' => $pg, 'pages' => $tp,
             'log_add' => ['📄 صفحهٔ ' . $pg . '/' . ($tp > 0 ? $tp : '?') . ' — مجموعاً ' . count($all) . ' محصولِ ردشده']]);
-        if (count($data) < 100) break;
-        if ($tp > 0 && $pg >= $tp) break;
+        if (count($data) < 100 || ($tp > 0 && $pg >= $tp)) { $meta['complete'] = true; break; }
         usleep(120000);
+    }
+    if (!$meta['complete'] && !$meta['partial']) {
+        $meta['partial'] = true; $meta['reason'] = 'max_pages'; $meta['page'] = $firstPage + CATFIX_MAX_PAGES - 1;
+        if ($partial !== null) $partial = ['partial' => true, 'reason' => 'max_pages', 'page' => $meta['page']];
+        catfixProgress(['log_add' => ['⚠️ سقفِ برداشت رسید — checkpoint صفحهٔ ' . $meta['page'] . ' حفظ شد']]);
     }
     return $all;
 }
@@ -51470,7 +52186,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
 
     /* --- فهرستِ محصولات --- */
     $onlyId = (int)($opts['product_id'] ?? 0);
-    $partial = [];
+    $partial = []; $fetchMeta = [];
     if ($onlyId > 0) {
         catfixProgress(['phase' => 'fetch', 'log_add' => ['🔎 دریافتِ محصول #' . $onlyId]]);
         $rg = bslReq($tk, 'GET', 'products/' . $onlyId);
@@ -51479,7 +52195,28 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
         $products = [(array)($rg['body'] ?? [])];
     } else {
         catfixProgress(['phase' => 'fetch', 'log_add' => ['🔎 دریافتِ محصولاتِ ردشده (وضعیت ۳۵۶۷)...']]);
-        $products = catfixFetchRejected($tk, $vid, $partial);
+        $products = catfixFetchRejected($tk, $vid, $partial, $fetchMeta);
+    }
+    if (!empty($partial['partial']) || (!empty($fetchMeta) && empty($fetchMeta['complete']))) {
+        $fetchCp = ['phase' => 'fetch', 'vendor_id' => $vid, 'fetch_page' => (int)($fetchMeta['page'] ?? ($partial['page'] ?? 0)),
+            'fetch_reason' => (string)($fetchMeta['reason'] ?? ($partial['reason'] ?? 'http')),
+            'done_ids' => (array)($cp['done_ids'] ?? []), 'fixed' => (int)($cp['fixed'] ?? 0),
+            'failed' => (int)($cp['failed'] ?? 0), 'no_ai' => (int)($cp['no_ai'] ?? 0),
+            'no_cat' => (int)($cp['no_cat'] ?? 0), 'skip_same' => (int)($cp['skip_same'] ?? 0),
+            'skip_tried' => (int)($cp['skip_tried'] ?? 0), 'asked' => (int)($cp['asked'] ?? 0),
+            'cache_hits' => (int)($cp['cache_hits'] ?? 0), 'learned_hits' => (int)($cp['learned_hits'] ?? 0),
+            'idx' => (int)($cp['idx'] ?? 0), 'items' => is_array($cp['items'] ?? null) ? $cp['items'] : [],
+            'started_at' => (int)($cp['started_at'] ?? time()),
+            'vendor_index' => (int)($opts['_vendor_index'] ?? 0),
+            'vendors' => is_array($opts['_parent_vendors'] ?? null) ? $opts['_parent_vendors'] : [],
+            'aggregate' => is_array($opts['_parent_aggregate'] ?? null) ? $opts['_parent_aggregate'] : null];
+        catfixProgress(['running' => false, 'done' => true, 'stale' => true, 'partial' => true,
+            'phase' => 'fetch', 'checkpoint' => $fetchCp,
+            'log_add' => ['⏸ فهرستِ محصولات کامل نشد — هیچ PATCHای انجام نشد و checkpoint حفظ شد']]);
+        return ['ok' => false, 'partial' => true, 'stopped' => !empty($fetchMeta['stopped']),
+            'error' => !empty($fetchMeta['stopped']) ? 'اصلاح با درخواست کاربر متوقف شد' : 'فهرست محصولات کامل دریافت نشد',
+            'mode' => $mode, 'total' => count($products), 'fixed' => (int)($cp['fixed'] ?? 0),
+            'failed' => (int)($cp['failed'] ?? 0), 'items' => is_array($cp['items'] ?? null) ? $cp['items'] : []];
     }
     $total = count($products);
     if ($total === 0) {
@@ -51577,7 +52314,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
         if ($pName === '' && $mode !== 'ai_text') {
             $failed++; $push('failed', 'عنوانِ محصول خالی است');
             catfixProgress(['log_add' => ['❌ [' . $idx . '/' . $total . '] عنوانِ خالی — #' . $pId]]);
-            $cpMark();
+            $cpSave();
             continue;
         }
 
@@ -51615,7 +52352,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             if ($aiText === '') {
                 $noAi++; $push('no_ai', 'متنِ بررسیِ باسلام برای این محصول وجود ندارد');
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — متنِ AI ندارد']]);
-                $cpMark();
+                $cpSave();
                 continue;
             }
             $res = extractAiCategoryFromTextEx($aiText, $cats);
@@ -51623,7 +52360,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
             if ($catId <= 0) {
                 $noCat++; $push('no_cat', 'از متنِ بررسی هیچ دسته‌ای استخراج نشد');
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — دسته از متن درنیامد']]);
-                $cpMark();
+                $cpSave();
                 continue;
             }
             $catId = findLeafCategory($catId, $cats);
@@ -51710,7 +52447,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
                      . ($err !== '' ? ' — ' . $err : '');
                 $push('no_cat', $m);
                 catfixProgress(['log_add' => ['⚠️ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8') . ' — ' . $m]]);
-                $cpMark();
+                $cpSave();
                 continue;
             }
         }
@@ -51751,13 +52488,15 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
                 . ' → ' . $catName . ' (' . $catId . ')']]);
         } else {
             $failed++;
-            catTriedRecord($pId, $catId, $catName, $mode, 'failed', $pName, $curCat);
+            /* خطای PATCH گذراست؛ آن را در «دسته‌های امتحان‌شده» ثبت نکن
+               و در done_ids هم نگذار تا اجرای بعدی واقعاً دوباره امتحان کند. */
             $err = (string)($r2['body']['message'] ?? ($r2['body']['error'] ?? ('HTTP ' . ($r2['code'] ?? '?'))));
             $push('failed', 'PATCH ناموفق: ' . $err, $catId, $catName);
             catfixProgress(['log_add' => ['❌ [' . $idx . '/' . $total . '] ' . mb_substr($pName, 0, 40, 'UTF-8')
                 . ' — ' . mb_substr($err, 0, 70, 'UTF-8')]]);
         }
-        $cpMark();
+        if (!empty($r2['ok']) && !empty($r2['body']['id'])) $cpMark();
+        else $cpSave();
         usleep(500000);
     }
 
@@ -51847,8 +52586,11 @@ function agentProgress(array $patch): void {
         unset($patch['convo_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['steps'] = $steps; $cur['convo'] = $convo; $cur['ts'] = time();
-    @file_put_contents(AGENT_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(AGENT_PROGRESS_FILE, $cur);
 }
 
 /* =====================================================================
@@ -52559,8 +53301,11 @@ function selagentProgress(array $patch): void {
         unset($patch['convo_add']);
     }
     $cur = array_merge($cur, $patch);
+    if (!empty($patch['running']) && empty($patch['done'])) {
+        foreach (['stale', 'stopped', 'cancelled', 'stalled', 'partial', 'incomplete', 'error', 'result_ok'] as $k) unset($cur[$k]);
+    }
     $cur['log'] = $log; $cur['steps'] = $steps; $cur['convo'] = $convo; $cur['ts'] = time();
-    @file_put_contents(SELAGENT_PROGRESS_FILE, json_encode($cur, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    writeProgress(SELAGENT_PROGRESS_FILE, $cur);
 }
 function selagentStopRequested(): bool { return is_file(SELAGENT_STOP_FILE); }
 function selagentClearStop(): void { @unlink(SELAGENT_STOP_FILE); }

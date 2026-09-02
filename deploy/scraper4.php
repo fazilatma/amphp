@@ -15,8 +15,8 @@
  *    فایل جداگانهٔ deploy.php است که کاربر خودش اجرا می‌کند.
  *  • درخواست‌های شبکه فقط با cURL و فقط به سرویس‌هایی می‌رود که
  *    کاربر در تنظیمات وارد کرده است (فروشگاه خودش، API باسلام).
- *  • نوشتن روی دیسک محدود به فایل‌های JSON کنار همین فایل است
- *    (تنظیمات، صف ارسال و گزارش‌ها) و پوشهٔ uploads برای تصاویر.
+ *  • نوشتن روی دیسک محدود به فایل‌های JSON کنار همین فایل، دفترِ محلیِ
+ *    SQLite برای وضعیتِ کارها، و پوشهٔ uploads برای تصاویر است.
  *
  * مجوز: استفادهٔ شخصی صاحب فروشگاه.
  */
@@ -144,6 +144,13 @@ const AICONTENT_ITEMS_FILE    = __DIR__ . '/aicontent_items.json'; /* جزئیا
  *       برمی‌گردانند، پس کارِ مهم‌ترِ کاربر اول جان می‌گیرد.
  */
 const TASKS_ORDER_FILE = __DIR__ . '/tasks_order.json';
+/* v10.164: دفترِ محلیِ SQLite برای اجرای مستقل.
+   این فایل جایگزینِ اجباریِ WordPress/MySQL نیست؛ خودِ scraper4.php می‌تواند
+   به‌تنهایی اجرا شود و وضعیت/heartbeat/checkpoint را در همین پوشه نگه دارد.
+   JSONها برای سازگاریِ UI و نسخه‌های قدیمی mirror می‌مانند، اما اگر JSON
+   خراب یا حذف شده باشد، آخرین snapshot از SQLite بازیابی می‌شود. */
+const LOCAL_TASK_DB_FILE = __DIR__ . '/../scraper_tasks.sqlite3';
+const LOCAL_TASK_DB_BUSY_MS = 5000;
 
 // v10.04 (۱۸): انتقالِ رابطِ «ایجنتِ مدیریت محصولات» از تبِ ارسال به تبِ تازهٔ «🤖 ایجنت» در بخشِ هوش مصنوعی
 // v10.03 (۱۷): محیطِ آزمایشیِ «ایجنتِ مدیریت محصولات» — مدل با فراخوانیِ ابزار (tool calling)
@@ -313,7 +320,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.163';
+const APP_VERSION = '10.170';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -1754,6 +1761,185 @@ return writeJsonFile(PROFILES_FILE, $profiles)['ok'];
  *  باز هم نشد علت واقعی (مجوز پوشه، خطای json_encode و...) را برمی‌گرداند.
  *  خروجی: ['ok'=>bool, 'error'=>string]
  * ===================================================================== */
+/* =====================================================================
+ *  v10.170: local SQLite task ledger — no WordPress/Apache database needed
+ *
+ *  Every progress writer in this file eventually passes through writeJsonFile
+ *  (the few direct state writers are covered here too). The ledger is kept
+ *  beside scraper4.php, so the same code works as a standalone PHP file or
+ *  inside WordPress. It records the latest complete state, normalized status,
+ *  checkpoint and heartbeat. JSON files remain a compatibility/cache layer;
+ *  a missing or invalid JSON file can be recovered from this ledger.
+ *
+ *  SQLite3 and PDO_SQLite are both supported. Hosts without either extension
+ *  continue to use the existing atomic JSON path instead of failing hard.
+ * ===================================================================== */
+function localTaskKeyForFile(string $path): string {
+    static $map = [
+        'manual_sync_progress.json' => 'manual_sync',
+        'bsl_progress.json' => 'bsl_send',
+        'woo_progress.json' => 'woo_send',
+        'extract_progress.json' => 'extract',
+        'dedup_progress.json' => 'dedup',
+        'catfix_progress.json' => 'catfix',
+        'agent_progress.json' => 'agent',
+        'selagent_progress.json' => 'selagent',
+        'ai_test_state.json' => 'ai_test',
+        'recon_progress.json' => 'recon',
+        'sync_matrix_progress.json' => 'matrix_build',
+        'sync_matrix_fix_progress.json' => 'matrix_fix',
+        'suffix_progress.json' => 'suffix',
+        'photofix_progress.json' => 'photofix',
+        'aicontent_progress.json' => 'aicontent',
+        'bulkedit_progress.json' => 'bulkedit',
+    ];
+    return $map[basename($path)] ?? '';
+}
+
+function localTaskDbFile(): string {
+    static $path = null;
+    if ($path !== null) return $path;
+    /* Prefer one directory above the web root. A public-directory fallback is
+       hidden and only used when the host refuses writes outside it. */
+    $outside = dirname(__DIR__) . '/scraper_tasks.sqlite3';
+    if (is_file($outside) ? is_writable($outside) : is_writable(dirname($outside))) {
+        $path = $outside;
+    } else {
+        $path = __DIR__ . '/.scraper_tasks.sqlite3';
+    }
+    return $path;
+}
+
+function localTaskDbOpen() {
+    static $db = '__not_initialized__';
+    if ($db !== '__not_initialized__') return $db;
+    $db = null;
+    $dbFile = localTaskDbFile();
+    $dir = dirname($dbFile);
+    if (!is_dir($dir) || !is_writable($dir)) return null;
+
+    if (class_exists('PDO')) {
+        try {
+            if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+                $pdo = new PDO('sqlite:' . $dbFile, null, null, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_TIMEOUT => max(1, (int)ceil(LOCAL_TASK_DB_BUSY_MS / 1000)),
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                ]);
+                $pdo->exec('PRAGMA busy_timeout = ' . LOCAL_TASK_DB_BUSY_MS);
+                @$pdo->exec('PRAGMA journal_mode = WAL');
+                $db = ['driver' => 'pdo', 'db' => $pdo, 'ready' => false];
+            }
+        } catch (Throwable $e) { $db = null; }
+    }
+    if ($db === null && class_exists('SQLite3')) {
+        try {
+            $sql = new SQLite3($dbFile);
+            $sql->busyTimeout(LOCAL_TASK_DB_BUSY_MS);
+            @$sql->exec('PRAGMA journal_mode = WAL');
+            $db = ['driver' => 'sqlite3', 'db' => $sql, 'ready' => false];
+        } catch (Throwable $e) { $db = null; }
+    }
+    if ($db === null) return null;
+    try {
+        $schema = [
+            "CREATE TABLE IF NOT EXISTS local_task_state (
+                task_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'idle',
+                state_json TEXT NOT NULL,
+                checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                heartbeat_at INTEGER NOT NULL DEFAULT 0,
+                lease_until INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )",
+            "CREATE INDEX IF NOT EXISTS local_task_state_heartbeat
+                ON local_task_state (status, heartbeat_at)",
+            "CREATE INDEX IF NOT EXISTS local_task_state_lease
+                ON local_task_state (status, lease_until)",
+        ];
+        foreach ($schema as $statement) $db['db']->exec($statement);
+        $db['ready'] = true;
+    } catch (Throwable $e) { $db = null; }
+    return $db;
+}
+
+function localTaskStateStatus(array $state): string {
+    if (!empty($state['running']) && empty($state['done'])) return 'running';
+    if (!empty($state['done']) && empty($state['error'])
+        && (!array_key_exists('result_ok', $state) || !empty($state['result_ok']))
+        && (empty($state['stopped']) && empty($state['partial'])
+        && empty($state['cancelled']) && empty($state['stale']) && empty($state['failed_resume']))) return 'done';
+    if (!empty($state['stopped']) || !empty($state['partial']) || !empty($state['cancelled'])) return 'paused';
+    if (!empty($state['stale']) || !empty($state['failed_resume']) || !empty($state['error'])) return 'failed';
+    return 'idle';
+}
+
+function localTaskStateCheckpoint(array $state): array {
+    $cp = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
+    /* Old workers do not all have a nested checkpoint yet. Keep the cursor
+       fields that are sufficient for the next dispatcher invocation. */
+    foreach (['phase', 'page', 'current', 'total', 'processed', 'tested', 'checked',
+              'cur', 'cur_total', 'step', 'calls', 'sent', 'updated', 'skipped',
+              'failed', 'groups', 'deleted', 'fixed', 'filled', 'edited', 'profile_key',
+              'queue_id', 'target', 'url', 'started_at'] as $key) {
+        if (!array_key_exists($key, $cp) && array_key_exists($key, $state)) $cp[$key] = $state[$key];
+    }
+    return $cp;
+}
+
+function localTaskDbSave(string $path, $data): void {
+    $key = localTaskKeyForFile($path);
+    if ($key === '' || !is_array($data)) return;
+    $db = localTaskDbOpen();
+    if (!is_array($db) || empty($db['ready'])) return;
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+    $cpJson = json_encode(localTaskStateCheckpoint($data), JSON_UNESCAPED_UNICODE);
+    if ($json === false || $cpJson === false) return;
+    $status = localTaskStateStatus($data);
+    $now = time();
+    $heartbeat = (int)($data['last_progress_ts'] ?? $data['heartbeat_at'] ?? $data['ts'] ?? $now);
+    $lease = (int)($data['lease_until'] ?? 0);
+    if ($status === 'running' && $lease <= 0) $lease = $heartbeat + 300;
+    try {
+        if ($db['driver'] === 'pdo') {
+            $q = $db['db']->prepare("INSERT OR REPLACE INTO local_task_state
+                (task_key,status,state_json,checkpoint_json,heartbeat_at,lease_until,updated_at)
+                VALUES (:k,:s,:j,:c,:h,:l,:u)");
+            $q->execute([':k'=>$key, ':s'=>$status, ':j'=>$json, ':c'=>$cpJson,
+                ':h'=>$heartbeat, ':l'=>$lease, ':u'=>$now]);
+        } else {
+            $q = $db['db']->prepare("INSERT OR REPLACE INTO local_task_state
+                (task_key,status,state_json,checkpoint_json,heartbeat_at,lease_until,updated_at)
+                VALUES (:k,:s,:j,:c,:h,:l,:u)");
+            $q->bindValue(':k', $key, SQLITE3_TEXT); $q->bindValue(':s', $status, SQLITE3_TEXT);
+            $q->bindValue(':j', $json, SQLITE3_TEXT); $q->bindValue(':c', $cpJson, SQLITE3_TEXT);
+            $q->bindValue(':h', $heartbeat, SQLITE3_INTEGER); $q->bindValue(':l', $lease, SQLITE3_INTEGER);
+            $q->bindValue(':u', $now, SQLITE3_INTEGER); @$q->execute();
+        }
+    } catch (Throwable $e) { /* DB is an availability enhancement, not a reason to kill a task. */ }
+}
+
+function localTaskDbRead(string $path): ?array {
+    $key = localTaskKeyForFile($path);
+    if ($key === '') return null;
+    $db = localTaskDbOpen();
+    if (!is_array($db) || empty($db['ready'])) return null;
+    try {
+        if ($db['driver'] === 'pdo') {
+            $q = $db['db']->prepare('SELECT state_json,updated_at FROM local_task_state WHERE task_key=:k');
+            $q->execute([':k'=>$key]); $row = $q->fetch();
+        } else {
+            $q = $db['db']->prepare('SELECT state_json,updated_at FROM local_task_state WHERE task_key=:k');
+            $q->bindValue(':k', $key, SQLITE3_TEXT); $res = @$q->execute();
+            $row = $res ? $res->fetchArray(SQLITE3_ASSOC) : false;
+        }
+        if (!is_array($row)) return null;
+        $state = json_decode((string)($row['state_json'] ?? ''), true);
+        if (!is_array($state)) return null;
+        return ['state' => $state, 'updated_at' => (int)($row['updated_at'] ?? 0)];
+    } catch (Throwable $e) { return null; }
+}
+
 function writeJsonFile(string $path, $data): array {
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     if ($json === false) {
@@ -1783,17 +1969,18 @@ function writeJsonFile(string $path, $data): array {
     if ($w !== false && $w === strlen($json)) {
         // مجوزهای فایل قبلی حفظ شود تا rename دسترسی وب‌سرور را عوض نکند
         if (is_file($path)) { $pm = @fileperms($path); if ($pm !== false) @chmod($tmp, $pm & 0777); }
-        if (@rename($tmp, $path)) return ['ok' => true, 'error' => ''];
+        if (@rename($tmp, $path)) { localTaskDbSave($path, $data); return ['ok' => true, 'error' => '']; }
     }
     @unlink($tmp);
     // ۱) تلاش با قفل
     $r = @file_put_contents($path, $json, LOCK_EX);
-    if ($r !== false) return ['ok' => true, 'error' => ''];
+    if ($r !== false) { localTaskDbSave($path, $data); return ['ok' => true, 'error' => '']; }
     $errLock = error_get_last()['message'] ?? 'LOCK_EX';
     // ۲) تلاش بدون قفل (حافظه‌های FUSE/استوریج اندروید)
     $r = @file_put_contents($path, $json);
     if ($r !== false) {
         @file_put_contents(__DIR__ . '/storage_errors.log', date('Y-m-d H:i:s') . ' | ' . $path . " | قفل پشتیبانی نشد، بدون قفل ذخیره شد: " . $errLock . "\n", FILE_APPEND);
+        localTaskDbSave($path, $data);
         return ['ok' => true, 'error' => ''];
     }
     $errFinal = error_get_last()['message'] ?? 'خطای نامشخص';
@@ -1807,10 +1994,41 @@ function writeJsonFile(string $path, $data): array {
 function writeProgress(string $file, array $data): void {
 writeJsonFile($file, $data);
 }
+function localTaskDbForget(string $path): void {
+    $key = localTaskKeyForFile($path);
+    if ($key === '') return;
+    $db = localTaskDbOpen();
+    if (!is_array($db) || empty($db['ready'])) return;
+    try {
+        if ($db['driver'] === 'pdo') {
+            $q = $db['db']->prepare('DELETE FROM local_task_state WHERE task_key=:k');
+            $q->execute([':k'=>$key]);
+        } else {
+            $q = $db['db']->prepare('DELETE FROM local_task_state WHERE task_key=:k');
+            $q->bindValue(':k', $key, SQLITE3_TEXT); @$q->execute();
+        }
+    } catch (Throwable $e) {}
+}
+
+function localTaskStateRead(string $file, array $default = []): array {
+    $dbRow = localTaskDbRead($file);
+    $dbState = is_array($dbRow['state'] ?? null) ? $dbRow['state'] : null;
+    if (!file_exists($file)) return $dbState ?? $default;
+    $d = @json_decode(@file_get_contents($file) ?: '', true);
+    if (!is_array($d)) return $dbState ?? $default;
+    $fileAt = (int)@filemtime($file);
+    if ($dbState !== null && (int)($dbRow['updated_at'] ?? 0) > $fileAt + 1) return $dbState;
+    return $d;
+}
+
+function localTaskStateExists(string $file): bool {
+    return is_file($file) || localTaskDbRead($file) !== null;
+}
+
 function readProgress(string $file): array {
-if (!file_exists($file)) return ['running'=>false,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,'last_title'=>'','last_index'=>0,'done'=>false,'started_at'=>0,'total_log_count'=>0];
-$d = @json_decode(@file_get_contents($file) ?: '', true);
-return is_array($d) ? $d : ['running'=>false,'total_log_count'=>0];
+    $default = ['running'=>false,'sent'=>0,'updated'=>0,'skipped'=>0,'failed'=>0,'total'=>0,
+        'last_title'=>'','last_index'=>0,'done'=>false,'started_at'=>0,'total_log_count'=>0];
+    return localTaskStateRead($file, $default);
 }
 
 /** v10.134: snapshotِ توقف برای resume در کران بعدی. */
@@ -3284,9 +3502,7 @@ function aiResetKeyRelatedFailures(array $p): array {
  *  ریفرش یا بستن پنجره ادامه پیدا می‌کند. مرورگر فقط وضعیت را poll می‌کند.
  * ===================================================================== */
 function aiTestStateLoad(): array {
-    if (!is_file(AI_TEST_STATE_FILE)) return ['running' => false, 'done' => false, 'items' => []];
-    $d = json_decode((string)@file_get_contents(AI_TEST_STATE_FILE), true);
-    return is_array($d) ? $d : ['running' => false, 'done' => false, 'items' => []];
+    return localTaskStateRead(AI_TEST_STATE_FILE, ['running' => false, 'done' => false, 'items' => []]);
 }
 function aiTestStateSave(array $st): void {
     $st['updated_at'] = time();
@@ -5338,11 +5554,7 @@ function aiAutoFillMissingAcrossProfiles(?array $cn = null, int $limit = 0): arr
 
 /* ---- v10.97: توضیح‌ساز هوشمند (server-side job + product cards log) ---- */
 function aicontentProgress(array $patch): void {
-    $cur = [];
-    if (is_file(AICONTENT_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(AICONTENT_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(AICONTENT_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) {
@@ -14710,7 +14922,7 @@ return ['__early_sent'=>$emitEarlyResponse,'ok'=>false,'error'=>$msg,
    هر کدام گزارش دیگری را بازنویسی می‌کرد. */
 /* queueId و lock پیش از dedup ساخته شدند تا probe و بستنِ ردیف بدون مالکیت
    انجام نشود؛ اکنون فقط workerِ صاحبِ lock فایلِ مشترک را آغاز می‌کند. */
-@unlink(EXTRACT_PROGRESS_FILE);
+localTaskDbForget(EXTRACT_PROGRESS_FILE); @unlink(EXTRACT_PROGRESS_FILE);
 @unlink(EXTRACT_STOP_FILE);
 $queue['entries'][]=['id'=>$queueId,'status'=>'running','profile_key'=>$profileKey,'url'=>$url,'profile_name'=>$profile['name']??$profileKey,'started_at'=>time(),'products_count'=>0,'total'=>0,'current'=>0,'new'=>0,'price_changed'=>0,'removed'=>0,'unchanged'=>0,'trigger'=>$trigger,'phase'=>$phase];
 extractWriteQueue($queue);
@@ -20061,7 +20273,7 @@ if (isset($_GET['bulk_edit'])) {
         echo json_encode(['ok' => false, 'error' => 'مقصد نامعتبر'], JSON_UNESCAPED_UNICODE); exit;
     }
 
-    @unlink(BULKEDIT_PROGRESS_FILE);
+    localTaskDbForget(BULKEDIT_PROGRESS_FILE); @unlink(BULKEDIT_PROGRESS_FILE);
     bulkProgress(['running' => true, 'done' => false, 'target' => $target, 'dry' => $dry,
         'total' => count($ids), 'current' => 0, 'started_at' => time(),
         'checkpoint' => ['target' => $target,
@@ -20151,7 +20363,7 @@ if (isset($_GET['photo_fix'])) {
         }
     }
 
-    @unlink(PHOTOFIX_PROGRESS_FILE);
+    localTaskDbForget(PHOTOFIX_PROGRESS_FILE); @unlink(PHOTOFIX_PROGRESS_FILE);
     photoFixProgress(['running' => true, 'done' => false, 'dry' => $dry, 'profile' => $onlyProfile,
         'notify' => $notify, 'started_at' => (int)($photoCp['started_at'] ?? time()),
         'checkpoint' => $photoCp !== null ? $photoCp : ['page' => 1, 'offset' => 0,
@@ -20732,7 +20944,7 @@ if (isset($_GET['recon'])) {
         }
     }
     if ($cp === null) {
-        @unlink(RECON_PROGRESS_FILE);
+        localTaskDbForget(RECON_PROGRESS_FILE); @unlink(RECON_PROGRESS_FILE);
         @unlink(reconFetchCursorFile());
         /* v10.126: در شروعِ تازه هم چک‌پوینتِ نازکی می‌سازیم تا مسیرِ
            تکی از واکشیِ قابلِ ادامه (کشِ صفحه‌ای) استفاده کند. */
@@ -21683,8 +21895,7 @@ function tasksState(array $p, int $now): string {
        همگام‌سازیِ دستی cancelled را ثبت می‌کند؛ هر دو همان کارِ ناقص‌اند. */
     if (!empty($p['stale']) || !empty($p['stalled']) || !empty($p['stopped']) || !empty($p['cancelled'])
         || !empty($p['paused']) || !empty($p['partial']) || !empty($p['incomplete'])
-        || (array_key_exists('result_ok', $p) && !$p['result_ok'])
-        || (!empty($p['error']) && is_array($p['checkpoint'] ?? null) && !empty($p['checkpoint'])))
+        || (array_key_exists('result_ok', $p) && !$p['result_ok']) || !empty($p['error']))
         return 'stale';
     /* بعضی workerها هنگام خاتمهٔ ناگهانی running=false می‌نویسند ولی done
        را false نگه می‌دارند؛ وجودِ checkpoint یعنی اجرای ناقص، نه idle/done. */
@@ -21761,7 +21972,7 @@ function tasksOrderMove(string $key, string $dir): array {
 /** یک ردیفِ آمادهٔ نمایش از روی رجیستری + فایلِ پیشرفت */
 function tasksBuildRow(string $key, array $def, int $now): array {
     $file = (string)$def['file'];
-    $p    = is_file($file) ? (array)json_decode((string)@file_get_contents($file), true) : [];
+    $p    = localTaskStateRead($file, []);
     $st   = tasksState($p, $now);
     /* heartbeat کهنه نباید worker دارای flock را stale نشان دهد؛ همین گارد
        مرکزی، UI و هر دو مسیر resume/clear را از اجرای موازی بازمی‌دارد. */
@@ -22424,7 +22635,7 @@ if (isset($_GET['auto_run_now'])) {
     agentClearStop();
     $cn = loadConnections();
 
-    @unlink(AGENT_PROGRESS_FILE);
+    localTaskDbForget(AGENT_PROGRESS_FILE); @unlink(AGENT_PROGRESS_FILE);
     @unlink(AGENT_RESULT_FILE);
     agentProgress(['running' => true, 'done' => false, 'mode' => $job['mode'],
         'task' => $job['prompt'], 'started_at' => time(), 'step' => 0, 'calls' => 0,
@@ -22550,7 +22761,7 @@ if (isset($_GET['agent_start'])) {
         }
     }
     if ($agentCp === null) {
-        @unlink(AGENT_PROGRESS_FILE);
+        localTaskDbForget(AGENT_PROGRESS_FILE); @unlink(AGENT_PROGRESS_FILE);
         @unlink(AGENT_RESULT_FILE);
     }
     agentProgress(['running' => true, 'done' => false, 'mode' => $mode, 'task' => $task,
@@ -22699,7 +22910,7 @@ if (isset($_GET['selagent_start'])) {
         }
     }
     if ($selAgentCp === null) {
-        @unlink(SELAGENT_PROGRESS_FILE);
+        localTaskDbForget(SELAGENT_PROGRESS_FILE); @unlink(SELAGENT_PROGRESS_FILE);
         @unlink(SELAGENT_RESULT_FILE);
     }
     selagentProgress(['running' => true, 'done' => false, 'kind' => $saKind, 'url' => $saUrl,
@@ -22932,7 +23143,7 @@ if (isset($_GET['suffix_report'])) {
         $suffixCp = ['target' => $target, 'phase' => 'start', 'woo_rows' => [], 'shops' => [],
             'started_at' => time(), 'notify' => $notify];
     }
-    @unlink(SUFFIX_PROGRESS_FILE);
+    localTaskDbForget(SUFFIX_PROGRESS_FILE); @unlink(SUFFIX_PROGRESS_FILE);
     suffixProgress(['running' => true, 'done' => false, 'target' => $target,
         'notify' => $notify, 'started_at' => ($suffixCp['started_at'] ?? time()),
         'phase' => ($suffixCp !== null ? 'resume' : 'start'),
@@ -23044,7 +23255,7 @@ if (isset($_GET['dedup_start'])) {
         }
     }
     if ($cp === null) {
-        @unlink(DEDUP_PROGRESS_FILE);
+        localTaskDbForget(DEDUP_PROGRESS_FILE); @unlink(DEDUP_PROGRESS_FILE);
         @unlink(DEDUP_FETCH_CURSOR_FILE);
     }
     $cpStartedAt = ($cp !== null ? (int)($cp['started_at'] ?? 0) : 0);
@@ -23213,7 +23424,7 @@ if (isset($_GET['catfix_start'])) {
         }
     }
     if ($cp === null) {
-        @unlink(CATFIX_PROGRESS_FILE);
+        localTaskDbForget(CATFIX_PROGRESS_FILE); @unlink(CATFIX_PROGRESS_FILE);
         @unlink(CATFIX_RESULT_FILE);
         @unlink(CATFIX_FETCH_CURSOR_FILE);
     }
@@ -23423,7 +23634,7 @@ if (($_POST['action'] ?? '') === 'dedup_delete_ids') {
     dedupClearStop();
     $total = count($ids);
     $verbFa = ($target === 'bsl' ? 'بایگانی' : 'حذف');
-    @unlink(DEDUP_PROGRESS_FILE);
+    localTaskDbForget(DEDUP_PROGRESS_FILE); @unlink(DEDUP_PROGRESS_FILE);
     dedupProgress(['running' => true, 'done' => false, 'target' => $target, 'mode' => 'delete',
         'started_at' => time(), 'phase' => 'delete', 'total' => $total, 'dups' => $total,
         'groups' => 0, 'processed' => 0, 'deleted' => 0, 'failed' => 0,
@@ -23691,11 +23902,7 @@ function matrixPriceTone(int $src, int $dst): string {
     return 'bad';
 }
 function matrixProgress(array $patch): void {
-    $cur = [];
-    if (is_file(SYNC_MATRIX_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(SYNC_MATRIX_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) {
@@ -23716,9 +23923,7 @@ function matrixStopRequested(): bool { return is_file(SYNC_MATRIX_STOP_FILE); }
 function matrixStopClear(): void { @unlink(SYNC_MATRIX_STOP_FILE); }
 
 function matrixProgressRead(): array {
-    if (!is_file(SYNC_MATRIX_PROGRESS_FILE)) return [];
-    $d = json_decode((string)@file_get_contents(SYNC_MATRIX_PROGRESS_FILE), true);
-    return is_array($d) ? $d : [];
+    return localTaskStateRead(SYNC_MATRIX_PROGRESS_FILE, []);
 }
 function matrixResultLoad(): array {
     if (!is_file(SYNC_MATRIX_RESULT_FILE)) return [];
@@ -24142,11 +24347,7 @@ function matrixBuild(array $opts = []): array {
  * ===================================================================== */
 
 function matrixFixProgress(array $patch): void {
-    $cur = [];
-    if (is_file(SYNC_MATRIX_FIX_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(SYNC_MATRIX_FIX_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(SYNC_MATRIX_FIX_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) {
@@ -24172,9 +24373,7 @@ function matrixFixProgress(array $patch): void {
 }
 
 function matrixFixProgressRead(): array {
-    if (!is_file(SYNC_MATRIX_FIX_PROGRESS_FILE)) return [];
-    $d = json_decode((string)@file_get_contents(SYNC_MATRIX_FIX_PROGRESS_FILE), true);
-    return is_array($d) ? $d : [];
+    return localTaskStateRead(SYNC_MATRIX_FIX_PROGRESS_FILE, []);
 }
 
 function matrixFixStopRequested(): bool {
@@ -39727,11 +39926,7 @@ function catProfileResolver(string $target = 'bsl'): callable {
  * ===================================================================== */
 
 function bulkProgress(array $patch): void {
-    $cur = [];
-    if (is_file(BULKEDIT_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(BULKEDIT_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(BULKEDIT_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) $log[] = ['t' => time(), 'm' => (string)$l];
@@ -39968,11 +40163,7 @@ function bulkEditMsg(array $r): string {
  * ===================================================================== */
 
 function photoFixProgress(array $patch): void {
-    $cur = [];
-    if (is_file(PHOTOFIX_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(PHOTOFIX_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(PHOTOFIX_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) $log[] = ['t' => time(), 'm' => (string)$l];
@@ -40355,11 +40546,7 @@ function digestMaybeSend(array $cn, int $now): array {
 }
 
 function suffixProgress(array $patch): void {
-    $cur = [];
-    if (is_file(SUFFIX_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(SUFFIX_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(SUFFIX_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) $log[] = ['t' => time(), 'm' => (string)$l];
@@ -41275,11 +41462,7 @@ function profileStatsSummaryMsg(array $rep): string {
 
 /* v8.49: گزارش زندهٔ مغایرت‌گیری */
 function reconProgress(array $patch): void {
-    $cur = [];
-    if (is_file(RECON_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(RECON_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $line) {
@@ -41303,9 +41486,7 @@ function reconStopRequested(): bool {
 function reconStopClear(): void { @unlink(RECON_STOP_FILE); }
 
 function reconProgressRead(): array {
-    if (!is_file(RECON_PROGRESS_FILE)) return ['running' => false, 'done' => false, 'log' => []];
-    $d = json_decode((string)@file_get_contents(RECON_PROGRESS_FILE), true);
-    return is_array($d) ? $d : ['running' => false, 'done' => false, 'log' => []];
+    return localTaskStateRead(RECON_PROGRESS_FILE, ['running' => false, 'done' => false, 'log' => []]);
 }
 
 /**
@@ -45997,7 +46178,7 @@ if (isset($_GET['aicontent_start']) || ($_POST['action'] ?? '') === 'aicontent_s
         $oldContentCp = is_array($oldContent['checkpoint'] ?? null) ? $oldContent['checkpoint'] : null;
         if (is_array($oldContentCp) && (int)($oldContentCp['limit'] ?? $lim) === $lim) $contentCp = $oldContentCp;
     }
-    @unlink(AICONTENT_PROGRESS_FILE);
+    localTaskDbForget(AICONTENT_PROGRESS_FILE); @unlink(AICONTENT_PROGRESS_FILE);
     @unlink(AICONTENT_RESULT_FILE);
     aicontentProgress([
         'running' => true, 'done' => false, 'started_at' => (int)($contentCp['started_at'] ?? time()),
@@ -47040,7 +47221,7 @@ if($wooBusyNow)$startImm=false;
 $status=$startImm?'running':'waiting';
 
 if($startImm){
-@unlink(WOO_PROGRESS_FILE);@unlink(WOO_STOP_FILE);
+localTaskDbForget(WOO_PROGRESS_FILE); @unlink(WOO_PROGRESS_FILE);@unlink(WOO_STOP_FILE);
 @unlink(WOO_PRODUCTS_FILE);
 $copyOk=@copy($qFile,WOO_PRODUCTS_FILE);
 if(!$copyOk){echo json_encode(['ok'=>false,'error'=>'خطا در کپی فایل محصولات'],JSON_UNESCAPED_UNICODE);exit;}
@@ -47111,7 +47292,7 @@ $nextIdx=$i;break;
 if($nextIdx>=0){
 @unlink(WOO_PRODUCTS_FILE);
 @copy($queue['entries'][$nextIdx]['products_file'],WOO_PRODUCTS_FILE);
-@unlink(WOO_PROGRESS_FILE);@unlink(WOO_STOP_FILE);
+localTaskDbForget(WOO_PROGRESS_FILE); @unlink(WOO_PROGRESS_FILE);@unlink(WOO_STOP_FILE);
 $queue['entries'][$nextIdx]['status']='running';
 $queue['entries'][$nextIdx]['started_at']=time();
 $nextEntry=$queue['entries'][$nextIdx];
@@ -48150,8 +48331,8 @@ if (isset($_GET['bsl_clear_temp'])) {
 header('Content-Type: application/json; charset=UTF-8');
 $bslDel=@unlink(BSL_PRODUCTS_FILE);
 $wooDel=@unlink(WOO_PRODUCTS_FILE);
-$bslProgDel=@unlink(BSL_PROGRESS_FILE);
-$wooProgDel=@unlink(WOO_PROGRESS_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); $bslProgDel=@unlink(BSL_PROGRESS_FILE);
+localTaskDbForget(WOO_PROGRESS_FILE); $wooProgDel=@unlink(WOO_PROGRESS_FILE);
 
 $stopDel=@unlink(BSL_STOP_FILE);
 echo json_encode(['ok'=>true,'bsl_temp_deleted'=>$bslDel,'woo_temp_deleted'=>$wooDel,'bsl_progress_deleted'=>$bslProgDel,'woo_progress_deleted'=>$wooProgDel,'bsl_temp_exists'=>file_exists(BSL_PRODUCTS_FILE),'woo_temp_exists'=>file_exists(WOO_PRODUCTS_FILE),'bsl_temp_size'=>@filesize(BSL_PRODUCTS_FILE),'woo_temp_size'=>@filesize(WOO_PRODUCTS_FILE)],JSON_UNESCAPED_UNICODE);
@@ -48355,7 +48536,7 @@ if($bslBusy)$startImm=false;
 $status=$startImm?'running':'waiting';
 
 if($startImm){
-@unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);
 @unlink(BSL_PRODUCTS_FILE);
 $copyOk=@copy($qFile,BSL_PRODUCTS_FILE);
 if(!$copyOk){echo json_encode(['ok'=>false,'error'=>'خطا در کپی فایل محصولات: '.$qFile.' → '.BSL_PRODUCTS_FILE],JSON_UNESCAPED_UNICODE);exit;}
@@ -48460,7 +48641,7 @@ $nextIdx2=$i;break;
 }
 if($nextIdx2>=0){
 @unlink(BSL_PRODUCTS_FILE);
-@unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);
 @copy($queue['entries'][$nextIdx2]['products_file'],BSL_PRODUCTS_FILE);
 $queue['entries'][$nextIdx2]['status']='running';
 $queue['entries'][$nextIdx2]['started_at']=time();
@@ -48717,7 +48898,7 @@ if($entry['status']!=='waiting'&&$entry['status']!=='paused'){echo json_encode([
 // v8.57: ارسال دیگری در جریان نباشد
 foreach($queue['entries'] as $qeR){if(($qeR['status']??'')==='running'){echo json_encode(['ok'=>false,'error'=>'یک ارسال دیگر در حال اجراست — اول آن را متوقف یا تمام کنید'],JSON_UNESCAPED_UNICODE);exit;}}
 // شروع دستی یعنی کاربر واقعاً می‌خواهد؛ پس نگه‌داشتِ توقف برداشته می‌شود
-@unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
 if(!file_exists($entry['products_file'])){echo json_encode(['ok'=>false,'error'=>'فایل محصولات یافت نشد'],JSON_UNESCAPED_UNICODE);exit;}
 @copy($entry['products_file'],BSL_PRODUCTS_FILE);
 $queue['entries'][$entryIdx]['status']='running';$queue['entries'][$entryIdx]['started_at']=time();
@@ -48744,7 +48925,7 @@ if($entry['status']!=='running'){echo json_encode(['ok'=>false,'error'=>'ورو�
 $progress=readProgress(BSL_PROGRESS_FILE);
 $current=(int)($progress['current']??$entry['current']??0);
 $sent=(int)($progress['sent']??$entry['sent']??0);$updated=(int)($progress['updated']??$entry['updated']??0);$skipped=(int)($progress['skipped']??$entry['skipped']??0);$failed=(int)($progress['failed']??$entry['failed']??0);
-@unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
 if(!file_exists($entry['products_file'])){echo json_encode(['ok'=>false,'error'=>'فایل محصولات یافت نشد'],JSON_UNESCAPED_UNICODE);exit;}
 @copy($entry['products_file'],BSL_PRODUCTS_FILE);
 // v8.57: تنظیمات عمومی بازنویسی نمی‌شود
@@ -49072,7 +49253,7 @@ if(!empty($bslPrevProg['updated_details'])&&is_array($bslPrevProg['updated_detai
 if(!empty($bslPrevProg['skipped_details'])&&is_array($bslPrevProg['skipped_details']))$bslSkippedList=$bslPrevProg['skipped_details'];
 if(!empty($bslPrevProg['failed_details'])&&is_array($bslPrevProg['failed_details']))$bslFailedList=$bslPrevProg['failed_details'];
 }
-@unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
+localTaskDbForget(BSL_PROGRESS_FILE); @unlink(BSL_PROGRESS_FILE);@unlink(BSL_STOP_FILE);@unlink(BSL_PRODUCTS_FILE);
 if(!file_exists($nextEntry['products_file'])){
 $queue['entries'][$nextIdx]['status']='failed';
 $queue['entries'][$nextIdx]['done_at']=time();
@@ -52657,11 +52838,7 @@ function catfixRun(array $cn, string $mode, array $opts = [], ?array $cp = null)
 
 /** پیشرفتِ زندهٔ ایجنت (همان الگوی dedupProgress) */
 function agentProgress(array $patch): void {
-    $cur = [];
-    if (is_file(AGENT_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(AGENT_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(AGENT_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) $log[] = ['t' => time(), 'm' => (string)$l];
@@ -53375,11 +53552,7 @@ function agentRun(array $cn, string $task, string $mode, string $model = '', ?ar
 
 /** ثبتِ پیشرفت — دقیقاً همان قراردادِ agentProgress، روی فایلِ خودِ این ایجنت. */
 function selagentProgress(array $patch): void {
-    $cur = [];
-    if (is_file(SELAGENT_PROGRESS_FILE)) {
-        $d = json_decode((string)@file_get_contents(SELAGENT_PROGRESS_FILE), true);
-        if (is_array($d)) $cur = $d;
-    }
+    $cur = localTaskStateRead(SELAGENT_PROGRESS_FILE, []);
     $log = is_array($cur['log'] ?? null) ? $cur['log'] : [];
     if (isset($patch['log_add'])) {
         foreach ((array)$patch['log_add'] as $l) $log[] = ['t' => time(), 'm' => (string)$l];

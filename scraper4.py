@@ -78,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Keep browser installation and runtime lookup in the same quota-controlled folder.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get("SCRAPER_PLAYWRIGHT_PATH", os.path.join(BASE_DIR, "ms-playwright"))
@@ -113,7 +113,7 @@ def default_data() -> dict[str, Any]:
     return {
         "profiles": {},
         "woocommerce": {"url": "", "consumer_key": "", "consumer_secret": ""},
-        "network": {"timeout": 25, "gap_ms": 350, "proxy": "", "verify_tls": True},
+        "network": {"timeout": 25, "gap_ms": 350, "proxy": "", "proxy_mode": "auto", "worker_key": "", "verify_tls": True},
         "deploy": {
             "repo": "fazilatma/amphp", "branch": "arena/01a0640f-amphp", "path": "scraper4.py",
             "github_token": "", "reload_file": "",
@@ -192,6 +192,12 @@ def require_password():
 def public_http_url(url: str) -> str:
     """Validate source URLs and reject localhost/private literal addresses."""
     url = (url or "").strip()
+    markdown = re.fullmatch(r"\[[^]]+\]\((https?://[^)]+)\)", url, re.I)
+    if markdown: url = markdown.group(1).strip()
+    # Also tolerate copied rich-text links that contain a URL after display text.
+    if not url.lower().startswith(("http://", "https://")):
+        embedded = re.search(r"https?://[^\s)]+", url, re.I)
+        if embedded: url = embedded.group(0)
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("آدرس باید با http:// یا https:// شروع شود")
@@ -227,6 +233,10 @@ class Fetcher:
         self.gap = max(0, min(10000, int(cfg.get("gap_ms", 350)))) / 1000.0
         self.verify = bool(cfg.get("verify_tls", True))
         self.proxy = str(cfg.get("proxy", "")).strip()
+        self.proxy_mode = str(cfg.get("proxy_mode", "auto")).strip().lower()
+        self.worker_key = str(cfg.get("worker_key", "")).strip()
+        if self.proxy_mode == "auto":
+            self.proxy_mode = "relay" if ("workers.dev" in self.proxy.lower() or "{url}" in self.proxy or "?url=" in self.proxy) else ("http" if self.proxy else "direct")
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": USER_AGENT,
@@ -234,26 +244,39 @@ class Fetcher:
             "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.7,en;q=0.6",
             "Cache-Control": "no-cache",
         })
-        if self.proxy:
+        if self.proxy and self.proxy_mode == "http":
             self.session.proxies.update({"http": self.proxy, "https": self.proxy})
         self.last_by_host: dict[str, float] = {}
 
     def get(self, url: str, *, referer: str = "", accept_json: bool = False) -> FetchResult:
         url = public_http_url(url)
-        host = urlparse(url).hostname or ""
+        target_url = url
+        request_url = url
+        if self.proxy and self.proxy_mode == "relay":
+            relay = public_http_url(self.proxy.replace("{url}", quote(target_url, safe=""))) if "{url}" in self.proxy else public_http_url(self.proxy)
+            if "{url}" not in self.proxy:
+                separator = "&" if "?" in relay else "?"
+                request_url = relay + separator + urlencode({"url": target_url})
+            else:
+                request_url = relay
+        host = urlparse(target_url).hostname or ""
         elapsed = time.monotonic() - self.last_by_host.get(host, 0)
         if elapsed < self.gap:
             time.sleep(self.gap - elapsed)
         headers = {}
         if referer:
             headers["Referer"] = referer
+        if self.proxy_mode == "relay":
+            headers["X-Proxy-UA"] = USER_AGENT
+            if referer: headers["X-Proxy-Referer"] = referer
+            if self.worker_key: headers["X-Proxy-Key"] = self.worker_key
         if accept_json:
             headers["Accept"] = "application/json,text/plain,*/*"
         last_error = ""
         for attempt in range(3):
             try:
                 response = self.session.get(
-                    url, headers=headers, timeout=self.timeout,
+                    request_url, headers=headers, timeout=self.timeout,
                     allow_redirects=True, verify=self.verify, stream=True,
                 )
                 self.last_by_host[host] = time.monotonic()
@@ -268,7 +291,7 @@ class Fetcher:
                 if not 200 <= response.status_code < 400:
                     raise FetchError(f"HTTP {response.status_code} برای {url}")
                 return FetchResult(
-                    response.url, text, response.headers.get("Content-Type", ""),
+                    target_url if self.proxy_mode == "relay" else response.url, text, response.headers.get("Content-Type", ""),
                     response.status_code,
                 )
             except (requests.RequestException, FetchError) as exc:
@@ -1146,7 +1169,10 @@ def get_config():
     deploy = dict(data["deploy"])
     deploy["has_github_token"] = bool(os.environ.get("GITHUB_TOKEN", "") or deploy.get("github_token"))
     deploy["github_token"] = ""
-    return jsonify(ok=True, profiles=data["profiles"], network=data["network"], woocommerce=woo,
+    network = dict(data["network"])
+    if network.get("worker_key"):
+        network["worker_key"] = "••••" + str(network["worker_key"])[-4:]
+    return jsonify(ok=True, profiles=data["profiles"], network=network, woocommerce=woo,
                    deploy=deploy, last_count=len(data["last_result"]), version=APP_VERSION,
                    build=BUILD_ID, auto_update=AUTO_UPDATE_ENABLED)
 
@@ -1156,9 +1182,12 @@ def settings():
     body = request.get_json(silent=True) or {}
     data = load_data()
     if isinstance(body.get("network"), dict):
-        for key in ("timeout", "gap_ms", "proxy", "verify_tls"):
+        for key in ("timeout", "gap_ms", "proxy", "proxy_mode", "worker_key", "verify_tls"):
             if key in body["network"]:
-                data["network"][key] = body["network"][key]
+                value = body["network"][key]
+                if key == "worker_key" and str(value).startswith("••••"):
+                    continue
+                data["network"][key] = value
     if isinstance(body.get("woocommerce"), dict):
         for key in ("url", "consumer_key", "consumer_secret"):
             value = body["woocommerce"].get(key)
@@ -1729,9 +1758,9 @@ INDEX_HTML = r'''<!doctype html>
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
 </style></head><body><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.8.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.9.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
-<section id="scrape" class="pane on"><div class="card"><div class="grid grid4">
+<section id="scrape" class="pane on"><div class="card"><h3>☆ انتخاب پروفایل</h3><div class="grid"><div><label>پروفایل ذخیره‌شده</label><select id="profileSelect"><option value="">— پروفایل جدید —</option></select></div></div><div class="actions"><button onclick="loadSelectedProfile()">بارگذاری پروفایل</button><button class="gray" onclick="saveProfilePrompt()">ذخیره پروفایل فعلی</button><button class="gray" onclick="deleteSelectedProfile()">حذف پروفایل</button></div></div><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
 <div><label>تعداد صفحه</label><input id="pages" type="number" min="1" max="50" value="1"></div>
 <div><label>روش محتوا</label><select id="render"><option value="auto">خودکار: HTML سپس Playwright</option><option value="http">HTML مستقیم (روش PHP)</option><option value="browser">DOM رندرشده با Playwright</option></select></div>
@@ -1752,7 +1781,7 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <section id="jobs" class="pane"><div class="card"><h3>صف استخراج و نقاط ادامه</h3><div class="note">پس از هر صفحه یک checkpoint اتمیک ذخیره می‌شود؛ عملیات قطع‌شده را بدون شروع از ابتدا ادامه دهید.</div><div class="actions"><button onclick="loadJobs()">تازه‌سازی صف</button></div><div id="jobList"></div></div></section>
 <section id="files" class="pane"><div class="card"><h3>📁 فایل اکسپلورر فضای حساب</h3><div class="note">نمایش فقط‌خواندنی پوشه خانگی؛ فایل‌های سیستمی، توکن‌ها و اطلاعات شخصی از این بخش حذف یا باز نمی‌شوند.</div><div id="spaceSummary" class="stats" style="margin-top:12px"></div><div id="quotaInfo" class="status" style="margin-top:12px"></div><div class="actions"><button class="gray" onclick="browseFiles(fileParent)">⬆ پوشه بالاتر</button><button onclick="browseFiles(fileCurrent)">تازه‌سازی</button></div><div id="filePath" class="status" dir="ltr"></div><div id="fileRows" class="file-list"></div></div></section>
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
-<section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>Proxy اختیاری</label><input id="proxy" dir="ltr" placeholder="http://user:pass@host:port"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button></div></div>
+<section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>پروکسی یا Worker واسط</label><input id="proxy" dir="ltr" placeholder="https://proxy.example.workers.dev"></div><div><label>نوع اتصال</label><select id="proxy_mode"><option value="auto">تشخیص خودکار</option><option value="relay">Worker با پارامتر url</option><option value="http">HTTP CONNECT Proxy</option><option value="direct">مستقیم</option></select></div><div><label>کلید Worker، اختیاری</label><input id="worker_key" type="password" dir="ltr"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button><button class="green" onclick="useMyWorker()">فعال‌سازی Worker شما</button></div></div>
 <div class="card note"><b>روش استخراج نسخه PHP:</b> HTML صفحه دریافت و سلکتورهای CSS روی DOM اجرا می‌شوند. در سایت‌های JavaScript، Playwright ابتدا DOM کامل را رندر می‌کند. هیچ API محصول یا hydration استفاده نمی‌شود.</div></section>
 <section id="woo" class="pane"><div class="card"><h3>اتصال و صف ووکامرس</h3><div class="grid"><div class="wide"><label>URL فروشگاه</label><input id="woo_url" dir="ltr"></div><div><label>Consumer key</label><input id="woo_ck" dir="ltr"></div><div><label>Consumer secret</label><input id="woo_cs" type="password" dir="ltr"></div><div><label>وضعیت محصول</label><select id="woo_product_status"><option value="draft">پیش‌نویس</option><option value="publish">انتشار</option><option value="pending">در انتظار بررسی</option><option value="private">خصوصی</option></select></div><div><label>تعداد هر مرحله</label><input id="woo_batch" type="number" min="1" max="25" value="10"></div><div><label><input id="woo_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست</button><button class="green" onclick="wooQueue()">افزودن نتایج به صف</button><button class="gray" onclick="loadWooJobs()">تازه‌سازی صف</button></div><div id="wooStatus" class="status">صف مرحله‌ای برای سازگاری با محدودیت اجرای PythonAnywhere</div><div id="wooJobList"></div></div></section>
 <section id="deploy" class="pane"><div class="card"><h3>نصب‌کننده اتمیک از GitHub</h3><div class="note">نسخه تازه پیش از نصب با کامپایل Python بررسی می‌شود. نسخه فعلی در <code>scraper4.py.bak</code> می‌ماند. برای repository خصوصی بهتر است متغیر محیطی <code>GITHUB_TOKEN</code> را در WSGI تنظیم کنید.</div><div class="grid" style="margin-top:12px"><div><label>Repository (owner/repo)</label><input id="dep_repo" dir="ltr"></div><div><label>Branch</label><input id="dep_branch" dir="ltr"></div><div><label>مسیر فایل در repository</label><input id="dep_path" dir="ltr"></div><div><label>GitHub token اختیاری</label><input id="dep_token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی / استفاده از GITHUB_TOKEN"></div><div class="wide"><label>مسیر کامل WSGI برای Reload اختیاری</label><input id="dep_reload" dir="ltr" placeholder="/var/www/USERNAME_pythonanywhere_com_wsgi.py"></div></div><div class="actions"><button onclick="saveDeploy()">ذخیره تنظیمات</button><button class="gray" onclick="cleanupAccount()">پاکسازی فضای بلااستفاده</button><button class="gray" onclick="installDeps()">پاکسازی و نصب سبک Playwright</button><button class="gray" onclick="deployCheck()">بررسی نسخه</button><button class="green" onclick="deployRun()">نصب نسخه تازه</button><button class="gray" onclick="deployRollback()">بازگشت به .bak</button></div><div id="deployStatus" class="status">ابتدا تنظیمات را ذخیره و سپس نسخه را بررسی کنید.</div></div></section>
@@ -1765,11 +1794,13 @@ function apply(c){if(!c)return;['url','pages','render','pagination','page_value'
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.8.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.9.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('proxy_mode').value=d.network.proxy_mode||'auto';$('worker_key').value=d.network.worker_key||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;openTab('results');}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
-function renderProfiles(){$('profileList').innerHTML=Object.entries(profiles).map(([n,c])=>`<div class="card"><b>${esc(n)}</b><br><small dir="ltr">${esc(c.url)}</small><div class="actions"><button onclick='loadProfile(${JSON.stringify(n)})'>بارگذاری</button><button class="gray" onclick='delProfile(${JSON.stringify(n)})'>حذف</button></div></div>`).join('')||'<div class="note">هنوز پروفایلی نیست.</div>'}
+function renderProfiles(){const entries=Object.entries(profiles);$('profileList').innerHTML=entries.map(([n,c])=>`<div class="card"><b>${esc(n)}</b><br><small dir="ltr">${esc(c.url)}</small><div class="actions"><button onclick='loadProfile(${JSON.stringify(n)})'>بارگذاری</button><button class="gray" onclick='delProfile(${JSON.stringify(n)})'>حذف</button></div></div>`).join('')||'<div class="note">هنوز پروفایلی نیست.</div>';$('profileSelect').innerHTML='<option value="">— پروفایل جدید —</option>'+entries.map(([n])=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+function loadSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}loadProfile(n)}
+function deleteSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}delProfile(n)}
 function loadProfile(n){apply(profiles[n]);document.querySelector('[data-tab="scrape"]').click()} async function delProfile(n){if(!confirm('حذف شود؟'))return;let d=await api('/api/profile/'+encodeURIComponent(n),{method:'DELETE'});profiles=d.profiles;renderProfiles()}
 async function loadJobs(){try{let d=await api('/api/extract/jobs');$('jobList').innerHTML=(d.jobs||[]).map(j=>`<div class="card"><b>${esc(j.id)}</b><br><small>وضعیت: ${esc(j.status)} · محصول: ${j.total||0} · صفحه بعد: ${j.next_page||'-'}</small><div class="actions">${j.status!=='completed'?`<button onclick="resumeJob('${esc(j.id)}')">ادامه</button>`:''}<button class="gray" onclick="deleteJob('${esc(j.id)}')">حذف</button></div></div>`).join('')||'<div class="note">صف خالی است.</div>'}catch(e){$('jobList').textContent=e.message}}
 async function resumeJob(id){try{$('jobList').textContent='در حال ادامه استخراج…';let d=await api('/api/extract/resume/'+encodeURIComponent(id),{method:'POST',body:'{}'});products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ عملیات ادامه یافت؛ ${d.total||0} محصول</span>`;openTab('results')}catch(e){$('jobList').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
@@ -1781,7 +1812,8 @@ async function needDeploySecret(){if(!deploySecret){deploySecret=prompt('رمز 
 async function backupSettings(){try{let secret=await needDeploySecret(),r=await fetch('/api/settings/backup',{method:'POST',headers:{'X-Deploy-Password':secret}});if(!r.ok){let d=await r.json();throw Error(d.error)}let blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='scraper4-settings.json';a.click();URL.revokeObjectURL(a.href);$('backupStatus').innerHTML='<span class="ok">پشتیبان دانلود شد.</span>'}catch(e){$('backupStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function restoreSettings(input){if(!input.files[0]||!confirm('همه تنظیمات و صف‌های فعلی جایگزین شوند؟'))return;try{let secret=await needDeploySecret(),f=new FormData();f.append('file',input.files[0]);let r=await fetch('/api/settings/restore',{method:'POST',headers:{'X-Deploy-Password':secret},body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);$('backupStatus').innerHTML='<span class="ok">'+esc(d.message)+'؛ صفحه در حال بارگذاری مجدد است.</span>';setTimeout(()=>location.reload(),900)}catch(e){$('backupStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
 async function importCSV(input){if(!input.files[0])return;let form=new FormData();form.append('file',input.files[0]);try{let r=await fetch('/api/import.csv',{method:'POST',body:form}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'ورود ناموفق');products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از CSV وارد شد</span>`;openTab('results')}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
-async function saveSettings(woo=false){let body={network:{timeout:+$('timeout').value,gap_ms:+$('gap_ms').value,proxy:$('proxy').value.trim(),verify_tls:$('verify_tls').checked}};if(woo)body.woocommerce={url:$('woo_url').value.trim(),consumer_key:$('woo_ck').value.trim(),consumer_secret:$('woo_cs').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify(body)});alert('ذخیره شد')}
+async function useMyWorker(){$('proxy').value='https://proxy.fazilat-ma.workers.dev';$('proxy_mode').value='relay';await saveSettings();alert('Worker واسط فعال شد')}
+async function saveSettings(woo=false){let body={network:{timeout:+$('timeout').value,gap_ms:+$('gap_ms').value,proxy:$('proxy').value.trim(),proxy_mode:$('proxy_mode').value,worker_key:$('worker_key').value.trim(),verify_tls:$('verify_tls').checked}};if(woo)body.woocommerce={url:$('woo_url').value.trim(),consumer_key:$('woo_ck').value.trim(),consumer_secret:$('woo_cs').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify(body)});alert('ذخیره شد')}
 async function wooTest(){try{$('wooStatus').textContent='در حال تست…';let d=await api('/api/woo/test',{method:'POST',body:'{}'});$('wooStatus').innerHTML='<span class="ok">اتصال موفق است.</span>'}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function wooQueue(){try{let d=await api('/api/woo/queue',{method:'POST',body:JSON.stringify({products,status:$('woo_product_status').value,update_existing:$('woo_update').checked})});$('wooStatus').innerHTML='<span class="ok">صف ساخته شد؛ اکنون «پردازش مرحله بعد» را بزنید.</span>';loadWooJobs()}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function loadWooJobs(){try{let d=await api('/api/woo/jobs');$('wooJobList').innerHTML=(d.jobs||[]).map(j=>`<div class="card"><b>${esc(j.id)}</b><br><small>${esc(j.status)} · پیشرفت ${j.cursor||0}/${j.total||0} · موفق ${j.sent||0} · خطا ${j.failed||0}</small><div class="actions">${j.status!=='completed'?`<button onclick="processWoo('${esc(j.id)}')">پردازش مرحله بعد</button>`:''}<button class="gray" onclick="deleteWoo('${esc(j.id)}')">حذف</button></div></div>`).join('')||'<div class="note">صفی وجود ندارد.</div>'}catch(e){$('wooStatus').textContent=e.message}}

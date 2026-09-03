@@ -61,10 +61,19 @@ echo "Home: $HOME_DIR"
 echo "Python: $PYTHON_BIN ($PYTHON_VERSION)"
 echo "Website: https://$DOMAIN"
 echo
-echo "Paste a NEW PythonAnywhere API token and press Enter."
-echo "The token will not be displayed."
-IFS= read -r -s -p "PythonAnywhere API token: " PA_API_TOKEN
-echo
+# Token lookup order: existing environment variable, protected token file,
+# then an interactive hidden prompt.
+PA_API_TOKEN="${PA_API_TOKEN:-}"
+if [ -z "$PA_API_TOKEN" ] && [ -s "${HOME_DIR}/.pythonanywhere_api_token" ]; then
+    PA_API_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/.pythonanywhere_api_token")"
+    echo "Using API token from ~/.pythonanywhere_api_token"
+fi
+if [ -z "$PA_API_TOKEN" ]; then
+    echo "Paste a NEW PythonAnywhere API token and press Enter."
+    echo "The token will not be displayed."
+    IFS= read -r -s -p "PythonAnywhere API token: " PA_API_TOKEN
+    echo
+fi
 
 PA_API_TOKEN="$(printf '%s' "$PA_API_TOKEN" | tr -d '[:space:]')"
 if [ -z "$PA_API_TOKEN" ]; then

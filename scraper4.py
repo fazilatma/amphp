@@ -53,6 +53,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import io
 import ipaddress
 import json
@@ -80,6 +81,7 @@ APP_VERSION = "1.0.0-py"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("SCRAPER_DATA_FILE", os.path.join(BASE_DIR, "scraper4_data.json"))
 PASSWORD = os.environ.get("SCRAPER_PASSWORD", "")
+DEPLOY_PASSWORD = os.environ.get("SCRAPER_DEPLOY_PASSWORD", "")
 MAX_PAGES_HARD = 50
 MAX_PRODUCTS_HARD = 2000
 MAX_HTML_BYTES = 12 * 1024 * 1024
@@ -152,7 +154,19 @@ def authorized() -> bool:
     if not supplied:
         auth = request.authorization
         supplied = auth.password if auth else ""
-    return bool(supplied) and hashlib.sha256(supplied.encode()).digest() == hashlib.sha256(PASSWORD.encode()).digest()
+    return bool(supplied) and hmac.compare_digest(supplied, PASSWORD)
+
+
+def deploy_authorized() -> bool:
+    """Authorize sensitive updater operations without locking the public UI."""
+    supplied = request.headers.get("X-Deploy-Password", "")
+    return bool(DEPLOY_PASSWORD and supplied and hmac.compare_digest(supplied, DEPLOY_PASSWORD))
+
+
+def deploy_auth_error():
+    if not DEPLOY_PASSWORD:
+        return jsonify(ok=False, error="رمز مدیریت نصب در WSGI تنظیم نشده است"), 503
+    return jsonify(ok=False, error="رمز مدیریت نصب نادرست است"), 401
 
 
 @app.before_request
@@ -979,6 +993,8 @@ def settings():
             if value is not None and not str(value).startswith("••••"):
                 data["woocommerce"][key] = str(value).strip()
     if isinstance(body.get("deploy"), dict):
+        if not deploy_authorized():
+            return deploy_auth_error()
         for key in ("repo", "branch", "path", "reload_file"):
             if key in body["deploy"]:
                 data["deploy"][key] = str(body["deploy"][key]).strip()
@@ -994,8 +1010,8 @@ def settings():
 
 @app.post("/api/deploy/check")
 def api_deploy_check():
-    if not PASSWORD:
-        return jsonify(ok=False, error="برای فعال‌شدن نصب‌کننده، SCRAPER_PASSWORD را در WSGI تنظیم کنید"), 403
+    if not deploy_authorized():
+        return deploy_auth_error()
     try:
         return jsonify(ok=True, **deploy_check())
     except (ValueError, FetchError, OSError) as exc:
@@ -1004,8 +1020,8 @@ def api_deploy_check():
 
 @app.post("/api/deploy/run")
 def api_deploy_run():
-    if not PASSWORD:
-        return jsonify(ok=False, error="برای فعال‌شدن نصب‌کننده، SCRAPER_PASSWORD را در WSGI تنظیم کنید"), 403
+    if not deploy_authorized():
+        return deploy_auth_error()
     try:
         return jsonify(ok=True, **deploy_install())
     except (ValueError, FetchError, OSError) as exc:
@@ -1014,8 +1030,8 @@ def api_deploy_run():
 
 @app.post("/api/deploy/rollback")
 def api_deploy_rollback():
-    if not PASSWORD:
-        return jsonify(ok=False, error="برای فعال‌شدن نصب‌کننده، SCRAPER_PASSWORD را در WSGI تنظیم کنید"), 403
+    if not deploy_authorized():
+        return deploy_auth_error()
     try:
         return jsonify(ok=True, **deploy_rollback())
     except (ValueError, FetchError, OSError) as exc:
@@ -1143,7 +1159,9 @@ let products=[],profiles={}; const $=id=>document.getElementById(id); const esc=
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('on'));b.classList.add('on');$(b.dataset.tab).classList.add('on')});
 function config(){let selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors}}
 function apply(c){if(!c)return;['url','pages','render','pagination','page_value','scrolls','detail_limit'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''})}
-async function api(path,opt={}){let r=await fetch(path,{headers:{'Content-Type':'application/json'},...opt});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
+async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
+let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
+async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
 async function init(){let d=await api('/api/config');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles()}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;$('rows').closest('.tablebox').scrollIntoView({behavior:'smooth',block:'start'});}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
@@ -1154,10 +1172,10 @@ function downloadCSV(){location.href='/api/export.csv'}
 async function saveSettings(woo=false){let body={network:{timeout:+$('timeout').value,gap_ms:+$('gap_ms').value,proxy:$('proxy').value.trim(),verify_tls:$('verify_tls').checked}};if(woo)body.woocommerce={url:$('woo_url').value.trim(),consumer_key:$('woo_ck').value.trim(),consumer_secret:$('woo_cs').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify(body)});alert('ذخیره شد')}
 async function wooTest(){try{$('wooStatus').textContent='در حال تست…';let d=await api('/api/woo/test',{method:'POST',body:'{}'});$('wooStatus').innerHTML='<span class="ok">اتصال موفق است.</span>'}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function wooSend(){if(!confirm('حداکثر ۲۰ محصول به صورت پیش‌نویس ساخته شود؟'))return;try{let d=await api('/api/woo/send',{method:'POST',body:JSON.stringify({products,status:'draft',limit:20})});$('wooStatus').textContent=`ارسال: ${d.sent.length}، ناموفق: ${d.failed.length}`;}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function saveDeploy(){let deploy={repo:$('dep_repo').value.trim(),branch:$('dep_branch').value.trim(),path:$('dep_path').value.trim(),reload_file:$('dep_reload').value.trim(),github_token:$('dep_token').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify({deploy})});$('dep_token').value='';$('deployStatus').innerHTML='<span class="ok">تنظیمات نصب ذخیره شد.</span>'}
-async function deployCheck(){try{$('deployStatus').textContent='در حال بررسی GitHub…';let d=await api('/api/deploy/check',{method:'POST',body:'{}'});$('deployStatus').innerHTML=`نسخه جاری: ${esc(d.version)}\nSHA محلی: ${esc(d.local_sha)}\nSHA راه دور: ${esc(d.remote_sha)}\n${d.update_available?'<span class="ok">نسخه متفاوت آماده نصب است.</span>':'نسخه محلی و راه دور یکسان‌اند.'}`;}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function deployRun(){if(!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;try{$('deployStatus').textContent='در حال دانلود، اعتبارسنجی و نصب…';let d=await api('/api/deploy/run',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد.':'در صورت تنظیم‌نبودن WSGI، از تب Web دکمه Reload را بزنید.');}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function deployRollback(){if(!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{let d=await api('/api/deploy/rollback',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>';}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function saveDeploy(){let deploy={repo:$('dep_repo').value.trim(),branch:$('dep_branch').value.trim(),path:$('dep_path').value.trim(),reload_file:$('dep_reload').value.trim(),github_token:$('dep_token').value.trim()};await deployApi('/api/settings',{method:'POST',body:JSON.stringify({deploy})});$('dep_token').value='';$('deployStatus').innerHTML='<span class="ok">تنظیمات نصب ذخیره شد.</span>'}
+async function deployCheck(){try{$('deployStatus').textContent='در حال بررسی GitHub…';let d=await deployApi('/api/deploy/check',{method:'POST',body:'{}'});$('deployStatus').innerHTML=`نسخه جاری: ${esc(d.version)}\nSHA محلی: ${esc(d.local_sha)}\nSHA راه دور: ${esc(d.remote_sha)}\n${d.update_available?'<span class="ok">نسخه متفاوت آماده نصب است.</span>':'نسخه محلی و راه دور یکسان‌اند.'}`;}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function deployRun(){if(!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;try{$('deployStatus').textContent='در حال دانلود، اعتبارسنجی و نصب…';let d=await deployApi('/api/deploy/run',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد.':'در صورت تنظیم‌نبودن WSGI، از تب Web دکمه Reload را بزنید.');}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function deployRollback(){if(!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{let d=await deployApi('/api/deploy/rollback',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>';}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 init().catch(e=>$('status').textContent=e.message);
 </script></body></html>'''
 

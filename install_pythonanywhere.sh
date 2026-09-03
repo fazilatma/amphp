@@ -58,7 +58,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then "$SYSTEM_PY" -m venv "$VENV_DIR"; fi
 VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
 # Free-plan quota: clear only disposable caches and install packages used by this app.
 rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
-PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright basalam-sdk
+PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright basalam-sdk cloudscraper curl_cffi
 BROWSER_PATH="$APP_DIR/ms-playwright"
 export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
 echo "Installing the smaller Chromium Headless Shell for Playwright..."
@@ -71,7 +71,7 @@ if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
   echo "WARNING: Browser download failed in both locations. Direct HTML extraction remains available; retry with the in-app lightweight installer."
  fi
 fi
-"$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright,basalam_sdk; print("Required scraper dependencies OK")'
+"$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright,basalam_sdk,cloudscraper,curl_cffi; print("Required scraper dependencies OK")'
 "$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
 SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"
 

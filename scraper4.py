@@ -78,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Keep browser installation and runtime lookup in the same quota-controlled folder.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get("SCRAPER_PLAYWRIGHT_PATH", os.path.join(BASE_DIR, "ms-playwright"))
@@ -123,6 +123,9 @@ def default_data() -> dict[str, Any]:
         "woo_jobs": {},
         "runtime": {"playwright_path": ""},
         "ai": {"provider": "openrouter", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "api_key": "", "model": "meta-llama/llama-3.3-70b-instruct:free", "temperature": 0.3},
+        "ai_providers": {},
+        "basalam": {"token": "", "refresh_token": "", "vendor_id": 0, "category_id": 0, "preparation_days": 3, "weight": 500, "stock": 10, "update_existing": True},
+        "bsl_jobs": {},
     }
 
 
@@ -458,10 +461,19 @@ def _html_product(node: Tag, base: str, selectors: Optional[dict[str, str]] = No
     if not title:
         candidate = node.select_one("h1,h2,h3,h4,[class*='title'],[class*='name'],a[title]")
         title = clean_text((candidate.get("title") if candidate else "") or (candidate.get_text(" ", strip=True) if candidate else ""))
+    if not title:
+        image_title = node.find("img")
+        title = clean_text((image_title.get("alt") or image_title.get("title")) if image_title else "")
+    if not title:
+        pieces = [clean_text(x) for x in node.stripped_strings]
+        pieces = [x for x in pieces if len(x) > 3 and not re.fullmatch(r"[%0-9,،٬.٫ تومانریال]+", x)]
+        title = max(pieces, key=len, default="")
     price = extract_price(select_value(node, selectors.get("price", ""), "price", base))
     if not price:
         candidate = node.select_one("[class*='price'],[class*='amount'],ins,[itemprop='price']")
         price = extract_price((candidate.get("content") or candidate.get_text(" ", strip=True)) if candidate else "")
+    if not price:
+        price = extract_price(node.get_text(" ", strip=True))
     link = select_value(node, selectors.get("link", ""), "link", base)
     if not link:
         candidate = node if node.name == "a" and node.get("href") else node.find("a", href=True)
@@ -494,6 +506,18 @@ def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None)
                 candidates = nested
         for node in candidates:
             add_product(store, _html_product(node, base, selectors))
+    if not store:
+        # PHP-style last fallback: product links with images are reliable even
+        # when a shop uses unknown generated class names (e.g. barfbox.ir).
+        for link in soup.select("a[href*='/product/'],a[href*='/products/'],a[href*='/shop/']"):
+            if not link.find("img") and not link.select_one("[class*='price']"): continue
+            node: Tag = link
+            for _ in range(5):
+                parent=node.parent
+                if not isinstance(parent,Tag): break
+                node=parent
+                if node.find("img") and extract_price(node.get_text(" ",strip=True)): break
+            add_product(store,_html_product(node,base,selectors))
     return list(store.values()), soup, {"selector_matches": len(selector_rows), "dom_products": len(store), "html_bytes": len(text.encode("utf-8", "ignore"))}
 
 
@@ -772,6 +796,24 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
             except (FetchError, ValueError):
                 continue
         report.logs.append(f"جزئیات {enriched} محصول ناقص بررسی شد")
+    rules=config.get("profile_rules") if isinstance(config.get("profile_rules"),dict) else {}
+    suffix=clean_text(rules.get("title_suffix"));prefix=clean_text(rules.get("title_prefix"));mode=str(rules.get("price_mode","none"));value=float(rules.get("price_value",0) or 0);step=max(0,int(rules.get("price_round",0) or 0));default_stock=clean_text(rules.get("default_stock"));default_category=clean_text(rules.get("default_category"))
+    for product in report.products.values():
+        title=clean_text(product.get("title"))
+        if prefix and not title.startswith(prefix):title=prefix+" "+title
+        if suffix and not title.endswith(suffix):title=title+" "+suffix
+        product["title"]=title
+        raw=woo_price(product.get("source_price") or product.get("price"));product["source_price"]=raw
+        price=float(raw or 0)
+        if mode=="percent":price*=1+value/100
+        elif mode=="multiplier":price*=value
+        elif mode=="fixed":price+=value
+        if step:price=round(price/step)*step
+        if price>0:product["price"]=str(max(0,round(price)))
+        if default_stock and product.get("stock") in (None,""):product["stock"]=default_stock
+        if default_category and not product.get("category"):product["category"]=default_category
+        if rules.get("bsl_category_id"):product["basalam_category_id"]=int(rules["bsl_category_id"])
+        if rules.get("woo_category_id"):product["woo_category_id"]=int(rules["woo_category_id"])
     save_extract_checkpoint(job_id, config, report, report.pages + 1, next_url, "completed")
     return report
 
@@ -1402,7 +1444,7 @@ def api_deploy_dependencies():
     if not deploy_authorized(): return deploy_auth_error()
     # Only runtime requirements are installed. Selenium/cloudscraper/html5lib were
     # unused and consumed scarce free-plan quota.
-    packages = ["flask", "requests", "beautifulsoup4", "lxml", "playwright"]
+    packages = ["flask", "requests", "beautifulsoup4", "lxml", "playwright", "basalam-sdk"]
     env = dict(os.environ); browser_root = os.path.join(BASE_DIR, "ms-playwright")
     env["PLAYWRIGHT_BROWSERS_PATH"] = browser_root
     env["PIP_NO_CACHE_DIR"] = "1"
@@ -1488,6 +1530,26 @@ def ai_chat(prompt: str) -> str:
     body=response.json()
     try:return str(body["choices"][0]["message"]["content"])
     except (KeyError,IndexError,TypeError):raise FetchError("پاسخ ارائه‌دهنده هوش مصنوعی قابل خواندن نیست")
+
+
+@app.post("/api/ai/providers/import")
+def api_ai_providers_import():
+    if not deploy_authorized():return deploy_auth_error()
+    upload=request.files.get("file")
+    if not upload:return jsonify(ok=False,error="فایل ارائه‌دهندگان ارسال نشده است"),400
+    try:
+        raw=upload.read(2*1024*1024+1)
+        if len(raw)>2*1024*1024:raise ValueError("فایل بزرگ‌تر از ۲ مگابایت است")
+        payload=json.loads(raw.decode("utf-8-sig"));providers=payload
+        if isinstance(payload,dict) and isinstance(payload.get("files"),dict):providers=php_file_json(payload["files"],"ai_providers.json")
+        if not isinstance(providers,dict) or not providers:raise ValueError("ساختار ai_providers.json معتبر نیست")
+        data=load_data();data["ai_providers"]=providers
+        first=next((v for v in providers.values() if isinstance(v,dict) and v.get("enabled",True)),None)
+        if first:
+            models=first.get("models",[]);model=models[0].get("id","") if models and isinstance(models[0],dict) else ""
+            data["ai"].update({"provider":first.get("id",first.get("name","custom")),"endpoint":first.get("endpoint",first.get("url","")),"api_key":first.get("apiKey",first.get("api_key","")),"model":model})
+        save_data(data);return jsonify(ok=True,count=len(providers),ai=ai_public_config(data))
+    except (ValueError,TypeError,json.JSONDecodeError) as exc:return jsonify(ok=False,error=str(exc)),400
 
 
 @app.get("/api/ai/config")
@@ -1681,6 +1743,45 @@ def settings_backup():
     return Response(json.dumps(payload,ensure_ascii=False,indent=2),mimetype="application/json",headers={"Content-Disposition":f'attachment; filename="scraper4-settings-{time.strftime("%Y%m%d-%H%M%S")}.json"',"Cache-Control":"no-store"})
 
 
+def php_file_json(files: dict[str, Any], name: str) -> Any:
+    meta=files.get(name)
+    if not isinstance(meta,dict) or not meta.get("b64"):return None
+    try:return json.loads(base64.b64decode(str(meta["b64"]),validate=True).decode("utf-8-sig"))
+    except (ValueError,TypeError,UnicodeDecodeError,json.JSONDecodeError):return None
+
+
+def convert_php_profile(row: dict[str, Any]) -> dict[str, Any]:
+    selectors=row.get("selectors") if isinstance(row.get("selectors"),dict) else {}
+    detail=row.get("detailSelectors") or row.get("detail_selectors") or {}
+    if isinstance(detail,dict):
+        detail={str(k):(str(v.get("selector",'')) if isinstance(v,dict) and v.get("enabled",True) else (str(v) if not isinstance(v,dict) else '')) for k,v in detail.items()}
+    rules={"title_suffix":row.get("titleSuffix",row.get("title_suffix","")),"title_prefix":row.get("titlePrefix",row.get("title_prefix","")),"price_mode":row.get("priceMode",row.get("price_mode","none")),"price_value":row.get("priceVal",row.get("price_value",0)),"price_round":row.get("roundPrice",row.get("price_round",0)),"default_stock":row.get("stock_quantity",row.get("default_stock","")),"default_category":row.get("category",row.get("bslCategoryId","")),"bsl_category_id":row.get("bslCategoryId",0),"woo_category_id":row.get("wooCategoryId",0)}
+    pag_type=str(row.get("pagType",row.get("pagination","query")));pag_map={"param":"query","query":"query","path":"path","next":"next"}
+    return {"url":row.get("url",row.get("list_url","")),"pages":int(row.get("pages",row.get("maxPages",1)) or 1),"render":"auto","pagination":pag_map.get(pag_type,"query"),"page_value":row.get("pagVal",row.get("pageParam","page")),"scrolls":4,"enrich":bool(detail),"detail_limit":int(row.get("detailLimit",20) or 20),"selectors":selectors,"detail_selectors":detail if isinstance(detail,dict) else {},"profile_rules":rules}
+
+
+def convert_php_bundle(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    files=payload.get("files") if isinstance(payload.get("files"),dict) else {};data=load_data();restored=[]
+    profiles=php_file_json(files,"profiles.json")
+    if isinstance(profiles,dict):
+        data["profiles"]={str(k):convert_php_profile(v) for k,v in profiles.items() if isinstance(v,dict)};restored.append("profiles.json")
+    connections=php_file_json(files,"connections.json")
+    if isinstance(connections,dict):
+        woo=connections.get("woocommerce",{});bsl=connections.get("basalam",{})
+        if isinstance(woo,dict):data["woocommerce"].update({"url":woo.get("store_url",woo.get("url","")),"consumer_key":woo.get("consumer_key",""),"consumer_secret":woo.get("consumer_secret","")})
+        if isinstance(bsl,dict):data["basalam"].update({k:bsl[k] for k in data["basalam"] if k in bsl})
+        restored.append("connections.json")
+    providers=php_file_json(files,"ai_providers.json")
+    if isinstance(providers,dict):
+        data["ai_providers"]=providers
+        first=next((v for v in providers.values() if isinstance(v,dict) and v.get("enabled",True)),None)
+        if first:
+            models=first.get("models",[]);model=models[0].get("id","") if models and isinstance(models[0],dict) else ""
+            data["ai"].update({"provider":first.get("id",first.get("name","custom")),"endpoint":first.get("endpoint",first.get("url","")),"api_key":first.get("apiKey",first.get("api_key","")),"model":model})
+        restored.append("ai_providers.json")
+    return data,restored
+
+
 @app.post("/api/settings/restore")
 def settings_restore():
     if not deploy_authorized(): return deploy_auth_error()
@@ -1690,9 +1791,13 @@ def settings_restore():
     if len(raw)>20*1024*1024:return jsonify(ok=False,error="فایل پشتیبان بزرگ‌تر از ۲۰ مگابایت است"),400
     try:
         payload=json.loads(raw.decode("utf-8-sig")); restored=payload.get("data") if isinstance(payload,dict) else None
-        if payload.get("format")!="scraper4-settings" or not isinstance(restored,dict):raise ValueError("این فایل، پشتیبان معتبر Scraper4 نیست")
-        defaults=default_data(); clean={}
-        for key,default in defaults.items():clean[key]=restored.get(key,default) if isinstance(restored.get(key,default),type(default)) else default
+        if isinstance(payload,dict) and isinstance(payload.get("files"),dict):
+            clean,php_restored=convert_php_bundle(payload)
+            if not php_restored:raise ValueError("بسته PHP خوانده شد اما profiles.json، connections.json یا ai_providers.json معتبر نداشت")
+        else:
+            if payload.get("format")!="scraper4-settings" or not isinstance(restored,dict):raise ValueError("فایل تنظیمات معتبر Python یا بسته PHP نیست")
+            defaults=default_data(); clean={}
+            for key,default in defaults.items():clean[key]=restored.get(key,default) if isinstance(restored.get(key,default),type(default)) else default
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE,"rb") as src: atomic_write(DATA_FILE+".restore.bak",src.read())
         save_data(clean)
@@ -1731,6 +1836,90 @@ def api_import_csv():
         return jsonify(ok=True,products=products,total=len(products))
     except ValueError as exc:return jsonify(ok=False,error=str(exc)),400
 
+
+
+def basalam_client():
+    cfg=load_data().get("basalam",{});token=str(cfg.get("token",""));refresh=str(cfg.get("refresh_token",""))
+    if not token:raise ValueError("توکن باسلام تنظیم نشده است")
+    try:
+        from basalam_sdk import BasalamClient, PersonalToken
+    except ImportError as exc:raise ValueError("SDK رسمی باسلام نصب نیست؛ از بخش بروزرسانی، نصب وابستگی‌ها را اجرا کنید") from exc
+    return BasalamClient(auth=PersonalToken(token=token,refresh_token=refresh))
+
+
+def basalam_photo_files(product: dict[str,Any]) -> list[io.BytesIO]:
+    urls=list(product.get("images",[])) if isinstance(product.get("images"),list) else []
+    if product.get("image") and product["image"] not in urls:urls.insert(0,product["image"])
+    network=load_data().get("network",{});proxy=clean_text(network.get("proxy"));mode=clean_text(network.get("proxy_mode","auto"))
+    if mode=="auto" and "workers.dev" in proxy:mode="relay"
+    files=[]
+    for index,url in enumerate(urls[:5]):
+        try:
+            public_http_url(url);request_url=url;headers={"User-Agent":USER_AGENT}
+            if proxy and mode=="relay":
+                relay=public_http_url(proxy);request_url=relay+("&" if "?" in relay else "?")+urlencode({"url":url});headers["X-Proxy-UA"]=USER_AGENT
+                if network.get("worker_key"):headers["X-Proxy-Key"]=str(network["worker_key"])
+            response=requests.get(request_url,headers=headers,timeout=30)
+            if not response.ok or len(response.content)>10*1024*1024:continue
+            stream=io.BytesIO(response.content);ext=os.path.splitext(urlparse(url).path)[1].lower()
+            stream.name=f"product-{index}{ext if ext in {'.jpg','.jpeg','.png','.webp'} else '.jpg'}";files.append(stream)
+        except Exception:continue
+    return files
+
+
+def basalam_send_one(product: dict[str,Any]) -> dict[str,Any]:
+    from basalam_sdk.core.models import ProductRequestSchema, GetVendorProductsSchema
+    cfg=load_data().get("basalam",{});vendor=int(cfg.get("vendor_id",0));category=int(product.get("basalam_category_id") or cfg.get("category_id",0))
+    if not vendor or not category:raise ValueError("شناسه غرفه و دسته‌بندی پیش‌فرض باسلام لازم است")
+    client=basalam_client();sku=clean_text(product.get("sku"));existing=None
+    if cfg.get("update_existing",True) and sku:
+        found=client.get_vendor_products_sync(vendor,GetVendorProductsSchema(skus=[sku],per_page=10))
+        existing=next((x for x in (found.data or []) if clean_text(getattr(x,"sku",""))==sku),None)
+    req=ProductRequestSchema(name=clean_text(product.get("title"))[:250],brief=clean_text(product.get("short_desc"))[:600],description=clean_text(product.get("long_desc"))[:10000],category_id=category,preparation_days=max(1,int(cfg.get("preparation_days",3))),weight=float(re.sub(r"[^0-9.]","",clean_text(product.get("weight"))) or cfg.get("weight",500)),package_weight=int(cfg.get("package_weight",0) or 0) or None,primary_price=int(woo_price(product.get("price"))),stock=int(re.sub(r"\D","",clean_text(product.get("stock"))) or cfg.get("stock",10)),sku=sku or None)
+    photos=basalam_photo_files(product)
+    try:
+        result=client.update_product_sync(int(existing.id),req,photo_files=photos or None) if existing else client.create_product_sync(vendor,req,photo_files=photos or None)
+        return {"source":product.get("title"),"id":getattr(result,"id",None),"action":"updated" if existing else "created","photos":len(photos)}
+    finally:
+        for photo in photos:
+            try: photo.close()
+            except Exception: pass
+
+
+@app.get("/api/basalam/config")
+def api_basalam_config():
+    if not deploy_authorized():return deploy_auth_error()
+    cfg=dict(load_data().get("basalam",{}))
+    for k in ("token","refresh_token"):
+        if cfg.get(k):cfg[k]="••••"+str(cfg[k])[-4:]
+    return jsonify(ok=True,basalam=cfg)
+
+
+@app.post("/api/basalam/settings")
+def api_basalam_settings():
+    if not deploy_authorized():return deploy_auth_error()
+    incoming=(request.get_json(silent=True) or {}).get("basalam",{});data=load_data();cfg=data.setdefault("basalam",default_data()["basalam"])
+    for k,v in incoming.items():
+        if k in cfg and not (k in {"token","refresh_token"} and str(v).startswith("••••")):cfg[k]=v
+    save_data(data);return jsonify(ok=True)
+
+
+@app.post("/api/basalam/test")
+def api_basalam_test():
+    if not deploy_authorized():return deploy_auth_error()
+    try:
+        user=basalam_client().get_current_user_sync();return jsonify(ok=True,user=str(getattr(user,"name",getattr(user,"id","connected"))))
+    except Exception as exc:return jsonify(ok=False,error=str(exc)),400
+
+
+@app.post("/api/basalam/send")
+def api_basalam_send():
+    if not deploy_authorized():return deploy_auth_error()
+    body=request.get_json(silent=True) or {};limit=max(1,min(5,int(body.get("limit",3))));data=load_data();sent=[];failed=[]
+    for product in data.get("last_result",[])[:limit]:
+        try:sent.append(basalam_send_one(product))
+        except Exception as exc:failed.append({"title":product.get("title"),"error":str(exc)[:400]})
+    return jsonify(ok=not failed,sent=sent,failed=failed)
 
 
 @app.post("/api/woo/test")
@@ -1820,8 +2009,8 @@ INDEX_HTML = r'''<!doctype html>
 .hamburger-btn{position:fixed;top:10px;right:10px;z-index:10050;width:44px;height:44px;padding:0;border-radius:12px;background:#1e293b;border:1px solid #475569;color:#e2e8f0;font-size:22px;display:grid;place-items:center}.settings-overlay{position:fixed;inset:0;background:#0009;z-index:9998;display:none}.settings-overlay.open{display:block}.settings-panel{position:fixed;top:0;right:-430px;width:410px;max-width:94vw;height:100dvh;background:#0f172a;border-left:1px solid #334155;z-index:10000;overflow-y:auto;transition:right .25s}.settings-panel.open{right:0}.settings-panel-head{position:sticky;top:0;z-index:5;background:#1e293b;padding:12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155}.settings-panel-head h2{margin:0;font-size:16px}.settings-panel-body{padding:10px}.admin-nav{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px}.admin-nav button{font-size:12px;padding:8px}.admin-section{display:none}.admin-section.admin-on{display:block}.hamburger-btn.active{background:#3b82f6;color:#08111e}@media(max-width:640px){.settings-panel{width:100%;max-width:100%;right:-100%}.hamburger-btn{top:8px;right:8px}}
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 64px 12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
-</style></head><body><button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSettingsPanel()" aria-label="تنظیمات عمومی">☰</button><div class="settings-overlay" id="settingsOverlay" onclick="toggleSettingsPanel(false)"></div><aside class="settings-panel" id="settingsPanel"><div class="settings-panel-head"><h2>☰ تنظیمات عمومی</h2><button class="gray" onclick="toggleSettingsPanel(false)">✕</button></div><div class="settings-panel-body"><div class="admin-nav"><button onclick="showAdmin('settings')">🌐 اتصال مبدأ</button><button onclick="showAdmin('aiAdmin')">🤖 هوش مصنوعی</button><button onclick="showAdmin('profiles')">☆ پروفایل‌ها</button><button onclick="showAdmin('jobs')">◷ صف‌ها</button><button onclick="showAdmin('deploy')">↻ بروزرسانی</button><button onclick="showAdmin('files');browseFiles('')">📁 فایل‌ها</button></div><section id="aiAdmin" class="admin-section"><div class="card"><h3>🤖 اتصال هوش مصنوعی</h3><div class="grid"><div><label>ارائه‌دهنده</label><select id="ai_provider" onchange="aiProviderPreset()"><option value="openrouter">OpenRouter</option><option value="groq">Groq</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI-compatible</option></select></div><div><label>مدل</label><input id="ai_model" dir="ltr"></div><div class="wide"><label>Endpoint</label><input id="ai_endpoint" dir="ltr"></div><div class="wide"><label>API Key</label><input id="ai_key" type="password" dir="ltr"></div><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div></div><div class="actions"><button onclick="saveAI()">ذخیره اتصال</button><button class="gray" onclick="testAI()">تست</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div><div id="aiStatus" class="status"></div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v2.0.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+</style></head><body><button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSettingsPanel()" aria-label="تنظیمات عمومی">☰</button><div class="settings-overlay" id="settingsOverlay" onclick="toggleSettingsPanel(false)"></div><aside class="settings-panel" id="settingsPanel"><div class="settings-panel-head"><h2>☰ تنظیمات عمومی</h2><button class="gray" onclick="toggleSettingsPanel(false)">✕</button></div><div class="settings-panel-body"><div class="admin-nav"><button onclick="showAdmin('settings')">🌐 اتصال مبدأ</button><button onclick="showAdmin('aiAdmin')">🤖 هوش مصنوعی</button><button onclick="showAdmin('basalamAdmin');loadBasalam()">🛍️ اتصال باسلام</button><button onclick="showAdmin('profiles')">☆ پروفایل‌ها</button><button onclick="showAdmin('jobs')">◷ صف‌ها</button><button onclick="showAdmin('deploy')">↻ بروزرسانی</button><button onclick="showAdmin('files');browseFiles('')">📁 فایل‌ها</button></div><section id="basalamAdmin" class="admin-section"><div class="card"><h3>🛍️ SDK رسمی باسلام</h3><div class="grid"><div><label>شناسه غرفه</label><input id="bsl_vendor" type="number"></div><div><label>دسته‌بندی پیش‌فرض</label><input id="bsl_category" type="number"></div><div class="wide"><label>Personal Token</label><input id="bsl_token" type="password" dir="ltr"></div><div class="wide"><label>Refresh Token</label><input id="bsl_refresh" type="password" dir="ltr"></div><div><label>زمان آماده‌سازی</label><input id="bsl_days" type="number" value="3"></div><div><label>وزن پیش‌فرض گرم</label><input id="bsl_weight" type="number" value="500"></div><div><label>موجودی پیش‌فرض</label><input id="bsl_stock" type="number" value="10"></div><div><label><input id="bsl_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="testBasalam()">تست SDK</button></div><div id="bslAdminStatus" class="status"></div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><h3>🤖 اتصال هوش مصنوعی</h3><div class="grid"><div><label>ارائه‌دهنده</label><select id="ai_provider" onchange="aiProviderPreset()"><option value="openrouter">OpenRouter</option><option value="groq">Groq</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI-compatible</option></select></div><div><label>مدل</label><input id="ai_model" dir="ltr"></div><div class="wide"><label>Endpoint</label><input id="ai_endpoint" dir="ltr"></div><div class="wide"><label>API Key</label><input id="ai_key" type="password" dir="ltr"></div><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div></div><div class="actions"><button onclick="saveAI()">ذخیره اتصال</button><label class="file-btn">بارگذاری ai_providers.json<input type="file" accept=".json" onchange="importAIProviders(this)"></label><button class="gray" onclick="testAI()">تست</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div><div id="aiStatus" class="status"></div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v2.1.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
 <section id="scrape" class="pane on"><div class="card"><h3>☆ انتخاب پروفایل</h3><div class="grid"><div><label>پروفایل ذخیره‌شده</label><select id="profileSelect"><option value="">— پروفایل جدید —</option></select></div></div><div class="actions"><button onclick="loadSelectedProfile()">بارگذاری پروفایل</button><button class="gray" onclick="saveProfilePrompt()">ذخیره پروفایل فعلی</button><button class="gray" onclick="deleteSelectedProfile()">حذف پروفایل</button></div></div><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
@@ -1837,6 +2026,7 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <div><label>ظرف محصول *</label><input id="sel_container" dir="ltr" placeholder="article.product"></div><div><label>عنوان</label><input id="sel_title" dir="ltr" placeholder="h2.title"></div><div><label>قیمت</label><input id="sel_price" dir="ltr" placeholder=".price"></div><div><label>لینک</label><input id="sel_link" dir="ltr" placeholder="a"></div><div><label>تصویر</label><input id="sel_image" dir="ltr" placeholder="img"></div><div><label>SKU</label><input id="sel_sku" dir="ltr"></div>
 </div><h3 class="section-mini">سلکتورهای صفحه جزئیات</h3><div class="grid grid4"><div><label>گالری تصاویر</label><input id="det_gallery" dir="ltr" placeholder=".gallery img"></div><div><label>تنوع‌ها</label><input id="det_variations" dir="ltr" placeholder=".variations | .sizes"></div><div><label>وزن</label><input id="det_weight" dir="ltr"></div><div><label>دسته‌بندی</label><input id="det_category" dir="ltr"></div><div><label>قیمت جزئیات</label><input id="det_price" dir="ltr"></div><div><label>موجودی</label><input id="det_stock" dir="ltr"></div><div><label>برند</label><input id="det_brand" dir="ltr"></div><div><label>SKU</label><input id="det_sku" dir="ltr"></div><div><label>توضیح کوتاه</label><input id="det_short_desc" dir="ltr"></div><div><label>توضیح بلند</label><input id="det_long_desc" dir="ltr"></div></div></div></details><div class="primary-actions actions"><button id="runBtn" onclick="runScrape()">🚀 شروع برداشت</button><button class="gray" onclick="saveProfilePrompt()">☆ ذخیره پروفایل</button><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button><label class="file-btn">↑ ورود CSV<input id="csvImport" type="file" accept=".csv,text/csv" onchange="importCSV(this)"></label></div>
 <div id="status" class="card status">آماده برای برداشت محصولات</div><div class="card tablebox"><table><thead><tr><th>#</th><th>تصویر</th><th>عنوان</th><th>قیمت</th><th>SKU</th><th>لینک</th></tr></thead><tbody id="rows"><tr><td class="empty" colspan="6">پس از شروع برداشت، محصولات اینجا نمایش داده می‌شوند.</td></tr></tbody></table></div></section>
+<section id="profileSettings" class="pane"><div class="card"><h3>⚙️ تنظیمات پروفایل</h3><div class="grid grid4"><div><label>پیشوند عنوان</label><input id="rule_title_prefix"></div><div><label>پسوند عنوان</label><input id="rule_title_suffix"></div><div><label>نوع تعدیل قیمت</label><select id="rule_price_mode"><option value="none">بدون تغییر</option><option value="percent">درصد</option><option value="multiplier">ضریب</option><option value="fixed">مبلغ ثابت</option></select></div><div><label>مقدار تعدیل</label><input id="rule_price_value" type="number" step="0.01" value="0"></div><div><label>گردکردن قیمت</label><input id="rule_price_round" type="number" value="0" placeholder="مثلاً 1000"></div><div><label>موجودی پیش‌فرض</label><input id="rule_default_stock" type="number"></div><div><label>دسته‌بندی پیش‌فرض</label><input id="rule_default_category"></div><div><label>شناسه دسته باسلام</label><input id="rule_bsl_category_id" type="number"></div><div><label>شناسه دسته ووکامرس</label><input id="rule_woo_category_id" type="number"></div></div><div class="note">این تنظیمات همراه پروفایل ذخیره و روی نتایج همان پروفایل اعمال می‌شوند.</div></div></section>
 <section id="selectors" class="pane"><div id="selectorsMount"></div></section>
 <section id="results" class="pane"><div class="primary-actions actions"><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button></div><div id="resultsMount"></div></section>
 <section id="imports" class="pane"><div class="card"><h3>📥 درون‌ریزی و نگاشت CSV</h3><div class="note">ابتدا فایل را پیش‌نمایش کنید، سپس ستون هر فیلد و تعدیل قیمت/عنوان را مشخص کنید.</div><div class="actions"><label class="file-btn">انتخاب CSV<input id="advancedCsv" type="file" accept=".csv,text/csv" onchange="previewImport(this)"></label></div><div id="importMap" class="grid grid4" style="margin-top:14px"></div><div id="importOptions" class="grid" style="display:none;margin-top:14px"><div><label>ضریب قیمت</label><input id="impMul" type="number" step="0.01" value="1"></div><div><label>مبلغ ثابت افزوده</label><input id="impAdd" type="number" value="0"></div><div><label>پیشوند عنوان</label><input id="impPrefix"></div><div><label>پسوند عنوان</label><input id="impSuffix"></div><div><label>شیوه ورود</label><select id="impMode"><option value="replace">جایگزینی نتایج</option><option value="append">افزودن/بروزرسانی نتایج</option></select></div></div><div id="importPreview" class="status" style="display:none;margin-top:14px"></div><div class="actions"><button id="applyImportBtn" style="display:none" onclick="applyImport()">اجرای درون‌ریزی</button></div></div></section>
@@ -1846,21 +2036,26 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
 <section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>پروکسی یا Worker واسط</label><input id="proxy" dir="ltr" placeholder="https://proxy.example.workers.dev"></div><div><label>نوع اتصال</label><select id="proxy_mode"><option value="auto">تشخیص خودکار</option><option value="relay">Worker با پارامتر url</option><option value="http">HTTP CONNECT Proxy</option><option value="direct">مستقیم</option></select></div><div><label>کلید Worker، اختیاری</label><input id="worker_key" type="password" dir="ltr"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button><button class="green" onclick="useMyWorker()">فعال‌سازی Worker شما</button></div></div>
 <div class="card note"><b>روش استخراج نسخه PHP:</b> HTML صفحه دریافت و سلکتورهای CSS روی DOM اجرا می‌شوند. در سایت‌های JavaScript، Playwright ابتدا DOM کامل را رندر می‌کند. هیچ API محصول یا hydration استفاده نمی‌شود.</div></section>
-<section id="woo" class="pane"><div class="card"><h3>اتصال و صف ووکامرس</h3><div class="grid"><div class="wide"><label>URL فروشگاه</label><input id="woo_url" dir="ltr"></div><div><label>Consumer key</label><input id="woo_ck" dir="ltr"></div><div><label>Consumer secret</label><input id="woo_cs" type="password" dir="ltr"></div><div><label>وضعیت محصول</label><select id="woo_product_status"><option value="draft">پیش‌نویس</option><option value="publish">انتشار</option><option value="pending">در انتظار بررسی</option><option value="private">خصوصی</option></select></div><div><label>تعداد هر مرحله</label><input id="woo_batch" type="number" min="1" max="25" value="10"></div><div><label><input id="woo_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست</button><button class="green" onclick="wooQueue()">افزودن نتایج به صف</button><button class="gray" onclick="loadWooJobs()">تازه‌سازی صف</button></div><div id="wooStatus" class="status">صف مرحله‌ای برای سازگاری با محدودیت اجرای PythonAnywhere</div><div id="wooJobList"></div></div></section>
+<section id="woo" class="pane"><div class="card"><h3>اتصال و صف ووکامرس</h3><div class="grid"><div class="wide"><label>URL فروشگاه</label><input id="woo_url" dir="ltr"></div><div><label>Consumer key</label><input id="woo_ck" dir="ltr"></div><div><label>Consumer secret</label><input id="woo_cs" type="password" dir="ltr"></div><div><label>وضعیت محصول</label><select id="woo_product_status"><option value="draft">پیش‌نویس</option><option value="publish">انتشار</option><option value="pending">در انتظار بررسی</option><option value="private">خصوصی</option></select></div><div><label>تعداد هر مرحله</label><input id="woo_batch" type="number" min="1" max="25" value="10"></div><div><label><input id="woo_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست</button><button class="green" onclick="wooQueue()">افزودن نتایج به صف</button><button class="gray" onclick="loadWooJobs()">تازه‌سازی صف</button></div><div id="wooStatus" class="status">صف مرحله‌ای برای سازگاری با محدودیت اجرای PythonAnywhere</div><div id="wooJobList"></div></div><div class="card"><h3>🛍️ ارسال با SDK رسمی باسلام</h3><div class="note">ایجاد یا ویرایش بر اساس SKU؛ هر مرحله حداکثر ۵ محصول برای حساب رایگان.</div><div class="actions"><button class="green" onclick="sendBasalam()">ارسال ۳ محصول به باسلام</button></div><div id="bslSendStatus" class="status"></div></div></section>
 <section id="deploy" class="pane"><div class="card"><h3>نصب‌کننده اتمیک از GitHub</h3><div class="note">نسخه تازه پیش از نصب با کامپایل Python بررسی می‌شود. نسخه فعلی در <code>scraper4.py.bak</code> می‌ماند. برای repository خصوصی بهتر است متغیر محیطی <code>GITHUB_TOKEN</code> را در WSGI تنظیم کنید.</div><div class="grid" style="margin-top:12px"><div><label>Repository (owner/repo)</label><input id="dep_repo" dir="ltr"></div><div><label>Branch</label><input id="dep_branch" dir="ltr"></div><div><label>مسیر فایل در repository</label><input id="dep_path" dir="ltr"></div><div><label>GitHub token اختیاری</label><input id="dep_token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی / استفاده از GITHUB_TOKEN"></div><div class="wide"><label>مسیر کامل WSGI برای Reload اختیاری</label><input id="dep_reload" dir="ltr" placeholder="/var/www/USERNAME_pythonanywhere_com_wsgi.py"></div></div><div class="actions"><button onclick="saveDeploy()">ذخیره تنظیمات</button><button class="gray" onclick="cleanupAccount()">پاکسازی فضای بلااستفاده</button><button class="gray" onclick="installDeps()">پاکسازی و نصب سبک Playwright</button><button class="gray" onclick="deployCheck()">بررسی نسخه</button><button class="green" onclick="deployRun()">نصب نسخه تازه</button><button class="gray" onclick="deployRollback()">بازگشت به .bak</button></div><div id="deployStatus" class="status">ابتدا تنظیمات را ذخیره و سپس نسخه را بررسی کنید.</div></div></section>
-<footer class="app-footer"><nav class="tabs" aria-label="مراحل پروفایل"><button class="on" data-tab="scrape"><i>🎯</i><span>شروع</span></button><button data-tab="selectors"><i>🎨</i><span>سلکتورها</span></button><button data-tab="results"><i>📊</i><span>نتایج</span></button><button data-tab="woo"><i>📤</i><span>ارسال</span></button><button data-tab="imports"><i>📥</i><span>درون‌ریزی</span></button></nav></footer></div><script>
+<footer class="app-footer"><nav class="tabs" aria-label="مراحل پروفایل"><button class="on" data-tab="scrape"><i>🎯</i><span>شروع</span></button><button data-tab="profileSettings"><i>⚙️</i><span>تنظیمات</span></button><button data-tab="selectors"><i>🎨</i><span>سلکتورها</span></button><button data-tab="results"><i>📊</i><span>نتایج</span></button><button data-tab="woo"><i>📤</i><span>ارسال</span></button><button data-tab="imports"><i>📥</i><span>درون‌ریزی</span></button></nav></footer></div><script>
 let products=[],profiles={},currentBuild=''; const $=id=>document.getElementById(id); const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 (function phpLayout(){const scrape=$('scrape'),adv=scrape.querySelector('details.advanced'),status=$('status'),table=status?status.nextElementSibling:null;if(adv)$('selectorsMount').appendChild(adv);if(status)$('resultsMount').appendChild(status);if(table)$('resultsMount').appendChild(table);scrape.querySelectorAll('[onclick^="download"],label.file-btn').forEach(x=>x.remove())})();
 (function globalDrawer(){const mount=$('adminMount');['settings','profiles','jobs','deploy','files'].forEach((id,i)=>{const node=$(id);if(node){node.classList.remove('pane','on');node.classList.add('admin-section');if(i===0)node.classList.add('admin-on');mount.appendChild(node)}});const woo=$('woo'),grid=woo?woo.querySelector('.grid'):null,settings=$('settings');if(grid&&settings){const card=document.createElement('div');card.className='card';card.innerHTML='<h3>🛒 اتصال ووکامرس</h3><div id="wooConnectionMount"></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست اتصال</button></div><div id="wooConnectionStatus" class="status"></div>';settings.appendChild(card);card.querySelector('#wooConnectionMount').appendChild(grid);woo.querySelectorAll('button[onclick="saveSettings(true)"],button[onclick="wooTest()"]').forEach(x=>x.remove())}})();
 function toggleSettingsPanel(force){const open=force===undefined?!$('settingsPanel').classList.contains('open'):force;$('settingsPanel').classList.toggle('open',open);$('settingsOverlay').classList.toggle('open',open);$('hamburgerBtn').classList.toggle('active',open);document.body.style.overflow=open?'hidden':'';if(open)loadAI()}
 function showAdmin(id){document.querySelectorAll('.admin-section').forEach(x=>x.classList.toggle('admin-on',x.id===id))}
 function openTab(name){const b=document.querySelector(`.tabs button[data-tab="${name}"]`),target=$(name);if(!target)return;document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('on'));if(b)b.classList.add('on');target.classList.add('on');localStorage.setItem('scraperActiveTab',b?name:'more');window.scrollTo({top:0,behavior:'smooth'})}document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
-function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors,detail_selectors}}
-function apply(c){if(!c)return;['url','pages','render','pagination','page_value','scrolls','detail_limit'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''})}
+function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());let profile_rules={title_prefix:$('rule_title_prefix').value.trim(),title_suffix:$('rule_title_suffix').value.trim(),price_mode:$('rule_price_mode').value,price_value:+$('rule_price_value').value,price_round:+$('rule_price_round').value,default_stock:$('rule_default_stock').value,default_category:$('rule_default_category').value.trim(),bsl_category_id:+$('rule_bsl_category_id').value,woo_category_id:+$('rule_woo_category_id').value};return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors,detail_selectors,profile_rules}}
+function apply(c){if(!c)return;['url','pages','render','pagination','page_value','scrolls','detail_limit'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''});let r=c.profile_rules||{};['title_prefix','title_suffix','price_mode','price_value','price_round','default_stock','default_category','bsl_category_id','woo_category_id'].forEach(k=>{if($('rule_'+k)&&r[k]!==undefined)$('rule_'+k).value=r[k]})}
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'2.0.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('proxy_mode').value=d.network.proxy_mode||'auto';$('worker_key').value=d.network.worker_key||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();let saved=localStorage.getItem('scraperActiveTab');openTab(['scrape','selectors','results','woo','imports'].includes(saved)?saved:'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'2.1.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('proxy_mode').value=d.network.proxy_mode||'auto';$('worker_key').value=d.network.worker_key||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();let saved=localStorage.getItem('scraperActiveTab');openTab(['scrape','profileSettings','selectors','results','woo','imports'].includes(saved)?saved:'scrape')}
+async function loadBasalam(){try{let d=await deployApi('/api/basalam/config');let b=d.basalam;$('bsl_vendor').value=b.vendor_id||0;$('bsl_category').value=b.category_id||0;$('bsl_token').value=b.token||'';$('bsl_refresh').value=b.refresh_token||'';$('bsl_days').value=b.preparation_days||3;$('bsl_weight').value=b.weight||500;$('bsl_stock').value=b.stock||10;$('bsl_update').checked=b.update_existing!==false}catch(e){$('bslAdminStatus').textContent=e.message}}
+async function saveBasalam(){try{let basalam={vendor_id:+$('bsl_vendor').value,category_id:+$('bsl_category').value,token:$('bsl_token').value.trim(),refresh_token:$('bsl_refresh').value.trim(),preparation_days:+$('bsl_days').value,weight:+$('bsl_weight').value,stock:+$('bsl_stock').value,update_existing:$('bsl_update').checked};await deployApi('/api/basalam/settings',{method:'POST',body:JSON.stringify({basalam})});$('bslAdminStatus').innerHTML='<span class="ok">اتصال ذخیره شد.</span>'}catch(e){$('bslAdminStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function testBasalam(){try{let d=await deployApi('/api/basalam/test',{method:'POST',body:'{}'});$('bslAdminStatus').innerHTML='<span class="ok">اتصال SDK موفق: '+esc(d.user)+'</span>'}catch(e){$('bslAdminStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function sendBasalam(){if(!confirm('۳ محصول نخست ایجاد یا بروزرسانی شوند؟'))return;try{$('bslSendStatus').textContent='در حال ارسال با SDK رسمی…';let d=await deployApi('/api/basalam/send',{method:'POST',body:JSON.stringify({limit:3})});$('bslSendStatus').innerHTML=`موفق: ${d.sent.length} · خطا: ${d.failed.length}`;}catch(e){$('bslSendStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function importAIProviders(input){if(!input.files[0])return;try{let secret=await needDeploySecret(),f=new FormData();f.append('file',input.files[0]);let r=await fetch('/api/ai/providers/import',{method:'POST',headers:{'X-Deploy-Password':secret},body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);$('aiStatus').innerHTML='<span class="ok">'+d.count+' ارائه‌دهنده وارد شد.</span>';loadAI()}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
 function aiProviderPreset(){const p=$('ai_provider').value,map={openrouter:['https://openrouter.ai/api/v1/chat/completions','meta-llama/llama-3.3-70b-instruct:free'],groq:['https://api.groq.com/openai/v1/chat/completions','llama-3.3-70b-versatile'],deepseek:['https://api.deepseek.com/chat/completions','deepseek-chat'],openai:['https://api.openai.com/v1/chat/completions','gpt-4o-mini']};if(map[p]){[$('ai_endpoint').value,$('ai_model').value]=map[p]}}
 async function loadAI(){try{let d=await deployApi('/api/ai/config');$('ai_provider').value=d.ai.provider||'openrouter';$('ai_endpoint').value=d.ai.endpoint||'';$('ai_model').value=d.ai.model||'';$('ai_key').value=d.ai.api_key||'';$('ai_temperature').value=d.ai.temperature??.3}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function saveAI(){try{let ai={provider:$('ai_provider').value,endpoint:$('ai_endpoint').value.trim(),model:$('ai_model').value.trim(),api_key:$('ai_key').value.trim(),temperature:+$('ai_temperature').value};await deployApi('/api/ai/settings',{method:'POST',body:JSON.stringify({ai})});$('aiStatus').innerHTML='<span class="ok">اتصال هوش مصنوعی ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

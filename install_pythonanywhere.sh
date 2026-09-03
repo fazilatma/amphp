@@ -56,13 +56,15 @@ mv "$DOWN" "$APP_FILE"; DOWN=""; chmod 600 "$APP_FILE"
 echo "Creating isolated virtual environment..."
 if [ ! -x "$VENV_DIR/bin/python" ]; then "$SYSTEM_PY" -m venv "$VENV_DIR"; fi
 VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
-"$VENV_PIP" install --upgrade pip flask requests beautifulsoup4 lxml html5lib soupsieve playwright cloudscraper selenium
+# Free-plan quota: clear only disposable caches and install packages used by this app.
+rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
+PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright
 export PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/ms-playwright"
-echo "Installing Chromium for Playwright (this can take several minutes)..."
-if ! "$VENV_PY" -m playwright install chromium; then
- echo "WARNING: Chromium download was blocked or interrupted. The Playwright package is installed; use the in-app 'Install libraries and Playwright' button to retry automatically."
+echo "Installing the smaller Chromium Headless Shell for Playwright..."
+if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
+ echo "WARNING: Browser installation exceeded quota or was blocked. Direct HTML extraction remains available; retry with the in-app lightweight installer."
 fi
-"$VENV_PY" -c 'import flask,requests,bs4,lxml,html5lib,playwright,cloudscraper,selenium; print("Scraper dependencies and Playwright OK")'
+"$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright; print("Required scraper dependencies OK")'
 "$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
 SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"
 

@@ -109,11 +109,29 @@ assert scraper4.app.test_client().get("/health").status_code==200
 print("Local Flask test passed:",scraper4.APP_VERSION)
 PY
 
-STATUS="$(api_call POST "$API/webapps/$DOMAIN/reload/")"
-[[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Reload failed: HTTP $STATUS"; }
+echo "Reloading web app..."
+RELOAD_OK=0
+for n in 1 2 3; do
+ STATUS="$(api_call POST "$API/webapps/$DOMAIN/reload/")"
+ if [ "$STATUS" = 200 ]||[ "$STATUS" = 201 ]; then RELOAD_OK=1; break; fi
+ echo "Reload API attempt $n/3 returned HTTP $STATUS."
+ sleep 5
+done
+if [ "$RELOAD_OK" != 1 ]; then
+ echo "WARNING: Reload API failed; touching WSGI as fallback."
+ cat "$RESP"||true
+ touch "$WSGI"
+fi
 rm -f "$AUTH" "$RESP"; AUTH=""; RESP=""
 LIVE=000
-for n in $(seq 1 12); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "https://$DOMAIN/health"||true)"; [ "$LIVE" != 200 ]||break; echo "Health $n/12: HTTP $LIVE"; done
+for n in $(seq 1 18); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "https://$DOMAIN/health"||true)"; [ "$LIVE" != 200 ]||break; echo "Health $n/18: HTTP $LIVE"; done
+
+if [ "$LIVE" != 200 ]; then
+ echo "Recent PythonAnywhere logs:"
+ for log in "/var/log/${DOMAIN}.error.log" "/var/log/${DOMAIN}.server.log"; do
+  if [ -r "$log" ]; then echo "===== $log ====="; tail -n 80 "$log"; fi
+ done
+fi
 
 echo "============================================================"
 echo "INSTALLATION FINISHED"
@@ -124,6 +142,8 @@ echo "Password file: $PASSWORD_FILE"
 echo "Application: $APP_FILE"
 echo "Virtualenv: $VENV_DIR"
 echo "WSGI: $WSGI"
+echo "Reload API success: $RELOAD_OK"
 echo "Live health: HTTP $LIVE"
 echo "============================================================"
+[ "$LIVE" = 200 ]||fail "Live health check failed; inspect logs above."
 unset ADMIN_PASSWORD

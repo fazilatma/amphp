@@ -77,7 +77,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(__file__, "rb") as _build_file:
@@ -1272,6 +1272,92 @@ def extract_job_delete(job_id: str):
     return jsonify(ok=True)
 
 
+def read_csv_upload(upload: Any) -> tuple[list[str], list[dict[str, str]]]:
+    raw = upload.read(5 * 1024 * 1024 + 1)
+    if len(raw) > 5 * 1024 * 1024: raise ValueError("فایل بزرگ‌تر از ۵ مگابایت است")
+    text = raw.decode("utf-8-sig", errors="replace")
+    try: dialect = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|")
+    except csv.Error: dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    headers = [clean_text(x) for x in (reader.fieldnames or []) if x]
+    rows = [{clean_text(k): clean_text(v) for k, v in row.items() if k} for row in reader]
+    return headers, rows[:MAX_PRODUCTS_HARD]
+
+
+def mapped_import_products(rows: list[dict[str, str]], mapping: dict[str, str], options: dict[str, Any]) -> list[dict[str, Any]]:
+    products = []
+    multiplier = max(0.0, min(1000.0, float(options.get("price_multiplier", 1) or 1)))
+    addition = max(-1e12, min(1e12, float(options.get("price_addition", 0) or 0)))
+    prefix, suffix = clean_text(options.get("title_prefix"))[:100], clean_text(options.get("title_suffix"))[:100]
+    for row in rows:
+        product = {field: clean_text(row.get(column, "")) for field, column in mapping.items() if column}
+        product["title"] = clean_text(" ".join(x for x in (prefix, product.get("title", ""), suffix) if x))[:300]
+        if product.get("price"):
+            number = woo_price(product["price"])
+            product["price"] = str(max(0, round(float(number) * multiplier + addition)))
+        if product.get("images"):
+            product["images"] = [clean_text(x) for x in re.split(r"[|,\n]+", product["images"]) if clean_text(x)][:20]
+            product["image"] = product["images"][0] if product["images"] else product.get("image", "")
+        if product.get("title") or product.get("link"):
+            product["key"] = product_key(product); products.append(product)
+    return products
+
+
+@app.post("/api/import/preview")
+def import_preview():
+    upload=request.files.get("file")
+    if not upload: return jsonify(ok=False,error="فایل CSV ارسال نشده است"),400
+    try:
+        headers,rows=read_csv_upload(upload)
+        return jsonify(ok=True,headers=headers,sample=rows[:5],total=len(rows))
+    except ValueError as exc: return jsonify(ok=False,error=str(exc)),400
+
+
+@app.post("/api/import/apply")
+def import_apply():
+    upload=request.files.get("file")
+    if not upload: return jsonify(ok=False,error="فایل CSV ارسال نشده است"),400
+    try:
+        headers,rows=read_csv_upload(upload)
+        mapping=json.loads(request.form.get("mapping","{}")); options=json.loads(request.form.get("options","{}"))
+        if not isinstance(mapping,dict) or not isinstance(options,dict): raise ValueError("تنظیمات نگاشت نامعتبر است")
+        products=mapped_import_products(rows,mapping,options)
+        data=load_data()
+        if options.get("mode")=="append":
+            merged={product_key(x):x for x in data["last_result"] if isinstance(x,dict)}
+            for product in products: merged[product_key(product)]=product
+            products=list(merged.values())[:MAX_PRODUCTS_HARD]
+        data["last_result"]=products;save_data(data)
+        return jsonify(ok=True,products=products,total=len(products),imported=len(rows))
+    except (ValueError,TypeError,json.JSONDecodeError) as exc: return jsonify(ok=False,error=str(exc)),400
+
+
+@app.post("/api/settings/backup")
+def settings_backup():
+    if not deploy_authorized(): return deploy_auth_error()
+    payload={"format":"scraper4-settings","version":APP_VERSION,"created_at":int(time.time()),"data":load_data()}
+    return Response(json.dumps(payload,ensure_ascii=False,indent=2),mimetype="application/json",headers={"Content-Disposition":f'attachment; filename="scraper4-settings-{time.strftime("%Y%m%d-%H%M%S")}.json"',"Cache-Control":"no-store"})
+
+
+@app.post("/api/settings/restore")
+def settings_restore():
+    if not deploy_authorized(): return deploy_auth_error()
+    upload=request.files.get("file")
+    if not upload:return jsonify(ok=False,error="فایل پشتیبان ارسال نشده است"),400
+    raw=upload.read(20*1024*1024+1)
+    if len(raw)>20*1024*1024:return jsonify(ok=False,error="فایل پشتیبان بزرگ‌تر از ۲۰ مگابایت است"),400
+    try:
+        payload=json.loads(raw.decode("utf-8-sig")); restored=payload.get("data") if isinstance(payload,dict) else None
+        if payload.get("format")!="scraper4-settings" or not isinstance(restored,dict):raise ValueError("این فایل، پشتیبان معتبر Scraper4 نیست")
+        defaults=default_data(); clean={}
+        for key,default in defaults.items():clean[key]=restored.get(key,default) if isinstance(restored.get(key,default),type(default)) else default
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE,"rb") as src: atomic_write(DATA_FILE+".restore.bak",src.read())
+        save_data(clean)
+        return jsonify(ok=True,message="همه تنظیمات و صف‌ها بازیابی شدند")
+    except (ValueError,TypeError,json.JSONDecodeError,OSError) as exc:return jsonify(ok=False,error=str(exc)),400
+
+
 @app.route("/api/export.csv", methods=["GET", "POST"])
 def api_export():
     body = request.get_json(silent=True) or {}
@@ -1292,22 +1378,17 @@ def api_export_xlsx():
 
 @app.post("/api/import.csv")
 def api_import_csv():
-    upload = request.files.get("file")
-    if not upload:
-        return jsonify(ok=False, error="فایل CSV ارسال نشده است"), 400
-    text = upload.read(5 * 1024 * 1024 + 1).decode("utf-8-sig", errors="replace")
-    if len(text.encode("utf-8")) > 5 * 1024 * 1024:
-        return jsonify(ok=False, error="فایل بزرگ‌تر از ۵ مگابایت است"), 400
-    rows = list(csv.DictReader(io.StringIO(text)))
-    products = []
-    for row in rows[:MAX_PRODUCTS_HARD]:
-        lowered = {clean_text(key).lower(): value for key, value in row.items() if key}
-        product = {field: clean_text(lowered.get(field, "")) for field in ("title", "price", "link", "image", "sku", "stock", "brand")}
-        if product["title"] or product["link"]:
-            product["key"] = product_key(product)
-            products.append(product)
-    data = load_data(); data["last_result"] = products; save_data(data)
-    return jsonify(ok=True, products=products, total=len(products))
+    upload=request.files.get("file")
+    if not upload:return jsonify(ok=False,error="فایل CSV ارسال نشده است"),400
+    try:
+        headers,rows=read_csv_upload(upload)
+        aliases={"title":["title","name","عنوان","نام"],"price":["price","قیمت"],"link":["link","url","لینک"],"image":["image","تصویر"],"sku":["sku","کد"],"stock":["stock","موجودی"],"brand":["brand","برند"]}
+        lowered={h.lower():h for h in headers};mapping={field:next((lowered[a] for a in names if a in lowered),"") for field,names in aliases.items()}
+        products=mapped_import_products(rows,mapping,{})
+        data=load_data();data["last_result"]=products;save_data(data)
+        return jsonify(ok=True,products=products,total=len(products))
+    except ValueError as exc:return jsonify(ok=False,error=str(exc)),400
+
 
 
 @app.post("/api/woo/test")
@@ -1396,7 +1477,7 @@ INDEX_HTML = r'''<!doctype html>
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
 </style></head><body><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.6.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.7.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
 <section id="scrape" class="pane on"><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
@@ -1414,8 +1495,8 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <div id="status" class="card status">آماده برای برداشت محصولات</div><div class="card tablebox"><table><thead><tr><th>#</th><th>تصویر</th><th>عنوان</th><th>قیمت</th><th>SKU</th><th>لینک</th></tr></thead><tbody id="rows"><tr><td class="empty" colspan="6">پس از شروع برداشت، محصولات اینجا نمایش داده می‌شوند.</td></tr></tbody></table></div></section>
 <section id="selectors" class="pane"><div id="selectorsMount"></div></section>
 <section id="results" class="pane"><div class="primary-actions actions"><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button></div><div id="resultsMount"></div></section>
-<section id="imports" class="pane"><div class="card"><h3>📥 درون‌ریزی محصولات</h3><div class="note">فایل CSV را مانند بخش درون‌ریزی نسخه PHP وارد کنید؛ نتیجه در تب نتایج نمایش داده می‌شود.</div><div class="actions"><label class="file-btn">↑ انتخاب و ورود CSV<input type="file" accept=".csv,text/csv" onchange="importCSV(this)"></label></div></div></section>
-<section id="more" class="pane"><div class="card"><h3>☰ ابزارهای بیشتر</h3><div class="actions"><button onclick="openTab('profiles')">☆ پروفایل‌ها</button><button onclick="openTab('jobs')">◷ صف استخراج</button><button onclick="openTab('deploy')">↻ به‌روزرسانی و کتابخانه‌ها</button></div></div></section>
+<section id="imports" class="pane"><div class="card"><h3>📥 درون‌ریزی و نگاشت CSV</h3><div class="note">ابتدا فایل را پیش‌نمایش کنید، سپس ستون هر فیلد و تعدیل قیمت/عنوان را مشخص کنید.</div><div class="actions"><label class="file-btn">انتخاب CSV<input id="advancedCsv" type="file" accept=".csv,text/csv" onchange="previewImport(this)"></label></div><div id="importMap" class="grid grid4" style="margin-top:14px"></div><div id="importOptions" class="grid" style="display:none;margin-top:14px"><div><label>ضریب قیمت</label><input id="impMul" type="number" step="0.01" value="1"></div><div><label>مبلغ ثابت افزوده</label><input id="impAdd" type="number" value="0"></div><div><label>پیشوند عنوان</label><input id="impPrefix"></div><div><label>پسوند عنوان</label><input id="impSuffix"></div><div><label>شیوه ورود</label><select id="impMode"><option value="replace">جایگزینی نتایج</option><option value="append">افزودن/بروزرسانی نتایج</option></select></div></div><div id="importPreview" class="status" style="display:none;margin-top:14px"></div><div class="actions"><button id="applyImportBtn" style="display:none" onclick="applyImport()">اجرای درون‌ریزی</button></div></div></section>
+<section id="more" class="pane"><div class="card"><h3>☰ ابزارهای بیشتر</h3><div class="actions"><button onclick="openTab('profiles')">☆ پروفایل‌ها</button><button onclick="openTab('jobs')">◷ صف استخراج</button><button onclick="openTab('deploy')">↻ به‌روزرسانی و کتابخانه‌ها</button></div></div><div class="card"><h3>💾 ذخیره و بازیابی همه تنظیمات</h3><div class="note">فایل شامل اتصال‌ها و کلیدهای خصوصی است؛ آن را امن نگه دارید.</div><div class="actions"><button onclick="backupSettings()">دانلود پشتیبان کامل</button><label class="file-btn">بازیابی پشتیبان<input type="file" accept=".json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status"></div></div></section>
 <section id="jobs" class="pane"><div class="card"><h3>صف استخراج و نقاط ادامه</h3><div class="note">پس از هر صفحه یک checkpoint اتمیک ذخیره می‌شود؛ عملیات قطع‌شده را بدون شروع از ابتدا ادامه دهید.</div><div class="actions"><button onclick="loadJobs()">تازه‌سازی صف</button></div><div id="jobList"></div></div></section>
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
 <section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>Proxy اختیاری</label><input id="proxy" dir="ltr" placeholder="http://user:pass@host:port"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button></div></div>
@@ -1431,7 +1512,7 @@ function apply(c){if(!c)return;['url','pages','render','pagination','page_value'
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.6.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.7.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;openTab('results');}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
@@ -1440,7 +1521,13 @@ function loadProfile(n){apply(profiles[n]);document.querySelector('[data-tab="sc
 async function loadJobs(){try{let d=await api('/api/extract/jobs');$('jobList').innerHTML=(d.jobs||[]).map(j=>`<div class="card"><b>${esc(j.id)}</b><br><small>وضعیت: ${esc(j.status)} · محصول: ${j.total||0} · صفحه بعد: ${j.next_page||'-'}</small><div class="actions">${j.status!=='completed'?`<button onclick="resumeJob('${esc(j.id)}')">ادامه</button>`:''}<button class="gray" onclick="deleteJob('${esc(j.id)}')">حذف</button></div></div>`).join('')||'<div class="note">صف خالی است.</div>'}catch(e){$('jobList').textContent=e.message}}
 async function resumeJob(id){try{$('jobList').textContent='در حال ادامه استخراج…';let d=await api('/api/extract/resume/'+encodeURIComponent(id),{method:'POST',body:'{}'});products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ عملیات ادامه یافت؛ ${d.total||0} محصول</span>`;openTab('results')}catch(e){$('jobList').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deleteJob(id){if(!confirm('این نقطه ادامه حذف شود؟'))return;await api('/api/extract/jobs/'+encodeURIComponent(id),{method:'DELETE'});loadJobs()}
-function downloadCSV(){location.href='/api/export.csv'}function downloadJSON(){location.href='/api/export.json'}function downloadXLSX(){location.href='/api/export.xlsx'}async function importCSV(input){if(!input.files[0])return;let form=new FormData();form.append('file',input.files[0]);try{let r=await fetch('/api/import.csv',{method:'POST',body:form}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'ورود ناموفق');products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از CSV وارد شد</span>`;openTab('results')}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
+function downloadCSV(){location.href='/api/export.csv'}function downloadJSON(){location.href='/api/export.json'}function downloadXLSX(){location.href='/api/export.xlsx'}let importFile=null,importHeaders=[];
+async function previewImport(input){if(!input.files[0])return;importFile=input.files[0];let f=new FormData();f.append('file',importFile);try{let r=await fetch('/api/import/preview',{method:'POST',body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);importHeaders=d.headers||[];const fields={title:'عنوان',price:'قیمت',link:'لینک',image:'تصویر اصلی',images:'گالری',sku:'SKU',stock:'موجودی',brand:'برند',category:'دسته‌بندی',weight:'وزن',short_desc:'توضیح کوتاه',long_desc:'توضیح کامل'};$('importMap').innerHTML=Object.entries(fields).map(([k,n])=>`<div><label>${n}</label><select data-map="${k}"><option value="">— استفاده نشود —</option>${importHeaders.map(h=>`<option value="${esc(h)}" ${h.toLowerCase()===k?'selected':''}>${esc(h)}</option>`).join('')}</select></div>`).join('');$('importOptions').style.display='grid';$('applyImportBtn').style.display='inline-block';$('importPreview').style.display='block';$('importPreview').textContent=`${d.total} ردیف؛ ستون‌ها: ${importHeaders.join('، ')}`;}catch(e){$('importPreview').style.display='block';$('importPreview').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function applyImport(){if(!importFile)return;let mapping={};document.querySelectorAll('[data-map]').forEach(x=>mapping[x.dataset.map]=x.value);let options={price_multiplier:+$('impMul').value,price_addition:+$('impAdd').value,title_prefix:$('impPrefix').value,title_suffix:$('impSuffix').value,mode:$('impMode').value};let f=new FormData();f.append('file',importFile);f.append('mapping',JSON.stringify(mapping));f.append('options',JSON.stringify(options));try{$('importPreview').textContent='در حال درون‌ریزی…';let r=await fetch('/api/import/apply',{method:'POST',body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول پس از نگاشت وارد شد</span>`;openTab('results')}catch(e){$('importPreview').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function needDeploySecret(){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}return deploySecret}
+async function backupSettings(){try{let secret=await needDeploySecret(),r=await fetch('/api/settings/backup',{method:'POST',headers:{'X-Deploy-Password':secret}});if(!r.ok){let d=await r.json();throw Error(d.error)}let blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='scraper4-settings.json';a.click();URL.revokeObjectURL(a.href);$('backupStatus').innerHTML='<span class="ok">پشتیبان دانلود شد.</span>'}catch(e){$('backupStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function restoreSettings(input){if(!input.files[0]||!confirm('همه تنظیمات و صف‌های فعلی جایگزین شوند؟'))return;try{let secret=await needDeploySecret(),f=new FormData();f.append('file',input.files[0]);let r=await fetch('/api/settings/restore',{method:'POST',headers:{'X-Deploy-Password':secret},body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);$('backupStatus').innerHTML='<span class="ok">'+esc(d.message)+'؛ صفحه در حال بارگذاری مجدد است.</span>';setTimeout(()=>location.reload(),900)}catch(e){$('backupStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
+async function importCSV(input){if(!input.files[0])return;let form=new FormData();form.append('file',input.files[0]);try{let r=await fetch('/api/import.csv',{method:'POST',body:form}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'ورود ناموفق');products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از CSV وارد شد</span>`;openTab('results')}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
 async function saveSettings(woo=false){let body={network:{timeout:+$('timeout').value,gap_ms:+$('gap_ms').value,proxy:$('proxy').value.trim(),verify_tls:$('verify_tls').checked}};if(woo)body.woocommerce={url:$('woo_url').value.trim(),consumer_key:$('woo_ck').value.trim(),consumer_secret:$('woo_cs').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify(body)});alert('ذخیره شد')}
 async function wooTest(){try{$('wooStatus').textContent='در حال تست…';let d=await api('/api/woo/test',{method:'POST',body:'{}'});$('wooStatus').innerHTML='<span class="ok">اتصال موفق است.</span>'}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function wooQueue(){try{let d=await api('/api/woo/queue',{method:'POST',body:JSON.stringify({products,status:$('woo_product_status').value,update_existing:$('woo_update').checked})});$('wooStatus').innerHTML='<span class="ok">صف ساخته شد؛ اکنون «پردازش مرحله بعد» را بزنید.</span>';loadWooJobs()}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

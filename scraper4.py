@@ -63,6 +63,7 @@ import socket
 import tempfile
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Iterable, Optional
@@ -77,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(__file__, "rb") as _build_file:
@@ -346,6 +347,30 @@ def extract_price(value: Any) -> str:
     return candidates[-1] if candidates else ""
 
 
+def collect_images(value: Any, base: str, limit: int = 20) -> list[str]:
+    """Recursively collect gallery URLs from HTML/JSON image structures."""
+    found: list[str] = []
+    def walk(item: Any, depth: int = 0) -> None:
+        if depth > 12 or len(found) >= limit:
+            return
+        if isinstance(item, str):
+            url = absolute_url(item, base)
+            if url and re.search(r"\.(?:jpe?g|png|webp|avif)(?:[?#]|$)", url, re.I) and url not in found:
+                found.append(url)
+        elif isinstance(item, list):
+            for child in item:
+                walk(child, depth + 1)
+        elif isinstance(item, dict):
+            for key in ("url", "src", "webp_url", "original", "800", "main"):
+                if key in item:
+                    walk(item[key], depth + 1)
+            for key, child in item.items():
+                if key not in {"url", "src", "webp_url", "original", "800", "main"}:
+                    walk(child, depth + 1)
+    walk(value)
+    return found
+
+
 def product_key(product: dict[str, Any]) -> str:
     identity = product.get("link") or product.get("sku") or (
         str(product.get("title", "")).lower() + "|" + str(product.get("price", ""))
@@ -386,11 +411,13 @@ def normalize_product(raw: dict[str, Any], base: str) -> Optional[dict[str, Any]
     ))
     if not product_signal:
         return None
+    gallery = collect_images(image_raw, base)
     product = {
         "title": title[:300],
         "price": extract_price(price_raw),
         "link": link,
-        "image": image_value(image_raw, base),
+        "image": gallery[0] if gallery else image_value(image_raw, base),
+        "images": gallery,
         "sku": sku,
     }
     stock = scalar_at(raw, ("stock", "inventory", "default_variant.stock", "is_available", "available"))
@@ -557,6 +584,48 @@ def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None)
     }
 
 
+def parse_detail_fields(soup: BeautifulSoup, base: str, selectors: dict[str, str]) -> dict[str, Any]:
+    """Extract phase-one detail fields with custom selectors plus safe fallbacks."""
+    out: dict[str, Any] = {}
+    mapping = {
+        "sku": ("sku", "[itemprop='sku'],[class*='sku']"),
+        "brand": ("brand", "[itemprop='brand'],[class*='brand']"),
+        "stock": ("stock", "[class*='stock'],[class*='availability']"),
+        "short_desc": ("short_desc", "[class*='short-description'],[class*='excerpt']"),
+        "long_desc": ("long_desc", "[itemprop='description'],[class*='description']"),
+    }
+    for field, (selector_key, fallback) in mapping.items():
+        selector = clean_text(selectors.get(selector_key)) or fallback
+        try:
+            node = soup.select_one(selector)
+        except Exception as exc:
+            raise ValueError(f"سلکتور جزئیات {field} نامعتبر است: {exc}") from exc
+        if node:
+            out[field] = clean_text(node.get_text(" ", strip=True))[:20000]
+    price_selector = clean_text(selectors.get("price")) or "[itemprop='price'],[class*='price']"
+    try:
+        price_node = soup.select_one(price_selector)
+    except Exception as exc:
+        raise ValueError(f"سلکتور قیمت جزئیات نامعتبر است: {exc}") from exc
+    if price_node:
+        out["price"] = extract_price(price_node.get("content") or price_node.get_text(" ", strip=True))
+    image_selector = clean_text(selectors.get("gallery")) or "[class*='gallery'] img,[class*='product'] img"
+    images: list[str] = []
+    try:
+        image_nodes = soup.select(image_selector)
+    except Exception as exc:
+        raise ValueError(f"سلکتور گالری نامعتبر است: {exc}") from exc
+    for node in image_nodes[:40]:
+        for attr in ("data-zoom", "data-large", "data-src", "data-lazy-src", "src"):
+            url = absolute_url(node.get(attr), base)
+            if url and url not in images:
+                images.append(url)
+                break
+    if images:
+        out["image"], out["images"] = images[0], images[:20]
+    return {key: value for key, value in out.items() if value not in ("", [], None)}
+
+
 # ---------------------------------------------------------------------------
 # SPA adapters and optional rendering
 # ---------------------------------------------------------------------------
@@ -655,6 +724,7 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
     pages = max(1, min(MAX_PAGES_HARD, int(config.get("pages", 1))))
     mode = str(config.get("render", "auto"))
     selectors = config.get("selectors") if isinstance(config.get("selectors"), dict) else {}
+    detail_selectors = config.get("detail_selectors") if isinstance(config.get("detail_selectors"), dict) else {}
     pag_kind = str(config.get("pagination", "query"))
     pag_value = str(config.get("page_value", "page"))
     enrich = bool(config.get("enrich", False))
@@ -662,9 +732,16 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
     cfg = load_data()
     fetcher = Fetcher(cfg["network"])
     report = ScrapeReport()
+    next_url = ""
 
     for number in range(1, pages + 1):
-        url = page_url(source, number, pag_kind, pag_value)
+        if pag_kind == "next" and number > 1:
+            if not next_url:
+                report.logs.append("صفحه‌بندی متوقف شد: لینک صفحه بعد پیدا نشد")
+                break
+            url = next_url
+        else:
+            url = page_url(source, number, pag_kind, pag_value)
         rows: list[dict[str, Any]] = []
         soup: Optional[BeautifulSoup] = None
         diag: dict[str, Any] = {}
@@ -716,6 +793,13 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
             except (FetchError, ValueError) as exc:
                 fetch_error = str(exc)
 
+        if pag_kind == "next" and soup is not None:
+            try:
+                next_node = soup.select_one(pag_value or "a[rel='next']")
+                next_url = absolute_url(next_node.get("href"), url) if next_node else ""
+            except Exception as exc:
+                raise ValueError(f"سلکتور صفحه بعد نامعتبر است: {exc}") from exc
+
         new_count = 0
         for row in rows:
             before = len(report.products)
@@ -737,11 +821,17 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
         for product in list(report.products.values()):
             if enriched >= detail_limit:
                 break
-            if not product.get("link") or (product.get("image") and product.get("price")):
+            if not product.get("link"):
+                continue
+            if not detail_selectors and product.get("image") and product.get("price") and product.get("images"):
                 continue
             try:
                 detail = fetcher.get(product["link"], referer=source)
                 detail_rows, detail_soup, _ = parse_html(detail.text, detail.url)
+                custom_detail = parse_detail_fields(detail_soup, detail.url, detail_selectors)
+                for key, value in custom_detail.items():
+                    if value not in ("", None, [], {}):
+                        product[key] = value
                 # Prefer JSON product whose title resembles the list title.
                 candidate = max(detail_rows, key=lambda x: int(clean_text(x.get("title")) in clean_text(product.get("title"))), default=None)
                 if candidate:
@@ -787,6 +877,32 @@ def export_csv(products: list[dict[str, Any]]) -> Response:
     return Response(stream.getvalue(), mimetype="text/csv; charset=utf-8", headers={
         "Content-Disposition": f'attachment; filename="products-{time.strftime("%Y%m%d-%H%M%S")}.csv"'
     })
+
+
+def export_xlsx(products: list[dict[str, Any]]) -> Response:
+    fields = ["title", "price", "link", "image", "sku", "stock", "brand", "short_desc", "long_desc"]
+    rows = [["#"] + fields] + [[index] + [p.get(field, "") for field in fields] for index, p in enumerate(products, 1)]
+    sheet_rows = []
+    for r_index, row in enumerate(rows, 1):
+        cells = []
+        for c_index, value in enumerate(row, 1):
+            number = c_index
+            col = ""
+            while number:
+                number, remainder = divmod(number - 1, 26)
+                col = chr(65 + remainder) + col
+            text = escape(clean_text(value), quote=False)
+            cells.append(f'<c r="{col}{r_index}" t="inlineStr"><is><t>{text}</t></is></c>')
+        sheet_rows.append(f'<row r="{r_index}">{"".join(cells)}</row>')
+    sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + "".join(sheet_rows) + '</sheetData></worksheet>'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        archive.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Products" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+    return Response(output.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="products-{time.strftime("%Y%m%d-%H%M%S")}.xlsx"'})
 
 
 # ---------------------------------------------------------------------------
@@ -1143,10 +1259,20 @@ def api_scrape():
         report = scrape(body)
         products = list(report.products.values())
         data = load_data()
+        previous = {product_key(p): p for p in data["last_result"] if isinstance(p, dict)}
+        current = {product_key(p): p for p in products}
+        added = [p for key, p in current.items() if key not in previous]
+        removed = [p for key, p in previous.items() if key not in current]
+        changed = [p for key, p in current.items() if key in previous and any(
+            str(p.get(field, "")) != str(previous[key].get(field, ""))
+            for field in ("price", "stock", "image", "title")
+        )]
+        comparison = {"added": len(added), "changed": len(changed), "removed": len(removed)}
         data["last_result"] = products
         save_data(data)
         return jsonify(ok=True, products=products, total=len(products), pages=report.pages,
-                       modes=sorted(report.modes), logs=report.logs, diagnostics=report.diagnostics)
+                       modes=sorted(report.modes), logs=report.logs, diagnostics=report.diagnostics,
+                       comparison=comparison)
     except (ValueError, FetchError) as exc:
         return jsonify(ok=False, error=str(exc)), 400
     except Exception as exc:
@@ -1159,6 +1285,37 @@ def api_export():
     body = request.get_json(silent=True) or {}
     products = body.get("products") if isinstance(body.get("products"), list) else load_data()["last_result"]
     return export_csv(products)
+
+
+@app.get("/api/export.json")
+def api_export_json():
+    payload = json.dumps(load_data()["last_result"], ensure_ascii=False, indent=2)
+    return Response(payload, mimetype="application/json; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="products-{time.strftime("%Y%m%d-%H%M%S")}.json"'})
+
+
+@app.get("/api/export.xlsx")
+def api_export_xlsx():
+    return export_xlsx(load_data()["last_result"])
+
+
+@app.post("/api/import.csv")
+def api_import_csv():
+    upload = request.files.get("file")
+    if not upload:
+        return jsonify(ok=False, error="فایل CSV ارسال نشده است"), 400
+    text = upload.read(5 * 1024 * 1024 + 1).decode("utf-8-sig", errors="replace")
+    if len(text.encode("utf-8")) > 5 * 1024 * 1024:
+        return jsonify(ok=False, error="فایل بزرگ‌تر از ۵ مگابایت است"), 400
+    rows = list(csv.DictReader(io.StringIO(text)))
+    products = []
+    for row in rows[:MAX_PRODUCTS_HARD]:
+        lowered = {clean_text(key).lower(): value for key, value in row.items() if key}
+        product = {field: clean_text(lowered.get(field, "")) for field in ("title", "price", "link", "image", "sku", "stock", "brand")}
+        if product["title"] or product["link"]:
+            product["key"] = product_key(product)
+            products.append(product)
+    data = load_data(); data["last_result"] = products; save_data(data)
+    return jsonify(ok=True, products=products, total=len(products))
 
 
 @app.post("/api/woo/test")
@@ -1204,19 +1361,19 @@ INDEX_HTML = r'''<!doctype html>
 <title>Scraper4 Python</title><style>
 :root{--bg:#07111f;--bg2:#0a1830;--card:rgba(15,28,48,.82);--card2:#13243d;--line:rgba(148,177,216,.16);--text:#f4f8ff;--muted:#9db0ca;--blue:#38bdf8;--blue2:#2563eb;--green:#34d399;--red:#fb7185;--amber:#fbbf24;--shadow:0 18px 55px rgba(0,0,0,.28);--radius:20px}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% -10%,rgba(37,99,235,.28),transparent 34%),radial-gradient(circle at 5% 18%,rgba(14,165,233,.13),transparent 26%),linear-gradient(155deg,var(--bg),var(--bg2));background-attachment:fixed;color:var(--text);font-family:Tahoma,"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.55}body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.22;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:34px 34px}.wrap{position:relative;max-width:1200px;margin:auto;padding:28px 22px 70px}.hero{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px;padding:24px 26px;border:1px solid var(--line);border-radius:26px;background:linear-gradient(125deg,rgba(15,38,68,.92),rgba(16,31,53,.76));box-shadow:var(--shadow);overflow:hidden;position:relative}.hero:after{content:"";position:absolute;width:220px;height:220px;border-radius:50%;left:-70px;top:-110px;background:rgba(56,189,248,.11);filter:blur(2px)}.hero-main{display:flex;align-items:center;gap:16px;position:relative;z-index:1}.logo{width:58px;height:58px;display:grid;place-items:center;flex:none;border-radius:18px;font-size:29px;background:linear-gradient(145deg,#0ea5e9,#2563eb);box-shadow:0 10px 28px rgba(37,99,235,.34)}.eyebrow{font-size:10px;letter-spacing:.8px;color:#75d5ff;margin-bottom:2px}h1{font-size:clamp(21px,4vw,30px);margin:0;letter-spacing:-.5px}h1 small{font-size:10px;font-weight:500;color:#7f96b4;background:#09182c;border:1px solid var(--line);padding:3px 7px;border-radius:20px;vertical-align:middle}.sub{color:var(--muted);margin:5px 0 0}.hero-badge{position:relative;z-index:1;white-space:nowrap;padding:8px 13px;border-radius:999px;border:1px solid rgba(52,211,153,.25);background:rgba(52,211,153,.09);color:#8af0c9;font-size:12px}.hero-badge:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-left:7px;box-shadow:0 0 10px var(--green)}
-.tabs{position:sticky;top:10px;z-index:20;display:flex;gap:7px;margin:0 0 16px;padding:7px;border:1px solid var(--line);border-radius:16px;background:rgba(7,17,31,.82);backdrop-filter:blur(16px);box-shadow:0 8px 28px rgba(0,0,0,.2);overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tabs button{flex:1;min-width:max-content;background:transparent;border:1px solid transparent;color:var(--muted);box-shadow:none;display:flex;align-items:center;justify-content:center;gap:7px}.tabs button i{font-style:normal;font-size:17px;line-height:1}.tabs button.on{color:white;border-color:rgba(56,189,248,.23);background:linear-gradient(135deg,rgba(14,165,233,.22),rgba(37,99,235,.2))}.pane{display:none;animation:rise .28s ease}.pane.on{display:block}@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}.card{background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:var(--radius);padding:20px;margin-bottom:14px;box-shadow:var(--shadow)}.card h3{margin:0 0 16px;font-size:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.grid4{grid-template-columns:repeat(4,minmax(0,1fr))}.wide{grid-column:1/-1}label{display:block;color:#b9c8dc;font-size:12px;font-weight:600;margin:0 2px 6px}input,select,textarea,button{font:inherit;border-radius:12px;border:1px solid var(--line);padding:11px 13px;background:rgba(5,14,27,.72);color:var(--text);width:100%;outline:none;transition:.2s ease}input:hover,select:hover,textarea:hover{border-color:rgba(56,189,248,.3)}input:focus,select:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(56,189,248,.12);background:#081426}input::placeholder{color:#627895}select{cursor:pointer}button{width:auto;min-height:42px;cursor:pointer;background:linear-gradient(135deg,#0284c7,#2563eb);border-color:rgba(125,211,252,.28);font-weight:700;box-shadow:0 7px 18px rgba(37,99,235,.16)}button:hover{filter:brightness(1.1);transform:translateY(-1px)}button:active{transform:translateY(0)}button:disabled{opacity:.62;cursor:wait;transform:none}button.gray{background:#17263d;border-color:#33465f;box-shadow:none}button.green{background:linear-gradient(135deg,#059669,#047857);border-color:#34d399}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:17px}.primary-actions{margin:0 0 14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:rgba(10,23,42,.8);box-shadow:var(--shadow)}details.advanced summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none}details.advanced summary::-webkit-details-marker{display:none}details.advanced summary small{display:block;color:var(--muted);font-weight:400;margin-top:2px}details.advanced summary>i{font-style:normal;font-size:22px;color:var(--blue);transition:.2s}details.advanced[open] summary>i{transform:rotate(180deg)}.advanced-body{padding-top:15px}.advanced-body>.note{margin-bottom:14px}.note{padding:12px 14px;border-radius:13px;border:1px solid rgba(56,189,248,.12);background:rgba(19,42,70,.68);color:#bfd0e5;line-height:1.85}.status{white-space:pre-wrap;line-height:1.9;color:#b9cae0;border-right:3px solid var(--blue);min-height:58px}.error{color:var(--red)}.ok{color:var(--green)}code{direction:ltr;display:inline-block;color:#a5e4ff;background:#061426;border-radius:6px;padding:1px 5px}table{width:100%;border-collapse:separate;border-spacing:0;direction:rtl}th,td{padding:11px 10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}th{color:#96ddfb;position:sticky;top:0;background:#112139;z-index:2;font-size:12px}tbody tr{transition:.2s}tbody tr:hover{background:rgba(56,189,248,.045)}td img{width:62px;height:62px;object-fit:contain;background:#fff;border-radius:12px;padding:3px;box-shadow:0 4px 14px #0004}.tablebox{max-height:620px;overflow:auto;padding:0;border-radius:var(--radius)}a{color:#78d7ff;text-decoration:none}a:hover{text-decoration:underline}.badge{display:inline-block;padding:4px 8px;border:1px solid #36516f;border-radius:12px;color:#b6d6ef;margin:3px}.empty{padding:42px 14px!important;text-align:center!important;color:var(--muted)}.spinner{display:inline-block;width:16px;height:16px;border:2px solid #fff5;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-3px;margin-left:7px}@keyframes spin{to{transform:rotate(360deg)}}
+.tabs{position:sticky;top:10px;z-index:20;display:flex;gap:7px;margin:0 0 16px;padding:7px;border:1px solid var(--line);border-radius:16px;background:rgba(7,17,31,.82);backdrop-filter:blur(16px);box-shadow:0 8px 28px rgba(0,0,0,.2);overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tabs button{flex:1;min-width:max-content;background:transparent;border:1px solid transparent;color:var(--muted);box-shadow:none;display:flex;align-items:center;justify-content:center;gap:7px}.tabs button i{font-style:normal;font-size:17px;line-height:1}.tabs button.on{color:white;border-color:rgba(56,189,248,.23);background:linear-gradient(135deg,rgba(14,165,233,.22),rgba(37,99,235,.2))}.pane{display:none;animation:rise .28s ease}.pane.on{display:block}@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}.card{background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:var(--radius);padding:20px;margin-bottom:14px;box-shadow:var(--shadow)}.card h3{margin:0 0 16px;font-size:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.grid4{grid-template-columns:repeat(4,minmax(0,1fr))}.wide{grid-column:1/-1}label{display:block;color:#b9c8dc;font-size:12px;font-weight:600;margin:0 2px 6px}input,select,textarea,button{font:inherit;border-radius:12px;border:1px solid var(--line);padding:11px 13px;background:rgba(5,14,27,.72);color:var(--text);width:100%;outline:none;transition:.2s ease}input:hover,select:hover,textarea:hover{border-color:rgba(56,189,248,.3)}input:focus,select:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(56,189,248,.12);background:#081426}input::placeholder{color:#627895}select{cursor:pointer}button{width:auto;min-height:42px;cursor:pointer;background:linear-gradient(135deg,#0284c7,#2563eb);border-color:rgba(125,211,252,.28);font-weight:700;box-shadow:0 7px 18px rgba(37,99,235,.16)}button:hover{filter:brightness(1.1);transform:translateY(-1px)}button:active{transform:translateY(0)}button:disabled{opacity:.62;cursor:wait;transform:none}button.gray{background:#17263d;border-color:#33465f;box-shadow:none}button.green{background:linear-gradient(135deg,#059669,#047857);border-color:#34d399}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:17px}.primary-actions{margin:0 0 14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:rgba(10,23,42,.8);box-shadow:var(--shadow)}details.advanced summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none}details.advanced summary::-webkit-details-marker{display:none}details.advanced summary small{display:block;color:var(--muted);font-weight:400;margin-top:2px}details.advanced summary>i{font-style:normal;font-size:22px;color:var(--blue);transition:.2s}details.advanced[open] summary>i{transform:rotate(180deg)}.advanced-body{padding-top:15px}.advanced-body>.note{margin-bottom:14px}.section-mini{font-size:14px!important;margin:18px 0 10px!important;color:#8edfff}.file-btn{display:inline-flex!important;align-items:center;justify-content:center;margin:0!important;padding:10px 13px;border:1px solid #33465f;border-radius:12px;background:#17263d;color:white!important;cursor:pointer;font-weight:700}.file-btn input{display:none}.note{padding:12px 14px;border-radius:13px;border:1px solid rgba(56,189,248,.12);background:rgba(19,42,70,.68);color:#bfd0e5;line-height:1.85}.status{white-space:pre-wrap;line-height:1.9;color:#b9cae0;border-right:3px solid var(--blue);min-height:58px}.error{color:var(--red)}.ok{color:var(--green)}code{direction:ltr;display:inline-block;color:#a5e4ff;background:#061426;border-radius:6px;padding:1px 5px}table{width:100%;border-collapse:separate;border-spacing:0;direction:rtl}th,td{padding:11px 10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}th{color:#96ddfb;position:sticky;top:0;background:#112139;z-index:2;font-size:12px}tbody tr{transition:.2s}tbody tr:hover{background:rgba(56,189,248,.045)}td img{width:62px;height:62px;object-fit:contain;background:#fff;border-radius:12px;padding:3px;box-shadow:0 4px 14px #0004}.tablebox{max-height:620px;overflow:auto;padding:0;border-radius:var(--radius)}a{color:#78d7ff;text-decoration:none}a:hover{text-decoration:underline}.badge{display:inline-block;padding:4px 8px;border:1px solid #36516f;border-radius:12px;color:#b6d6ef;margin:3px}.empty{padding:42px 14px!important;text-align:center!important;color:var(--muted)}.spinner{display:inline-block;width:16px;height:16px;border:2px solid #fff5;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-3px;margin-left:7px}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:900px){.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.hero{padding:20px}.wrap{padding:18px 14px 60px}}
 @media(max-width:640px){html,body{max-width:100%;overflow-x:hidden}body{font-size:13px}.wrap{padding:10px 8px calc(28px + env(safe-area-inset-bottom))}.hero{border-radius:18px;padding:14px 12px;margin-bottom:10px}.hero-main{gap:10px}.logo{width:43px;height:43px;border-radius:13px;font-size:22px}.eyebrow{display:none}.hero h1{font-size:20px}.sub{font-size:10px;line-height:1.55;max-width:230px}.hero-badge{display:none}.tabs{position:sticky;top:4px;right:auto;left:auto;bottom:auto;width:100%;margin:0 0 10px;border-radius:15px;padding:5px;justify-content:flex-start;z-index:50;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity}.tabs button{flex:1 0 62px;min-width:62px;min-height:48px;padding:5px 3px;font-size:9px;white-space:nowrap;flex-direction:column;gap:1px;scroll-snap-align:start}.tabs button i{font-size:18px}.card{padding:14px 12px;border-radius:16px;margin-bottom:10px}.grid,.grid4{grid-template-columns:1fr;gap:12px}.wide{grid-column:auto}input,select,textarea{font-size:16px;min-height:48px}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%;padding:11px 8px;min-height:46px}.actions button:first-child:last-child{grid-column:1/-1}.note{font-size:12px;padding:10px}.tablebox{max-height:none;overflow:visible;background:transparent;border:0;box-shadow:none;padding:0}table,thead,tbody,tr,td{display:block}thead{display:none}tbody{display:grid;gap:10px}tbody tr{position:relative;padding:13px 88px 13px 12px;min-height:104px;border:1px solid var(--line);border-radius:16px;background:var(--card);box-shadow:0 8px 24px #0003}tbody tr:hover{background:var(--card)}td{padding:3px 0;border:0;text-align:right}td:before{content:attr(data-label);color:var(--muted);font-size:10px;margin-left:6px}td:nth-child(1){position:absolute;left:9px;top:8px;color:#7188a5;font-size:10px}td:nth-child(1):before,td:nth-child(2):before{display:none}td:nth-child(2){position:absolute;right:12px;top:13px}td:nth-child(2) img{width:64px;height:76px;border-radius:11px}td:nth-child(3){font-weight:700;font-size:13px;line-height:1.65;margin-bottom:4px}td:nth-child(4){color:#7ce6ba;font-weight:700;direction:ltr;text-align:right}td:empty{display:none}.empty{padding:35px 10px!important}.empty:before{display:none}}
 @media(max-height:480px) and (max-width:900px){.hero{display:none}.tabs{top:0}.tabs button{min-height:40px;flex-direction:row;font-size:10px}.tabs button i{font-size:15px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style></head><body><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.2.1</small></h1><div class="sub">استخراج هوشمند از HTML، React، JSON و API</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.3.0</small></h1><div class="sub">استخراج هوشمند از HTML، React، JSON و API</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 <nav class="tabs" aria-label="منوی اصلی"><button class="on" data-tab="scrape"><i>⌁</i><span>برداشت</span></button><button data-tab="profiles"><i>☆</i><span>پروفایل‌ها</span></button><button data-tab="settings"><i>⚙</i><span>تنظیمات</span></button><button data-tab="woo"><i>◈</i><span>ووکامرس</span></button><button data-tab="deploy"><i>↻</i><span>به‌روزرسانی</span></button></nav>
 <section id="scrape" class="pane on"><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
 <div><label>تعداد صفحه</label><input id="pages" type="number" min="1" max="50" value="1"></div>
 <div><label>روش محتوا</label><select id="render"><option value="auto">خودکار: API ← HTML/JSON ← Browser</option><option value="api">API و hydration (بدون مرورگر)</option><option value="http">فقط HTML/hydration</option><option value="browser">مرورگر JavaScript (Playwright)</option></select></div>
-<div><label>صفحه‌بندی</label><select id="pagination"><option value="query">پارامتر Query</option><option value="path">الگوی مسیر</option></select></div>
+<div><label>صفحه‌بندی</label><select id="pagination"><option value="query">پارامتر Query</option><option value="path">الگوی مسیر</option><option value="next">سلکتور لینک صفحه بعد</option></select></div>
 <div><label>نام پارامتر / الگو</label><input id="page_value" value="page" dir="ltr" placeholder="page یا /page/{page}/"></div>
 <div><label>تعداد اسکرول در Browser</label><input id="scrolls" type="number" value="4" min="0" max="12"></div>
 <div><label>تکمیل تصویر/قیمت از صفحه جزئیات</label><select id="enrich"><option value="0">خاموش</option><option value="1">روشن</option></select></div>
@@ -1224,7 +1381,7 @@ INDEX_HTML = r'''<!doctype html>
 </div></div>
 <details class="card advanced"><summary><span><b>سلکتورهای CSS</b><small>اختیاری — فقط برای سایت‌های خاص</small></span><i>⌄</i></summary><div class="advanced-body"><div class="note">برای React ابتدا حالت «خودکار» را امتحان کنید. فقط اگر محصول پیدا نشد، سلکتور وارد کنید.</div><div class="grid grid4">
 <div><label>ظرف محصول *</label><input id="sel_container" dir="ltr" placeholder="article.product"></div><div><label>عنوان</label><input id="sel_title" dir="ltr" placeholder="h2.title"></div><div><label>قیمت</label><input id="sel_price" dir="ltr" placeholder=".price"></div><div><label>لینک</label><input id="sel_link" dir="ltr" placeholder="a"></div><div><label>تصویر</label><input id="sel_image" dir="ltr" placeholder="img"></div><div><label>SKU</label><input id="sel_sku" dir="ltr"></div>
-</div></div></details><div class="primary-actions actions"><button id="runBtn" onclick="runScrape()">🚀 شروع برداشت</button><button class="gray" onclick="saveProfilePrompt()">☆ ذخیره پروفایل</button><button class="green" onclick="downloadCSV()">↓ خروجی CSV</button></div>
+</div><h3 class="section-mini">سلکتورهای صفحه جزئیات</h3><div class="grid grid4"><div><label>گالری تصاویر</label><input id="det_gallery" dir="ltr" placeholder=".gallery img"></div><div><label>قیمت جزئیات</label><input id="det_price" dir="ltr"></div><div><label>موجودی</label><input id="det_stock" dir="ltr"></div><div><label>برند</label><input id="det_brand" dir="ltr"></div><div><label>SKU</label><input id="det_sku" dir="ltr"></div><div><label>توضیح کوتاه</label><input id="det_short_desc" dir="ltr"></div><div><label>توضیح بلند</label><input id="det_long_desc" dir="ltr"></div></div></div></details><div class="primary-actions actions"><button id="runBtn" onclick="runScrape()">🚀 شروع برداشت</button><button class="gray" onclick="saveProfilePrompt()">☆ ذخیره پروفایل</button><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button><label class="file-btn">↑ ورود CSV<input id="csvImport" type="file" accept=".csv,text/csv" onchange="importCSV(this)"></label></div>
 <div id="status" class="card status">آماده برای برداشت محصولات</div><div class="card tablebox"><table><thead><tr><th>#</th><th>تصویر</th><th>عنوان</th><th>قیمت</th><th>SKU</th><th>لینک</th></tr></thead><tbody id="rows"><tr><td class="empty" colspan="6">پس از شروع برداشت، محصولات اینجا نمایش داده می‌شوند.</td></tr></tbody></table></div></section>
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
 <section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>Proxy اختیاری</label><input id="proxy" dir="ltr" placeholder="http://user:pass@host:port"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button></div></div>
@@ -1234,18 +1391,18 @@ INDEX_HTML = r'''<!doctype html>
 </div><script>
 let products=[],profiles={},currentBuild=''; const $=id=>document.getElementById(id); const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function openTab(name){const b=document.querySelector(`.tabs button[data-tab="${name}"]`);if(!b)return;document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('on'));b.classList.add('on');$(name).classList.add('on');localStorage.setItem('scraperActiveTab',name);window.scrollTo({top:0,behavior:'smooth'})}document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
-function config(){let selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors}}
-function apply(c){if(!c)return;['url','pages','render','pagination','page_value','scrolls','detail_limit'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''})}
+function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','price','stock','brand','sku','short_desc','long_desc'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors,detail_selectors}}
+function apply(c){if(!c)return;['url','pages','render','pagination','page_value','scrolls','detail_limit'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''})}
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.2.1');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
-async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;$('rows').closest('.tablebox').scrollIntoView({behavior:'smooth',block:'start'});}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.3.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
+async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;$('rows').closest('.tablebox').scrollIntoView({behavior:'smooth',block:'start'});}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
 function renderProfiles(){$('profileList').innerHTML=Object.entries(profiles).map(([n,c])=>`<div class="card"><b>${esc(n)}</b><br><small dir="ltr">${esc(c.url)}</small><div class="actions"><button onclick='loadProfile(${JSON.stringify(n)})'>بارگذاری</button><button class="gray" onclick='delProfile(${JSON.stringify(n)})'>حذف</button></div></div>`).join('')||'<div class="note">هنوز پروفایلی نیست.</div>'}
 function loadProfile(n){apply(profiles[n]);document.querySelector('[data-tab="scrape"]').click()} async function delProfile(n){if(!confirm('حذف شود؟'))return;let d=await api('/api/profile/'+encodeURIComponent(n),{method:'DELETE'});profiles=d.profiles;renderProfiles()}
-function downloadCSV(){location.href='/api/export.csv'}
+function downloadCSV(){location.href='/api/export.csv'}function downloadJSON(){location.href='/api/export.json'}function downloadXLSX(){location.href='/api/export.xlsx'}async function importCSV(input){if(!input.files[0])return;let form=new FormData();form.append('file',input.files[0]);try{let r=await fetch('/api/import.csv',{method:'POST',body:form}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'ورود ناموفق');products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از CSV وارد شد</span>`}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
 async function saveSettings(woo=false){let body={network:{timeout:+$('timeout').value,gap_ms:+$('gap_ms').value,proxy:$('proxy').value.trim(),verify_tls:$('verify_tls').checked}};if(woo)body.woocommerce={url:$('woo_url').value.trim(),consumer_key:$('woo_ck').value.trim(),consumer_secret:$('woo_cs').value.trim()};await api('/api/settings',{method:'POST',body:JSON.stringify(body)});alert('ذخیره شد')}
 async function wooTest(){try{$('wooStatus').textContent='در حال تست…';let d=await api('/api/woo/test',{method:'POST',body:'{}'});$('wooStatus').innerHTML='<span class="ok">اتصال موفق است.</span>'}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function wooSend(){if(!confirm('حداکثر ۲۰ محصول به صورت پیش‌نویس ساخته شود؟'))return;try{let d=await api('/api/woo/send',{method:'POST',body:JSON.stringify({products,status:'draft',limit:20})});$('wooStatus').textContent=`ارسال: ${d.sent.length}، ناموفق: ${d.failed.length}`;}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

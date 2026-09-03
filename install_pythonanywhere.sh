@@ -59,10 +59,17 @@ VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
 # Free-plan quota: clear only disposable caches and install packages used by this app.
 rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
 PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright
-export PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/ms-playwright"
+BROWSER_PATH="$APP_DIR/ms-playwright"
+export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
 echo "Installing the smaller Chromium Headless Shell for Playwright..."
 if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
- echo "WARNING: Browser installation exceeded quota or was blocked. Direct HTML extraction remains available; retry with the in-app lightweight installer."
+ echo "Home quota blocked the browser; retrying in /tmp outside the account quota..."
+ BROWSER_PATH="/tmp/scraper4-${USER_NAME}-playwright"
+ rm -rf "$BROWSER_PATH"; mkdir -p "$BROWSER_PATH"; chmod 700 "$BROWSER_PATH"
+ export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
+ if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
+  echo "WARNING: Browser download failed in both locations. Direct HTML extraction remains available; retry with the in-app lightweight installer."
+ fi
 fi
 "$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright; print("Required scraper dependencies OK")'
 "$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
@@ -98,12 +105,12 @@ for n in $(seq 1 30); do WSGI="$(find_wsgi||true)"; [ -z "$WSGI" ]||break; echo 
 [ -n "$WSGI" ]&&[ -w "$WSGI" ]||fail "No writable WSGI file found in /var/www."
 echo "Using WSGI: $WSGI"
 
-export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES"
+export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES" BROWSER_PATH_E="$BROWSER_PATH"
 "$VENV_PY" - <<'PY'
 import datetime,json,os,pathlib,shutil
-app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]
+app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]
 shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
-source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(str(app / "ms-playwright")),"from scraper4 import app as application",""))
+source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(browser_path),"os.environ['SCRAPER_PLAYWRIGHT_PATH']="+repr(browser_path),"from scraper4 import app as application",""))
 tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
 data={}
 if datafile.exists():
@@ -115,7 +122,7 @@ old=data.get("deploy") if isinstance(data.get("deploy"),dict) else {}
 data["deploy"]={"repo":"fazilatma/amphp","branch":"arena/01a0640f-amphp","path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
 tmp=datafile.with_suffix(".json.tmp"); tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8"); tmp.replace(datafile)
 PY
-unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E; chmod 600 "$DATA_FILE"
+unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E BROWSER_PATH_E; chmod 600 "$DATA_FILE"
 
 "$VENV_PY" - "$APP_DIR" <<'PY'
 import pathlib,sys

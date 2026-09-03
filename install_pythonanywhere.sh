@@ -96,7 +96,7 @@ export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWOR
 import datetime,json,os,pathlib,shutil
 app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]
 shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
-source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"from scraper4 import app as application",""))
+source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"from scraper4 import app as application",""))
 tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
 data={}
 if datafile.exists():
@@ -153,9 +153,8 @@ fi
 echo "============================================================"
 echo "INSTALLATION FINISHED"
 echo "Website: https://$DOMAIN"
-echo "Login username: admin"
-echo "Login password: $ADMIN_PASSWORD"
-echo "Password file: $PASSWORD_FILE"
+echo "Login protection: disabled"
+echo "Former password file (not used): $PASSWORD_FILE"
 echo "Application: $APP_FILE"
 echo "Virtualenv: $VENV_DIR"
 echo "WSGI: $WSGI"

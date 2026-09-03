@@ -2,367 +2,128 @@
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_USERNAME="Fazilatma"
-USERNAME="$(id -un)"
+EXPECTED_USER="Fazilatma"
+USER_NAME="$(id -un)"
+USER_LOWER="$(printf '%s' "$USER_NAME" | tr '[:upper:]' '[:lower:]')"
 HOME_DIR="$HOME"
-USERNAME_LOWER="$(printf '%s' "$USERNAME" | tr '[:upper:]' '[:lower:]')"
-DOMAIN="${USERNAME_LOWER}.pythonanywhere.com"
-APP_DIR="${HOME_DIR}/scraper4"
-APP_FILE="${APP_DIR}/scraper4.py"
-DATA_FILE="${APP_DIR}/scraper4_data.json"
-PASSWORD_FILE="${APP_DIR}/admin_password.txt"
-WSGI_FILE=""
-REPOSITORY="fazilatma/amphp"
+DOMAIN="${USER_LOWER}.pythonanywhere.com"
+APP_DIR="$HOME_DIR/scraper4"
+APP_FILE="$APP_DIR/scraper4.py"
+DATA_FILE="$APP_DIR/scraper4_data.json"
+PASSWORD_FILE="$APP_DIR/admin_password.txt"
+TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
+VENV_DIR="$APP_DIR/venv"
+REPO="fazilatma/amphp"
 BRANCH="arena/01a0640f-amphp"
-REMOTE_FILE="scraper4.py"
-SOURCE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${BRANCH}/${REMOTE_FILE}"
-API_BASE="https://www.pythonanywhere.com/api/v0/user/${USERNAME}"
-AUTH_FILE=""
-RESPONSE_FILE=""
-DOWNLOAD_FILE=""
+SOURCE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH/scraper4.py"
+API="https://www.pythonanywhere.com/api/v0/user/$USER_NAME"
+AUTH=""; RESP=""; DOWN=""
 
-cleanup() {
-    unset PA_API_TOKEN SCRAPER_PASSWORD WSGI_PASSWORD 2>/dev/null || true
-    [ -z "${AUTH_FILE:-}" ] || rm -f "$AUTH_FILE"
-    [ -z "${RESPONSE_FILE:-}" ] || rm -f "$RESPONSE_FILE"
-    [ -z "${DOWNLOAD_FILE:-}" ] || rm -f "$DOWNLOAD_FILE"
-}
+cleanup(){ unset TOKEN ADMIN_PASSWORD APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E 2>/dev/null||true; [ -z "${AUTH:-}" ]||rm -f "$AUTH"; [ -z "${RESP:-}" ]||rm -f "$RESP"; [ -z "${DOWN:-}" ]||rm -f "$DOWN"; }
 trap cleanup EXIT
+fail(){ echo "ERROR: $*" >&2; exit 1; }
+api_call(){ local method="$1" url="$2"; shift 2; curl --config "$AUTH" --silent --show-error --output "$RESP" --write-out '%{http_code}' --request "$method" --connect-timeout 20 --max-time 120 "$@" "$url"; }
 
-echo "============================================================"
-echo "Scraper4 installer for PythonAnywhere account: $EXPECTED_USERNAME"
-echo "============================================================"
+[ "$USER_NAME" = "$EXPECTED_USER" ]||fail "Run this in the $EXPECTED_USER account; current user is $USER_NAME."
+[ -d "$HOME_DIR" ]&&[ -w "$HOME_DIR" ]||fail "Home is not writable: $HOME_DIR"
+[ -s "$TOKEN_FILE" ]||fail "Token file is missing or empty: $TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+TOKEN="$(tr -d '[:space:]' <"$TOKEN_FILE")"
+[[ "$TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]||fail "Token file contains invalid characters."
+mkdir -p "$APP_DIR"; chmod 700 "$APP_DIR"
+SYSTEM_PY="$(command -v python3||true)"; [ -n "$SYSTEM_PY" ]||fail "python3 not found."
+MAJOR="$($SYSTEM_PY -c 'import sys;print(sys.version_info.major)')"; MINOR="$($SYSTEM_PY -c 'import sys;print(sys.version_info.minor)' )"
+PY_VERSION="python${MAJOR}${MINOR}"
+AUTH="$APP_DIR/.pa-auth-$$"; RESP="$APP_DIR/.pa-response-$$"
+printf 'header = "Authorization: Token %s"\n' "$TOKEN" >"$AUTH"; chmod 600 "$AUTH"; unset TOKEN
 
-if [ "$USERNAME" != "$EXPECTED_USERNAME" ]; then
-    echo "ERROR: Current account is '$USERNAME', but '$EXPECTED_USERNAME' is required."
-    echo "Run this in the Bash console belonging to $EXPECTED_USERNAME."
-    exit 1
-fi
-
-if [ ! -d "$HOME_DIR" ] || [ ! -w "$HOME_DIR" ]; then
-    echo "ERROR: Home directory is unavailable or not writable: $HOME_DIR"
-    exit 1
-fi
-
-mkdir -p "$APP_DIR"
-chmod 700 "$APP_DIR"
-
-PYTHON_BIN="$(command -v python3 || true)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "ERROR: python3 is not installed."
-    exit 1
-fi
-
-PY_MAJOR="$($PYTHON_BIN -c 'import sys; print(sys.version_info.major)')"
-PY_MINOR="$($PYTHON_BIN -c 'import sys; print(sys.version_info.minor)')"
-PYTHON_VERSION="python${PY_MAJOR}${PY_MINOR}"
-
-echo "Account: $USERNAME"
-echo "Home: $HOME_DIR"
-echo "Python: $PYTHON_BIN ($PYTHON_VERSION)"
-echo "Website: https://$DOMAIN"
-echo
-# Token lookup order: existing environment variable, protected token file,
-# then an interactive hidden prompt.
-PA_API_TOKEN="${PA_API_TOKEN:-}"
-if [ -z "$PA_API_TOKEN" ] && [ -s "${HOME_DIR}/.pythonanywhere_api_token" ]; then
-    PA_API_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/.pythonanywhere_api_token")"
-    echo "Using API token from ~/.pythonanywhere_api_token"
-fi
-if [ -z "$PA_API_TOKEN" ]; then
-    echo "Paste a NEW PythonAnywhere API token and press Enter."
-    echo "The token will not be displayed."
-    IFS= read -r -s -p "PythonAnywhere API token: " PA_API_TOKEN
-    echo
-fi
-
-PA_API_TOKEN="$(printf '%s' "$PA_API_TOKEN" | tr -d '[:space:]')"
-if [ -z "$PA_API_TOKEN" ]; then
-    echo "ERROR: No API token was entered."
-    exit 1
-fi
-if [[ ! "$PA_API_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "ERROR: API token contains invalid characters."
-    exit 1
-fi
-
-AUTH_FILE="${APP_DIR}/.pa-auth-$$.conf"
-printf 'header = "Authorization: Token %s"\n' "$PA_API_TOKEN" > "$AUTH_FILE"
-chmod 600 "$AUTH_FILE"
-unset PA_API_TOKEN
-RESPONSE_FILE="${APP_DIR}/.pa-response-$$.json"
-
-echo "Testing PythonAnywhere API token..."
-STATUS="$(curl --config "$AUTH_FILE" --silent --show-error \
-    --output "$RESPONSE_FILE" --write-out '%{http_code}' \
-    --connect-timeout 20 --max-time 60 "${API_BASE}/webapps/")"
-if [ "$STATUS" != "200" ]; then
-    echo "ERROR: API authentication failed (HTTP $STATUS)."
-    cat "$RESPONSE_FILE" || true
-    exit 1
-fi
+echo "Testing API authentication..."
+STATUS="$(api_call GET "$API/webapps/")"; [ "$STATUS" = 200 ]||{ cat "$RESP"||true; fail "API authentication failed: HTTP $STATUS"; }
 
 echo "Downloading Scraper4..."
-DOWNLOAD_FILE="${APP_DIR}/.scraper4-download-$$.py"
-curl --fail --location --silent --show-error --retry 3 --retry-delay 2 \
-    --connect-timeout 20 --max-time 180 "$SOURCE_URL" --output "$DOWNLOAD_FILE"
-if [ ! -s "$DOWNLOAD_FILE" ]; then
-    echo "ERROR: Downloaded file is empty."
-    exit 1
-fi
-
-echo "Validating downloaded source..."
-"$PYTHON_BIN" - "$DOWNLOAD_FILE" <<'PY'
-import ast
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-source = path.read_text(encoding="utf-8")
-required_markers = (
-    "APP_VERSION",
-    "Flask(",
-    "/api/scrape",
-    "/api/deploy/check",
-    "/api/deploy/run",
-    "/api/deploy/rollback",
-)
-missing = [marker for marker in required_markers if marker not in source]
-if missing:
-    raise SystemExit("Invalid Scraper4 source; missing: " + ", ".join(missing))
-tree = ast.parse(source, filename=str(path))
-version = "unknown"
-for node in tree.body:
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-        continue
-    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-    if any(isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in targets):
-        value = node.value
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            version = value.value
-        break
-print("Source is valid. Version:", version)
+DOWN="$APP_DIR/.download-$$.py"
+curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 "$SOURCE_URL" -o "$DOWN"
+"$SYSTEM_PY" - "$DOWN" <<'PY'
+import ast,pathlib,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding="utf-8")
+missing=[x for x in ("APP_VERSION","Flask(","/api/scrape","/api/deploy/run") if x not in s]
+if missing: raise SystemExit("Invalid download; missing: "+", ".join(missing))
+ast.parse(s,filename=str(p)); print("Downloaded source syntax is valid.")
 PY
+[ ! -f "$APP_FILE" ]||cp -p "$APP_FILE" "$APP_FILE.$(date +%Y%m%d-%H%M%S).bak"
+mv "$DOWN" "$APP_FILE"; DOWN=""; chmod 600 "$APP_FILE"
 
-if [ -f "$APP_FILE" ]; then
-    cp -p "$APP_FILE" "${APP_FILE}.$(date +%Y%m%d-%H%M%S).bak"
-fi
-mv "$DOWNLOAD_FILE" "$APP_FILE"
-DOWNLOAD_FILE=""
-chmod 600 "$APP_FILE"
+echo "Creating isolated virtual environment..."
+if [ ! -x "$VENV_DIR/bin/python" ]; then "$SYSTEM_PY" -m venv "$VENV_DIR"; fi
+VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
+"$VENV_PIP" install --upgrade pip flask requests beautifulsoup4
+"$VENV_PY" -c 'import flask,requests,bs4; print("Dependencies OK:",flask.__name__,requests.__version__,bs4.__version__)'
+"$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
+SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"
 
- echo "Installing dependencies..."
-"$PYTHON_BIN" -m pip install --user --upgrade flask requests beautifulsoup4
-"$PYTHON_BIN" -m py_compile "$APP_FILE"
-rm -rf "${APP_DIR}/__pycache__"
-
-if [ -s "$PASSWORD_FILE" ]; then
-    SCRAPER_PASSWORD="$(tr -d '\r\n' < "$PASSWORD_FILE")"
-else
-    SCRAPER_PASSWORD="$($PYTHON_BIN -c 'import secrets; print(secrets.token_urlsafe(32))')"
-    printf '%s\n' "$SCRAPER_PASSWORD" > "$PASSWORD_FILE"
-    chmod 600 "$PASSWORD_FILE"
-fi
-if [ -z "$SCRAPER_PASSWORD" ]; then
-    echo "ERROR: Could not create administrator password."
-    exit 1
-fi
+if [ -s "$PASSWORD_FILE" ]; then ADMIN_PASSWORD="$(tr -d '\r\n' <"$PASSWORD_FILE")"; else ADMIN_PASSWORD="$($VENV_PY -c 'import secrets;print(secrets.token_urlsafe(32))')"; printf '%s\n' "$ADMIN_PASSWORD" >"$PASSWORD_FILE"; chmod 600 "$PASSWORD_FILE"; fi
+[ -n "$ADMIN_PASSWORD" ]||fail "Could not generate admin password."
 
 echo "Checking web app $DOMAIN..."
-STATUS="$(curl --config "$AUTH_FILE" --silent --show-error \
-    --output "$RESPONSE_FILE" --write-out '%{http_code}' \
-    --connect-timeout 20 --max-time 60 "${API_BASE}/webapps/${DOMAIN}/")"
-if [ "$STATUS" = "404" ]; then
-    echo "Creating web app..."
-    STATUS="$(curl --config "$AUTH_FILE" --silent --show-error \
-        --output "$RESPONSE_FILE" --write-out '%{http_code}' --request POST \
-        --connect-timeout 20 --max-time 120 \
-        --data-urlencode "domain_name=${DOMAIN}" \
-        --data-urlencode "python_version=${PYTHON_VERSION}" \
-        "${API_BASE}/webapps/")"
-    if [ "$STATUS" != "200" ] && [ "$STATUS" != "201" ]; then
-        echo "ERROR: Could not create web app (HTTP $STATUS)."
-        cat "$RESPONSE_FILE" || true
-        exit 1
-    fi
-elif [ "$STATUS" != "200" ]; then
-    echo "ERROR: Could not inspect web app (HTTP $STATUS)."
-    cat "$RESPONSE_FILE" || true
-    exit 1
-else
-    echo "Web app already exists."
-fi
+STATUS="$(api_call GET "$API/webapps/$DOMAIN/")"
+if [ "$STATUS" = 404 ]; then
+ STATUS="$(api_call POST "$API/webapps/" --data-urlencode "domain_name=$DOMAIN" --data-urlencode "python_version=$PY_VERSION")"
+ [[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Web app creation failed: HTTP $STATUS"; }
+elif [ "$STATUS" != 200 ]; then cat "$RESP"||true; fail "Web app check failed: HTTP $STATUS"; fi
 
-# PythonAnywhere normalizes domain-derived WSGI filenames to lowercase even
-# when the account's display/login name contains uppercase letters.
-find_wsgi_file() {
-    local candidate
-    for candidate in \
-        "/var/www/${USERNAME_LOWER}_pythonanywhere_com_wsgi.py" \
-        "/var/www/${USERNAME}_pythonanywhere_com_wsgi.py"; do
-        if [ -f "$candidate" ]; then
-            printf '%s' "$candidate"
-            return 0
-        fi
-    done
-    # Final fallback for custom/canonicalized domain filenames. Restrict the
-    # result to a writable WSGI file so we never select another user's app.
-    find /var/www -maxdepth 1 -type f -name '*_pythonanywhere_com_wsgi.py' \
-        -writable -print 2>/dev/null | head -n 1
-}
+# Configure PythonAnywhere to use the isolated environment.
+STATUS="$(api_call PATCH "$API/webapps/$DOMAIN/" --data-urlencode "virtualenv_path=$VENV_DIR")"
+[[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Could not set virtualenv: HTTP $STATUS"; }
 
-for ATTEMPT in $(seq 1 30); do
-    WSGI_FILE="$(find_wsgi_file || true)"
-    [ -z "$WSGI_FILE" ] || break
-    echo "Waiting for WSGI file ($ATTEMPT/30)..."
-    sleep 2
-done
-if [ -z "$WSGI_FILE" ] || [ ! -f "$WSGI_FILE" ]; then
-    echo "ERROR: No writable PythonAnywhere WSGI file was found in /var/www."
-    echo "Expected lowercase candidate: /var/www/${USERNAME_LOWER}_pythonanywhere_com_wsgi.py"
-    exit 1
-fi
-if [ ! -w "$WSGI_FILE" ]; then
-    echo "ERROR: WSGI file is not writable: $WSGI_FILE"
-    exit 1
-fi
-echo "Using WSGI file: $WSGI_FILE"
+find_wsgi(){ local f; for f in "/var/www/${USER_LOWER}_pythonanywhere_com_wsgi.py" "/var/www/${USER_NAME}_pythonanywhere_com_wsgi.py"; do [ ! -f "$f" ]||{ printf '%s' "$f"; return; }; done; find /var/www -maxdepth 1 -type f -name '*_pythonanywhere_com_wsgi.py' -writable -print 2>/dev/null|head -n1; }
+WSGI=""
+for n in $(seq 1 30); do WSGI="$(find_wsgi||true)"; [ -z "$WSGI" ]||break; echo "Waiting for WSGI ($n/30)..."; sleep 2; done
+[ -n "$WSGI" ]&&[ -w "$WSGI" ]||fail "No writable WSGI file found in /var/www."
+echo "Using WSGI: $WSGI"
 
-echo "Writing WSGI configuration..."
-export INSTALL_APP_DIR="$APP_DIR"
-export INSTALL_DATA_FILE="$DATA_FILE"
-export INSTALL_WSGI_FILE="$WSGI_FILE"
-export WSGI_PASSWORD="$SCRAPER_PASSWORD"
-"$PYTHON_BIN" - <<'PY'
-import datetime
-import os
-import pathlib
-import shutil
-
-app_dir = pathlib.Path(os.environ["INSTALL_APP_DIR"]).resolve()
-data_file = pathlib.Path(os.environ["INSTALL_DATA_FILE"]).resolve()
-wsgi_file = pathlib.Path(os.environ["INSTALL_WSGI_FILE"])
-password = os.environ["WSGI_PASSWORD"]
-backup = app_dir / ("wsgi-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak")
-if wsgi_file.exists():
-    shutil.copy2(wsgi_file, backup)
-source = "\n".join((
-    "import os",
-    "import sys",
-    "",
-    "APP_DIRECTORY = " + repr(str(app_dir)),
-    "if APP_DIRECTORY not in sys.path:",
-    "    sys.path.insert(0, APP_DIRECTORY)",
-    "",
-    "os.environ['SCRAPER_PASSWORD'] = " + repr(password),
-    "os.environ['SCRAPER_DATA_FILE'] = " + repr(str(data_file)),
-    "",
-    "from scraper4 import app as application",
-    "",
-))
-temporary = app_dir / ".wsgi-temporary"
-temporary.write_text(source, encoding="utf-8")
-shutil.copyfile(temporary, wsgi_file)
-temporary.unlink()
-print("WSGI written:", wsgi_file)
-print("WSGI backup:", backup)
+export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES"
+"$VENV_PY" - <<'PY'
+import datetime,json,os,pathlib,shutil
+app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]
+shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
+source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"from scraper4 import app as application",""))
+tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
+data={}
+if datafile.exists():
+ try:
+  x=json.loads(datafile.read_text(encoding="utf-8")); data=x if isinstance(x,dict) else {}
+ except Exception: pass
+data.setdefault("profiles",{}); data.setdefault("woocommerce",{"url":"","consumer_key":"","consumer_secret":""}); data.setdefault("network",{"timeout":25,"gap_ms":350,"proxy":"","verify_tls":True}); data.setdefault("last_result",[])
+old=data.get("deploy") if isinstance(data.get("deploy"),dict) else {}
+data["deploy"]={"repo":"fazilatma/amphp","branch":"arena/01a0640f-amphp","path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
+tmp=datafile.with_suffix(".json.tmp"); tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8"); tmp.replace(datafile)
 PY
-unset INSTALL_APP_DIR INSTALL_DATA_FILE INSTALL_WSGI_FILE WSGI_PASSWORD
+unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E; chmod 600 "$DATA_FILE"
 
-echo "Writing Scraper4 deployer configuration..."
-"$PYTHON_BIN" - "$DATA_FILE" "$WSGI_FILE" "$REPOSITORY" "$BRANCH" "$REMOTE_FILE" <<'PY'
-import json
-import pathlib
-import sys
-
-data_file = pathlib.Path(sys.argv[1])
-wsgi_file = pathlib.Path(sys.argv[2])
-repository, branch, remote_file = sys.argv[3:6]
-data = {}
-if data_file.exists():
-    try:
-        candidate = json.loads(data_file.read_text(encoding="utf-8"))
-        if isinstance(candidate, dict):
-            data = candidate
-    except Exception:
-        data_file.rename(data_file.with_suffix(".json.invalid.bak"))
-data.setdefault("profiles", {})
-data.setdefault("woocommerce", {"url": "", "consumer_key": "", "consumer_secret": ""})
-data.setdefault("network", {"timeout": 25, "gap_ms": 350, "proxy": "", "verify_tls": True})
-data.setdefault("last_result", [])
-old_deploy = data.get("deploy") if isinstance(data.get("deploy"), dict) else {}
-data["deploy"] = {
-    "repo": repository,
-    "branch": branch,
-    "path": remote_file,
-    "github_token": old_deploy.get("github_token", ""),
-    "reload_file": str(wsgi_file),
-}
-temporary = data_file.with_suffix(".json.temporary")
-temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-temporary.replace(data_file)
-print("Configuration written:", data_file)
-PY
-chmod 600 "$DATA_FILE"
-
-echo "Testing Flask application..."
-"$PYTHON_BIN" - "$APP_DIR" <<'PY'
-import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve()))
-import scraper4
-required = {
-    "/", "/health", "/api/config", "/api/scrape",
-    "/api/deploy/check", "/api/deploy/run", "/api/deploy/rollback",
-}
-routes = {rule.rule for rule in scraper4.app.url_map.iter_rules()}
-missing = required - routes
-if missing:
-    raise RuntimeError("Missing routes: " + ", ".join(sorted(missing)))
-response = scraper4.app.test_client().get("/health")
-if response.status_code != 200:
-    raise RuntimeError("Health test failed: HTTP " + str(response.status_code))
-print("Application test passed. Version:", scraper4.APP_VERSION)
+"$VENV_PY" - "$APP_DIR" <<'PY'
+import pathlib,sys
+sys.path.insert(0,str(pathlib.Path(sys.argv[1]).resolve())); import scraper4
+routes={r.rule for r in scraper4.app.url_map.iter_rules()}; need={"/","/health","/api/scrape","/api/deploy/run"}
+if need-routes: raise RuntimeError("Missing routes: "+", ".join(need-routes))
+assert scraper4.app.test_client().get("/health").status_code==200
+print("Local Flask test passed:",scraper4.APP_VERSION)
 PY
 
-echo "Reloading PythonAnywhere web app..."
-STATUS="$(curl --config "$AUTH_FILE" --silent --show-error \
-    --output "$RESPONSE_FILE" --write-out '%{http_code}' --request POST \
-    --connect-timeout 20 --max-time 120 \
-    "${API_BASE}/webapps/${DOMAIN}/reload/")"
-if [ "$STATUS" != "200" ] && [ "$STATUS" != "201" ]; then
-    echo "ERROR: Reload failed (HTTP $STATUS)."
-    cat "$RESPONSE_FILE" || true
-    exit 1
-fi
+STATUS="$(api_call POST "$API/webapps/$DOMAIN/reload/")"
+[[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Reload failed: HTTP $STATUS"; }
+rm -f "$AUTH" "$RESP"; AUTH=""; RESP=""
+LIVE=000
+for n in $(seq 1 12); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "https://$DOMAIN/health"||true)"; [ "$LIVE" != 200 ]||break; echo "Health $n/12: HTTP $LIVE"; done
 
-rm -f "$AUTH_FILE" "$RESPONSE_FILE"
-AUTH_FILE=""
-RESPONSE_FILE=""
-
-echo "Waiting for live website..."
-LIVE_STATUS="000"
-for ATTEMPT in $(seq 1 12); do
-    sleep 5
-    LIVE_STATUS="$(curl --silent --show-error --output /dev/null \
-        --write-out '%{http_code}' --connect-timeout 15 --max-time 30 \
-        "https://${DOMAIN}/health" || true)"
-    [ "$LIVE_STATUS" != "200" ] || break
-    echo "Health attempt $ATTEMPT/12: HTTP $LIVE_STATUS"
-done
-
-echo
 echo "============================================================"
 echo "INSTALLATION FINISHED"
-echo "============================================================"
-echo "Website: https://${DOMAIN}"
+echo "Website: https://$DOMAIN"
 echo "Login username: admin"
-echo "Login password: ${SCRAPER_PASSWORD}"
-echo "Password file: ${PASSWORD_FILE}"
-echo "Application: ${APP_FILE}"
-echo "Configuration: ${DATA_FILE}"
-echo "WSGI: ${WSGI_FILE}"
-echo "Live health status: HTTP ${LIVE_STATUS}"
+echo "Login password: $ADMIN_PASSWORD"
+echo "Password file: $PASSWORD_FILE"
+echo "Application: $APP_FILE"
+echo "Virtualenv: $VENV_DIR"
+echo "WSGI: $WSGI"
+echo "Live health: HTTP $LIVE"
 echo "============================================================"
-unset SCRAPER_PASSWORD
+unset ADMIN_PASSWORD

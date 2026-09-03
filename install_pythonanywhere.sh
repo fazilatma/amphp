@@ -5,12 +5,13 @@ umask 077
 EXPECTED_USERNAME="Fazilatma"
 USERNAME="$(id -un)"
 HOME_DIR="$HOME"
-DOMAIN="${USERNAME}.pythonanywhere.com"
+USERNAME_LOWER="$(printf '%s' "$USERNAME" | tr '[:upper:]' '[:lower:]')"
+DOMAIN="${USERNAME_LOWER}.pythonanywhere.com"
 APP_DIR="${HOME_DIR}/scraper4"
 APP_FILE="${APP_DIR}/scraper4.py"
 DATA_FILE="${APP_DIR}/scraper4_data.json"
 PASSWORD_FILE="${APP_DIR}/admin_password.txt"
-WSGI_FILE="/var/www/${USERNAME}_pythonanywhere_com_wsgi.py"
+WSGI_FILE=""
 REPOSITORY="fazilatma/amphp"
 BRANCH="arena/01a0640f-amphp"
 REMOTE_FILE="scraper4.py"
@@ -192,19 +193,40 @@ else
     echo "Web app already exists."
 fi
 
+# PythonAnywhere normalizes domain-derived WSGI filenames to lowercase even
+# when the account's display/login name contains uppercase letters.
+find_wsgi_file() {
+    local candidate
+    for candidate in \
+        "/var/www/${USERNAME_LOWER}_pythonanywhere_com_wsgi.py" \
+        "/var/www/${USERNAME}_pythonanywhere_com_wsgi.py"; do
+        if [ -f "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    # Final fallback for custom/canonicalized domain filenames. Restrict the
+    # result to a writable WSGI file so we never select another user's app.
+    find /var/www -maxdepth 1 -type f -name '*_pythonanywhere_com_wsgi.py' \
+        -writable -print 2>/dev/null | head -n 1
+}
+
 for ATTEMPT in $(seq 1 30); do
-    [ ! -f "$WSGI_FILE" ] || break
+    WSGI_FILE="$(find_wsgi_file || true)"
+    [ -z "$WSGI_FILE" ] || break
     echo "Waiting for WSGI file ($ATTEMPT/30)..."
     sleep 2
 done
-if [ ! -f "$WSGI_FILE" ]; then
-    echo "ERROR: WSGI file was not created: $WSGI_FILE"
+if [ -z "$WSGI_FILE" ] || [ ! -f "$WSGI_FILE" ]; then
+    echo "ERROR: No writable PythonAnywhere WSGI file was found in /var/www."
+    echo "Expected lowercase candidate: /var/www/${USERNAME_LOWER}_pythonanywhere_com_wsgi.py"
     exit 1
 fi
 if [ ! -w "$WSGI_FILE" ]; then
     echo "ERROR: WSGI file is not writable: $WSGI_FILE"
     exit 1
 fi
+echo "Using WSGI file: $WSGI_FILE"
 
 echo "Writing WSGI configuration..."
 export INSTALL_APP_DIR="$APP_DIR"

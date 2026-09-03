@@ -109,6 +109,13 @@ assert scraper4.app.test_client().get("/health").status_code==200
 print("Local Flask test passed:",scraper4.APP_VERSION)
 PY
 
+echo "Enabling web app..."
+ENABLE_STATUS="$(api_call POST "$API/webapps/$DOMAIN/enable/")"
+if [ "$ENABLE_STATUS" != 200 ]&&[ "$ENABLE_STATUS" != 201 ]&&[ "$ENABLE_STATUS" != 409 ]; then
+ echo "WARNING: Enable endpoint returned HTTP $ENABLE_STATUS."
+ cat "$RESP"||true
+fi
+
 echo "Reloading web app..."
 RELOAD_OK=0
 for n in 1 2 3; do

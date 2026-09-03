@@ -144,6 +144,22 @@ const AICONTENT_ITEMS_FILE    = __DIR__ . '/aicontent_items.json'; /* جزئیا
  *       برمی‌گردانند، پس کارِ مهم‌ترِ کاربر اول جان می‌گیرد.
  */
 const TASKS_ORDER_FILE = __DIR__ . '/tasks_order.json';
+/* v10.171: سقفِ همزمانِ کارهای پس‌زمینه + صفِ نوبت.
+ *
+ *  گزارشِ کاربر: وقتی چند کارِ سنگین (ارسال، استخراج، ایجنت…) هم‌زمان روی
+ *  هاستِ اشتراکی می‌افتند، سایت تایم‌اوت می‌شود و پردازه‌ها وسطِ کار کشته
+ *  می‌شوند. تا حالا «ادامهٔ همه» و نگهبانِ کران هر تیک فقط یک کار شلیک
+ *  می‌کردند، ولی از داخلِ خودِ مدیر وظیفه/تب‌ها می‌شد چند کار را پشتِ‌سرهم
+ *  شروع کرد و هیچ سقفی پشتش نبود.
+ *
+ *  حالا یک سقفِ سراسریِ قابلِ تنظیم داریم: حداکثر N کارِ پس‌زمینه هم‌زمان
+ *  اجرا می‌شود (پیش‌فرض ۲). هر درخواستِ شروع/ادامه که با صفِ پُر برخورد
+ *  کند، به‌جای اجرای فوری، در «صفِ نوبت» (tasks_queue.json) می‌نشیند و با
+ *  آزاد شدنِ یک جای خالی در تیکِ بعدیِ کران، به ترتیبِ اولویت اجرا می‌شود.
+ */
+const TASKS_QUEUE_FILE = __DIR__ . '/tasks_queue.json';
+const TASKS_MAX_CONCURRENT_DEFAULT = 2;   // پیش‌فرضِ سقفِ همزمان
+const TASKS_MAX_CONCURRENT_LIMIT   = 10;  // سقفِ سقف‌ها — قابلِ تنظیم بین ۱ تا ۱۰
 /* v10.164: دفترِ محلیِ SQLite برای اجرای مستقل.
    این فایل جایگزینِ اجباریِ WordPress/MySQL نیست؛ خودِ scraper4.php می‌تواند
    به‌تنهایی اجرا شود و وضعیت/heartbeat/checkpoint را در همین پوشه نگه دارد.
@@ -320,7 +336,7 @@ const BACKUP_LOG_FILE  = __DIR__ . '/.backup-log.json';
 const BACKUP_DIR       = __DIR__ . '/_backups';
 
 /* نسخهٔ کد — با هر تغییر در این فایل به‌روز می‌شود */
-const APP_VERSION = '10.170';
+const APP_VERSION = '10.171';
 if (!function_exists('str_starts_with')) {
     function str_starts_with($haystack, $needle) {
         $haystack = (string)$haystack; $needle = (string)$needle;
@@ -334,7 +350,7 @@ if (!function_exists('str_contains')) {
     }
 }
 
-const APP_VERSION_DATE = '1405/06/10';
+const APP_VERSION_DATE = '1405/06/12';
 const UPLOAD_DIR = __DIR__ . '/uploads/';
 
 /* ==================================================================
@@ -14022,6 +14038,8 @@ if (isset($_POST['stall_after']))    $conn['stall_after']    = max(60, (int)$_PO
    چون هر دو یک آستانه (stall_after) را می‌خوانند و با هم خاموش می‌شوند. */
 if (isset($_POST['auto_resume']))     $conn['auto_resume']     = !empty($_POST['auto_resume']) && $_POST['auto_resume'] !== 'false';
 if (isset($_POST['auto_resume_max'])) $conn['auto_resume_max'] = max(1, min(10, (int)$_POST['auto_resume_max']));
+/* v10.171: سقفِ همزمانِ کارهای پس‌زمینه (۱ تا ۱۰) — از مدیر وظیفه/تنظیمات */
+if (isset($_POST['tasks_max_concurrent'])) $conn['tasks_max_concurrent'] = max(1, min(TASKS_MAX_CONCURRENT_LIMIT, (int)$_POST['tasks_max_concurrent']));
 /* v10.39 (۵۳): فهرستِ آمادهٔ محصولاتِ باسلام — بازهٔ تازه‌سازی و کلیدِ خودکار */
 if (isset($_POST['bsl_catalog_auto']))  $conn['bsl_catalog_auto']  = !empty($_POST['bsl_catalog_auto']) && $_POST['bsl_catalog_auto'] !== 'false';
 if (isset($_POST['bsl_catalog_ttl_h'])) $conn['bsl_catalog_ttl_h'] = max(0.25, min(168, (float)$_POST['bsl_catalog_ttl_h']));
@@ -17072,11 +17090,12 @@ function cronWatchdogs(array $cn): array {
             $arRes = tasksResumeOne($arKey);
             $arDone[] = ['key' => $arKey, 'title' => (string)$arRow['title'],
                          'idle' => (int)$arRow['age'], 'try' => $_arTr + 1, 'max' => $arMax,
-                         'ok' => !empty($arRes['ok']), 'error' => (string)($arRes['error'] ?? '')];
+                         'ok' => !empty($arRes['ok']), 'queued' => !empty($arRes['queued']),
+                         'error' => (string)($arRes['error'] ?? '')];
             notifRunFailure($cn, 'ادامهٔ خودکار', (string)$arRow['title'],
                 'این کار ' . (int)$arRow['age'] . ' ثانیه بی‌حرکت مانده بود — '
                 . (!empty($arRes['ok'])
-                    ? 'خودکار ادامه داده شد ✅'
+                    ? (!empty($arRes['queued']) ? 'در صفِ نوبت قرار گرفت ⏳' : 'خودکار ادامه داده شد ✅')
                     : 'ادامه ناموفق ❌ ' . (string)($arRes['error'] ?? ''))
                 . ' (تلاشِ بدونِ پیشرفت ' . ($_arTr + 1) . ' از ' . $arMax . ')');
             /* fireAndForget پاسخِ زودهنگام دارد؛ حتی با پاسخِ موفق، worker
@@ -17090,6 +17109,21 @@ function cronWatchdogs(array $cn): array {
         }
         if ($arDone)     $results['auto_resume'] = $arDone;
         if ($arBlocked)  $results['auto_resume_blocked'] = $arBlocked;
+    }
+
+    /* v10.171: پمپِ صفِ نوبت — وقتی این تیک کارِ دیگری را شلیک نکرده (و
+       صفِ نوبت خالی نیست)، کارهای منتظر را تا سقفِ همزمان راه می‌اندازیم.
+       این حلقه مستقل از گزینهٔ «ادامهٔ خودکار» است چون خودِ کاربر آن‌ها را
+       در صف نشانده و انتظارِ اجرا دارد. اگر شلیکی انجام شد، مثل بقیهٔ
+       مسیرهای resume، بقیهٔ تیک به کرانِ بعدی واگذار می‌شود. */
+    if (empty($results['resume_blocking']) && function_exists('tasksQueueDrain')) {
+        $tqDrain = tasksQueueDrain($cn);
+        if (!empty($tqDrain['dispatched'])) {
+            $results['tasks_queue_drain'] = $tqDrain;
+            $results['resume_blocking'] = ['kind' => 'queue', 'count' => count($tqDrain['dispatched'])];
+        } elseif (!empty($tqDrain['skipped'])) {
+            $results['tasks_queue_drain'] = $tqDrain;
+        }
     }
 
     return $results;
@@ -22124,6 +22158,18 @@ function tasksResumeOne(string $key): array {
            آن را مصرف می‌کند تا بین probe و dispatch race ایجاد نشود. */
     }
 
+    /* v10.171: سقفِ همزمانِ کارهای پس‌زمینه. اگر به سقف رسیده باشیم، به‌جای
+       شلیکِ فوری، کار در «صفِ نوبت» می‌نشیند و با آزاد شدنِ جای خالی در تیکِ
+       بعدیِ کران — به ترتیبِ اولویت — اجرا می‌شود. این گلوگاهِ اصلیِ سبک شدنِ
+       بارِ هاستِ اشتراکی است. */
+    $tmcLimit = tasksMaxConcurrent();
+    if (tasksRunningCount(time()) >= $tmcLimit) {
+        $tmcPos = tasksQueueEnqueue($key);
+        return ['ok' => true, 'queued' => true, 'position' => $tmcPos, 'limit' => $tmcLimit,
+                'title' => (string)$row['title'],
+                'error' => 'سقفِ همزمان پُر است — کار در صفِ نوبت قرار گرفت'];
+    }
+
     /* صف‌های ارسال تنها از مسیرِ checkpoint-aware خودشان ادامه می‌یابند؛
        tasksResumeOne هرگز یک worker عمومیِ موازی برایشان شلیک نمی‌کند. */
     if ($key === 'bsl_send' || $key === 'woo_send') {
@@ -22311,6 +22357,125 @@ function tasksRowsOrdered(int $now): array {
     return $rows;
 }
 
+/* ═══════════ v10.171: سقفِ همزمانِ کارها + صفِ نوبت ═══════════
+ *
+ *  مشکلِ هاستِ اشتراکی: چند workerِ سنگین به‌موازات هم که راه بیفتند،
+ *  max_execution_time و حافظهٔ هاست ته می‌کشد و همهٔ پردازه‌ها — و خودِ
+ *  سایت — تایم‌اوت می‌شوند. اینجا یک سقفِ سراسری می‌گذاریم: حداکثر N کار
+ *  (پیش‌فرض ۲، قابلِ تنظیم) هم‌زمان اجرا می‌شود؛ درخواستِ شروع/ادامه‌ای که
+ *  با صفِ پُر برخورد کند، به‌جای شلیکِ فوری در «صفِ نوبت» می‌نشیند و با
+ *  آزاد شدنِ جای خالی، در تیکِ بعدیِ کران به ترتیبِ اولویت اجرا می‌شود.
+ */
+
+/** سقفِ همزمانِ کارهای پس‌زمینه — قابلِ تنظیم از مدیر وظیفه (پیش‌فرض ۲). */
+function tasksMaxConcurrent(?array $cn = null): int {
+    if ($cn === null) {
+        try { $cn = loadConnections(); } catch (Throwable $e) { $cn = []; }
+    }
+    return max(1, min(TASKS_MAX_CONCURRENT_LIMIT, (int)($cn['tasks_max_concurrent'] ?? TASKS_MAX_CONCURRENT_DEFAULT)));
+}
+
+/** شمارِ کارهای «در حال اجرا»ی زندهٔ رجیستری. کارهای stale عمداً شمرده
+ *  نمی‌شوند — پردازه‌شان مرده و باری روی سرور ندارند؛ نگهبان خودش آن‌ها را
+ *  برمی‌گرداند. */
+function tasksRunningCount(int $now = 0): int {
+    if ($now <= 0) $now = time();
+    $n = 0;
+    foreach (tasksRowsOrdered($now) as $r) {
+        if (($r['state'] ?? '') === 'running') $n++;
+    }
+    return $n;
+}
+
+/** چند جای خالی برای اجرای کارِ تازه وجود دارد؟ */
+function tasksFreeSlots(int $now = 0): int {
+    return max(0, tasksMaxConcurrent() - tasksRunningCount($now));
+}
+
+/** خواندنِ صفِ نوبت (کارهای منتظرِ جای خالی) */
+function tasksQueueRead(): array {
+    if (!is_file(TASKS_QUEUE_FILE)) return [];
+    $d = json_decode((string)@file_get_contents(TASKS_QUEUE_FILE), true);
+    return is_array($d) ? array_values($d) : [];
+}
+
+/** نوشتنِ اتمیکِ صفِ نوبت */
+function tasksQueueWrite(array $queue): bool {
+    if (!$queue) { @unlink(TASKS_QUEUE_FILE); return true; }
+    $tmp = TASKS_QUEUE_FILE . '.tmp';
+    $ok  = @file_put_contents($tmp, json_encode(array_values($queue), JSON_UNESCAPED_UNICODE), LOCK_EX) !== false;
+    if (!$ok) return false;
+    return @rename($tmp, TASKS_QUEUE_FILE);
+}
+
+/** افزودنِ یک کار به صفِ نوبت — اگر از قبل در صف باشد فقط جایگاهش برمی‌گردد
+ *  (کارِ تکراری دوبار صف نمی‌شود). خروجی: جایگاهِ ۱-پایه در صف. */
+function tasksQueueEnqueue(string $key): int {
+    $q = tasksQueueRead();
+    foreach ($q as $i => $row) {
+        if (is_array($row) && (($row['key'] ?? '') === $key)) return $i + 1;
+    }
+    $q[] = ['key' => $key, 'at' => time()];
+    tasksQueueWrite($q);
+    return count($q);
+}
+
+/** برداشتنِ یک کار از صفِ نوبت */
+function tasksQueueRemove(string $key): void {
+    $q = tasksQueueRead();
+    $out = [];
+    foreach ($q as $row) {
+        if (is_array($row) && (($row['key'] ?? '') === $key)) continue;
+        $out[] = $row;
+    }
+    tasksQueueWrite($out);
+}
+
+/** فهرستِ آمادهٔ نمایشِ صفِ نوبت (کلید + عنوان + جایگاه) */
+function tasksQueueList(): array {
+    $reg = tasksRegistry();
+    $out = [];
+    foreach (tasksQueueRead() as $i => $row) {
+        $k = (string)($row['key'] ?? '');
+        if ($k === '' || !isset($reg[$k])) continue;
+        $out[] = ['key' => $k, 'title' => (string)$reg[$k]['title'],
+                  'icon' => (string)$reg[$k]['icon'], 'position' => $i + 1,
+                  'queued_at' => (int)($row['at'] ?? 0)];
+    }
+    return $out;
+}
+
+/** پمپِ صفِ نوبت: تا وقتی جای خالی هست، کارهای منتظر را به ترتیبِ صف شلیک
+ *  می‌کند. از نگهبانِ کران صدا زده می‌شود؛ وقتی صف خالی است عملاً رایگان است. */
+function tasksQueueDrain(?array $cn = null): array {
+    $out = ['dispatched' => [], 'skipped' => [], 'queued' => 0];
+    $q   = tasksQueueRead();
+    if (!$q) return $out;
+    $out['queued'] = count($q);
+    $limit = tasksMaxConcurrent($cn);
+    $slots = max(0, $limit - tasksRunningCount(time()));
+    if ($slots <= 0) return $out;
+    $reg = tasksRegistry();
+    foreach ($q as $row) {
+        if ($slots <= 0) break;
+        $key = (string)($row['key'] ?? '');
+        if ($key === '' || !isset($reg[$key])) { tasksQueueRemove($key); continue; }
+        $r = tasksBuildRow($key, $reg[$key], time());
+        /* همین حالا زنده است (مثلاً از مسیر دیگری شروع شده) — از صف بیفتد. */
+        if (($r['state'] ?? '') === 'running') { tasksQueueRemove($key); continue; }
+        if (empty($r['resumable'])) { tasksQueueRemove($key); $out['skipped'][] = ['key' => $key, 'why' => 'ادامه ندارد']; continue; }
+        $one = tasksResumeOne($key);
+        tasksQueueRemove($key);
+        if (!empty($one['ok']) && empty($one['queued'])) {
+            $out['dispatched'][] = ['key' => $key, 'title' => (string)$r['title']];
+            $slots--;
+        } else {
+            $out['skipped'][] = ['key' => $key, 'why' => (string)($one['error'] ?? '')];
+        }
+    }
+    return $out;
+}
+
 /** فهرستِ زندهٔ همهٔ کارها + کارهای زمان‌بندی‌شده در یک پاسخ.
  *  مدیر وظیفه فقط همین یک اندپوینت را poll می‌کند تا با باز بودنِ
  *  پنجره ده‌تا درخواستِ موازی روی هاستِ اشتراکی نریزد. */
@@ -22333,7 +22498,30 @@ if (isset($_GET['tasks_list'])) {
     foreach ($rows as $r) { if ($r['state'] === 'running') $running++; if ($r['state'] === 'stale') $stale++; }
     echo json_encode(['ok' => true, 'now' => $now, 'tasks' => $rows, 'jobs' => $jobs,
         'running' => $running, 'stale' => $stale,
+        'max_concurrent' => tasksMaxConcurrent(),
+        'queued' => count(tasksQueueRead()),
+        'queue' => tasksQueueList(),
         'stale_after' => TASKS_STALE_SEC], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/** v10.171: خواندن/تنظیمِ سقفِ همزمانِ کارهای پس‌زمینه — مستقیم از مدیر وظیفه.
+ *  بدونِ value فقط مقدارِ فعلی و شمارِ کارهای در حال اجرا برمی‌گردد. */
+if (isset($_GET['tasks_limit'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $val = $_POST['value'] ?? $_GET['value'] ?? null;
+    if ($val !== null && $val !== '') {
+        $conn = loadConnections();
+        $conn['tasks_max_concurrent'] = max(1, min(TASKS_MAX_CONCURRENT_LIMIT, (int)$val));
+        if (saveConnections($conn)) {
+            echo json_encode(['ok' => true, 'max_concurrent' => $conn['tasks_max_concurrent']], JSON_UNESCAPED_UNICODE);
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'ذخیره نشد'], JSON_UNESCAPED_UNICODE);
+        }
+        exit;
+    }
+    echo json_encode(['ok' => true, 'max_concurrent' => tasksMaxConcurrent(),
+        'running' => tasksRunningCount(), 'queued' => count(tasksQueueRead())], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -22393,32 +22581,42 @@ if (isset($_GET['tasks_resume_all'])) {
     $now  = time();
     $only = (string)($_GET['only'] ?? 'stale');   // stale | stale_done
     $rows = tasksRowsOrdered($now);
-    $done = []; $skipped = []; $dispatched = false;
+    $done = []; $skipped = []; $queued = [];
+    /* v10.171: سقفِ همزمان حاکم است — فقط به‌اندازهٔ جای خالیِ فعلی worker
+       شلیک می‌کنیم و بقیهٔ کارهای قابل‌ادامه در «صفِ نوبت» می‌نشینند تا با
+       آزاد شدنِ جای خالی در تیک‌های بعدیِ کران، به همان ترتیب اجرا شوند. */
+    $limit = tasksMaxConcurrent();
+    $slots = max(0, $limit - tasksRunningCount($now));
     foreach ($rows as $r) {
         $st = (string)$r['state'];
         $want = $only === 'stale_done' ? in_array($st, ['stale', 'done'], true) : ($st === 'stale');
         if (!$want) continue;
         if (empty($r['resumable'])) { $skipped[] = ['key' => $r['key'], 'why' => 'ادامه ندارد']; continue; }
-        if ($dispatched) {
-            /* worker قبلی با پاسخِ زودهنگام هنوز ممکن است زنده باشد؛
-               این ردیف عمداً در checkpoint خودش می‌ماند تا کران بعدی، پس
-               از آزادشدنِ قبلی، آن را به همان ترتیب بردارد. */
-            $skipped[] = ['key' => $r['key'], 'why' => 'پس از پایانِ کارِ اولویتِ بالاتر، در کران بعدی ادامه می‌یابد'];
-            continue;
-        }
-        $one = tasksResumeOne((string)$r['key']);
-        if (!empty($one['ok'])) {
-            $done[] = ['key' => $r['key'], 'title' => $r['title'], 'rank' => $r['rank']];
-            $dispatched = true;
-        } else {
+        if ($slots > 0) {
+            $one = tasksResumeOne((string)$r['key']);
+            if (!empty($one['ok']) && empty($one['queued'])) {
+                $done[] = ['key' => $r['key'], 'title' => $r['title'], 'rank' => $r['rank']];
+                $slots--;
+                continue;
+            }
+            if (!empty($one['queued'])) {
+                $queued[] = ['key' => $r['key'], 'title' => $r['title'],
+                             'position' => (int)($one['position'] ?? 0)];
+                continue;
+            }
             $skipped[] = ['key' => $r['key'], 'why' => (string)($one['error'] ?? '')];
             /* قفلِ فعال یا dispatch نامطمئن: به کارِ بعدی نرو تا overlap نسازیم. */
             if (strpos((string)($one['error'] ?? ''), 'فعال') !== false
-                || strpos((string)($one['error'] ?? ''), 'پاسخ نداد') !== false) $dispatched = true;
+                || strpos((string)($one['error'] ?? ''), 'پاسخ نداد') !== false) $slots = 0;
+        } else {
+            $pos = tasksQueueEnqueue((string)$r['key']);
+            $queued[] = ['key' => $r['key'], 'title' => $r['title'], 'position' => $pos];
         }
     }
-    echo json_encode(['ok' => true, 'resumed' => $done, 'skipped' => $skipped,
-        'count' => count($done), 'sequential' => true], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['ok' => true, 'resumed' => $done, 'queued' => $queued,
+        'skipped' => $skipped, 'count' => count($done),
+        'queued_count' => count($queued), 'limit' => $limit,
+        'sequential' => false], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -31441,7 +31639,7 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
     $add('10.24', 'ادامهٔ همه کارها را به‌ترتیب و بدون هم‌پوشانی dispatch می‌کند',
          strpos($selfSrc, "\$only === 'stale_done'") !== false
       && strpos($selfSrc, "if (empty(\$r['resumable']))") !== false
-      && strpos($selfSrc, "'sequential' => true") !== false
+      && strpos($selfSrc, "'sequential' => false") !== false
       && strpos($selfSrc, "waiting_previous") === false);
 
     $add('10.24', 'کارتِ مدیر وظیفه دکمه‌های اولویت و شمارهٔ رتبه دارد',
@@ -33699,6 +33897,23 @@ $add('10.109', 'نسخهٔ ۱۰.۱۰۹',
     $add('10.19', 'نسخه و گزارشِ تغییرات به‌روز است',
          version_compare(APP_VERSION, '10.' . '19', '>=')
       && strpos($selfSrc, 'v:' . "'10.19'") !== false);
+
+    /* ==== v10.171: سقفِ همزمانِ کارهای پس‌زمینه + صفِ نوبت ==== */
+    $add('10.171', 'سقفِ همزمان قابلِ تنظیم است (۱ تا ۱۰، پیش‌فرض ۲)',
+         function_exists('tasksMaxConcurrent')
+      && defined('TASKS_QUEUE_FILE')
+      && defined('TASKS_MAX_CONCURRENT_DEFAULT')
+      && strpos($selfSrc, "if (isset(\$_GET['tasks_limit']))") !== false);
+    $add('10.171', 'شروعِ کار وقتی صفِ همزمان پُر است به صفِ نوبت می‌رود',
+         function_exists('tasksQueueEnqueue')
+      && function_exists('tasksQueueDrain')
+      && strpos($selfSrc, "\$tmcPos = tasksQueueEnqueue(\$key);") !== false);
+    $add('10.171', 'نگهبانِ کران صفِ نوبت را پمپ می‌کند',
+         strpos($selfSrc, "if (empty(\$results['resume_blocking']) && function_exists('tasksQueueDrain')) {") !== false
+      && strpos($selfSrc, "\$results['tasks_queue_drain']") !== false);
+    $add('10.171', 'ورودیِ CHANGELOG برای 10.171 ثبت شده و نسخهٔ برنامه عقب‌تر نیست',
+         strpos($selfSrc, "{v:'10.171',") !== false
+      && version_compare(APP_VERSION, '10.171', '>='));
 
 /* ---------- v9.94 (۸الف/۸ب): دکمهٔ تمام‌عرض + سربخشِ چسبانِ منو ---------- */
     $add('9.94', 'دکمه‌های ☰ و ⛶ بالاتر از پنل تنظیمات قرار می‌گیرند',
@@ -55291,7 +55506,7 @@ app_theme_ob_start();   // v9.94: رنگ‌بندیِ انتخابیِ کارب�
   border-radius:5px;min-width:17px;text-align:center;padding:2px 4px}
 .tmrank:hover{background:#1e3a5f;border-color:#3b6ea5}
 .tmb-run{background:#14532d;color:#86efac}.tmb-stale{background:#78350f;color:#fcd34d}
-.tmb-done{background:#1e3a5f;color:#93c5fd}.tmb-idle{background:#1e293b;color:#64748b}
+.tmb-done{background:#1e3a5f;color:#93c5fd}.tmb-idle{background:#1e293b;color:#64748b}.tmb-queued{background:#3b0764;color:#e9d5ff}
 /* نوارِ پیشرفت؛ حالتِ نامعین برای کارهایی که «کل» را نمی‌دانند */
 .tmbar{height:6px;border-radius:4px;background:#0b1220;overflow:hidden;margin-top:7px;border:1px solid #1e293b}
 .tmbar>i{display:block;height:100%;background:linear-gradient(90deg,#22c55e,#67e8f9);transition:width .4s ease}
@@ -57343,6 +57558,17 @@ title="چند درخواست هم‌زمان فرستاده شود (۱ تا ۱۶
 <b style="color:#94a3b8">هر نوبت فقط یک کار</b>، تا هاست زیر بار نرود.
 </div>
 <div class="crow"><label>حداکثر تلاش در ساعت:</label><input type="number" id="autoResumeMax" value="2" min="1" max="10" style="max-width:80px" dir="ltr"><span style="font-size:10px;color:#64748b">برای هر کار · جلوی حلقهٔ بی‌پایان را می‌گیرد</span></div>
+</div>
+
+<!-- v10.171: سقفِ همزمانِ کارهای پس‌زمینه -->
+<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155">
+<div class="crow"><label>حداکثر کارِ همزمان:</label><input type="number" id="tasksMaxConcurrent" value="2" min="1" max="10" style="max-width:80px" dir="ltr"><span style="font-size:10px;color:#64748b">۱ تا ۱۰ · پیش‌فرض ۲ · بقیه در نوبت می‌مانند</span></div>
+<div style="font-size:10px;color:#64748b;line-height:1.7;margin-top:4px">
+تا این سقف، کارهای سنگینِ پس‌زمینه (ارسال، استخراج، ایجنت، حذفِ تکراری و…)
+هم‌زمان اجرا می‌شوند؛ هر شروع/ادامهٔ تازه که با صفِ پُر برخورد کند در
+<b>صفِ نوبت</b> می‌ماند و با آزاد شدنِ جای خالی خودش اجرا می‌شود. روی هاستِ
+اشتراکی، کمتر از این سبک‌تر و امن‌تر است.
+</div>
 </div>
 
 <!-- v10.39 (۵۳): فهرستِ آمادهٔ محصولاتِ باسلام -->
@@ -66163,6 +66389,12 @@ const CHANGELOG = [
     'خواستهٔ شما: امکان فعال/غیرفعال کردن تک‌تکِ ارائه‌دهنده‌ها (و در نتیجهٔ', 'مدل‌هایشان) برای تعیینِ شمول در «تست مدل‌ها» فراهم شود.', '✅ در تب «ارائه‌دهنده‌ها» بخشِ «🚦 روشن/خاموش کردن ارائه‌دهنده‌ها» اضافه شد:', 'کنارِ هر ارائه‌دهنده یک تیک است که می‌توانید بزنید/بردارید و همان لحظه ذخیره', 'می‌شود.', '✅ ارائه‌دهنده‌ای که خاموش شود به‌همراهِ همهٔ مدل‌هایش از «تست مدل‌ها»', '(تست انبوه) کنار می‌رود — برای صرفه‌جویی در زمان و جلوگیری از ریت‌لیمیت،', 'فقط ارائه‌دهنده‌های روشن تست می‌شوند.', '✅ خاموش کردن، داده‌ها و کلیدها و مدل‌ها را پاک نمی‌کند؛ فقط از تست بیرون', 'می‌مانند و هر وقت تیک بزنید دوباره برمی‌گردند.', '✅ اگر ارائه‌دهندهٔ «فعال» (انتخاب اصلی اتوماسیون) خاموش شود، فعال به یک', 'ارائه‌دهندهٔ روشنِ دیگر می‌پرد تا دسته‌بندی/پاسخ خودکار بی‌درنگ از کار', 'نیفتد. شمارندهٔ «X روشن از Y» هم بالای فهرست نمایش داده می‌شود.'],},
   {v:'9.62', t:'💾 ذخیرهٔ تنظیمات فقط متن — حذف عکس‌های inline برای سبک شدن فایل', items:[
     'گزارش شما: موقع «ذخیرهٔ همهٔ تنظیمات» فایلِ خروجی ۱۳ مگابایت می‌شد که برای', 'آپلود/بارگذاری روی هاست‌ها و سرورهای ضعیف خیلی زیاد است.', '🐞 ریشهٔ کار: محصولاتِ استخراج‌شده می‌توانند عکس را به‌صورت inline', '(data:image/...;base64,XXXX) داخلِ خودِ فیلدِ image نگه دارند. این بلوک‌ها', 'چند ده کیلوبایت تا چند مگابایت روی هم حجم می‌دهند و چون فایلِ خروجی دوباره', 'base64 می‌شد، حجم باز هم بیشتر می‌رفت.', '✅ حالا خروجیِ «دانلود همهٔ تنظیمات و پروفایل‌ها» و اندپوینتِ backup_export', 'واردِ حالتِ «فقط متن» می‌شود: همهٔ بلوک‌های تصویرِ base64 از محتوای فایل‌های', 'داده حذف می‌شوند و فایل فقط متنِ تنظیمات/پروفایل/تاریخچه می‌ماند — سبک و', 'قابل آپلود روی هر هاستی.', '✅ عکس‌های واقعی همیشه در پوشهٔ uploads بودند و هیچ‌وقت داخل این بسته', 'نمی‌آمدند؛ پس حذفِ نسخهٔ inline برای بازیابی هیچ دادهٔ واقعی‌ای را کم نمی‌کند.', '⚠️ بکاپِ کاملِ گیت‌هاب/محلی (با دکمهٔ «بکاپ» در بخش گیت‌هاب) بدونِ تغییر،', 'همان رفتارِ قبلی را حفظ کرده است.'],},
+  {v:'10.171', t:'🧵 سقفِ همزمانِ کارهای پس‌زمینه + صفِ نوبت', items:[
+    'یک سقفِ سراسریِ قابلِ تنظیم: حداکثر N کارِ پس‌زمینه هم‌زمان اجرا می‌شود (پیش‌فرض ۲، بین ۱ تا ۱۰) تا هاستِ اشتراکی زیر بار نرود و تایم‌اوت نشود.',
+    'هر شروع/ادامه‌ای که با صفِ پُر برخورد کند، به‌جای اجرای فوری در «صفِ نوبت» (tasks_queue.json) می‌نشیند و با آزاد شدنِ جای خالی، در تیکِ بعدیِ کران به ترتیبِ اولویت اجرا می‌شود.',
+    'سقف از خودِ پنجرهٔ مدیر وظیفه (فیلد «سقف») و از تنظیماتِ نگهبان صف قابل تغییر است؛ «ادامهٔ همه» هم فقط به‌اندازهٔ جای خالی شلیک می‌کند و بقیه را در نوبت می‌گذارد.',
+    'شمارندهٔ «X در نوبت» و «سقف: N» در مدیر وظیفه نمایش داده می‌شود.',
+  ]},
   {v:'10.130', t:'🛡 ادامهٔ ترتیبی و قفل‌محورِ همهٔ کارهای سرورساید', items:[
     'همهٔ ردیف‌های قابل‌ادامهٔ مدیر وظیفه، شامل صف‌های ارسال، استخراج، همگام‌سازی دستی، حذف تکراری، اصلاح دسته، ایجنت‌ها، تست AI، مغایرت‌گیری، گزارش پسوند، ماتریس، بازسازی عکس، تولید محتوا و ویرایش گروهی، در فهرست و نگهبان کران پوشش داده می‌شوند.',
     'به‌جای فاصلهٔ ثابت، هر تیک فقط یک worker را dispatch می‌کند و صف/کارهای بعدی پس از آزادشدنِ قبلی در کران بعدی ادامه می‌یابند؛ پاسخ زودهنگام دیگر باعث هم‌پوشانی نمی‌شود.',
@@ -72058,7 +72290,7 @@ const bl=cn.baleh||{};if($('balehEnabled'))$('balehEnabled').checked=!!bl.enable
 const rb=cn.rubika||{};if($('rubikaEnabled'))$('rubikaEnabled').checked=!!rb.enabled;if($('rubikaToken')&&rb.token)$('rubikaToken').value=rb.token;if($('rubikaChatId')&&rb.chat_id)$('rubikaChatId').value=rb.chat_id;
 const tgm=cn.telegram||{};if($('telegramEnabled'))$('telegramEnabled').checked=!!tgm.enabled;if($('telegramToken')&&tgm.token)$('telegramToken').value=tgm.token;if($('telegramChatId')&&tgm.chat_id)$('telegramChatId').value=tgm.chat_id;
 const ne=cn.notif_events||{};/* v10.45: نبودِ کلید = روشن، صریحِ 0 = خاموش — دقیقاً همان قاعدهٔ سروری (notifEventOn). تا حالا 0 هم «روشن» نشان داده می‌شد. */const neOn=k=>ne[k]===undefined?true:!!ne[k];if($('notifOrderNew'))$('notifOrderNew').checked=neOn('order_new');if($('notifOrderStatus'))$('notifOrderStatus').checked=neOn('order_status');if($('notifChatMsg'))$('notifChatMsg').checked=neOn('chat_msg');/* v10.46 (۶۰): غرفهٔ «پیام مشتری» — گزینه‌ها از غرفهٔ پیش‌فرض + غرفه‌های اضافی می‌سازند */if($('notifChatShop')){const ncs=$('notifChatShop');const ncsCur=String(cn.notif_chat_shop||0);let ncsOpts='<option value="0">همهٔ غرفه‌ها</option>';const ncsDefVid=parseInt(b.vendor_id)||0;if(ncsDefVid>0&&b.token)ncsOpts+='<option value="'+ncsDefVid+'">غرفهٔ پیش‌فرض (#'+ncsDefVid+')</option>';(Array.isArray(bslExtraVendors)?bslExtraVendors:[]).forEach(v=>{const ncsVid=parseInt(v&&v.vendor_id)||0,ncsTok=String(v&&(v.token||''));if(ncsVid>0&&ncsTok)ncsOpts+='<option value="'+ncsVid+'">'+esc((v.shop_name||v.name)||('غرفه '+ncsVid))+' (#'+ncsVid+')</option>';});ncs.innerHTML=ncsOpts;ncs.value=(ncsCur!=='0'&&ncsOpts.indexOf('value="'+ncsCur+'"')>-1)?ncsCur:'0';}if($('notifProductStatus'))$('notifProductStatus').checked=neOn('product_status');if($('notifProductNew'))$('notifProductNew').checked=neOn('product_new');if($('notifOrderRefund'))$('notifOrderRefund').checked=neOn('order_refund');if($('notifSrcPrice'))$('notifSrcPrice').checked=neOn('src_price');if($('notifSrcStock'))$('notifSrcStock').checked=neOn('src_stock');if($('notifRunFail'))$('notifRunFail').checked=neOn('run_fail');if($('notifRetire'))$('notifRetire').checked=neOn('retire');if($('notifSyncReport'))$('notifSyncReport').checked=neOn('sync_report');if($('notifCronPing'))$('notifCronPing').checked=!!ne.cron_ping;if($('pingEvery'))$('pingEvery').value=(cn.ping_every!==undefined?cn.ping_every:360);if($('notifScanLimit'))$('notifScanLimit').value=(cn.notif_scan_limit!==undefined?cn.notif_scan_limit:20); /* v10.86 (100) */
-if($('remindAfter'))$('remindAfter').value=(cn.notif_remind_after!==undefined?cn.notif_remind_after:30);if($('remindMax'))$('remindMax').value=(cn.notif_remind_max!==undefined?cn.notif_remind_max:0);if($('qDedup'))$('qDedup').checked=cn.queue_dedup!==false;if($('qDedupStale'))$('qDedupStale').value=Math.round((cn.queue_dedup_stale!==undefined?cn.queue_dedup_stale:7200)/60);if($('cronLockMin'))$('cronLockMin').value=(cn.cron_lock_min||30);if($('keepReports'))$('keepReports').value=(cn.keep_reports||20);if($('contentSync'))$('contentSync').checked=(cn.content_sync!==false);if($('catLearnWords'))$('catLearnWords').value=String(cn.catlearn_words||1);catLearnWordsCfg=parseInt(cn.catlearn_words||1)||1;updateCatWordsBadge();if($('digestEnabled'))$('digestEnabled').checked=!!cn.digest_enabled;if($('digestHour')){if(!$('digestHour').options.length){let hh='';for(let i=0;i<24;i++)hh+='<option value="'+i+'">'+toFa(String(i).padStart(2,'0'))+':۰۰</option>';$('digestHour').innerHTML=hh;}$('digestHour').value=String(cn.digest_hour!==undefined?cn.digest_hour:23);}if($('digestHours'))$('digestHours').value=String(cn.digest_hours||24);updateDigestBadge();updateGenBadge();if($('retireMode'))$('retireMode').value=cn.retire_mode||'off';if($('retireWooAction'))$('retireWooAction').value=cn.retire_woo_action||'delete';if($('retireBslAction'))$('retireBslAction').value=cn.retire_bsl_action||'delete';if($('retireMaxPct'))$('retireMaxPct').value=cn.retire_max_pct||30;if($('retireMaxCount'))$('retireMaxCount').value=cn.retire_max_count||50;if($('stallWatchdog'))$('stallWatchdog').checked=cn.stall_watchdog!==false;if($('stallAfter'))$('stallAfter').value=cn.stall_after||300;if($('autoResume'))$('autoResume').checked=cn.auto_resume!==false;if($('autoResumeMax'))$('autoResumeMax').value=(cn.auto_resume_max||2);if($('bslCatAuto'))$('bslCatAuto').checked=cn.bsl_catalog_auto!==false;if($('bslCatTtl'))$('bslCatTtl').value=(cn.bsl_catalog_ttl_h!==undefined?cn.bsl_catalog_ttl_h:6);if($('detailBudget'))$('detailBudget').value=(cn.detail_budget_sec!==undefined?cn.detail_budget_sec:0);if($('proxyTimeout'))$('proxyTimeout').value=(cn.proxy_timeout_sec||45);srcNetApply(cn.src_net||{});updateRetireBadge();updateStallBadge();
+if($('remindAfter'))$('remindAfter').value=(cn.notif_remind_after!==undefined?cn.notif_remind_after:30);if($('remindMax'))$('remindMax').value=(cn.notif_remind_max!==undefined?cn.notif_remind_max:0);if($('qDedup'))$('qDedup').checked=cn.queue_dedup!==false;if($('qDedupStale'))$('qDedupStale').value=Math.round((cn.queue_dedup_stale!==undefined?cn.queue_dedup_stale:7200)/60);if($('cronLockMin'))$('cronLockMin').value=(cn.cron_lock_min||30);if($('keepReports'))$('keepReports').value=(cn.keep_reports||20);if($('contentSync'))$('contentSync').checked=(cn.content_sync!==false);if($('catLearnWords'))$('catLearnWords').value=String(cn.catlearn_words||1);catLearnWordsCfg=parseInt(cn.catlearn_words||1)||1;updateCatWordsBadge();if($('digestEnabled'))$('digestEnabled').checked=!!cn.digest_enabled;if($('digestHour')){if(!$('digestHour').options.length){let hh='';for(let i=0;i<24;i++)hh+='<option value="'+i+'">'+toFa(String(i).padStart(2,'0'))+':۰۰</option>';$('digestHour').innerHTML=hh;}$('digestHour').value=String(cn.digest_hour!==undefined?cn.digest_hour:23);}if($('digestHours'))$('digestHours').value=String(cn.digest_hours||24);updateDigestBadge();updateGenBadge();if($('retireMode'))$('retireMode').value=cn.retire_mode||'off';if($('retireWooAction'))$('retireWooAction').value=cn.retire_woo_action||'delete';if($('retireBslAction'))$('retireBslAction').value=cn.retire_bsl_action||'delete';if($('retireMaxPct'))$('retireMaxPct').value=cn.retire_max_pct||30;if($('retireMaxCount'))$('retireMaxCount').value=cn.retire_max_count||50;if($('stallWatchdog'))$('stallWatchdog').checked=cn.stall_watchdog!==false;if($('stallAfter'))$('stallAfter').value=cn.stall_after||300;if($('autoResume'))$('autoResume').checked=cn.auto_resume!==false;if($('autoResumeMax'))$('autoResumeMax').value=(cn.auto_resume_max||2);if($('tasksMaxConcurrent'))$('tasksMaxConcurrent').value=(cn.tasks_max_concurrent||2);if($('bslCatAuto'))$('bslCatAuto').checked=cn.bsl_catalog_auto!==false;if($('bslCatTtl'))$('bslCatTtl').value=(cn.bsl_catalog_ttl_h!==undefined?cn.bsl_catalog_ttl_h:6);if($('detailBudget'))$('detailBudget').value=(cn.detail_budget_sec!==undefined?cn.detail_budget_sec:0);if($('proxyTimeout'))$('proxyTimeout').value=(cn.proxy_timeout_sec||45);srcNetApply(cn.src_net||{});updateRetireBadge();updateStallBadge();
 updN();if(b.token&&bslAllCats.length===0){loadBslCats();}
 renderNotifHealth(); /* v10.46 (۶۰): خطِ وضعیتِ اعلان‌ها */
 arApplyCfg(cn.autoreply||{});arLoad();
@@ -72494,7 +72726,7 @@ fd.append('ai_net',JSON.stringify(getAiNet()));
 fd.append('baleh',JSON.stringify({enabled:$('balehEnabled')?.checked?1:0,token:$('balehToken')?.value||'',chat_id:$('balehChatId')?.value||''}));
 fd.append('rubika',JSON.stringify({enabled:$('rubikaEnabled')?.checked?1:0,token:$('rubikaToken')?.value||'',chat_id:$('rubikaChatId')?.value||''}));
 fd.append('telegram',JSON.stringify({enabled:$('telegramEnabled')?.checked?1:0,token:$('telegramToken')?.value||'',chat_id:$('telegramChatId')?.value||''}));
-fd.append('notif_events',JSON.stringify({order_new:$('notifOrderNew')?.checked?1:0,order_status:$('notifOrderStatus')?.checked?1:0,chat_msg:$('notifChatMsg')?.checked?1:0,product_status:$('notifProductStatus')?.checked?1:0,product_new:$('notifProductNew')?.checked?1:0,order_refund:$('notifOrderRefund')?.checked?1:0,src_price:$('notifSrcPrice')?.checked?1:0,src_stock:$('notifSrcStock')?.checked?1:0,run_fail:$('notifRunFail')?.checked?1:0,retire:$('notifRetire')?.checked?1:0,cron_ping:$('notifCronPing')?.checked?1:0,sync_report:$('notifSyncReport')?.checked?1:0}));/* v10.46 (۶۰): غرفهٔ انتخاب‌شده برای پیام مشتری */fd.append('notif_chat_shop',String($('notifChatShop')?.value||0));fd.append('notif_scan_limit',$('notifScanLimit')?.value||20); /* v10.86 (100) */fd.append('ping_every',$('pingEvery')?.value||360);fd.append('notif_remind_after',$('remindAfter')?.value??30);fd.append('notif_remind_max',$('remindMax')?.value??0);fd.append('queue_dedup',$('qDedup')?.checked?1:0);fd.append('queue_dedup_stale',Math.round((parseInt($('qDedupStale')?.value)||0)*60));fd.append('cron_lock_min',$('cronLockMin')?.value??30);fd.append('keep_reports',$('keepReports')?.value??20);fd.append('content_sync',$('contentSync')?.checked?1:0);fd.append('catlearn_words',$('catLearnWords')?.value??1);fd.append('digest_enabled',$('digestEnabled')?.checked?1:0);fd.append('digest_hour',$('digestHour')?.value??23);fd.append('digest_hours',$('digestHours')?.value??24);fd.append('retire_mode',$('retireMode')?.value||'off');fd.append('retire_woo_action',$('retireWooAction')?.value||'delete');fd.append('retire_bsl_action',$('retireBslAction')?.value||'delete');fd.append('retire_max_pct',$('retireMaxPct')?.value||30);fd.append('retire_max_count',$('retireMaxCount')?.value||50);fd.append('stall_watchdog',$('stallWatchdog')?.checked?1:0);fd.append('stall_after',$('stallAfter')?.value||300);fd.append('auto_resume',$('autoResume')?.checked?1:0);fd.append('auto_resume_max',$('autoResumeMax')?.value||2);fd.append('bsl_catalog_auto',$('bslCatAuto')?.checked?1:0);fd.append('bsl_catalog_ttl_h',$('bslCatTtl')?.value||6);fd.append('detail_budget_sec',$('detailBudget')?.value??0);fd.append('proxy_timeout_sec',$('proxyTimeout')?.value??45);fd.append('src_net',JSON.stringify(srcNetCollect()));fd.append('autoreply',JSON.stringify(arCollectCfg()));
+fd.append('notif_events',JSON.stringify({order_new:$('notifOrderNew')?.checked?1:0,order_status:$('notifOrderStatus')?.checked?1:0,chat_msg:$('notifChatMsg')?.checked?1:0,product_status:$('notifProductStatus')?.checked?1:0,product_new:$('notifProductNew')?.checked?1:0,order_refund:$('notifOrderRefund')?.checked?1:0,src_price:$('notifSrcPrice')?.checked?1:0,src_stock:$('notifSrcStock')?.checked?1:0,run_fail:$('notifRunFail')?.checked?1:0,retire:$('notifRetire')?.checked?1:0,cron_ping:$('notifCronPing')?.checked?1:0,sync_report:$('notifSyncReport')?.checked?1:0}));/* v10.46 (۶۰): غرفهٔ انتخاب‌شده برای پیام مشتری */fd.append('notif_chat_shop',String($('notifChatShop')?.value||0));fd.append('notif_scan_limit',$('notifScanLimit')?.value||20); /* v10.86 (100) */fd.append('ping_every',$('pingEvery')?.value||360);fd.append('notif_remind_after',$('remindAfter')?.value??30);fd.append('notif_remind_max',$('remindMax')?.value??0);fd.append('queue_dedup',$('qDedup')?.checked?1:0);fd.append('queue_dedup_stale',Math.round((parseInt($('qDedupStale')?.value)||0)*60));fd.append('cron_lock_min',$('cronLockMin')?.value??30);fd.append('keep_reports',$('keepReports')?.value??20);fd.append('content_sync',$('contentSync')?.checked?1:0);fd.append('catlearn_words',$('catLearnWords')?.value??1);fd.append('digest_enabled',$('digestEnabled')?.checked?1:0);fd.append('digest_hour',$('digestHour')?.value??23);fd.append('digest_hours',$('digestHours')?.value??24);fd.append('retire_mode',$('retireMode')?.value||'off');fd.append('retire_woo_action',$('retireWooAction')?.value||'delete');fd.append('retire_bsl_action',$('retireBslAction')?.value||'delete');fd.append('retire_max_pct',$('retireMaxPct')?.value||30);fd.append('retire_max_count',$('retireMaxCount')?.value||50);fd.append('stall_watchdog',$('stallWatchdog')?.checked?1:0);fd.append('stall_after',$('stallAfter')?.value||300);fd.append('auto_resume',$('autoResume')?.checked?1:0);fd.append('auto_resume_max',$('autoResumeMax')?.value||2);fd.append('tasks_max_concurrent',$('tasksMaxConcurrent')?.value||2);fd.append('bsl_catalog_auto',$('bslCatAuto')?.checked?1:0);fd.append('bsl_catalog_ttl_h',$('bslCatTtl')?.value||6);fd.append('detail_budget_sec',$('detailBudget')?.value??0);fd.append('proxy_timeout_sec',$('proxyTimeout')?.value??45);fd.append('src_net',JSON.stringify(srcNetCollect()));fd.append('autoreply',JSON.stringify(arCollectCfg()));
 fd.append('ai_content_auto',JSON.stringify({
   enabled:!!($('aiContentAutoEnabled')&&$('aiContentAutoEnabled').checked),
   web_search:!!($('aiContentAutoWeb')&&$('aiContentAutoWeb').checked),
@@ -74143,6 +74375,9 @@ function tmOpen(){
     +'<div style="display:flex;gap:6px;align-items:center">'
     +'<label style="font-size:10px;color:#94a3b8;display:flex;gap:4px;align-items:center;cursor:pointer">'
     +'<input type="checkbox" id="tmOnlyActive" onchange="tmToggleFilter()"> فقط فعال‌ها</label>'
+    +'<span style="display:flex;gap:4px;align-items:center;font-size:10px;color:#94a3b8" title="حداکثر کارِ همزمان — بقیه در صفِ نوبت می‌مانند">سقف:'
+    +'<input type="number" id="tmLimit" min="1" max="10" value="2" style="width:40px;font-size:10px;padding:2px 4px" dir="ltr">'
+    +'<button class="btn btn-gray" onclick="tmSetLimit()" style="font-size:9px;padding:2px 7px">تنظیم</button></span>'
     +'<button class="btn btn-gray" onclick="tmClearAll()" style="font-size:10px;padding:4px 9px" title="پاک‌کردنِ ردِ همهٔ کارهای تمام‌شده">🧽 پاک‌سازی</button>'
     +'<button class="btn btn-gray" onclick="tmClose()" style="font-size:11px;padding:4px 9px">✕</button></div></div>'
     +'<div class="bsl-modal-body" id="tmBody" style="min-height:320px;max-height:72vh;overflow:auto;padding:12px">'
@@ -74169,6 +74404,32 @@ function tmToggleFilter(){
   const c=document.getElementById('tmOnlyActive');
   tmOnlyActive=!!(c&&c.checked);
   tmRender();
+}
+
+/* v10.171: سقفِ همزمانِ کارهای پس‌زمینه — خواندن/تنظیمِ مستقیم از مدیر وظیفه */
+function tmSyncLimit(){
+  const el=document.getElementById('tmLimit');
+  if(el && tmData && tmData.max_concurrent!==undefined){
+    const v=parseInt(tmData.max_concurrent,10)||2;
+    el.value=v;
+  }
+}
+function tmSetLimit(){
+  const el=document.getElementById('tmLimit');
+  if(!el) return;
+  let v=parseInt(el.value,10);
+  if(!v||isNaN(v))v=2;
+  if(v<1)v=1; if(v>10)v=10;
+  if(tmBusy)return; tmBusy=true;
+  fetch('?tasks_limit=1&value='+encodeURIComponent(v)).then(r=>r.json()).then(d=>{
+    tmBusy=false;
+    if(d&&d.ok){
+      if(tmData)tmData.max_concurrent=d.max_concurrent;
+      el.value=d.max_concurrent;
+      showToast('⚙ سقفِ همزمان: '+toFa(d.max_concurrent)+' کار — بقیه در نوبت');
+      tmPulse();
+    } else showToast('✗ '+((d&&d.error)||'ذخیره نشد'),true);
+  }).catch(()=>{tmBusy=false;showToast('✗ خطا شبکه',true);});
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -74418,6 +74679,9 @@ function tmRender(){
   let tasks=(d.tasks||[]);
   if(tmOnlyActive) tasks=tasks.filter(t=>t.state==='running'||t.state==='stale');
   const run=parseInt(d.running)||0, st=parseInt(d.stale)||0;
+  const queued=parseInt(d.queued)||0;
+  const limit=parseInt(d.max_concurrent)||2;
+  tmSyncLimit();
 
   /* v10.24 (۳۷ج): چند کارِ گیرکرده معمولاً با هم می‌میرند (یک ری‌استارتِ
      هاست)، پس دکمهٔ جمعی کنارِ شمارندهٔ «رهاشده» می‌نشیند. */
@@ -74425,6 +74689,8 @@ function tmRender(){
   let h='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
     +'<span class="tmc-badge '+(run>0?'tmb-run':'tmb-idle')+'">'+toFa(run)+' در حال اجرا</span>'
     +(st>0?'<span class="tmc-badge tmb-stale">'+toFa(st)+' رهاشده</span>':'')
+    +(queued>0?'<span class="tmc-badge tmb-queued" title="منتظرِ جای خالی برای اجرا">'+toFa(queued)+' در نوبت</span>':'')
+    +'<span class="tmc-badge tmb-idle" title="حداکثر کارِ همزمان">سقف: '+toFa(limit)+'</span>'
     +'<span class="tmc-badge tmb-done">'+toFa((d.jobs||[]).length)+' کارِ زمان‌بندی‌شده</span>'
     +(staleResumable>0?'<button class="btn btn-green" style="font-size:10px;padding:3px 10px" '
       +'onclick="tmResumeAll()" title="همهٔ کارهای گیرکرده را به ترتیبِ اولویت دوباره شروع کن">'
@@ -74518,7 +74784,8 @@ function tmResumeAll(){
   fetch('?tasks_resume_all=1&only=stale').then(r=>r.json()).then(d=>{
     tmBusy=false;
     if(d&&d.ok){
-      showToast('▶ '+toFa(d.count||0)+' کار دوباره شروع شد'
+      showToast('▶ '+toFa(d.count||0)+' کار شروع شد'
+        +((d.queued_count||0)?(' · '+toFa(d.queued_count)+' در نوبت'):'')
         +((d.skipped||[]).length?(' · '+toFa(d.skipped.length)+' مورد رد شد'):''));
     }else showToast('✗ '+((d&&d.error)||'ناموفق'),true);
     setTimeout(tmPulse,1500); tmPulse();
@@ -74537,8 +74804,10 @@ function tmResume(key){
   tmBusy=true;
   fetch('?tasks_resume=1&key='+encodeURIComponent(key)).then(r=>r.json()).then(d=>{
     tmBusy=false;
-    if(d&&d.ok) showToast('▶ شروع شد — چند لحظه بعد وضعیتش اینجا به‌روز می‌شود');
-    else showToast('✗ '+((d&&d.error)||'شروع نشد'),true);
+    if(d&&d.ok){
+      if(d.queued) showToast('⏳ سقفِ همزمان پُر است — در صفِ نوبت قرار گرفت (جایگاه '+toFa(d.position||1)+')');
+      else showToast('▶ شروع شد — چند لحظه بعد وضعیتش اینجا به‌روز می‌شود');
+    } else showToast('✗ '+((d&&d.error)||'شروع نشد'),true);
     setTimeout(tmPulse,1500);
     tmPulse();
   }).catch(()=>{tmBusy=false;showToast('✗ خطا شبکه',true);});

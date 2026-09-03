@@ -78,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(__file__, "rb") as _build_file:
@@ -1167,6 +1167,89 @@ def playwright_browser_ready(root: str) -> bool:
     return False
 
 
+def safe_remove_generated(path: str, allowed_roots: list[str]) -> int:
+    """Delete one known generated path without ever following symlinks."""
+    absolute = os.path.abspath(os.path.expanduser(path))
+    if not any(os.path.commonpath([absolute, root]) == root for root in allowed_roots):
+        return 0
+    size = 0
+    try:
+        if os.path.islink(absolute):
+            os.unlink(absolute); return 0
+        if os.path.isfile(absolute):
+            size = os.path.getsize(absolute); os.unlink(absolute); return size
+        if not os.path.isdir(absolute): return 0
+        for directory, _, files in os.walk(absolute):
+            for name in files:
+                try: size += os.path.getsize(os.path.join(directory, name))
+                except OSError: pass
+        shutil.rmtree(absolute, ignore_errors=True)
+    except OSError:
+        return 0
+    return size
+
+
+def account_cleanup() -> dict[str, Any]:
+    """Clean only provably disposable account data; preserve system and user content."""
+    home = os.path.abspath(os.path.expanduser("~")); app_root = os.path.abspath(BASE_DIR)
+    allowed = [home, app_root]
+    candidates = [
+        os.path.join(home, ".cache", "pip"), os.path.join(home, ".cache", "uv"),
+        os.path.join(home, ".cache", "pypoetry"), os.path.join(home, ".cache", "ms-playwright"),
+        os.path.join(home, ".npm", "_cacache"), os.path.join(home, ".npm", "_logs"),
+        os.path.join(app_root, "__pycache__"), os.path.join(app_root, ".pytest_cache"),
+    ]
+    freed, removed = 0, []
+    for path in candidates:
+        amount = safe_remove_generated(path, allowed)
+        if amount or not os.path.exists(path):
+            if amount: removed.append(os.path.relpath(path, home))
+            freed += amount
+    # Interrupted installers and atomic-write leftovers in the dedicated app folder.
+    temp_patterns = re.compile(r"^(?:\.download-|\.pa-auth-|\.pa-response-|\.scraper4-|\.wsgi\.tmp)")
+    try:
+        for name in os.listdir(app_root):
+            if temp_patterns.match(name):
+                path=os.path.join(app_root,name); amount=safe_remove_generated(path,allowed)
+                if amount: freed+=amount;removed.append(os.path.relpath(path,home))
+    except OSError: pass
+    # Keep two newest application/WSGI backups.
+    for prefix in ("scraper4.py.", "wsgi-"):
+        try: backups=sorted((x for x in os.listdir(app_root) if x.startswith(prefix) and x.endswith(".bak")),reverse=True)
+        except OSError: backups=[]
+        for name in backups[2:]:
+            path=os.path.join(app_root,name);amount=safe_remove_generated(path,allowed)
+            if amount:freed+=amount;removed.append(os.path.relpath(path,home))
+    # Remove incomplete browser downloads. If lightweight shell exists, full Chromium copies are redundant.
+    browser_root=os.path.join(app_root,"ms-playwright")
+    headless_ready=any("headless" in directory.lower() and playwright_browser_ready(directory) for directory,dirs,files in os.walk(browser_root)) if os.path.isdir(browser_root) else False
+    if os.path.isdir(browser_root):
+        for name in os.listdir(browser_root):
+            path=os.path.join(browser_root,name)
+            redundant=(headless_ready and name.startswith("chromium-") and "headless" not in name)
+            incomplete=os.path.isdir(path) and not playwright_browser_ready(path) and not name.startswith("ffmpeg")
+            if redundant or incomplete:
+                amount=safe_remove_generated(path,allowed)
+                if amount:freed+=amount;removed.append(os.path.relpath(path,home))
+    # Dedicated venv only: uninstall packages no longer used by Scraper4.
+    candidates_py=[os.path.join(app_root,"venv","bin","python"),os.path.join(sys.prefix,"bin","python")]
+    python_bin=next((x for x in candidates_py if os.path.isfile(x) and os.access(x,os.X_OK) and "uwsgi" not in os.path.basename(x).lower()),"")
+    uninstall_output=""
+    if python_bin:
+        try:
+            run=subprocess.run([python_bin,"-m","pip","uninstall","-y","selenium","cloudscraper","html5lib","trio","trio-websocket"],capture_output=True,text=True,timeout=180)
+            uninstall_output=(run.stdout or run.stderr)[-1200:]
+        except (OSError,subprocess.TimeoutExpired): pass
+    return {"freed_bytes":freed,"freed_mb":round(freed/1048576,1),"removed":removed,"uninstall":uninstall_output}
+
+
+@app.post("/api/deploy/cleanup")
+def api_deploy_cleanup():
+    if not deploy_authorized(): return deploy_auth_error()
+    result=account_cleanup()
+    return jsonify(ok=True,message=f"پاکسازی امن انجام شد؛ {result['freed_mb']} مگابایت فایل موقت حذف شد",**result)
+
+
 @app.post("/api/deploy/dependencies")
 def api_deploy_dependencies():
     if not deploy_authorized(): return deploy_auth_error()
@@ -1514,7 +1597,7 @@ INDEX_HTML = r'''<!doctype html>
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
 </style></head><body><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.7.1</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.7.2</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
 <section id="scrape" class="pane on"><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
@@ -1539,7 +1622,7 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>Proxy اختیاری</label><input id="proxy" dir="ltr" placeholder="http://user:pass@host:port"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button></div></div>
 <div class="card note"><b>روش استخراج نسخه PHP:</b> HTML صفحه دریافت و سلکتورهای CSS روی DOM اجرا می‌شوند. در سایت‌های JavaScript، Playwright ابتدا DOM کامل را رندر می‌کند. هیچ API محصول یا hydration استفاده نمی‌شود.</div></section>
 <section id="woo" class="pane"><div class="card"><h3>اتصال و صف ووکامرس</h3><div class="grid"><div class="wide"><label>URL فروشگاه</label><input id="woo_url" dir="ltr"></div><div><label>Consumer key</label><input id="woo_ck" dir="ltr"></div><div><label>Consumer secret</label><input id="woo_cs" type="password" dir="ltr"></div><div><label>وضعیت محصول</label><select id="woo_product_status"><option value="draft">پیش‌نویس</option><option value="publish">انتشار</option><option value="pending">در انتظار بررسی</option><option value="private">خصوصی</option></select></div><div><label>تعداد هر مرحله</label><input id="woo_batch" type="number" min="1" max="25" value="10"></div><div><label><input id="woo_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست</button><button class="green" onclick="wooQueue()">افزودن نتایج به صف</button><button class="gray" onclick="loadWooJobs()">تازه‌سازی صف</button></div><div id="wooStatus" class="status">صف مرحله‌ای برای سازگاری با محدودیت اجرای PythonAnywhere</div><div id="wooJobList"></div></div></section>
-<section id="deploy" class="pane"><div class="card"><h3>نصب‌کننده اتمیک از GitHub</h3><div class="note">نسخه تازه پیش از نصب با کامپایل Python بررسی می‌شود. نسخه فعلی در <code>scraper4.py.bak</code> می‌ماند. برای repository خصوصی بهتر است متغیر محیطی <code>GITHUB_TOKEN</code> را در WSGI تنظیم کنید.</div><div class="grid" style="margin-top:12px"><div><label>Repository (owner/repo)</label><input id="dep_repo" dir="ltr"></div><div><label>Branch</label><input id="dep_branch" dir="ltr"></div><div><label>مسیر فایل در repository</label><input id="dep_path" dir="ltr"></div><div><label>GitHub token اختیاری</label><input id="dep_token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی / استفاده از GITHUB_TOKEN"></div><div class="wide"><label>مسیر کامل WSGI برای Reload اختیاری</label><input id="dep_reload" dir="ltr" placeholder="/var/www/USERNAME_pythonanywhere_com_wsgi.py"></div></div><div class="actions"><button onclick="saveDeploy()">ذخیره تنظیمات</button><button class="gray" onclick="installDeps()">پاکسازی و نصب سبک Playwright</button><button class="gray" onclick="deployCheck()">بررسی نسخه</button><button class="green" onclick="deployRun()">نصب نسخه تازه</button><button class="gray" onclick="deployRollback()">بازگشت به .bak</button></div><div id="deployStatus" class="status">ابتدا تنظیمات را ذخیره و سپس نسخه را بررسی کنید.</div></div></section>
+<section id="deploy" class="pane"><div class="card"><h3>نصب‌کننده اتمیک از GitHub</h3><div class="note">نسخه تازه پیش از نصب با کامپایل Python بررسی می‌شود. نسخه فعلی در <code>scraper4.py.bak</code> می‌ماند. برای repository خصوصی بهتر است متغیر محیطی <code>GITHUB_TOKEN</code> را در WSGI تنظیم کنید.</div><div class="grid" style="margin-top:12px"><div><label>Repository (owner/repo)</label><input id="dep_repo" dir="ltr"></div><div><label>Branch</label><input id="dep_branch" dir="ltr"></div><div><label>مسیر فایل در repository</label><input id="dep_path" dir="ltr"></div><div><label>GitHub token اختیاری</label><input id="dep_token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی / استفاده از GITHUB_TOKEN"></div><div class="wide"><label>مسیر کامل WSGI برای Reload اختیاری</label><input id="dep_reload" dir="ltr" placeholder="/var/www/USERNAME_pythonanywhere_com_wsgi.py"></div></div><div class="actions"><button onclick="saveDeploy()">ذخیره تنظیمات</button><button class="gray" onclick="cleanupAccount()">پاکسازی فضای بلااستفاده</button><button class="gray" onclick="installDeps()">پاکسازی و نصب سبک Playwright</button><button class="gray" onclick="deployCheck()">بررسی نسخه</button><button class="green" onclick="deployRun()">نصب نسخه تازه</button><button class="gray" onclick="deployRollback()">بازگشت به .bak</button></div><div id="deployStatus" class="status">ابتدا تنظیمات را ذخیره و سپس نسخه را بررسی کنید.</div></div></section>
 <footer class="app-footer"><nav class="tabs" aria-label="منوی اصلی"><button class="on" data-tab="scrape"><i>🎯</i><span>شروع</span></button><button data-tab="settings"><i>⚙️</i><span>تنظیمات</span></button><button data-tab="selectors"><i>🎨</i><span>سلکتورها</span></button><button data-tab="results"><i>📊</i><span>نتایج</span></button><button data-tab="woo"><i>📤</i><span>ارسال</span></button><button data-tab="imports"><i>📥</i><span>درون‌ریزی</span></button><button data-tab="more"><i>☰</i><span>بیشتر</span></button></nav></footer></div><script>
 let products=[],profiles={},currentBuild=''; const $=id=>document.getElementById(id); const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 (function phpLayout(){const scrape=$('scrape'),adv=scrape.querySelector('details.advanced'),status=$('status'),table=status?status.nextElementSibling:null;if(adv)$('selectorsMount').appendChild(adv);if(status)$('resultsMount').appendChild(status);if(table)$('resultsMount').appendChild(table);scrape.querySelectorAll('[onclick^="download"],label.file-btn').forEach(x=>x.remove())})();
@@ -1549,7 +1632,7 @@ function apply(c){if(!c)return;['url','pages','render','pagination','page_value'
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.7.1');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.7.2');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;openTab('results');}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
@@ -1572,6 +1655,7 @@ async function loadWooJobs(){try{let d=await api('/api/woo/jobs');$('wooJobList'
 async function processWoo(id){try{$('wooStatus').textContent='در حال ارسال مرحله…';let d=await api('/api/woo/process/'+encodeURIComponent(id),{method:'POST',body:JSON.stringify({batch:+$('woo_batch').value})});$('wooStatus').innerHTML=`<span class="ok">پیشرفت ${d.job.cursor}/${d.job.total}؛ موفق ${d.job.sent}؛ خطا ${d.job.failed}</span>`;loadWooJobs()}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deleteWoo(id){if(!confirm('صف حذف شود؟'))return;await api('/api/woo/jobs/'+encodeURIComponent(id),{method:'DELETE'});loadWooJobs()}
 async function saveDeploy(){let deploy={repo:$('dep_repo').value.trim(),branch:$('dep_branch').value.trim(),path:$('dep_path').value.trim(),reload_file:$('dep_reload').value.trim(),github_token:$('dep_token').value.trim()};await deployApi('/api/settings',{method:'POST',body:JSON.stringify({deploy})});$('dep_token').value='';$('deployStatus').innerHTML='<span class="ok">تنظیمات نصب ذخیره شد.</span>'}
+async function cleanupAccount(){if(!confirm('فقط cacheها، نصب‌های نیمه‌کاره، مرورگرهای تکراری و بسته‌های بلااستفاده پاک شوند؟ فایل‌های سیستمی، برنامه، تنظیمات و فایل‌های شخصی حفظ می‌شوند.'))return;try{$('deployStatus').textContent='در حال پاکسازی امن فضای حساب…';let d=await deployApi('/api/deploy/cleanup',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+'</span>\n'+esc((d.removed||[]).join('\n'))}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function installDeps(){if(!confirm('کتابخانه‌های استخراج و مرورگر Chromium نصب/به‌روزرسانی شوند؟ ممکن است چند دقیقه طول بکشد.'))return;try{$('deployStatus').textContent='در حال نصب Playwright، Chromium و کتابخانه‌های استخراج…';let d=await deployApi('/api/deploy/dependencies',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+'</span>'+(!d.browser_installed&&d.warning?'\n'+esc(d.warning):'')}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deployCheck(){try{$('deployStatus').textContent='در حال بررسی GitHub…';let d=await deployApi('/api/deploy/check',{method:'POST',body:'{}'});$('deployStatus').innerHTML=`نسخه جاری: ${esc(d.version)}\nSHA محلی: ${esc(d.local_sha)}\nSHA راه دور: ${esc(d.remote_sha)}\n${d.update_available?'<span class="ok">نسخه متفاوت آماده نصب است.</span>':'نسخه محلی و راه دور یکسان‌اند.'}`;}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deployRun(){if(!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;try{$('deployStatus').textContent='در حال دانلود، اعتبارسنجی و نصب…';let d=await deployApi('/api/deploy/run',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد.':'در صورت تنظیم‌نبودن WSGI، از تب Web دکمه Reload را بزنید.');}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

@@ -78,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "1.7.4"
+APP_VERSION = "1.8.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Keep browser installation and runtime lookup in the same quota-controlled folder.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get("SCRAPER_PLAYWRIGHT_PATH", os.path.join(BASE_DIR, "ms-playwright"))
@@ -1293,6 +1293,73 @@ def account_cleanup() -> dict[str, Any]:
     return {"freed_bytes":freed,"freed_mb":round(freed/1048576,1),"removed":removed,"uninstall":uninstall_output}
 
 
+def bounded_path_size(path: str, deadline: float, counter: list[int]) -> tuple[int, bool]:
+    """Folder size without following links, bounded to keep a web request responsive."""
+    total, complete = 0, True
+    try:
+        if os.path.islink(path): return os.lstat(path).st_size, True
+        if os.path.isfile(path): return os.path.getsize(path), True
+        for directory, dirs, files in os.walk(path, followlinks=False):
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(directory, name))]
+            for name in files:
+                if time.monotonic() > deadline or counter[0] >= 150000: return total, False
+                try: total += os.path.getsize(os.path.join(directory, name)); counter[0] += 1
+                except OSError: pass
+    except OSError:
+        complete = False
+    return total, complete
+
+
+def safe_home_path(relative: str) -> tuple[str, str]:
+    home = os.path.realpath(os.path.expanduser("~"))
+    relative = str(relative or "").strip().replace("\\", "/").lstrip("/")
+    target = os.path.realpath(os.path.join(home, relative))
+    if os.path.commonpath([home, target]) != home: raise ValueError("مسیر خارج از پوشه حساب مجاز نیست")
+    return home, target
+
+
+@app.get("/api/files")
+def api_file_explorer():
+    if not deploy_authorized(): return deploy_auth_error()
+    try: home, target = safe_home_path(request.args.get("path", ""))
+    except ValueError as exc: return jsonify(ok=False, error=str(exc)), 400
+    if not os.path.isdir(target): return jsonify(ok=False, error="پوشه پیدا نشد"), 404
+    deadline=time.monotonic()+8.0; counter=[0]; entries=[]
+    try: children=list(os.scandir(target))[:250]
+    except OSError as exc: return jsonify(ok=False,error=f"خواندن پوشه ممکن نیست: {exc}"),400
+    children.sort(key=lambda item:(not item.is_dir(follow_symlinks=False),item.name.lower()))
+    for item in children:
+        if time.monotonic()>deadline: break
+        try:
+            is_dir=item.is_dir(follow_symlinks=False); size,complete=bounded_path_size(item.path,deadline,counter)
+            stat=item.stat(follow_symlinks=False)
+            rel=os.path.relpath(item.path,home); rel="" if rel=="." else rel
+            entries.append({"name":item.name,"path":rel,"directory":is_dir,"symlink":item.is_symlink(),"size":size,"complete":complete,"modified":int(stat.st_mtime),"protected":item.name.startswith(".") or os.path.realpath(item.path)==os.path.realpath(BASE_DIR)})
+        except OSError: continue
+    disk=shutil.disk_usage(home); account_used,account_complete=bounded_path_size(home,time.monotonic()+8.0,[0])
+    quota_text=""
+    try:
+        q=subprocess.run(["quota","-s"],capture_output=True,text=True,timeout=8)
+        quota_text=(q.stdout or q.stderr).strip()[-2000:]
+    except (OSError,subprocess.TimeoutExpired): pass
+    quota_used = quota_limit = quota_remaining = None
+    def quota_number(token: str) -> Optional[int]:
+        match=re.fullmatch(r"([0-9.]+)([KMGTP]?)",token.strip(),re.I)
+        if not match:return None
+        value=float(match.group(1));unit=match.group(2).upper()
+        return int(value*(1024**({"":1,"K":1,"M":2,"G":3,"T":4,"P":5}[unit])))
+    for line in quota_text.splitlines():
+        parts=line.split()
+        if len(parts)>=4 and (parts[0].startswith("/") or parts[0].startswith("*") or ":" in parts[0]):
+            used=quota_number(parts[1].rstrip("*"));soft=quota_number(parts[2]);hard=quota_number(parts[3])
+            limit=hard or soft
+            if used is not None and limit:
+                quota_used,quota_limit,quota_remaining=used,limit,max(0,limit-used);break
+    rel_current=os.path.relpath(target,home);rel_current="" if rel_current=="." else rel_current
+    parent="" if not rel_current else os.path.dirname(rel_current)
+    return jsonify(ok=True,current=rel_current,parent=parent,home=home,entries=entries,truncated=len(children)>len(entries),scanned_files=counter[0],account_used=account_used,account_complete=account_complete,account_quota_used=quota_used,account_quota_limit=quota_limit,account_quota_remaining=quota_remaining,filesystem={"total":disk.total,"used":disk.used,"free":disk.free},quota=quota_text)
+
+
 @app.post("/api/deploy/cleanup")
 def api_deploy_cleanup():
     if not deploy_authorized(): return deploy_auth_error()
@@ -1658,10 +1725,11 @@ INDEX_HTML = r'''<!doctype html>
 @media(max-height:480px) and (max-width:900px){.hero{display:none}.tabs{bottom:0}.tabs button{min-height:40px;flex-direction:row;font-size:10px}.tabs button i{font-size:15px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+.file-list{display:grid;gap:6px}.file-row{display:grid;grid-template-columns:minmax(0,1fr) 130px 120px;align-items:center;gap:8px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 11px}.file-row button{background:transparent;border:0;padding:0;min-height:0;text-align:right;color:#93c5fd;box-shadow:none}.file-row .fsize{text-align:left;direction:ltr;color:#fbbf24}.file-row small{color:#64748b;text-align:left}.space-card{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center}.space-card b{display:block;font-size:18px;color:#67e8f9}.space-card span{font-size:10px;color:#94a3b8}@media(max-width:640px){.file-row{grid-template-columns:minmax(0,1fr) 90px}.file-row small{display:none}}
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
 </style></head><body><div class="wrap">
-<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.7.4</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
+<header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v1.8.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
 <section id="scrape" class="pane on"><div class="card"><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
@@ -1680,8 +1748,9 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <section id="selectors" class="pane"><div id="selectorsMount"></div></section>
 <section id="results" class="pane"><div class="primary-actions actions"><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button></div><div id="resultsMount"></div></section>
 <section id="imports" class="pane"><div class="card"><h3>📥 درون‌ریزی و نگاشت CSV</h3><div class="note">ابتدا فایل را پیش‌نمایش کنید، سپس ستون هر فیلد و تعدیل قیمت/عنوان را مشخص کنید.</div><div class="actions"><label class="file-btn">انتخاب CSV<input id="advancedCsv" type="file" accept=".csv,text/csv" onchange="previewImport(this)"></label></div><div id="importMap" class="grid grid4" style="margin-top:14px"></div><div id="importOptions" class="grid" style="display:none;margin-top:14px"><div><label>ضریب قیمت</label><input id="impMul" type="number" step="0.01" value="1"></div><div><label>مبلغ ثابت افزوده</label><input id="impAdd" type="number" value="0"></div><div><label>پیشوند عنوان</label><input id="impPrefix"></div><div><label>پسوند عنوان</label><input id="impSuffix"></div><div><label>شیوه ورود</label><select id="impMode"><option value="replace">جایگزینی نتایج</option><option value="append">افزودن/بروزرسانی نتایج</option></select></div></div><div id="importPreview" class="status" style="display:none;margin-top:14px"></div><div class="actions"><button id="applyImportBtn" style="display:none" onclick="applyImport()">اجرای درون‌ریزی</button></div></div></section>
-<section id="more" class="pane"><div class="card"><h3>☰ ابزارهای بیشتر</h3><div class="actions"><button onclick="openTab('profiles')">☆ پروفایل‌ها</button><button onclick="openTab('jobs')">◷ صف استخراج</button><button onclick="openTab('deploy')">↻ به‌روزرسانی و کتابخانه‌ها</button></div></div><div class="card"><h3>💾 ذخیره و بازیابی همه تنظیمات</h3><div class="note">فایل شامل اتصال‌ها و کلیدهای خصوصی است؛ آن را امن نگه دارید.</div><div class="actions"><button onclick="backupSettings()">دانلود پشتیبان کامل</button><label class="file-btn">بازیابی پشتیبان<input type="file" accept=".json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status"></div></div></section>
+<section id="more" class="pane"><div class="card"><h3>☰ ابزارهای بیشتر</h3><div class="actions"><button onclick="openTab('profiles')">☆ پروفایل‌ها</button><button onclick="openTab('jobs')">◷ صف استخراج</button><button onclick="openTab('deploy')">↻ به‌روزرسانی و کتابخانه‌ها</button><button onclick="openTab('files');browseFiles('')">📁 فایل اکسپلورر</button></div></div><div class="card"><h3>💾 ذخیره و بازیابی همه تنظیمات</h3><div class="note">فایل شامل اتصال‌ها و کلیدهای خصوصی است؛ آن را امن نگه دارید.</div><div class="actions"><button onclick="backupSettings()">دانلود پشتیبان کامل</button><label class="file-btn">بازیابی پشتیبان<input type="file" accept=".json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status"></div></div></section>
 <section id="jobs" class="pane"><div class="card"><h3>صف استخراج و نقاط ادامه</h3><div class="note">پس از هر صفحه یک checkpoint اتمیک ذخیره می‌شود؛ عملیات قطع‌شده را بدون شروع از ابتدا ادامه دهید.</div><div class="actions"><button onclick="loadJobs()">تازه‌سازی صف</button></div><div id="jobList"></div></div></section>
+<section id="files" class="pane"><div class="card"><h3>📁 فایل اکسپلورر فضای حساب</h3><div class="note">نمایش فقط‌خواندنی پوشه خانگی؛ فایل‌های سیستمی، توکن‌ها و اطلاعات شخصی از این بخش حذف یا باز نمی‌شوند.</div><div id="spaceSummary" class="stats" style="margin-top:12px"></div><div id="quotaInfo" class="status" style="margin-top:12px"></div><div class="actions"><button class="gray" onclick="browseFiles(fileParent)">⬆ پوشه بالاتر</button><button onclick="browseFiles(fileCurrent)">تازه‌سازی</button></div><div id="filePath" class="status" dir="ltr"></div><div id="fileRows" class="file-list"></div></div></section>
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
 <section id="settings" class="pane"><div class="card"><div class="grid"><div><label>Timeout ثانیه</label><input id="timeout" type="number"></div><div><label>فاصله درخواست‌ها، ms</label><input id="gap_ms" type="number"></div><div class="wide"><label>Proxy اختیاری</label><input id="proxy" dir="ltr" placeholder="http://user:pass@host:port"></div><div><label><input id="verify_tls" type="checkbox" style="width:auto"> بررسی گواهی TLS</label></div></div><div class="actions"><button onclick="saveSettings()">ذخیره</button></div></div>
 <div class="card note"><b>روش استخراج نسخه PHP:</b> HTML صفحه دریافت و سلکتورهای CSS روی DOM اجرا می‌شوند. در سایت‌های JavaScript، Playwright ابتدا DOM کامل را رندر می‌کند. هیچ API محصول یا hydration استفاده نمی‌شود.</div></section>
@@ -1696,7 +1765,7 @@ function apply(c){if(!c)return;['url','pages','render','pagination','page_value'
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.7.4');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'1.8.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();openTab(localStorage.getItem('scraperActiveTab')||'scrape')}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;openTab('results');}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
@@ -1719,6 +1788,8 @@ async function loadWooJobs(){try{let d=await api('/api/woo/jobs');$('wooJobList'
 async function processWoo(id){try{$('wooStatus').textContent='در حال ارسال مرحله…';let d=await api('/api/woo/process/'+encodeURIComponent(id),{method:'POST',body:JSON.stringify({batch:+$('woo_batch').value})});$('wooStatus').innerHTML=`<span class="ok">پیشرفت ${d.job.cursor}/${d.job.total}؛ موفق ${d.job.sent}؛ خطا ${d.job.failed}</span>`;loadWooJobs()}catch(e){$('wooStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deleteWoo(id){if(!confirm('صف حذف شود؟'))return;await api('/api/woo/jobs/'+encodeURIComponent(id),{method:'DELETE'});loadWooJobs()}
 async function saveDeploy(){let deploy={repo:$('dep_repo').value.trim(),branch:$('dep_branch').value.trim(),path:$('dep_path').value.trim(),reload_file:$('dep_reload').value.trim(),github_token:$('dep_token').value.trim()};await deployApi('/api/settings',{method:'POST',body:JSON.stringify({deploy})});$('dep_token').value='';$('deployStatus').innerHTML='<span class="ok">تنظیمات نصب ذخیره شد.</span>'}
+let fileCurrent='',fileParent='';const formatBytes=n=>{n=Number(n||0);if(n<1024)return n+' B';const u=['KB','MB','GB','TB'];let i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(n>=100?0:n>=10?1:2)+' '+u[i]};
+async function browseFiles(path=''){try{let secret=await needDeploySecret();$('fileRows').innerHTML='<div class="status">در حال محاسبه اندازه پوشه‌ها…</div>';let r=await fetch('/api/files?path='+encodeURIComponent(path||''),{headers:{'X-Deploy-Password':secret},cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);fileCurrent=d.current||'';fileParent=d.parent||'';$('filePath').textContent=d.home+(fileCurrent?'/'+fileCurrent:'');$('spaceSummary').innerHTML=`<div class="space-card"><b>${formatBytes(d.account_quota_used??d.account_used)}</b><span>فضای مصرف‌شده حساب${d.account_quota_used==null&&!d.account_complete?' (تقریبی)':''}</span></div><div class="space-card"><b>${formatBytes(d.account_quota_remaining??d.filesystem.free)}</b><span>${d.account_quota_remaining!=null?'فضای باقی‌مانده سهمیه':'فضای آزاد فایل‌سیستم'}</span></div><div class="space-card"><b>${d.account_quota_limit!=null?formatBytes(d.account_quota_limit):d.scanned_files}</b><span>${d.account_quota_limit!=null?'سقف سهمیه حساب':'فایل بررسی‌شده'}</span></div>`;$('quotaInfo').textContent=d.quota||'سامانه سهمیه عدد جداگانه‌ای گزارش نکرد؛ مصرف پوشه حساب و فضای فایل‌سیستم نمایش داده شده است.';$('fileRows').innerHTML=(d.entries||[]).map(e=>`<div class="file-row"><div>${e.directory&&!e.symlink?`<button onclick="browseFiles(decodeURIComponent('${encodeURIComponent(e.path)}'))">📁 ${esc(e.name)}</button>`:`<span>📄 ${esc(e.name)}</span>`}${e.protected?' <span class="badge">محافظت‌شده</span>':''}</div><span class="fsize">${e.complete?'':'≈ '}${formatBytes(e.size)}</span><small>${new Date(e.modified*1000).toLocaleDateString('fa-IR')}</small></div>`).join('')||'<div class="note">این پوشه خالی است.</div>'}catch(e){$('fileRows').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function cleanupAccount(){if(!confirm('فقط cacheها، نصب‌های نیمه‌کاره، مرورگرهای تکراری و بسته‌های بلااستفاده پاک شوند؟ فایل‌های سیستمی، برنامه، تنظیمات و فایل‌های شخصی حفظ می‌شوند.'))return;try{$('deployStatus').textContent='در حال پاکسازی امن فضای حساب…';let d=await deployApi('/api/deploy/cleanup',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+'</span>\n'+esc((d.removed||[]).join('\n'))}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function installDeps(){if(!confirm('کتابخانه‌های استخراج و مرورگر Chromium نصب/به‌روزرسانی شوند؟ ممکن است چند دقیقه طول بکشد.'))return;try{$('deployStatus').textContent='در حال نصب Playwright، Chromium و کتابخانه‌های استخراج…';let d=await deployApi('/api/deploy/dependencies',{method:'POST',body:'{}'});$('deployStatus').innerHTML='<span class="ok">'+esc(d.message)+'</span>'+(!d.browser_installed&&d.warning?'\n'+esc(d.warning):'')+(d.browser_installed?'\nمرورگر اکنون آماده استخراج است.':'')}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deployCheck(){try{$('deployStatus').textContent='در حال بررسی GitHub…';let d=await deployApi('/api/deploy/check',{method:'POST',body:'{}'});$('deployStatus').innerHTML=`نسخه جاری: ${esc(d.version)}\nSHA محلی: ${esc(d.local_sha)}\nSHA راه دور: ${esc(d.remote_sha)}\n${d.update_available?'<span class="ok">نسخه متفاوت آماده نصب است.</span>':'نسخه محلی و راه دور یکسان‌اند.'}`;}catch(e){$('deployStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

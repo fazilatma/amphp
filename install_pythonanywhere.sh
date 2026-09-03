@@ -64,12 +64,22 @@ SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["pure
 if [ -s "$PASSWORD_FILE" ]; then ADMIN_PASSWORD="$(tr -d '\r\n' <"$PASSWORD_FILE")"; else ADMIN_PASSWORD="$($VENV_PY -c 'import secrets;print(secrets.token_urlsafe(32))')"; printf '%s\n' "$ADMIN_PASSWORD" >"$PASSWORD_FILE"; chmod 600 "$PASSWORD_FILE"; fi
 [ -n "$ADMIN_PASSWORD" ]||fail "Could not generate admin password."
 
-echo "Checking web app $DOMAIN..."
-STATUS="$(api_call GET "$API/webapps/$DOMAIN/")"
-if [ "$STATUS" = 404 ]; then
+echo "Checking web-app collection for $DOMAIN..."
+STATUS="$(api_call GET "$API/webapps/")"
+[ "$STATUS" = 200 ]||{ cat "$RESP"||true; fail "Could not list web apps: HTTP $STATUS"; }
+DOMAIN_EXISTS="$($SYSTEM_PY - "$RESP" "$DOMAIN" <<'PY'
+import json,sys
+rows=json.load(open(sys.argv[1],encoding="utf-8")); wanted=sys.argv[2].lower()
+print(1 if any(str(row.get("domain_name","")).lower()==wanted for row in rows if isinstance(row,dict)) else 0)
+PY
+)"
+if [ "$DOMAIN_EXISTS" != 1 ]; then
+ echo "No web app exists; creating the one allowed free-plan app..."
  STATUS="$(api_call POST "$API/webapps/" --data-urlencode "domain_name=$DOMAIN" --data-urlencode "python_version=$PY_VERSION")"
  [[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Web app creation failed: HTTP $STATUS"; }
-elif [ "$STATUS" != 200 ]; then cat "$RESP"||true; fail "Web app check failed: HTTP $STATUS"; fi
+else
+ echo "Existing web app found."
+fi
 
 # Configure PythonAnywhere to use the isolated environment.
 STATUS="$(api_call PATCH "$API/webapps/$DOMAIN/" --data-urlencode "virtualenv_path=$VENV_DIR")"

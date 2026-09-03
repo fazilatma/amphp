@@ -78,7 +78,7 @@ except ImportError as exc:  # clear diagnosis in PythonAnywhere's error log
         "Missing dependency. Run: pip3 install --user flask requests beautifulsoup4"
     ) from exc
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Keep browser installation and runtime lookup in the same quota-controlled folder.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get("SCRAPER_PLAYWRIGHT_PATH", os.path.join(BASE_DIR, "ms-playwright"))
@@ -122,7 +122,7 @@ def default_data() -> dict[str, Any]:
         "extract_jobs": {},
         "woo_jobs": {},
         "runtime": {"playwright_path": ""},
-        "ai": {"provider": "openrouter", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "api_key": "", "model": "meta-llama/llama-3.3-70b-instruct:free", "temperature": 0.3},
+        "ai": {"provider": "openrouter", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "api_key": "", "model": "meta-llama/llama-3.3-70b-instruct:free", "temperature": 0.3, "max_tokens": 1200, "system_prompt": "You write accurate Persian WooCommerce product content. Return only requested JSON."},
         "ai_providers": {},
         "basalam": {"token": "", "refresh_token": "", "vendor_id": 0, "category_id": 0, "preparation_days": 3, "weight": 500, "stock": 10, "update_existing": True},
         "bsl_jobs": {},
@@ -1514,22 +1514,113 @@ def api_deploy_rollback():
         return jsonify(ok=False, error=str(exc)), 400
 
 
+def ai_key_preview(key: str) -> str:
+    key=str(key).strip()
+    return (key[:5]+"…"+key[-4:]) if len(key)>10 else ((key[:2]+"••••") if key else "")
+
+
+def normalize_ai_providers(value: Any) -> dict[str,dict[str,Any]]:
+    if isinstance(value,list):value={str(x.get("id") or f"provider-{i+1}"):x for i,x in enumerate(value) if isinstance(x,dict)}
+    if not isinstance(value,dict):raise ValueError("ساختار ارائه‌دهندگان باید object یا array باشد")
+    out={}
+    for raw_id,raw in value.items():
+        if not isinstance(raw,dict):continue
+        pid=re.sub(r"[^a-zA-Z0-9_.-]+","-",clean_text(raw.get("id") or raw_id)).strip("-")[:80]
+        if not pid:continue
+        models=[];seen=set()
+        source_models=raw.get("models",[])
+        if isinstance(source_models,dict):source_models=[dict(v,id=k) if isinstance(v,dict) else {"id":k,"name":str(v)} for k,v in source_models.items()]
+        for model in source_models if isinstance(source_models,list) else []:
+            if isinstance(model,str):model={"id":model,"name":model}
+            if not isinstance(model,dict):continue
+            mid=clean_text(model.get("id") or model.get("model"));
+            if not mid or mid in seen:continue
+            seen.add(mid);m=dict(model);m["id"]=mid;m["name"]=clean_text(m.get("name") or mid);m["enabled"]=m.get("enabled",True) is not False;models.append(m)
+        keys=[];seen_keys=set()
+        source_keys=raw.get("apiKeys",[])
+        if not isinstance(source_keys,list):source_keys=[]
+        legacy=raw.get("apiKey",raw.get("api_key",""));source_keys=([{"key":legacy}]+source_keys) if legacy else source_keys
+        for item in source_keys:
+            row=item if isinstance(item,dict) else {"key":item};key=str(row.get("key","")).strip()
+            if not key or key in seen_keys:continue
+            seen_keys.add(key);keys.append({"key":key,"label":clean_text(row.get("label")),"acct":clean_text(row.get("acct")),"enabled":row.get("enabled",True) is not False})
+        out[pid]={**raw,"id":pid,"name":clean_text(raw.get("name") or pid),"vendor":clean_text(raw.get("vendor")),"url":clean_text(raw.get("url") or raw.get("endpoint")),"endpoint":clean_text(raw.get("endpoint") or raw.get("url")),"enabled":raw.get("enabled",True) is not False,"apiKey":keys[0]["key"] if keys else str(legacy or ""),"apiKeys":keys,"models":models}
+    if not out:raise ValueError("هیچ ارائه‌دهنده معتبر و دارای شناسه‌ای پیدا نشد")
+    return out
+
+
 def ai_public_config(data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    cfg=dict((data or load_data()).get("ai", {}))
-    key=str(cfg.get("api_key", "")); cfg["api_key"]=("••••"+key[-4:]) if key else ""; cfg["has_key"]=bool(key)
+    cfg=dict((data or load_data()).get("ai", {}));key=str(cfg.get("api_key", ""));cfg["api_key"]=ai_key_preview(key);cfg["has_key"]=bool(key)
     return cfg
 
 
-def ai_chat(prompt: str) -> str:
-    cfg=load_data().get("ai", {}); endpoint=public_http_url(str(cfg.get("endpoint", "")))
-    key=str(cfg.get("api_key", "")); model=clean_text(cfg.get("model"))
-    if not key or not model: raise ValueError("کلید API و مدل هوش مصنوعی تنظیم نشده است")
-    payload={"model":model,"messages":[{"role":"system","content":"You write accurate Persian WooCommerce product content. Return only requested JSON."},{"role":"user","content":prompt}],"temperature":float(cfg.get("temperature",.3)),"max_tokens":1200}
-    response=requests.post(endpoint,json=payload,headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","User-Agent":USER_AGENT},timeout=90)
-    if not response.ok: raise FetchError(f"AI HTTP {response.status_code}: {response.text[:400]}")
-    body=response.json()
-    try:return str(body["choices"][0]["message"]["content"])
-    except (KeyError,IndexError,TypeError):raise FetchError("پاسخ ارائه‌دهنده هوش مصنوعی قابل خواندن نیست")
+def ai_provider_summary(data: Optional[dict[str,Any]]=None) -> dict[str,Any]:
+    data=data or load_data();providers=[]
+    try: normalized=normalize_ai_providers(data.get("ai_providers",{})) if data.get("ai_providers") else {}
+    except ValueError:normalized={}
+    for p in normalized.values():
+        keys=p.get("apiKeys",[]);providers.append({"id":p["id"],"name":p["name"],"vendor":p.get("vendor",""),"url":p.get("url",""),"enabled":p.get("enabled",True),"key_count":len(keys),"key_preview":[ai_key_preview(x.get("key","")) for x in keys],"models":p.get("models",[])})
+    return {"providers":providers,"selected":{"provider":data.get("ai",{}).get("provider",""),"model":data.get("ai",{}).get("model","")},"total_models":sum(len(x["models"]) for x in providers)}
+
+
+def ai_endpoint(url: str) -> str:
+    url=public_http_url(url);path=urlparse(url).path.rstrip("/")
+    if re.search(r"/(chat/completions|messages|generateContent)$",path,re.I) or ":generateContent" in url:return url
+    return url.rstrip("/")+"/chat/completions"
+
+
+def ai_extract_text(body: Any) -> str:
+    if not isinstance(body,dict):return ""
+    choices=body.get("choices")
+    if isinstance(choices,list) and choices:
+        row=choices[0] if isinstance(choices[0],dict) else {};msg=row.get("message",{}) if isinstance(row.get("message"),dict) else {}
+        content=msg.get("content") or msg.get("reasoning") or row.get("text")
+        if isinstance(content,list):content="".join(str(x.get("text",x.get("content",""))) for x in content if isinstance(x,dict))
+        if content:return str(content)
+    for key in ("result","data"):
+        if isinstance(body.get(key),dict):
+            text=ai_extract_text(body[key])
+            if text:return text
+    return str(body.get("response") or body.get("text") or "")
+
+
+def ai_chat(prompt: str, provider_id: str="", model_id: str="") -> str:
+    data=load_data();cfg=data.get("ai",{});pid=provider_id or clean_text(cfg.get("provider"));model=model_id or clean_text(cfg.get("model"));provider=None
+    if data.get("ai_providers"):
+        providers=normalize_ai_providers(data["ai_providers"]);provider=providers.get(pid)
+        if not provider or provider.get("enabled") is False:provider=next((x for x in providers.values() if x.get("enabled",True) and x.get("models")),None)
+    base_url=str((provider or {}).get("url") or cfg.get("endpoint", ""))
+    if provider and not model:model=clean_text((provider.get("models") or [{}])[0].get("id"))
+    key_rows=[x for x in (provider or {}).get("apiKeys",[]) if x.get("enabled",True) and x.get("key")]
+    if not key_rows and cfg.get("api_key"):key_rows=[{"key":str(cfg["api_key"]),"acct":""}]
+    if not model:raise ValueError("مدل هوش مصنوعی انتخاب نشده است")
+    cloudflare="/ai/run" in base_url.lower()
+    endpoint=public_http_url(base_url.rstrip("/")+("/"+model if cloudflare and base_url.rstrip("/").lower().endswith("/ai/run") else "")) if cloudflare else ai_endpoint(base_url)
+    if not key_rows and "localhost" not in endpoint:raise ValueError("برای ارائه‌دهنده انتخاب‌شده کلید API ثبت نشده است")
+    payload={"model":model,"messages":[{"role":"system","content":str(cfg.get("system_prompt") or "You write accurate Persian WooCommerce product content. Return only requested JSON.")},{"role":"user","content":prompt}],"temperature":float(cfg.get("temperature",.3)),"max_tokens":max(64,min(32000,int(cfg.get("max_tokens",1200))))}
+    if cloudflare:payload.pop("model",None)
+    errors=[]
+    for key_row in key_rows or [{"key":"","acct":""}]:
+        key=str(key_row.get("key",""));request_endpoint=endpoint;acct=clean_text(key_row.get("acct"))
+        if cloudflare and acct:request_endpoint=re.sub(r"(/accounts/)[^/]+(/)",rf"\g<1>{acct}\2",request_endpoint,count=1,flags=re.I)
+        headers={"Content-Type":"application/json","User-Agent":USER_AGENT}
+        if key:headers["Authorization"]="Bearer "+key
+        try:
+            response=requests.post(request_endpoint,json=payload,headers=headers,timeout=90)
+            if response.ok:
+                text=ai_extract_text(response.json())
+                if text:return text
+                raise FetchError("پاسخ مدل خالی بود")
+            errors.append(f"HTTP {response.status_code}: {response.text[:240]}")
+            if response.status_code not in (401,402,403,429):break
+        except (requests.RequestException,ValueError) as exc:errors.append(str(exc));break
+    raise FetchError(errors[-1] if errors else "فراخوانی مدل ناموفق بود")
+
+
+@app.get("/api/ai/providers")
+def api_ai_providers():
+    if not deploy_authorized():return deploy_auth_error()
+    return jsonify(ok=True,**ai_provider_summary())
 
 
 @app.post("/api/ai/providers/import")
@@ -1542,38 +1633,65 @@ def api_ai_providers_import():
         if len(raw)>2*1024*1024:raise ValueError("فایل بزرگ‌تر از ۲ مگابایت است")
         payload=json.loads(raw.decode("utf-8-sig"));providers=payload
         if isinstance(payload,dict) and isinstance(payload.get("files"),dict):providers=php_file_json(payload["files"],"ai_providers.json")
-        if not isinstance(providers,dict) or not providers:raise ValueError("ساختار ai_providers.json معتبر نیست")
-        data=load_data();data["ai_providers"]=providers
-        first=next((v for v in providers.values() if isinstance(v,dict) and v.get("enabled",True)),None)
-        if first:
-            models=first.get("models",[]);model=models[0].get("id","") if models and isinstance(models[0],dict) else ""
-            data["ai"].update({"provider":first.get("id",first.get("name","custom")),"endpoint":first.get("endpoint",first.get("url","")),"api_key":first.get("apiKey",first.get("api_key","")),"model":model})
-        save_data(data);return jsonify(ok=True,count=len(providers),ai=ai_public_config(data))
+        imported=normalize_ai_providers(providers);data=load_data();providers=normalize_ai_providers(data["ai_providers"]) if data.get("ai_providers") else {};providers.update(imported);data["ai_providers"]=providers
+        current=data.get("ai",{}).get("provider");first=providers.get(current) or next((x for x in imported.values() if x.get("enabled",True)),next(iter(imported.values())))
+        models=first.get("models",[]);model=models[0]["id"] if models else ""
+        data["ai"].update({"provider":first["id"],"endpoint":first["url"],"api_key":first.get("apiKey",""),"model":model});save_data(data)
+        return jsonify(ok=True,count=len(imported),total=len(providers),models=sum(len(x["models"]) for x in imported.values()),**ai_provider_summary(data))
     except (ValueError,TypeError,json.JSONDecodeError) as exc:return jsonify(ok=False,error=str(exc)),400
+
+
+@app.post("/api/ai/providers/save")
+def api_ai_provider_save():
+    if not deploy_authorized():return deploy_auth_error()
+    try:
+        body=request.get_json(silent=True) or {};row=body.get("provider",{});data=load_data();allp=normalize_ai_providers(data["ai_providers"]) if data.get("ai_providers") else {};pid=str(row.get("id","new"))
+        if body.get("preserve_keys") and pid in allp:
+            old_keys=allp[pid].get("apiKeys",[]);row=dict(row);row["apiKeys"]=old_keys+list(row.get("apiKeys",[]))
+        new=normalize_ai_providers({pid:row});allp.update(new);data["ai_providers"]=allp;save_data(data);return jsonify(ok=True,**ai_provider_summary(data))
+    except (ValueError,TypeError) as exc:return jsonify(ok=False,error=str(exc)),400
+
+
+@app.delete("/api/ai/providers/<path:provider_id>")
+def api_ai_provider_delete(provider_id: str):
+    if not deploy_authorized():return deploy_auth_error()
+    data=load_data();data.get("ai_providers",{}).pop(provider_id,None)
+    if data.get("ai",{}).get("provider")==provider_id:data["ai"].update({"provider":"","model":""})
+    save_data(data);return jsonify(ok=True,**ai_provider_summary(data))
+
+
+@app.post("/api/ai/select")
+def api_ai_select():
+    if not deploy_authorized():return deploy_auth_error()
+    body=request.get_json(silent=True) or {};pid=clean_text(body.get("provider"));mid=clean_text(body.get("model"));data=load_data();providers=normalize_ai_providers(data.get("ai_providers",{}))
+    if pid not in providers: return jsonify(ok=False,error="ارائه‌دهنده پیدا نشد"),404
+    valid={x["id"] for x in providers[pid].get("models",[])}
+    if mid not in valid:return jsonify(ok=False,error="مدل در این ارائه‌دهنده پیدا نشد"),404
+    p=providers[pid];data["ai"].update({"provider":pid,"model":mid,"endpoint":p["url"],"api_key":p.get("apiKey","")});save_data(data);return jsonify(ok=True,ai=ai_public_config(data))
 
 
 @app.get("/api/ai/config")
 def api_ai_config():
     if not deploy_authorized():return deploy_auth_error()
-    return jsonify(ok=True,ai=ai_public_config())
+    data=load_data();return jsonify(ok=True,ai=ai_public_config(data),**ai_provider_summary(data))
 
 
 @app.post("/api/ai/settings")
 def api_ai_settings():
     if not deploy_authorized():return deploy_auth_error()
-    body=request.get_json(silent=True) or {}; incoming=body.get("ai") if isinstance(body.get("ai"),dict) else {}
-    data=load_data();cfg=data.setdefault("ai",default_data()["ai"])
-    for field in ("provider","endpoint","model","temperature"):
+    body=request.get_json(silent=True) or {};incoming=body.get("ai") if isinstance(body.get("ai"),dict) else {};data=load_data();cfg=data.setdefault("ai",default_data()["ai"])
+    for field in ("provider","endpoint","model","temperature","max_tokens","system_prompt"):
         if field in incoming:cfg[field]=incoming[field]
     key=str(incoming.get("api_key","")).strip()
-    if key and not key.startswith("••••"):cfg["api_key"]=key
+    if key and not key.startswith("••"):cfg["api_key"]=key
     save_data(data);return jsonify(ok=True,ai=ai_public_config(data))
 
 
 @app.post("/api/ai/test")
 def api_ai_test():
     if not deploy_authorized():return deploy_auth_error()
-    try:return jsonify(ok=True,answer=ai_chat('فقط این JSON را برگردان: {"status":"ok"}')[:1000])
+    body=request.get_json(silent=True) or {}
+    try:return jsonify(ok=True,answer=ai_chat(str(body.get("prompt") or 'فقط این JSON را برگردان: {"status":"ok"}'),clean_text(body.get("provider")),clean_text(body.get("model")))[:2000])
     except (ValueError,FetchError,requests.RequestException) as exc:return jsonify(ok=False,error=str(exc)),400
 
 
@@ -1604,6 +1722,7 @@ def profile_save():
         return jsonify(ok=False, error="نام و تنظیمات پروفایل لازم است"), 400
     public_http_url(str(config.get("url", "")))
     data = load_data()
+    config=dict(config);config["saved_products"]=[dict(x) for x in data.get("last_result",[])[:MAX_PRODUCTS_HARD] if isinstance(x,dict)]
     data["profiles"][name] = config
     save_data(data)
     return jsonify(ok=True, profiles=data["profiles"])
@@ -1757,7 +1876,13 @@ def convert_php_profile(row: dict[str, Any]) -> dict[str, Any]:
         detail={str(k):(str(v.get("selector",'')) if isinstance(v,dict) and v.get("enabled",True) else (str(v) if not isinstance(v,dict) else '')) for k,v in detail.items()}
     rules={"title_suffix":row.get("titleSuffix",row.get("title_suffix","")),"title_prefix":row.get("titlePrefix",row.get("title_prefix","")),"price_mode":row.get("priceMode",row.get("price_mode","none")),"price_value":row.get("priceVal",row.get("price_value",0)),"price_round":row.get("roundPrice",row.get("price_round",0)),"default_stock":row.get("stock_quantity",row.get("default_stock","")),"default_category":row.get("category",row.get("bslCategoryId","")),"bsl_category_id":row.get("bslCategoryId",0),"woo_category_id":row.get("wooCategoryId",0)}
     pag_type=str(row.get("pagType",row.get("pagination","query")));pag_map={"param":"query","query":"query","path":"path","next":"next"}
-    return {"url":row.get("url",row.get("list_url","")),"pages":int(row.get("pages",row.get("maxPages",1)) or 1),"render":"auto","pagination":pag_map.get(pag_type,"query"),"page_value":row.get("pagVal",row.get("pageParam","page")),"scrolls":4,"enrich":bool(detail),"detail_limit":int(row.get("detailLimit",20) or 20),"selectors":selectors,"detail_selectors":detail if isinstance(detail,dict) else {},"profile_rules":rules}
+    saved=[];raw_products=row.get("products",[])
+    if isinstance(raw_products,dict):raw_products=list(raw_products.values())
+    if isinstance(raw_products,list):
+        for item in raw_products:
+            product=item[1] if isinstance(item,list) and len(item)==2 and isinstance(item[1],dict) else item
+            if isinstance(product,dict):saved.append(product)
+    return {"url":row.get("url",row.get("list_url","")),"pages":int(row.get("pages",row.get("maxPages",1)) or 1),"render":"auto","pagination":pag_map.get(pag_type,"query"),"page_value":row.get("pagVal",row.get("pageParam","page")),"scrolls":4,"enrich":bool(detail),"detail_limit":int(row.get("detailLimit",20) or 20),"selectors":selectors,"detail_selectors":detail if isinstance(detail,dict) else {},"profile_rules":rules,"saved_products":saved[:MAX_PRODUCTS_HARD]}
 
 
 def convert_php_bundle(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -2006,10 +2131,10 @@ INDEX_HTML = r'''<!doctype html>
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .file-list{display:grid;gap:6px}.file-row{display:grid;grid-template-columns:minmax(0,1fr) 130px 120px;align-items:center;gap:8px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 11px}.file-row button{background:transparent;border:0;padding:0;min-height:0;text-align:right;color:#93c5fd;box-shadow:none}.file-row .fsize{text-align:left;direction:ltr;color:#fbbf24}.file-row small{color:#64748b;text-align:left}.space-card{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px;text-align:center}.space-card b{display:block;font-size:18px;color:#67e8f9}.space-card span{font-size:10px;color:#94a3b8}@media(max-width:640px){.file-row{grid-template-columns:minmax(0,1fr) 90px}.file-row small{display:none}}
-.hamburger-btn{position:fixed;top:10px;right:10px;z-index:10050;width:44px;height:44px;padding:0;border-radius:12px;background:#1e293b;border:1px solid #475569;color:#e2e8f0;font-size:22px;display:grid;place-items:center}.settings-overlay{position:fixed;inset:0;background:#0009;z-index:9998;display:none}.settings-overlay.open{display:block}.settings-panel{position:fixed;top:0;right:-430px;width:410px;max-width:94vw;height:100dvh;background:#0f172a;border-left:1px solid #334155;z-index:10000;overflow-y:auto;transition:right .25s}.settings-panel.open{right:0}.settings-panel-head{position:sticky;top:0;z-index:5;background:#1e293b;padding:12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155}.settings-panel-head h2{margin:0;font-size:16px}.settings-panel-body{padding:10px}.admin-nav{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px}.admin-nav button{font-size:12px;padding:8px}.admin-section{display:none}.admin-section.admin-on{display:block}.hamburger-btn.active{background:#3b82f6;color:#08111e}@media(max-width:640px){.settings-panel{width:100%;max-width:100%;right:-100%}.hamburger-btn{top:8px;right:8px}}
+.hamburger-btn{position:fixed;top:10px;right:10px;z-index:10050;width:44px;height:44px;padding:0;border-radius:12px;background:#1e293b;border:1px solid #475569;color:#e2e8f0;font-size:22px;display:grid;place-items:center}.settings-overlay{position:fixed;inset:0;background:#0009;z-index:9998;display:none}.settings-overlay.open{display:block}.settings-panel{position:fixed;top:0;right:-430px;width:410px;max-width:94vw;height:100dvh;background:#0f172a;border-left:1px solid #334155;z-index:10000;overflow-y:auto;transition:right .25s}.settings-panel.open{right:0}.settings-panel-head{position:sticky;top:0;z-index:5;background:#1e293b;padding:12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155}.settings-panel-head h2{margin:0;font-size:16px}.settings-panel-body{padding:10px}.admin-nav{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px}.admin-nav button{font-size:12px;padding:8px}.admin-section{display:none}.admin-section.admin-on{display:block}.hamburger-btn.active{background:#3b82f6;color:#08111e}.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}.section-head small{color:var(--muted)}.ai-tabs{display:flex;gap:6px;overflow:auto;margin:10px 0 14px;padding:5px;background:#091426;border-radius:14px}.ai-tabs button{font-size:11px;flex:1;white-space:nowrap;background:transparent;box-shadow:none}.ai-tabs button.on{background:#1d4ed8}.ai-pane{display:none}.ai-pane.on{display:block}.provider-list{display:grid;gap:8px;margin-top:12px}.provider-row{padding:11px;border:1px solid var(--line);border-radius:13px;background:#091426;display:grid;grid-template-columns:1fr auto;gap:7px}.provider-row small{color:var(--muted)}.provider-row .models{grid-column:1/-1;display:flex;gap:4px;flex-wrap:wrap}.model-chip{font-size:10px;padding:3px 7px;border-radius:99px;background:#172a46;color:#bce9ff}.backup-hero{border-color:#10b98155;background:linear-gradient(145deg,#0c2d2b,#10243c)}@media(max-width:640px){.settings-panel{width:100%;max-width:100%;right:-100%}.hamburger-btn{top:8px;right:8px}}
 /* v1.6: visual parity with scraper4.php */
 body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90px}body:before{display:none}.wrap{max-width:1400px;padding:0;margin:auto}.hero{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 64px 12px 14px;margin:0 0 14px;box-shadow:none}.hero:after{display:none}.logo{width:40px;height:40px;border-radius:8px;font-size:20px;box-shadow:none}.eyebrow{display:none}.hero h1{font-size:18px}.sub{font-size:11px}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:none;backdrop-filter:none}input,select,textarea{background:#0f172a;border:1px solid #475569;border-radius:8px;color:#fff}button,.file-btn{border-radius:8px;box-shadow:none}.primary-actions{background:#1e293b;border-color:#334155;border-radius:12px;box-shadow:none}.note,.status{background:#0f172a;border-color:#334155;border-radius:10px}.tabs{left:0;right:0;bottom:0;transform:none;width:100%;max-width:none;background:#0f172a;border:0;border-top:1px solid #334155;border-radius:0;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);gap:0;box-shadow:0 -4px 20px rgba(0,0,0,.5)}.tabs button{flex:1 0 64px;min-height:60px;border:0;border-radius:0;color:#64748b;flex-direction:column;gap:2px;padding:8px 4px;font-size:11px}.tabs button.on{color:#3b82f6;background:#1e293b;border:0}.tabs button.on i{transform:translateY(-2px) scale(1.15);filter:drop-shadow(0 3px 8px rgba(59,130,246,.7))}.tabs button i{font-size:21px}.tablebox{background:#1e293b}.app-footer{height:72px}
-</style></head><body><button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSettingsPanel()" aria-label="تنظیمات عمومی">☰</button><div class="settings-overlay" id="settingsOverlay" onclick="toggleSettingsPanel(false)"></div><aside class="settings-panel" id="settingsPanel"><div class="settings-panel-head"><h2>☰ تنظیمات عمومی</h2><button class="gray" onclick="toggleSettingsPanel(false)">✕</button></div><div class="settings-panel-body"><div class="admin-nav"><button onclick="showAdmin('settings')">🌐 اتصال مبدأ</button><button onclick="showAdmin('aiAdmin')">🤖 هوش مصنوعی</button><button onclick="showAdmin('basalamAdmin');loadBasalam()">🛍️ اتصال باسلام</button><button onclick="showAdmin('profiles')">☆ پروفایل‌ها</button><button onclick="showAdmin('jobs')">◷ صف‌ها</button><button onclick="showAdmin('deploy')">↻ بروزرسانی</button><button onclick="showAdmin('files');browseFiles('')">📁 فایل‌ها</button></div><section id="basalamAdmin" class="admin-section"><div class="card"><h3>🛍️ SDK رسمی باسلام</h3><div class="grid"><div><label>شناسه غرفه</label><input id="bsl_vendor" type="number"></div><div><label>دسته‌بندی پیش‌فرض</label><input id="bsl_category" type="number"></div><div class="wide"><label>Personal Token</label><input id="bsl_token" type="password" dir="ltr"></div><div class="wide"><label>Refresh Token</label><input id="bsl_refresh" type="password" dir="ltr"></div><div><label>زمان آماده‌سازی</label><input id="bsl_days" type="number" value="3"></div><div><label>وزن پیش‌فرض گرم</label><input id="bsl_weight" type="number" value="500"></div><div><label>موجودی پیش‌فرض</label><input id="bsl_stock" type="number" value="10"></div><div><label><input id="bsl_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="testBasalam()">تست SDK</button></div><div id="bslAdminStatus" class="status"></div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><h3>🤖 اتصال هوش مصنوعی</h3><div class="grid"><div><label>ارائه‌دهنده</label><select id="ai_provider" onchange="aiProviderPreset()"><option value="openrouter">OpenRouter</option><option value="groq">Groq</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI-compatible</option></select></div><div><label>مدل</label><input id="ai_model" dir="ltr"></div><div class="wide"><label>Endpoint</label><input id="ai_endpoint" dir="ltr"></div><div class="wide"><label>API Key</label><input id="ai_key" type="password" dir="ltr"></div><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div></div><div class="actions"><button onclick="saveAI()">ذخیره اتصال</button><label class="file-btn">بارگذاری ai_providers.json<input type="file" accept=".json" onchange="importAIProviders(this)"></label><button class="gray" onclick="testAI()">تست</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div><div id="aiStatus" class="status"></div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
+</style></head><body><button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSettingsPanel()" aria-label="تنظیمات عمومی">☰</button><div class="settings-overlay" id="settingsOverlay" onclick="toggleSettingsPanel(false)"></div><aside class="settings-panel" id="settingsPanel"><div class="settings-panel-head"><h2>☰ تنظیمات عمومی</h2><button class="gray" onclick="toggleSettingsPanel(false)">✕</button></div><div class="settings-panel-body"><div class="admin-nav"><button onclick="showAdmin('backupAdmin')">💾 پشتیبان کل سایت</button><button onclick="showAdmin('settings')">🌐 اتصال مبدأ</button><button onclick="showAdmin('aiAdmin');loadAI()">🤖 هوش مصنوعی</button><button onclick="showAdmin('basalamAdmin');loadBasalam()">🛍️ اتصال باسلام</button><button onclick="showAdmin('profiles')">☆ پروفایل‌ها</button><button onclick="showAdmin('jobs')">◷ صف‌ها</button><button onclick="showAdmin('deploy')">↻ بروزرسانی</button><button onclick="showAdmin('files');browseFiles('')">📁 فایل‌ها</button></div><section id="backupAdmin" class="admin-section"><div class="card backup-hero"><h3>💾 ذخیره و بازیابی همه تنظیمات سایت</h3><p class="note">این همان بخش پشتیبان کلی سایت است و شامل پروفایل‌ها، اتصال‌ها، صف‌ها، ارائه‌دهندگان، مدل‌ها و کلیدهای خصوصی می‌شود. فایل را امن نگه دارید.</p><div class="actions"><button class="green" onclick="backupSettings()">⬇ دانلود پشتیبان کامل</button><label class="file-btn">♻ بارگذاری و بازیابی فایل<input type="file" accept=".json,application/json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status">آماده دانلود یا بازیابی تنظیمات Python و بسته‌های PHP</div></div></section><section id="basalamAdmin" class="admin-section"><div class="card"><h3>🛍️ SDK رسمی باسلام</h3><div class="grid"><div><label>شناسه غرفه</label><input id="bsl_vendor" type="number"></div><div><label>دسته‌بندی پیش‌فرض</label><input id="bsl_category" type="number"></div><div class="wide"><label>Personal Token</label><input id="bsl_token" type="password" dir="ltr"></div><div class="wide"><label>Refresh Token</label><input id="bsl_refresh" type="password" dir="ltr"></div><div><label>زمان آماده‌سازی</label><input id="bsl_days" type="number" value="3"></div><div><label>وزن پیش‌فرض گرم</label><input id="bsl_weight" type="number" value="500"></div><div><label>موجودی پیش‌فرض</label><input id="bsl_stock" type="number" value="10"></div><div><label><input id="bsl_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="testBasalam()">تست SDK</button></div><div id="bslAdminStatus" class="status"></div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><div class="section-head"><div><h3>🤖 مرکز هوش مصنوعی</h3><small>مدیریت چند ارائه‌دهنده، مدل‌ها و چند کلید API مانند نسخه PHP</small></div><span id="aiSummary" class="badge">در حال خواندن…</span></div><div class="ai-tabs"><button class="on" onclick="aiPane('providers',this)">🧠 ارائه‌دهنده‌ها</button><button onclick="aiPane('editor',this)">✏️ ویرایش</button><button onclick="aiPane('test',this)">🧪 آزمایش و محتوا</button></div><div id="aiPaneProviders" class="ai-pane on"><div class="grid"><div><label>ارائه‌دهنده فعال</label><select id="ai_provider" onchange="aiSelectProvider()"><option value="">— ارائه‌دهنده‌ای نیست —</option></select></div><div><label>مدل فعال</label><select id="ai_model" onchange="aiSelectModel()"><option value="">—</option></select></div></div><div id="aiProviderList" class="provider-list"></div><div class="actions"><label class="file-btn">⬆ بارگذاری ai_providers.json<input type="file" accept=".json,application/json" onchange="importAIProviders(this)"></label><button class="gray" onclick="loadAI()">↻ تازه‌سازی</button></div></div><div id="aiPaneEditor" class="ai-pane"><div class="grid"><div><label>شناسه یکتا</label><input id="ai_edit_id" dir="ltr" placeholder="openrouter"></div><div><label>نام نمایشی</label><input id="ai_edit_name" placeholder="OpenRouter"></div><div><label>Vendor اختیاری</label><input id="ai_edit_vendor" dir="ltr"></div><div><label><input id="ai_edit_enabled" type="checkbox" checked style="width:auto"> ارائه‌دهنده فعال باشد</label></div><div class="wide"><label>Base URL یا Endpoint</label><input id="ai_endpoint" dir="ltr" placeholder="https://.../v1/chat/completions"></div><div class="wide"><label>کلیدهای API — هر خط: کلید | برچسب | Account ID کلادفلر</label><textarea id="ai_keys" rows="4" dir="ltr" placeholder="sk-... | حساب اول"></textarea></div><div class="wide"><label>مدل‌ها — هر خط: model-id | نام نمایشی | free</label><textarea id="ai_models" rows="7" dir="ltr" placeholder="model/id | نام مدل | free"></textarea></div></div><div class="actions"><button onclick="saveAIProvider()">ذخیره ارائه‌دهنده</button><button class="gray" onclick="newAIProvider()">ارائه‌دهنده تازه</button><button class="gray" onclick="deleteAIProvider()">حذف</button></div></div><div id="aiPaneTest" class="ai-pane"><div class="grid"><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div><div><label>Max tokens</label><input id="ai_max_tokens" type="number" min="64" max="32000"></div><div class="wide"><label>System prompt</label><textarea id="ai_system_prompt" rows="3"></textarea></div><div class="wide"><label>پیام آزمایش</label><textarea id="ai_test_prompt" rows="3">فقط این JSON را برگردان: {"status":"ok"}</textarea></div></div><div class="actions"><button onclick="saveAIOptions()">ذخیره گزینه‌ها</button><button class="gray" onclick="testAI()">تست مدل فعال</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div></div><div id="aiStatus" class="status">فایل PHP را بارگذاری کنید؛ ارائه‌دهنده‌ها و مدل‌ها فوراً در فهرست ظاهر می‌شوند.</div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
 <header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>Scraper4 <small id="appVersion">v2.1.0</small></h1><div class="sub">استخراج مستقیم DOM و سلکتورها، مطابق نسخه PHP</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header>
 
 <section id="scrape" class="pane on"><div class="card"><h3>☆ انتخاب پروفایل</h3><div class="grid"><div><label>پروفایل ذخیره‌شده</label><select id="profileSelect"><option value="">— پروفایل جدید —</option></select></div></div><div class="actions"><button onclick="loadSelectedProfile()">بارگذاری پروفایل</button><button class="gray" onclick="saveProfilePrompt()">ذخیره پروفایل فعلی</button><button class="gray" onclick="deleteSelectedProfile()">حذف پروفایل</button></div></div><div class="card"><div class="grid grid4">
@@ -2030,7 +2155,7 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <section id="selectors" class="pane"><div id="selectorsMount"></div></section>
 <section id="results" class="pane"><div class="primary-actions actions"><button class="green" onclick="downloadCSV()">↓ CSV</button><button class="gray" onclick="downloadJSON()">↓ JSON</button><button class="gray" onclick="downloadXLSX()">↓ Excel</button></div><div id="resultsMount"></div></section>
 <section id="imports" class="pane"><div class="card"><h3>📥 درون‌ریزی و نگاشت CSV</h3><div class="note">ابتدا فایل را پیش‌نمایش کنید، سپس ستون هر فیلد و تعدیل قیمت/عنوان را مشخص کنید.</div><div class="actions"><label class="file-btn">انتخاب CSV<input id="advancedCsv" type="file" accept=".csv,text/csv" onchange="previewImport(this)"></label></div><div id="importMap" class="grid grid4" style="margin-top:14px"></div><div id="importOptions" class="grid" style="display:none;margin-top:14px"><div><label>ضریب قیمت</label><input id="impMul" type="number" step="0.01" value="1"></div><div><label>مبلغ ثابت افزوده</label><input id="impAdd" type="number" value="0"></div><div><label>پیشوند عنوان</label><input id="impPrefix"></div><div><label>پسوند عنوان</label><input id="impSuffix"></div><div><label>شیوه ورود</label><select id="impMode"><option value="replace">جایگزینی نتایج</option><option value="append">افزودن/بروزرسانی نتایج</option></select></div></div><div id="importPreview" class="status" style="display:none;margin-top:14px"></div><div class="actions"><button id="applyImportBtn" style="display:none" onclick="applyImport()">اجرای درون‌ریزی</button></div></div></section>
-<section id="more" class="pane"><div class="card"><h3>☰ ابزارهای بیشتر</h3><div class="actions"><button onclick="openTab('profiles')">☆ پروفایل‌ها</button><button onclick="openTab('jobs')">◷ صف استخراج</button><button onclick="openTab('deploy')">↻ به‌روزرسانی و کتابخانه‌ها</button><button onclick="openTab('files');browseFiles('')">📁 فایل اکسپلورر</button></div></div><div class="card"><h3>💾 ذخیره و بازیابی همه تنظیمات</h3><div class="note">فایل شامل اتصال‌ها و کلیدهای خصوصی است؛ آن را امن نگه دارید.</div><div class="actions"><button onclick="backupSettings()">دانلود پشتیبان کامل</button><label class="file-btn">بازیابی پشتیبان<input type="file" accept=".json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status"></div></div></section>
+
 <section id="jobs" class="pane"><div class="card"><h3>صف استخراج و نقاط ادامه</h3><div class="note">پس از هر صفحه یک checkpoint اتمیک ذخیره می‌شود؛ عملیات قطع‌شده را بدون شروع از ابتدا ادامه دهید.</div><div class="actions"><button onclick="loadJobs()">تازه‌سازی صف</button></div><div id="jobList"></div></div></section>
 <section id="files" class="pane"><div class="card"><h3>📁 فایل اکسپلورر فضای حساب</h3><div class="note">نمایش فقط‌خواندنی پوشه خانگی؛ فایل‌های سیستمی، توکن‌ها و اطلاعات شخصی از این بخش حذف یا باز نمی‌شوند.</div><div id="spaceSummary" class="stats" style="margin-top:12px"></div><div id="quotaInfo" class="status" style="margin-top:12px"></div><div class="actions"><button class="gray" onclick="browseFiles(fileParent)">⬆ پوشه بالاتر</button><button onclick="browseFiles(fileCurrent)">تازه‌سازی</button></div><div id="filePath" class="status" dir="ltr"></div><div id="fileRows" class="file-list"></div></div></section>
 <section id="profiles" class="pane"><div class="card"><h3>پروفایل‌های ذخیره‌شده</h3><div id="profileList"></div></div></section>
@@ -2041,8 +2166,9 @@ body{background:#0f172a;background-image:none;color:#e2e8f0;padding:12px 12px 90
 <footer class="app-footer"><nav class="tabs" aria-label="مراحل پروفایل"><button class="on" data-tab="scrape"><i>🎯</i><span>شروع</span></button><button data-tab="profileSettings"><i>⚙️</i><span>تنظیمات</span></button><button data-tab="selectors"><i>🎨</i><span>سلکتورها</span></button><button data-tab="results"><i>📊</i><span>نتایج</span></button><button data-tab="woo"><i>📤</i><span>ارسال</span></button><button data-tab="imports"><i>📥</i><span>درون‌ریزی</span></button></nav></footer></div><script>
 let products=[],profiles={},currentBuild=''; const $=id=>document.getElementById(id); const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 (function phpLayout(){const scrape=$('scrape'),adv=scrape.querySelector('details.advanced'),status=$('status'),table=status?status.nextElementSibling:null;if(adv)$('selectorsMount').appendChild(adv);if(status)$('resultsMount').appendChild(status);if(table)$('resultsMount').appendChild(table);scrape.querySelectorAll('[onclick^="download"],label.file-btn').forEach(x=>x.remove())})();
-(function globalDrawer(){const mount=$('adminMount');['settings','profiles','jobs','deploy','files'].forEach((id,i)=>{const node=$(id);if(node){node.classList.remove('pane','on');node.classList.add('admin-section');if(i===0)node.classList.add('admin-on');mount.appendChild(node)}});const woo=$('woo'),grid=woo?woo.querySelector('.grid'):null,settings=$('settings');if(grid&&settings){const card=document.createElement('div');card.className='card';card.innerHTML='<h3>🛒 اتصال ووکامرس</h3><div id="wooConnectionMount"></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست اتصال</button></div><div id="wooConnectionStatus" class="status"></div>';settings.appendChild(card);card.querySelector('#wooConnectionMount').appendChild(grid);woo.querySelectorAll('button[onclick="saveSettings(true)"],button[onclick="wooTest()"]').forEach(x=>x.remove())}})();
-function toggleSettingsPanel(force){const open=force===undefined?!$('settingsPanel').classList.contains('open'):force;$('settingsPanel').classList.toggle('open',open);$('settingsOverlay').classList.toggle('open',open);$('hamburgerBtn').classList.toggle('active',open);document.body.style.overflow=open?'hidden':'';if(open)loadAI()}
+(function globalDrawer(){const mount=$('adminMount');['settings','profiles','jobs','deploy','files'].forEach((id,i)=>{const node=$(id);if(node){node.classList.remove('pane','on');node.classList.add('admin-section');;mount.appendChild(node)}});const woo=$('woo'),grid=woo?woo.querySelector('.grid'):null,settings=$('settings');if(grid&&settings){const card=document.createElement('div');card.className='card';card.innerHTML='<h3>🛒 اتصال ووکامرس</h3><div id="wooConnectionMount"></div><div class="actions"><button onclick="saveSettings(true)">ذخیره اتصال</button><button class="gray" onclick="wooTest()">تست اتصال</button></div><div id="wooConnectionStatus" class="status"></div>';settings.appendChild(card);card.querySelector('#wooConnectionMount').appendChild(grid);woo.querySelectorAll('button[onclick="saveSettings(true)"],button[onclick="wooTest()"]').forEach(x=>x.remove())}})();
+function toggleSettingsPanel(force){const open=force===undefined?!$('settingsPanel').classList.contains('open'):force;$('settingsPanel').classList.toggle('open',open);$('settingsOverlay').classList.toggle('open',open);$('hamburgerBtn').classList.toggle('active',open);document.body.style.overflow=open?'hidden':''}
+showAdmin('backupAdmin');
 function showAdmin(id){document.querySelectorAll('.admin-section').forEach(x=>x.classList.toggle('admin-on',x.id===id))}
 function openTab(name){const b=document.querySelector(`.tabs button[data-tab="${name}"]`),target=$(name);if(!target)return;document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('on'));if(b)b.classList.add('on');target.classList.add('on');localStorage.setItem('scraperActiveTab',b?name:'more');window.scrollTo({top:0,behavior:'smooth'})}document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());let profile_rules={title_prefix:$('rule_title_prefix').value.trim(),title_suffix:$('rule_title_suffix').value.trim(),price_mode:$('rule_price_mode').value,price_value:+$('rule_price_value').value,price_round:+$('rule_price_round').value,default_stock:$('rule_default_stock').value,default_category:$('rule_default_category').value.trim(),bsl_category_id:+$('rule_bsl_category_id').value,woo_category_id:+$('rule_woo_category_id').value};return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_limit:+$('detail_limit').value,selectors,detail_selectors,profile_rules}}
@@ -2050,24 +2176,35 @@ function apply(c){if(!c)return;['url','pages','render','pagination','page_value'
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 let deploySecret=sessionStorage.getItem('scraperDeployPassword')||'';
 async function deployApi(path,opt={}){if(!deploySecret){deploySecret=prompt('رمز مدیریت نصب را وارد کنید:')||'';if(!deploySecret)throw Error('رمز مدیریت نصب وارد نشد');sessionStorage.setItem('scraperDeployPassword',deploySecret)}try{return await api(path,{...opt,headers:{...(opt.headers||{}),'X-Deploy-Password':deploySecret}})}catch(e){if(/رمز مدیریت نصب/.test(e.message)){deploySecret='';sessionStorage.removeItem('scraperDeployPassword')}throw e}}
-async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'2.1.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('proxy_mode').value=d.network.proxy_mode||'auto';$('worker_key').value=d.network.worker_key||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();let saved=localStorage.getItem('scraperActiveTab');openTab(['scrape','profileSettings','selectors','results','woo','imports'].includes(saved)?saved:'scrape')}
+async function init(){let d=await api('/api/config');currentBuild=d.build||'';$('appVersion').textContent='v'+(d.version||'2.2.0');profiles=d.profiles||{};$('timeout').value=d.network.timeout;$('gap_ms').value=d.network.gap_ms;$('proxy').value=d.network.proxy||'';$('proxy_mode').value=d.network.proxy_mode||'auto';$('worker_key').value=d.network.worker_key||'';$('verify_tls').checked=d.network.verify_tls!==false;$('woo_url').value=d.woocommerce.url||'';$('woo_ck').value=d.woocommerce.consumer_key||'';$('woo_cs').value=d.woocommerce.consumer_secret||'';$('dep_repo').value=d.deploy.repo||'';$('dep_branch').value=d.deploy.branch||'';$('dep_path').value=d.deploy.path||'';$('dep_reload').value=d.deploy.reload_file||'';$('dep_token').placeholder=d.deploy.has_github_token?'توکن تنظیم شده است؛ خالی = نگه‌داشتن':'GitHub token اختیاری';renderProfiles();loadJobs();loadWooJobs();let saved=localStorage.getItem('scraperActiveTab');openTab(['scrape','profileSettings','selectors','results','woo','imports'].includes(saved)?saved:'scrape')}
 async function loadBasalam(){try{let d=await deployApi('/api/basalam/config');let b=d.basalam;$('bsl_vendor').value=b.vendor_id||0;$('bsl_category').value=b.category_id||0;$('bsl_token').value=b.token||'';$('bsl_refresh').value=b.refresh_token||'';$('bsl_days').value=b.preparation_days||3;$('bsl_weight').value=b.weight||500;$('bsl_stock').value=b.stock||10;$('bsl_update').checked=b.update_existing!==false}catch(e){$('bslAdminStatus').textContent=e.message}}
 async function saveBasalam(){try{let basalam={vendor_id:+$('bsl_vendor').value,category_id:+$('bsl_category').value,token:$('bsl_token').value.trim(),refresh_token:$('bsl_refresh').value.trim(),preparation_days:+$('bsl_days').value,weight:+$('bsl_weight').value,stock:+$('bsl_stock').value,update_existing:$('bsl_update').checked};await deployApi('/api/basalam/settings',{method:'POST',body:JSON.stringify({basalam})});$('bslAdminStatus').innerHTML='<span class="ok">اتصال ذخیره شد.</span>'}catch(e){$('bslAdminStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function testBasalam(){try{let d=await deployApi('/api/basalam/test',{method:'POST',body:'{}'});$('bslAdminStatus').innerHTML='<span class="ok">اتصال SDK موفق: '+esc(d.user)+'</span>'}catch(e){$('bslAdminStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function sendBasalam(){if(!confirm('۳ محصول نخست ایجاد یا بروزرسانی شوند؟'))return;try{$('bslSendStatus').textContent='در حال ارسال با SDK رسمی…';let d=await deployApi('/api/basalam/send',{method:'POST',body:JSON.stringify({limit:3})});$('bslSendStatus').innerHTML=`موفق: ${d.sent.length} · خطا: ${d.failed.length}`;}catch(e){$('bslSendStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function importAIProviders(input){if(!input.files[0])return;try{let secret=await needDeploySecret(),f=new FormData();f.append('file',input.files[0]);let r=await fetch('/api/ai/providers/import',{method:'POST',headers:{'X-Deploy-Password':secret},body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);$('aiStatus').innerHTML='<span class="ok">'+d.count+' ارائه‌دهنده وارد شد.</span>';loadAI()}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
-function aiProviderPreset(){const p=$('ai_provider').value,map={openrouter:['https://openrouter.ai/api/v1/chat/completions','meta-llama/llama-3.3-70b-instruct:free'],groq:['https://api.groq.com/openai/v1/chat/completions','llama-3.3-70b-versatile'],deepseek:['https://api.deepseek.com/chat/completions','deepseek-chat'],openai:['https://api.openai.com/v1/chat/completions','gpt-4o-mini']};if(map[p]){[$('ai_endpoint').value,$('ai_model').value]=map[p]}}
-async function loadAI(){try{let d=await deployApi('/api/ai/config');$('ai_provider').value=d.ai.provider||'openrouter';$('ai_endpoint').value=d.ai.endpoint||'';$('ai_model').value=d.ai.model||'';$('ai_key').value=d.ai.api_key||'';$('ai_temperature').value=d.ai.temperature??.3}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function saveAI(){try{let ai={provider:$('ai_provider').value,endpoint:$('ai_endpoint').value.trim(),model:$('ai_model').value.trim(),api_key:$('ai_key').value.trim(),temperature:+$('ai_temperature').value};await deployApi('/api/ai/settings',{method:'POST',body:JSON.stringify({ai})});$('aiStatus').innerHTML='<span class="ok">اتصال هوش مصنوعی ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function testAI(){try{$('aiStatus').textContent='در حال تست…';let d=await deployApi('/api/ai/test',{method:'POST',body:'{}'});$('aiStatus').innerHTML='<span class="ok">اتصال موفق: '+esc(d.answer)+'</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function enrichAI(){if(!confirm('توضیحات حداکثر ۳ محصول ناقص با AI ساخته شود؟'))return;try{$('aiStatus').textContent='در حال تولید محتوا…';let d=await deployApi('/api/ai/enrich',{method:'POST',body:JSON.stringify({limit:3})});$('aiStatus').innerHTML='<span class="ok">'+d.total+' محصول تکمیل شد.</span>';let c=await api('/api/config');}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+let aiProviders=[];
+function aiPane(id,btn){document.querySelectorAll('.ai-pane').forEach(x=>x.classList.toggle('on',x.id==='aiPane'+id[0].toUpperCase()+id.slice(1)));document.querySelectorAll('.ai-tabs button').forEach(x=>x.classList.toggle('on',x===btn))}
+function aiCurrent(){return aiProviders.find(x=>x.id===$('ai_provider').value)}
+function renderAI(){let selected=$('ai_provider').value,sel=$('ai_provider');sel.innerHTML='<option value="">— انتخاب —</option>'+aiProviders.map(p=>`<option value="${esc(p.id)}">${p.enabled?'●':'○'} ${esc(p.name)} (${p.models.length})</option>`).join('');sel.value=aiProviders.some(x=>x.id===selected)?selected:(sel.dataset.selected||aiProviders[0]?.id||'');renderAIModels();$('aiSummary').textContent=aiProviders.length+' ارائه‌دهنده · '+aiProviders.reduce((n,p)=>n+p.models.length,0)+' مدل';$('aiProviderList').innerHTML=aiProviders.map(p=>`<div class="provider-row"><div><b>${esc(p.name)}</b> <code>${esc(p.id)}</code><br><small>${esc(p.url)} · ${p.key_count} کلید ${p.key_preview.map(esc).join('، ')}</small></div><button class="gray" onclick="editAIProvider('${esc(p.id)}')">ویرایش</button><div class="models">${p.models.slice(0,12).map(m=>`<span class="model-chip">${esc(m.name||m.id)}</span>`).join('')}${p.models.length>12?`<span class="badge">+${p.models.length-12}</span>`:''}</div></div>`).join('')||'<div class="note">هنوز ارائه‌دهنده‌ای ثبت نشده است. فایل PHP را بارگذاری یا ارائه‌دهنده تازه بسازید.</div>'}
+function renderAIModels(){let p=aiCurrent(),sel=$('ai_model'),wanted=sel.dataset.selected||sel.value;sel.innerHTML=(p?.models||[]).filter(m=>m.enabled!==false).map(m=>`<option value="${esc(m.id)}">${esc(m.name||m.id)}${m.free?' · رایگان':''}</option>`).join('')||'<option value="">— مدلی نیست —</option>';if(p?.models.some(m=>m.id===wanted))sel.value=wanted}
+async function importAIProviders(input){if(!input.files[0])return;try{$('aiStatus').textContent='در حال درون‌ریزی و ساخت فهرست مدل‌ها…';let secret=await needDeploySecret(),f=new FormData();f.append('file',input.files[0]);let r=await fetch('/api/ai/providers/import',{method:'POST',headers:{'X-Deploy-Password':secret},body:f}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error);$('aiStatus').innerHTML='<span class="ok">'+d.count+' ارائه‌دهنده و '+d.models+' مدل وارد شد.</span>';await loadAI()}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{input.value=''}}
+async function loadAI(){try{let d=await deployApi('/api/ai/config');aiProviders=d.providers||[];$('ai_provider').dataset.selected=d.selected?.provider||'';$('ai_model').dataset.selected=d.selected?.model||'';$('ai_temperature').value=d.ai.temperature??.3;$('ai_max_tokens').value=d.ai.max_tokens||1200;$('ai_system_prompt').value=d.ai.system_prompt||'';renderAI()}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function aiSelectProvider(){renderAIModels();let p=aiCurrent(),m=p?.models?.[0]?.id;if(p&&m)await selectAI(p.id,m)}
+async function aiSelectModel(){let p=aiCurrent();if(p&&$('ai_model').value)await selectAI(p.id,$('ai_model').value)}
+async function selectAI(provider,model){try{await deployApi('/api/ai/select',{method:'POST',body:JSON.stringify({provider,model})});$('aiStatus').innerHTML='<span class="ok">مدل فعال ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+function newAIProvider(){['ai_edit_id','ai_edit_name','ai_edit_vendor','ai_endpoint','ai_keys','ai_models'].forEach(x=>$(x).value='');$('ai_keys').dataset.preserve='';$('ai_edit_enabled').checked=true;aiPane('editor',document.querySelectorAll('.ai-tabs button')[1])}
+function editAIProvider(id){let p=aiProviders.find(x=>x.id===id);if(!p)return;$('ai_edit_id').value=p.id;$('ai_edit_name').value=p.name;$('ai_edit_vendor').value=p.vendor||'';$('ai_endpoint').value=p.url||'';$('ai_edit_enabled').checked=p.enabled!==false;$('ai_keys').value='';$('ai_keys').placeholder=(p.key_count||0)+' کلید محفوظ است؛ کلید تازه را برای افزودن وارد کنید';$('ai_keys').dataset.preserve='1';$('ai_models').value=p.models.map(m=>m.id+' | '+(m.name||m.id)+(m.free?' | free':'')).join('\n');aiPane('editor',document.querySelectorAll('.ai-tabs button')[1])}
+async function saveAIProvider(){try{let id=$('ai_edit_id').value.trim();if(!id)throw Error('شناسه ارائه‌دهنده لازم است');let preserve=$('ai_keys').dataset.preserve==='1',prior=aiProviders.find(x=>x.id===id);let keys=$('ai_keys').value.split(/\n+/).map(x=>{let [key,label,acct]=x.split('|');return {key:key.trim(),label:(label||'').trim(),acct:(acct||'').trim(),enabled:true}}).filter(x=>x.key);let models=$('ai_models').value.split(/\n+/).map(x=>{let [mid,name,free]=x.split('|');mid=(mid||'').trim();return {...(prior?.models.find(m=>m.id===mid)||{}),id:mid,name:(name||mid||'').trim(),free:/free|رایگان|true|1/i.test(free||''),enabled:true}}).filter(x=>x.id);let provider={id,name:$('ai_edit_name').value.trim()||id,vendor:$('ai_edit_vendor').value.trim(),url:$('ai_endpoint').value.trim(),enabled:$('ai_edit_enabled').checked,models};provider.apiKeys=keys;let d=await deployApi('/api/ai/providers/save',{method:'POST',body:JSON.stringify({provider,preserve_keys:preserve})});aiProviders=d.providers||[];$('ai_keys').dataset.preserve='';renderAI();$('aiStatus').innerHTML='<span class="ok">ارائه‌دهنده و '+models.length+' مدل ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function deleteAIProvider(){let id=$('ai_edit_id').value.trim();if(!id||!confirm('ارائه‌دهنده و مدل‌هایش حذف شوند؟'))return;try{let d=await deployApi('/api/ai/providers/'+encodeURIComponent(id),{method:'DELETE'});aiProviders=d.providers||[];renderAI();newAIProvider();$('aiStatus').innerHTML='<span class="ok">حذف شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function saveAIOptions(){try{let ai={temperature:+$('ai_temperature').value,max_tokens:+$('ai_max_tokens').value,system_prompt:$('ai_system_prompt').value};await deployApi('/api/ai/settings',{method:'POST',body:JSON.stringify({ai})});$('aiStatus').innerHTML='<span class="ok">گزینه‌های تولید ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function testAI(){try{$('aiStatus').textContent='در حال تست مدل انتخاب‌شده…';let d=await deployApi('/api/ai/test',{method:'POST',body:JSON.stringify({provider:$('ai_provider').value,model:$('ai_model').value,prompt:$('ai_test_prompt').value})});$('aiStatus').innerHTML='<span class="ok">اتصال موفق: '+esc(d.answer)+'</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function enrichAI(){if(!confirm('توضیحات حداکثر ۳ محصول ناقص با مدل فعال ساخته شود؟'))return;try{$('aiStatus').textContent='در حال تولید محتوا…';let d=await deployApi('/api/ai/enrich',{method:'POST',body:JSON.stringify({limit:3})});$('aiStatus').innerHTML='<span class="ok">'+d.total+' محصول تکمیل شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="spinner"></span> در حال دریافت و تحلیل صفحات…\nاین پنجره را تا پایان عملیات باز نگه دارید.';try{let d=await api('/api/scrape',{method:'POST',body:JSON.stringify(config())});products=d.products;renderRows();let c=d.comparison||{};$('status').innerHTML=`<span class="ok">✓ ${d.total} محصول از ${d.pages} صفحه استخراج شد</span>\nجدید: ${c.added||0} · تغییرکرده: ${c.changed||0} · حذف‌شده: ${c.removed||0}\nروش: ${esc(d.modes.join(' · '))}\n${esc(d.logs.join('\n'))}`;openTab('results');}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderRows(){if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="6">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${i+1}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 async function saveProfilePrompt(){let name=prompt('نام پروفایل:');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;renderProfiles()}
 function renderProfiles(){const entries=Object.entries(profiles);$('profileList').innerHTML=entries.map(([n,c])=>`<div class="card"><b>${esc(n)}</b><br><small dir="ltr">${esc(c.url)}</small><div class="actions"><button onclick='loadProfile(${JSON.stringify(n)})'>بارگذاری</button><button class="gray" onclick='delProfile(${JSON.stringify(n)})'>حذف</button></div></div>`).join('')||'<div class="note">هنوز پروفایلی نیست.</div>';$('profileSelect').innerHTML='<option value="">— پروفایل جدید —</option>'+entries.map(([n])=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}
 function loadSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}loadProfile(n)}
 function deleteSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}delProfile(n)}
-function loadProfile(n){apply(profiles[n]);document.querySelector('[data-tab="scrape"]').click()} async function delProfile(n){if(!confirm('حذف شود؟'))return;let d=await api('/api/profile/'+encodeURIComponent(n),{method:'DELETE'});profiles=d.profiles;renderProfiles()}
+function loadProfile(n){let p=profiles[n];apply(p);if(Array.isArray(p?.saved_products)&&p.saved_products.length){products=p.saved_products;renderRows();$('status').innerHTML='<span class="ok">✓ پروفایل «'+esc(n)+'» با '+products.length+' محصول ذخیره‌شده بارگذاری شد.</span>'}document.querySelector('[data-tab="scrape"]').click()} async function delProfile(n){if(!confirm('حذف شود؟'))return;let d=await api('/api/profile/'+encodeURIComponent(n),{method:'DELETE'});profiles=d.profiles;renderProfiles()}
 async function loadJobs(){try{let d=await api('/api/extract/jobs');$('jobList').innerHTML=(d.jobs||[]).map(j=>`<div class="card"><b>${esc(j.id)}</b><br><small>وضعیت: ${esc(j.status)} · محصول: ${j.total||0} · صفحه بعد: ${j.next_page||'-'}</small><div class="actions">${j.status!=='completed'?`<button onclick="resumeJob('${esc(j.id)}')">ادامه</button>`:''}<button class="gray" onclick="deleteJob('${esc(j.id)}')">حذف</button></div></div>`).join('')||'<div class="note">صف خالی است.</div>'}catch(e){$('jobList').textContent=e.message}}
 async function resumeJob(id){try{$('jobList').textContent='در حال ادامه استخراج…';let d=await api('/api/extract/resume/'+encodeURIComponent(id),{method:'POST',body:'{}'});products=d.products||[];renderRows();$('status').innerHTML=`<span class="ok">✓ عملیات ادامه یافت؛ ${d.total||0} محصول</span>`;openTab('results')}catch(e){$('jobList').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function deleteJob(id){if(!confirm('این نقطه ادامه حذف شود؟'))return;await api('/api/extract/jobs/'+encodeURIComponent(id),{method:'DELETE'});loadJobs()}

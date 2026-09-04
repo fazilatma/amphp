@@ -15,6 +15,7 @@ DEFAULT_GITHUB_PATH = "scraper4.py"
 DEFAULT_CLOUDFLARE_RELAY = "https://proxy.fazilat-ma.workers.dev"
 
 import os
+import re
 import sys
 import time
 import json
@@ -233,6 +234,14 @@ def fetch_url(url: str, network_cfg: Optional[Dict[str, Any]] = None, timeout: i
         return resp.text
     except Exception as e:
         raise FetchError(f"خطا در دریافت نشانی {url}: {str(e)}")
+
+FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def to_fa(value: Any) -> str:
+    """Persian digits, for agent log lines. (The JS toFa() lives in the page.)"""
+    return str(value).translate(FA_DIGITS)
+
 
 # Background Task Registry Helpers
 def register_task(task_type: str, title: str, total_steps: int = 100) -> str:
@@ -718,7 +727,10 @@ def ai_extract_text(res_json: Dict[str, Any]) -> str:
 
 
 def ai_post_once(endpoint: str, payload: Dict[str, Any], api_key: str,
-                 mode: str, ai_cfg: Dict[str, Any], timeout: int) -> str:
+                 mode: str, ai_cfg: Dict[str, Any], timeout: int,
+                 raw: bool = False) -> Any:
+    """POST a chat payload. Returns the extracted text, or the whole parsed
+    response when raw=True (the agent needs message.tool_calls)."""
     req_url, extra, proxies = ai_build_request(endpoint, mode, ai_cfg)
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -744,23 +756,42 @@ def ai_post_once(endpoint: str, payload: Dict[str, Any], api_key: str,
         err = res_json["error"]
         msg = err.get("message") if isinstance(err, dict) else str(err)
         raise AiHttpError(f"خطای ارائه‌دهنده: {msg}", mode, resp.status_code)
-    return ai_extract_text(res_json)
+    return res_json if raw else ai_extract_text(res_json)
 
 
-def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Dict[str, Any]] = None,
-                       mode_override: Optional[str] = None) -> str:
-    """Chat completion with PHP-compatible transports and auto-fallback."""
+def ai_merge_cfg(ai_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Merge the AI section with the network section so both keep working."""
     if ai_cfg is None:
         ai_cfg = load_data().get("ai", {})
-    # Merge network-level proxy settings so both places keep working.
     net_cfg = load_data().get("network", {})
     merged = dict(ai_cfg)
     if not merged.get("proxy") and net_cfg.get("proxy"):
         merged["proxy"] = net_cfg["proxy"]
     if not merged.get("worker_url") and net_cfg.get("relay_url"):
         merged["worker_url"] = net_cfg["relay_url"]
-    if merged.get("net_mode") in (None, "", "direct") and net_cfg.get("proxy_mode") in ("relay", "worker"):
+    # Configs written before the AI studio existed have no ai.net_mode key at
+    # all; honour their network.proxy_mode. Once the AI section names a mode
+    # explicitly it must win, otherwise picking "direct" is silently ignored.
+    if "net_mode" not in ai_cfg and net_cfg.get("proxy_mode") in ("relay", "worker"):
         merged["net_mode"] = "worker"
+    return merged
+
+
+def ai_transport_order(merged: Dict[str, Any], mode_override: Optional[str] = None) -> List[str]:
+    primary = (mode_override or merged.get("net_mode") or "direct").strip()
+    order = [primary]
+    if merged.get("fallback", True) and not mode_override:
+        for m in ("direct", "worker"):
+            if m not in order:
+                order.append(m)
+    return order
+
+
+def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Dict[str, Any]] = None,
+                       mode_override: Optional[str] = None) -> str:
+    """Chat completion with PHP-compatible transports and auto-fallback."""
+    merged = ai_merge_cfg(ai_cfg)
+    net_cfg = load_data().get("network", {})
 
     provider = (merged.get("provider") or "openrouter").strip().lower()
     api_key = (merged.get("api_key") or "").strip()
@@ -781,17 +812,42 @@ def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Di
         "max_tokens": int(merged.get("max_tokens", 1500) or 1500),
     }
 
-    primary = (mode_override or merged.get("net_mode") or "direct").strip()
-    order = [primary]
-    if merged.get("fallback", True) and not mode_override:
-        for m in ("direct", "worker"):
-            if m not in order:
-                order.append(m)
-
     last_err: Optional[AiHttpError] = None
-    for mode in order:
+    for mode in ai_transport_order(merged, mode_override):
         try:
             return ai_post_once(endpoint, payload, api_key, mode, merged, timeout)
+        except AiHttpError as e:
+            last_err = e
+    raise last_err or AiHttpError("تماس با مدل ناموفق بود")
+
+
+def call_ai_tools(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
+                  ai_cfg: Optional[Dict[str, Any]] = None,
+                  mode_override: Optional[str] = None,
+                  raw: bool = False) -> Any:
+    """One agent turn. Sends messages + tool specs and returns the raw model
+    response (so the caller can read message.tool_calls), or just the text."""
+    merged = ai_merge_cfg(ai_cfg)
+    net_cfg = load_data().get("network", {})
+    provider = (merged.get("provider") or "openrouter").strip().lower()
+    api_key = (merged.get("api_key") or "").strip()
+    model = (merged.get("model") or "").strip() or AI_DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+    if not api_key and provider != "ollama":
+        raise AiHttpError("کلید API وارد نشده است؛ آن را در بخش هوش مصنوعی ذخیره کنید")
+
+    payload: Dict[str, Any] = {"model": model, "messages": messages,
+                               "temperature": 0.1, "max_tokens": 1200}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    endpoint = ai_resolve_endpoint(merged)
+    timeout = int(net_cfg.get("timeout", 25) or 25)
+    last_err: Optional[AiHttpError] = None
+    for mode in ai_transport_order(merged, mode_override):
+        try:
+            return ai_post_once(endpoint, payload, api_key, mode, merged, timeout, raw=True) \
+                if raw else ai_post_once(endpoint, payload, api_key, mode, merged, timeout)
         except AiHttpError as e:
             last_err = e
     raise last_err or AiHttpError("تماس با مدل ناموفق بود")
@@ -1510,6 +1566,418 @@ def api_ai_candidates_compare():
         items.append(item)
 
     return jsonify(ok=True, task=task, title=inp, items=items, master=ai_master_key())
+
+
+# ==================== PRODUCT-MANAGEMENT AGENT (tool calling) ====================
+# Mirrors scraper4.php's agentRun/agentToolSpecs/agentExecTool: the model is
+# handed a tool catalogue and decides which tools to call. Caps stop runaway
+# loops. Modes: sim (sample data), dry (read-only), live (writes to the catalog).
+
+AGENT_MAX_STEPS = 24
+AGENT_MAX_CALLS = 80
+AGENT_MODES = ["sim", "dry", "live"]
+
+
+def agent_mode_label(mode: str) -> str:
+    return {"sim": "🧪 شبیه‌سازی (بدون اتصال)", "dry": "🔍 آزمایشی (فقط خواندن)",
+            "live": "🔥 اجرای واقعی (تغییر قیمت و موجودی)"}.get(mode, mode)
+
+
+def agent_tool_specs() -> List[Dict[str, Any]]:
+    return [
+        {"type": "function", "function": {
+            "name": "list_products",
+            "description": "فهرست محصولات فروشگاه را برمی‌گرداند. با query فقط محصولاتی "
+                           "گرفته می‌شوند که کلیدواژه در عنوانشان باشد. خروجی شامل شناسه، "
+                           "عنوان، قیمت و موجودی است.",
+            "parameters": {"type": "object", "properties": {
+                "source": {"type": "string", "enum": ["woo", "bsl"],
+                           "description": "woo = ووکامرس، bsl = باسلام"},
+                "query": {"type": "string",
+                          "description": "کلیدواژهٔ عنوان؛ چند کلیدواژه با «|» جدا شوند"},
+                "limit": {"type": "integer", "description": "حداکثر خروجی (پیش‌فرض ۲۰، سقف ۱۰۰)"}},
+                "required": ["source"]}}},
+        {"type": "function", "function": {
+            "name": "search_snappshop",
+            "description": "یک عنوان را در snappshop.ir جست‌وجو می‌کند و نزدیک‌ترین محصول را با "
+                           "قیمت و وضعیت موجودی برمی‌گرداند. برای قیمت روز بازار از این ابزار استفاده کن.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string", "description": "عنوان محصول برای جست‌وجو"}},
+                "required": ["title"]}}},
+        {"type": "function", "function": {
+            "name": "update_product",
+            "description": "قیمت و/یا موجودی یک محصول را به‌روز می‌کند. فقط وقتی صدا بزن که قیمت "
+                           "تازه را از search_snappshop گرفته باشی.",
+            "parameters": {"type": "object", "properties": {
+                "target": {"type": "string", "enum": ["woo", "bsl"], "description": "مقصد"},
+                "id": {"type": "integer", "description": "شناسهٔ محصول"},
+                "price": {"type": "integer", "description": "قیمت تازه به تومان"},
+                "stock": {"type": "integer", "description": "موجودی تازه"},
+                "reason": {"type": "string", "description": "دلیل کوتاه تغییر"}},
+                "required": ["target", "id"]}}},
+        {"type": "function", "function": {
+            "name": "finish",
+            "description": "وقتی کار تمام شد این را صدا بزن و خلاصهٔ فارسی کارها را بنویس.",
+            "parameters": {"type": "object", "properties": {
+                "summary": {"type": "string", "description": "خلاصهٔ فارسی نتیجه"}},
+                "required": ["summary"]}}},
+    ]
+
+
+def agent_system_prompt(mode: str) -> str:
+    s = ("تو یک دستیار مدیریت فروشگاه اینترنتی هستی و به چند ابزار واقعی دسترسی داری.\n"
+         "قواعد:\n"
+         "۱) برای هر کاری حتماً ابزار مناسب را صدا بزن؛ چیزی را از خودت حدس نزن.\n"
+         "۲) اول با list_products محصولات را پیدا کن، بعد برای هر عنوان search_snappshop را "
+         "صدا بزن، و در پایان با update_product قیمت و موجودی را اصلاح کن.\n"
+         "۳) اگر snappshop محصولی را پیدا نکرد، آن را دست‌نخورده رها کن.\n"
+         "۴) اگر در snappshop ناموجود بود، موجودی را صفر کن.\n"
+         "۵) هر بار حداکثر چند ابزار را صدا بزن و منتظر نتیجه بمان.\n"
+         "۶) وقتی کار تمام شد، finish را با خلاصهٔ فارسی صدا بزن.\n"
+         f"حالت فعلی اجرا: {agent_mode_label(mode)}.\n")
+    if mode != "live":
+        s += "در این حالت هیچ تغییری واقعاً نوشته نمی‌شود، ولی کارت را کامل انجام بده.\n"
+    return s + "همیشه فارسی بنویس."
+
+
+def agent_call_label(name: str, args: Dict[str, Any]) -> str:
+    if name == "list_products":
+        where = "باسلام" if args.get("source") == "bsl" else "ووکامرس"
+        q = args.get("query") or ""
+        return f"📋 فهرست محصولات {where}" + (f" · جست‌وجو: {q}" if q else "")
+    if name == "search_snappshop":
+        return f"🔎 اسنپ‌شاپ: {args.get('title', '')}"
+    if name == "update_product":
+        parts = []
+        if args.get("price") is not None:
+            parts.append(f"قیمت {to_fa(int(args['price']))}")
+        if args.get("stock") is not None:
+            parts.append(f"موجودی {to_fa(int(args['stock']))}")
+        where = "باسلام" if args.get("target") == "bsl" else "ووکامرس"
+        return (f"✏️ به‌روزرسانی {where} #{to_fa(int(args.get('id') or 0))}"
+                + (f" → {'، '.join(parts)}" if parts else ""))
+    if name == "finish":
+        return "🏁 پایان کار"
+    return f"🔧 {name}"
+
+
+def agent_extract_tool_calls(body: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Native tool_calls, falling back to a JSON block in the text."""
+    out = []
+    try:
+        msg = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return out
+    for tc in (msg.get("tool_calls") or []):
+        fn = (tc or {}).get("function") or {}
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        raw = fn.get("arguments")
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                args = {}
+        elif isinstance(raw, dict):
+            args = raw
+        else:
+            args = {}
+        out.append({"id": tc.get("id") or f"call_{len(out)}", "name": name,
+                    "args": args if isinstance(args, dict) else {}})
+    if out:
+        return out
+    text = msg.get("content") or ""
+    m = re.search(r'\{\s*"tool"\s*:\s*"([a-z_]+)"\s*(?:,\s*"args"\s*:\s*(\{.*?\}))?\s*\}',
+                  text, re.S)
+    if m:
+        try:
+            args = json.loads(m.group(2)) if m.group(2) else {}
+        except ValueError:
+            args = {}
+        out.append({"id": "call_text_0", "name": m.group(1),
+                    "args": args if isinstance(args, dict) else {}})
+    return out
+
+
+def agent_tool_list_products(mode: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    limit = min(int(args.get("limit") or 20), 100)
+    query = str(args.get("query") or "").strip()
+    products = load_data().get("last_result", []) or []
+    if query:
+        words = [w.strip() for w in query.split("|") if w.strip()]
+        products = [p for p in products
+                    if any(w.lower() in str(p.get("title", "")).lower() for w in words)]
+    rows = [{"id": i, "title": p.get("title", ""), "price": p.get("price", 0),
+             "stock": p.get("stock", 0)} for i, p in enumerate(products[:limit])]
+    if mode == "sim":
+        rows = [{"id": 1, "title": "عطر مردانه ساواج", "price": 480000, "stock": 12},
+                {"id": 2, "title": "ادکلن زنانه الین", "price": 620000, "stock": 5}]
+    return {"ok": True, "count": len(rows), "products": rows,
+            "note": "دادهٔ شبیه‌سازی" if mode == "sim" else ""}
+
+
+def agent_tool_search_snappshop(mode: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(args.get("title") or "").strip()
+    if not title:
+        return {"ok": False, "error": "عنوان خالی است"}
+    if mode == "sim":
+        return {"ok": True, "simulated": True, "title": title, "price": 512000,
+                "in_stock": True, "note": "دادهٔ شبیه‌سازی — اتصال واقعی برقرار نشد"}
+    url = "https://snappshop.ir/search?q=" + urllib.parse.quote(title)
+    try:
+        html = fetch_url(url, timeout=20)
+    except Exception as e:
+        return {"ok": False, "error": f"جست‌وجوی اسنپ‌شاپ ناموفق بود: {str(e)[:150]}"}
+    m = re.search(r'"title"\s*:\s*"([^"]{3,120})"', html)
+    pm = re.search(r'"price"\s*:\s*"?(\d{4,12})"?', html)
+    if not m and not pm:
+        return {"ok": False, "error": "نتیجه‌ای در اسنپ‌شاپ پیدا نشد"}
+    return {"ok": True, "title": (m.group(1) if m else title),
+            "price": int(pm.group(1)) if pm else 0,
+            "in_stock": bool(pm)}
+
+
+def agent_tool_update_product(mode: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    # Note: id 0 is a valid product, so an `or` default would silently turn it
+    # into -1. Parse explicitly instead.
+    raw_id = args.get("id")
+    try:
+        pid = int(str(raw_id).strip()) if raw_id is not None and str(raw_id).strip() != "" else -1
+    except (TypeError, ValueError):
+        pid = -1
+    price = args.get("price")
+    stock = args.get("stock")
+    if pid < 0:
+        return {"ok": False, "error": "شناسهٔ محصول نامعتبر است"}
+    data = load_data()
+    products = data.get("last_result", []) or []
+    if mode == "sim":
+        return {"ok": True, "simulated": True, "id": pid,
+                "changes": {k: v for k, v in (("price", price), ("stock", stock)) if v is not None}}
+    if pid >= len(products):
+        return {"ok": False, "error": f"محصول #{pid} در فهرست نیست"}
+    changes = {}
+    if price is not None:
+        changes["price"] = {"from": products[pid].get("price", 0), "to": int(price)}
+    if stock is not None:
+        changes["stock"] = {"from": products[pid].get("stock", 0), "to": int(stock)}
+    if mode == "dry":
+        return {"ok": True, "dry_run": True, "id": pid, "changes": changes,
+                "note": "حالت آزمایشی — چیزی نوشته نشد"}
+    if price is not None:
+        products[pid]["price"] = int(price)
+    if stock is not None:
+        products[pid]["stock"] = int(stock)
+    data["last_result"] = products
+    save_data(data)
+    return {"ok": True, "applied": True, "id": pid, "changes": changes}
+
+
+def agent_exec_tool(mode: str, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    if name == "list_products":
+        return agent_tool_list_products(mode, args)
+    if name == "search_snappshop":
+        return agent_tool_search_snappshop(mode, args)
+    if name == "update_product":
+        return agent_tool_update_product(mode, args)
+    if name == "finish":
+        return {"ok": True, "finished": True, "summary": str(args.get("summary") or "")}
+    return {"ok": False, "error": f"ابزار ناشناخته: {name}"}
+
+
+def _agent_convo(task_id: str, role: str, text: str, calls: Optional[List[str]] = None) -> None:
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return
+        res = t.get("result")
+        if not isinstance(res, dict):
+            res = {"convo": [], "log": [], "steps": 0, "calls": 0, "changes": []}
+            t["result"] = res
+        res.setdefault("convo", []).append(
+            {"role": role, "text": (text or "")[:1200], "calls": calls or []})
+        if len(res["convo"]) > 200:
+            res["convo"] = res["convo"][-200:]
+        t["updated_at"] = time.time()
+
+
+def run_agent_worker(task_id: str, task: str, mode: str, model: str = "") -> None:
+    started = time.time()
+    tools = agent_tool_specs()
+    ai_cfg = load_data().get("ai", {})
+    if model:
+        ai_cfg = dict(ai_cfg)
+        if "/" in model:
+            ai_cfg["provider"], ai_cfg["model"] = model.split("/", 1)
+        else:
+            ai_cfg["model"] = model
+        update_task(task_id, log_msg=f"مدل این اجرا: {model}")
+
+    messages = [{"role": "system", "content": agent_system_prompt(mode)},
+                {"role": "user", "content": task}]
+    _agent_convo(task_id, "system", agent_system_prompt(mode)[:700])
+    _agent_convo(task_id, "user", task)
+
+    calls = 0
+    changes: List[Dict[str, Any]] = []
+    final_text = ""
+    stopped_by = ""
+    native_tools: Optional[bool] = None
+
+    try:
+        for step in range(1, AGENT_MAX_STEPS + 1):
+            if is_task_cancelled(task_id):
+                stopped_by = "کاربر"
+                break
+            update_task(task_id, progress=int(step / AGENT_MAX_STEPS * 90),
+                        step=f"گام {to_fa(step)} — پرسش از مدل",
+                        log_msg=f"🤔 گام {to_fa(step)} — پرسش از مدل…")
+
+            try:
+                body = call_ai_tools(messages, tools, ai_cfg=ai_cfg, raw=True)
+            except AiHttpError as e:
+                # Some providers reject the tools field outright (HTTP 400):
+                # retry once in text mode, as PHP does.
+                if e.status == 400 and native_tools is not False:
+                    native_tools = False
+                    update_task(task_id, log_msg="⚠️ مدل فیلد tools را نپذیرفت؛ حالت متنی امتحان می‌شود")
+                    catalog = "، ".join(t["function"]["name"] for t in tools)
+                    messages[0]["content"] = agent_system_prompt(mode) + (
+                        "\n\nاین مدل فراخوانی ابزار بومی ندارد. برای صدا زدن ابزار فقط یک بلوک "
+                        'JSON بنویس:\n{"tool":"نام ابزار","args":{...}}\nابزارها: ' + catalog)
+                    continue
+                update_task(task_id, error=f"خطای مدل: {e}",
+                            result={"steps": step, "calls": calls, "changes": changes})
+                return
+
+            tcs = agent_extract_tool_calls(body)
+            try:
+                text = (body["choices"][0]["message"].get("content") or "").strip()
+            except (KeyError, IndexError, TypeError):
+                text = ""
+            if tcs and native_tools is None:
+                native_tools = True
+                update_task(task_id, log_msg="✅ مدل فراخوانی ابزار بومی دارد")
+            elif tcs and native_tools is False:
+                update_task(task_id, log_msg="🧩 فراخوانی ابزار از متن مدل استخراج شد")
+
+            if not tcs:
+                final_text = text
+                _agent_convo(task_id, "assistant", text)
+                update_task(task_id, log_msg="💬 مدل بدون ابزار پاسخ متنی داد؛ پایان")
+                break
+
+            _agent_convo(task_id, "assistant", text, [c["name"] for c in tcs])
+            messages.append({"role": "assistant", "content": text or None, "tool_calls": [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"],
+                              "arguments": json.dumps(c["args"], ensure_ascii=False)}}
+                for c in tcs]})
+
+            finished = False
+            for c in tcs:
+                if is_task_cancelled(task_id):
+                    stopped_by = "کاربر"
+                    break
+                if calls >= AGENT_MAX_CALLS:
+                    stopped_by = "سقف فراخوانی"
+                    break
+                calls += 1
+                update_task(task_id, log_msg=agent_call_label(c["name"], c["args"]))
+                res = agent_exec_tool(mode, c["name"], c["args"])
+                messages.append({"role": "tool", "tool_call_id": c["id"],
+                                 "content": json.dumps(res, ensure_ascii=False)[:4000]})
+                if res.get("finished"):
+                    final_text = res.get("summary") or ""
+                    finished = True
+                    break
+                if res.get("applied") or res.get("dry_run") or res.get("simulated"):
+                    changes.append({"id": res.get("id"), "tool": c["name"],
+                                    "changes": res.get("changes", {})})
+            if finished or stopped_by:
+                break
+        else:
+            # The step cap was exhausted without the model calling finish.
+            stopped_by = "سقف گام"
+
+        report = {"ok": True, "mode": mode, "task": task, "summary": final_text,
+                  "steps": step, "calls": calls, "changes": changes,
+                  "stopped_by": stopped_by, "native_tools": native_tools,
+                  "took": round(time.time() - started, 1)}
+        with TASKS_LOCK:
+            t = TASKS.get(task_id)
+            if t:
+                res = t.get("result") if isinstance(t.get("result"), dict) else {}
+                res.update({k: v for k, v in report.items() if k != "ok"})
+                res.setdefault("convo", [])
+                t["result"] = res
+        update_task(task_id, progress=100, status="completed",
+                    step=(stopped_by or "پایان"), log_msg=f"🏁 پایان — {calls} فراخوانی ابزار")
+    except Exception as e:
+        update_task(task_id, error=str(e), status="failed",
+                    result={"steps": 0, "calls": calls, "changes": changes})
+
+
+@app.post("/api/agent/start")
+def api_agent_start():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    task = str(body.get("task") or "").strip()
+    if not task:
+        return jsonify(ok=False, error="دستور کار خالی است"), 400
+    mode = body.get("mode") if body.get("mode") in AGENT_MODES else "dry"
+    model = str(body.get("model") or "").strip()
+    cfg = load_data().get("ai", {})
+    if not (cfg.get("api_key") or "").strip() and (cfg.get("provider") or "") != "ollama":
+        return jsonify(ok=False, error="کلید API وارد نشده است؛ ابتدا در بخش هوش مصنوعی ذخیره کنید"), 400
+    task_id = register_task("agent", f"ایجنت: {task[:40]}", AGENT_MAX_STEPS)
+    with TASKS_LOCK:
+        TASKS[task_id]["result"] = {"convo": [], "steps": 0, "calls": 0, "changes": [], "mode": mode}
+    threading.Thread(target=run_agent_worker, args=(task_id, task, mode, model), daemon=True).start()
+    return jsonify(ok=True, task_id=task_id, mode=mode)
+
+
+@app.get("/api/agent/status/<task_id>")
+def api_agent_status(task_id: str):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return jsonify(ok=False, error="اجرا یافت نشد"), 404
+        res = t.get("result") if isinstance(t.get("result"), dict) else {}
+        return jsonify(ok=True, status=t["status"], progress=t["progress"], step=t["step"],
+                       logs=t["logs"][-60:], error=t["error"],
+                       convo=res.get("convo", []), steps=res.get("steps", 0),
+                       calls=res.get("calls", 0), changes=res.get("changes", []),
+                       summary=res.get("summary", ""), stopped_by=res.get("stopped_by", ""),
+                       took=res.get("took", 0))
+
+
+@app.post("/api/agent/stop/<task_id>")
+def api_agent_stop(task_id: str):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    with TASKS_LOCK:
+        if task_id not in TASKS:
+            return jsonify(ok=False, error="اجرا یافت نشد"), 404
+        TASKS[task_id]["cancelled"] = True
+    return jsonify(ok=True)
+
+
+@app.get("/api/agent/tools")
+def api_agent_tools():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    return jsonify(ok=True, tools=agent_tool_specs(), max_steps=AGENT_MAX_STEPS,
+                   max_calls=AGENT_MAX_CALLS, modes=AGENT_MODES,
+                   mode_labels={m: agent_mode_label(m) for m in AGENT_MODES})
 
 
 @app.post("/api/aicontent/start")
@@ -3317,6 +3785,57 @@ textarea.form-control {
   overflow-wrap: anywhere;
   margin-top: 5px;
 }
+.ai-agent-sum {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.ai-agent-sum > div {
+  flex: 1;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ai-agent-sum b { font-size: calc(15px * var(--font-scale, 1)); }
+.ai-agent-sum span { font-size: calc(10px * var(--font-scale, 1)); color: var(--text-muted); }
+.ai-agent-log {
+  margin-top: 10px;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  max-height: 260px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  font-size: calc(11px * var(--font-scale, 1));
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.ai-convo {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card-solid);
+  padding: 6px 10px;
+}
+.ai-convo > summary {
+  cursor: pointer;
+  font-size: calc(11px * var(--font-scale, 1));
+  color: var(--text-dim);
+  font-weight: 700;
+}
+.ai-convo-msg {
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+  font-size: calc(10.5px * var(--font-scale, 1));
+  overflow-wrap: anywhere;
+}
+.ai-convo-role { font-weight: 800; color: var(--primary); margin-inline-end: 6px; }
 
 /* ==================== CATALOG RESPONSIVE PRODUCTS ==================== */
 .products-cards-list {
@@ -4217,6 +4736,7 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
         <button class="sub-tab-btn" onclick="switchAiSub('candidates')">🏆 کاندید و مستر</button>
         <button class="sub-tab-btn" onclick="switchAiSub('net')">🌐 اتصال</button>
         <button class="sub-tab-btn" onclick="switchAiSub('test')">🧪 تست مدل</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('agent')">🤖 ایجنت</button>
         <button class="sub-tab-btn" onclick="switchAiSub('prompts')">📝 پرامپت‌ها</button>
       </div>
 
@@ -4318,6 +4838,50 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
           <button class="btn btn-secondary btn-sm" onclick="aiCandLeaderboard()">📊 جدول امتیازات</button>
         </div>
         <div id="aiCandR" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- AI SUB: agent -->
+      <div id="ai-sub-agent" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          کارت را <b>به زبان فارسی</b> بنویسید؛ مدل خودش تصمیم می‌گیرد کدام ابزار را صدا بزند:
+          فهرست محصولات، جست‌وجو در snappshop.ir و به‌روزرسانی قیمت/موجودی.
+          ⚠️ نیازمند مدلی با پشتیبانی <b>فراخوانی ابزار</b>؛ اگر پشتیبانی نکند خودکار به حالت متنی سوییچ می‌شود.
+        </p>
+        <div class="form-group">
+          <label class="form-label">دستور کار:</label>
+          <textarea class="form-control" id="agTask" rows="3">محصول‌های عطر و ادکلن را پیدا کن و قیمت آن‌ها را با اسنپ‌شاپ مقایسه و هم‌ترازی کن</textarea>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">حالت اجرا:</label>
+            <select class="form-control" id="agMode">
+              <option value="sim">🧪 شبیه‌سازی — دادهٔ نمونه، بدون اتصال</option>
+              <option value="dry" selected>🔍 آزمایشی — می‌خواند ولی نمی‌نویسد</option>
+              <option value="live">🔥 اجرای واقعی — قیمت و موجودی تغییر می‌کند</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">مدل این اجرا (اختیاری):</label>
+            <input type="text" class="form-control" id="agModel" placeholder="خالی = مدل پیش‌فرض" dir="ltr">
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+          <button class="btn btn-primary btn-sm" id="agRunBtn" onclick="agStart()">🚀 اجرای ایجنت</button>
+          <button class="btn btn-danger btn-sm" id="agStopBtn" onclick="agStop()" style="display:none;">⏹ توقف</button>
+          <button class="btn btn-secondary btn-sm" onclick="agShowTools()">🧰 ابزارها</button>
+        </div>
+        <div class="ai-agent-sum" id="agSum" style="display:none;">
+          <div><b id="agSteps" style="color:var(--primary);">۰</b><span>گام</span></div>
+          <div><b id="agCalls" style="color:var(--accent);">۰</b><span>ابزار</span></div>
+          <div><b id="agChanges" style="color:var(--warning);">۰</b><span>تغییر</span></div>
+        </div>
+        <div id="agStatus" style="margin-top:8px; font-size:calc(11px * var(--font-scale, 1)); color:var(--primary);"></div>
+        <div id="agLog" class="ai-agent-log" style="display:none;"></div>
+        <details class="ai-convo" id="agConvo" style="display:none;">
+          <summary><span>💬 گفتگوی زنده با مدل</span> <span id="agConvoN">۰ پیام</span></summary>
+          <div id="agConvoBody"></div>
+        </details>
+        <div id="agReport" style="margin-top:10px;"></div>
       </div>
 
       <!-- AI SUB: net -->
@@ -5517,6 +6081,156 @@ function switchAiSub(sub) {
     const label = (b.getAttribute('onclick') || '');
     b.classList.toggle('active', label.includes("'" + sub + "'") && label.includes('switchAiSub'));
   });
+}
+
+/* ---------- Agent tab ---------- */
+let agTaskId = null;
+let agBusy = false;
+let agTimer = null;
+let agLogSeen = 0;
+let agConvoSeen = 0;
+
+function agSetBusy(on) {
+  agBusy = on;
+  const run = document.getElementById('agRunBtn');
+  const stop = document.getElementById('agStopBtn');
+  if (run) run.disabled = on;
+  if (stop) stop.style.display = on ? '' : 'none';
+}
+
+async function agStart() {
+  if (agBusy) return;
+  const task = (document.getElementById('agTask').value || '').trim();
+  if (!task) { showToast('لطفاً دستور کار را بنویسید', 'error'); return; }
+  const mode = document.getElementById('agMode').value || 'dry';
+  if (mode === 'live' && !confirm('حالت «اجرای واقعی» انتخاب شده است.\n\nقیمت و موجودی محصولات واقعاً تغییر می‌کند.\n\nادامه می‌دهید؟')) return;
+
+  agLogSeen = 0; agConvoSeen = 0;
+  const log = document.getElementById('agLog');
+  if (log) { log.innerHTML = ''; log.style.display = 'block'; }
+  const rp = document.getElementById('agReport');
+  if (rp) rp.innerHTML = '';
+  document.getElementById('agSum').style.display = 'flex';
+  ['agSteps', 'agCalls', 'agChanges'].forEach(i => { const el = document.getElementById(i); if (el) el.textContent = toFa(0); });
+  const cv = document.getElementById('agConvo');
+  if (cv) { cv.style.display = ''; document.getElementById('agConvoBody').innerHTML = ''; }
+  agSetBusy(true);
+  document.getElementById('agStatus').textContent = 'در حال شروع…';
+
+  try {
+    const res = await fetch('/api/agent/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, mode, model: (document.getElementById('agModel').value || '').trim() })
+    });
+    const d = await res.json();
+    if (!d.ok) { agSetBusy(false); document.getElementById('agStatus').textContent = d.error || 'شروع نشد'; showToast(d.error || 'ایجنت شروع نشد', 'error'); return; }
+    agTaskId = d.task_id;
+    agWatch();
+  } catch (e) {
+    agSetBusy(false);
+    showToast('خطای ارتباط با سرور', 'error');
+  }
+}
+
+async function agStop() {
+  if (!agTaskId) return;
+  try { await fetch('/api/agent/stop/' + encodeURIComponent(agTaskId), { method: 'POST' }); }
+  catch (e) { /* ignore */ }
+  showToast('درخواست توقف ارسال شد', 'info');
+}
+
+async function agWatch() {
+  if (!agTaskId) { agSetBusy(false); return; }
+  let d;
+  try {
+    const res = await fetch('/api/agent/status/' + encodeURIComponent(agTaskId));
+    d = await res.json();
+  } catch (e) { setTimeout(agWatch, 1500); return; }
+  if (!d.ok) { agSetBusy(false); document.getElementById('agStatus').textContent = d.error || 'خطا'; return; }
+
+  document.getElementById('agStatus').textContent = d.step || '';
+  const steps = document.getElementById('agSteps');
+  const callsN = document.getElementById('agCalls');
+  const chg = document.getElementById('agChanges');
+  if (steps) steps.textContent = toFa(d.steps || 0);
+  if (callsN) callsN.textContent = toFa(d.calls || 0);
+  if (chg) chg.textContent = toFa((d.changes || []).length);
+
+  const log = document.getElementById('agLog');
+  if (log) {
+    const lines = d.logs || [];
+    for (let i = agLogSeen; i < lines.length; i++) {
+      const div = document.createElement('div');
+      div.textContent = lines[i];
+      log.appendChild(div);
+    }
+    if (lines.length > agLogSeen) { agLogSeen = lines.length; log.scrollTop = log.scrollHeight; }
+  }
+
+  const convo = d.convo || [];
+  const cbody = document.getElementById('agConvoBody');
+  if (cbody) {
+    for (let i = agConvoSeen; i < convo.length; i++) {
+      const m = convo[i];
+      const div = document.createElement('div');
+      div.className = 'ai-convo-msg';
+      const role = document.createElement('span');
+      role.className = 'ai-convo-role';
+      role.textContent = { system: 'سیستم', user: 'کاربر', assistant: 'مدل' }[m.role] || m.role;
+      div.appendChild(role);
+      div.appendChild(document.createTextNode(' ' + (m.text || '')));
+      if (m.calls && m.calls.length) {
+        const c = document.createElement('div');
+        c.style.color = 'var(--text-muted)';
+        c.textContent = '🔧 ' + m.calls.join('، ');
+        div.appendChild(c);
+      }
+      cbody.appendChild(div);
+    }
+    if (convo.length > agConvoSeen) {
+      agConvoSeen = convo.length;
+      const n = document.getElementById('agConvoN');
+      if (n) n.textContent = toFa(convo.length) + ' پیام';
+    }
+  }
+
+  const done = (d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled');
+  if (!done) { agTimer = setTimeout(agWatch, 1200); return; }
+
+  agSetBusy(false);
+  if (agTimer) { clearTimeout(agTimer); agTimer = null; }
+  const rp = document.getElementById('agReport');
+  if (rp) {
+    if (d.error) {
+      rp.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(d.error)}</div>`;
+    } else {
+      rp.innerHTML = `<div class="ai-cand-card">
+        <div style="font-weight:800; margin-bottom:6px;">🏁 گزارش اجرا</div>
+        ${d.summary ? `<div class="ai-compare-text">${escHtml(d.summary)}</div>` : ''}
+        <div class="meta" style="margin-top:6px;">
+          ${toFa(d.steps || 0)} گام · ${toFa(d.calls || 0)} فراخوانی ابزار ·
+          ${toFa((d.changes || []).length)} تغییر · ${toFa(d.took || 0)} ثانیه
+          ${d.stopped_by ? ' · متوقف‌شده توسط: ' + escHtml(d.stopped_by) : ''}
+        </div>
+        ${(d.changes || []).map(c => `<div class="ai-compare-text">✏️ محصول #${toFa(c.id)}: ${escHtml(JSON.stringify(c.changes))}</div>`).join('')}
+      </div>`;
+    }
+  }
+  document.getElementById('agStatus').textContent = d.status === 'completed' ? 'پایان' : (d.error || 'متوقف شد');
+}
+
+async function agShowTools() {
+  try {
+    const res = await fetch('/api/agent/tools');
+    const d = await res.json();
+    if (!d.ok) { showToast(d.error || 'خطا', 'error'); return; }
+    const rp = document.getElementById('agReport');
+    rp.innerHTML = `<div class="ai-cand-card">
+      <div style="font-weight:800; margin-bottom:6px;">🧰 ابزارهای ایجنت</div>
+      <div class="meta">سقف: ${toFa(d.max_steps)} گام · ${toFa(d.max_calls)} فراخوانی</div>
+      ${d.tools.map(t => `<div class="ai-compare-text"><b dir="ltr">${escHtml(t.function.name)}</b> — ${escHtml(t.function.description)}</div>`).join('')}
+    </div>`;
+  } catch (e) { showToast('خطا در دریافت ابزارها', 'error'); }
 }
 
 function escHtml(s) {

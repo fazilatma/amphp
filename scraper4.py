@@ -131,9 +131,9 @@ def get_default_config() -> Dict[str, Any]:
         },
         "ui_preferences": {
             "theme": "navy",
-            "font_family": "vazir",
+            "font_family": "vazirmatn",
             "font_scale": 1.0,
-            "view_mode": "table"
+            "view_mode": "cards"
         },
         "last_result": []
     }
@@ -1322,17 +1322,17 @@ INDEX_HTML = r"""<!doctype html>
 <style>
 :root {
   --font-scale: 1;
-  --font-base: 14px;
-  --font-family: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif;
+  --font-base: 13.5px;
+  --app-font: 'Vazirmatn', Tahoma, 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   
   /* Theme Navy (Default) */
   --bg: #07111f;
   --bg-gradient: radial-gradient(circle at 85% -10%, rgba(37,99,235,.28), transparent 40%), radial-gradient(circle at 5% 20%, rgba(14,165,233,.15), transparent 30%), linear-gradient(160deg, #07111f, #0d1b33);
-  --card: rgba(14, 29, 53, 0.85);
+  --card: rgba(14, 29, 53, 0.88);
   --card-solid: #0e1d35;
   --card-hover: #132747;
   --card-active: #19325c;
-  --border: rgba(148, 177, 216, 0.18);
+  --border: rgba(148, 177, 216, 0.16);
   --border-focus: rgba(56, 189, 248, 0.55);
   --text: #f1f5f9;
   --text-dim: #94a3b8;
@@ -1359,7 +1359,7 @@ INDEX_HTML = r"""<!doctype html>
 body.theme-midnight {
   --bg: #090d16;
   --bg-gradient: radial-gradient(circle at 80% 0%, rgba(99,102,241,.25), transparent 40%), linear-gradient(160deg, #090d16, #111827);
-  --card: rgba(17, 24, 39, 0.85);
+  --card: rgba(17, 24, 39, 0.88);
   --card-solid: #111827;
   --card-hover: #1f2937;
   --primary: #0ea5e9;
@@ -1370,7 +1370,7 @@ body.theme-midnight {
 body.theme-emerald {
   --bg: #05130e;
   --bg-gradient: radial-gradient(circle at 80% 0%, rgba(16,185,129,.25), transparent 40%), linear-gradient(160deg, #05130e, #06241a);
-  --card: rgba(6, 36, 26, 0.85);
+  --card: rgba(6, 36, 26, 0.88);
   --card-solid: #06241a;
   --card-hover: #0c3d2d;
   --primary: #10b981;
@@ -1381,7 +1381,7 @@ body.theme-emerald {
 body.theme-violet {
   --bg: #0f0c1b;
   --bg-gradient: radial-gradient(circle at 80% 0%, rgba(139,92,246,.25), transparent 40%), linear-gradient(160deg, #0f0c1b, #1d1835);
-  --card: rgba(29, 24, 53, 0.85);
+  --card: rgba(29, 24, 53, 0.88);
   --card-solid: #1d1835;
   --card-hover: #2c254e;
   --primary: #8b5cf6;
@@ -1392,7 +1392,7 @@ body.theme-violet {
 body.theme-amber {
   --bg: #141006;
   --bg-gradient: radial-gradient(circle at 80% 0%, rgba(245,158,11,.25), transparent 40%), linear-gradient(160deg, #141006, #241d0c);
-  --card: rgba(36, 29, 12, 0.85);
+  --card: rgba(36, 29, 12, 0.88);
   --card-solid: #241d0c;
   --card-hover: #382d14;
   --primary: #f59e0b;
@@ -1403,7 +1403,7 @@ body.theme-amber {
 body.theme-light {
   --bg: #f8fafc;
   --bg-gradient: linear-gradient(160deg, #f8fafc, #edf2f7);
-  --card: rgba(255, 255, 255, 0.9);
+  --card: rgba(255, 255, 255, 0.92);
   --card-solid: #ffffff;
   --card-hover: #f1f5f9;
   --card-active: #e2e8f0;
@@ -1428,83 +1428,146 @@ body {
   background: var(--bg-gradient);
   background-attachment: fixed;
   color: var(--text);
-  font-family: var(--font-family);
-  line-height: 1.55;
-  padding-bottom: 90px;
+  font-family: var(--app-font);
+  line-height: 1.5;
+  padding-top: 68px;
+  padding-bottom: 84px;
   overflow-x: hidden;
-  user-select: none;
+  direction: rtl;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(148, 177, 216, 0.25); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(148, 177, 216, 0.22); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
 
-.app-shell { max-width: 1240px; margin: 0 auto; padding: 16px 16px 40px; position: relative; }
+.app-shell {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 10px 14px;
+  position: relative;
+}
 
-/* Top Sticky Header */
+/* ==================== TOP STICKY HEADER ==================== */
 .top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
-  margin-bottom: 20px;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 56px;
   background: var(--card);
   backdrop-filter: var(--blur);
   -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
-  position: sticky;
-  top: 12px;
-  z-index: 90;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  z-index: 990;
+  box-shadow: var(--shadow-sm);
 }
-.brand-group { display: flex; align-items: center; gap: 12px; }
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
 .brand-logo {
-  width: 38px; height: 38px; border-radius: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   background: linear-gradient(135deg, var(--primary), var(--accent));
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px; color: #fff; box-shadow: 0 0 16px var(--primary-glow);
-  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #fff;
+  box-shadow: 0 0 12px var(--primary-glow);
+  flex-shrink: 0;
 }
-.brand-pulse {
-  position: absolute; inset: -2px; border-radius: 14px;
-  border: 2px solid var(--primary); animation: pulse 2s infinite; opacity: 0.6;
-}
-@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.6; } 50% { transform: scale(1.15); opacity: 0; } }
 
-.brand-text h1 { font-size: 15px; font-weight: 800; letter-spacing: -0.3px; color: var(--text); }
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+.brand-text h1 {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .brand-text .version-badge {
-  font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 6px;
-  background: rgba(56, 189, 248, 0.15); color: var(--primary); border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--primary);
+  white-space: nowrap;
 }
 
-.top-actions { display: flex; align-items: center; gap: 8px; }
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
 
 .task-pill {
-  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-  background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3);
-  border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--primary);
-  cursor: pointer; transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--primary);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
 }
-.task-pill:hover { background: rgba(56, 189, 248, 0.22); transform: translateY(-1px); }
-.spinner { width: 14px; height: 14px; border: 2px solid rgba(56, 189, 248, 0.3); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.task-pill:active { transform: scale(0.96); }
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(56, 189, 248, 0.3);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .icon-btn {
-  width: 36px; height: 36px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--card-solid); border: 1px solid var(--border);
-  color: var(--text); font-size: 16px; cursor: pointer; transition: all 0.2s;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
 }
-.icon-btn:hover { background: var(--card-hover); border-color: var(--primary); transform: translateY(-1px); }
+.icon-btn:active { transform: scale(0.92); background: var(--card-hover); border-color: var(--primary); }
 
-/* Bottom Tab Navigation Bar */
+/* ==================== BOTTOM TAB BAR ==================== */
 .bottom-nav {
   position: fixed;
   bottom: 0; left: 0; right: 0;
-  height: 68px;
+  height: 62px;
   background: var(--card);
   backdrop-filter: var(--blur);
   -webkit-backdrop-filter: var(--blur);
@@ -1512,157 +1575,508 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-around;
-  padding: 0 10px;
-  z-index: 100;
-  box-shadow: var(--shadow-lg);
-}
-.nav-item {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; padding: 8px 12px; border-radius: 14px;
-  color: var(--text-dim); text-decoration: none; cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative; flex: 1; max-width: 90px;
-}
-.nav-item .nav-icon { font-size: 20px; transition: transform 0.2s; }
-.nav-item .nav-label { font-size: 11px; font-weight: 600; }
-.nav-item.active {
-  color: var(--primary);
-  background: rgba(56, 189, 248, 0.1);
-}
-.nav-item.active .nav-icon { transform: scale(1.15) translateY(-2px); }
-.nav-badge {
-  position: absolute; top: 4px; right: 20px;
-  background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
-  padding: 1px 5px; border-radius: 10px; min-width: 16px; text-align: center;
+  padding: 0 4px calc(env(safe-area-inset-bottom, 0px));
+  z-index: 990;
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
 }
 
-/* Glass Card */
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  color: var(--text-dim);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  flex: 1;
+  max-width: 68px;
+  min-height: 48px;
+}
+
+.nav-item .nav-icon {
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.2s;
+}
+
+.nav-item .nav-label {
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.nav-item.active {
+  color: var(--primary);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.nav-item.active .nav-icon {
+  transform: translateY(-2px) scale(1.12);
+}
+
+.nav-badge {
+  position: absolute;
+  top: 3px;
+  right: calc(50% - 18px);
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 8px;
+  min-width: 14px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* ==================== CARDS & CONTAINERS ==================== */
 .glass-card {
   background: var(--card);
   backdrop-filter: var(--blur);
   -webkit-backdrop-filter: var(--blur);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 22px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 14px;
   box-shadow: var(--shadow-sm);
-  transition: all 0.25s;
+  transition: border-color 0.2s;
 }
-.glass-card:hover { border-color: rgba(148, 177, 216, 0.28); }
+
 .card-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
 }
-.card-title { font-size: 16px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
-.card-title-icon { font-size: 18px; color: var(--primary); }
 
-/* Form Controls */
-.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-.form-label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.card-title {
+  font-size: 14.5px;
+  font-weight: 800;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-title-icon {
+  font-size: 16px;
+}
+
+/* ==================== FORMS & CONTROLS ==================== */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 640px) {
+  .form-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 992px) {
+  .form-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.form-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
 .form-control {
-  width: 100%; height: 42px; padding: 8px 14px;
-  background: var(--card-solid); border: 1px solid var(--border);
-  border-radius: var(--radius-md); color: var(--text);
-  font-family: inherit; font-size: 13px; outline: none; transition: all 0.2s;
+  width: 100%;
+  height: 42px;
+  padding: 8px 12px;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.2s;
 }
-.form-control:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
-textarea.form-control { height: auto; min-height: 90px; padding: 10px 14px; resize: vertical; }
 
-/* Buttons */
+.form-control:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 80px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+/* ==================== BUTTONS & ACTION GRIDS ==================== */
 .btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  padding: 9px 18px; border-radius: var(--radius-md); font-family: inherit;
-  font-size: 13px; font-weight: 600; cursor: pointer; border: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-decoration: none;
+  white-space: nowrap;
+  min-height: 40px;
 }
 .btn:active { transform: scale(0.97); }
-.btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); color: #fff; box-shadow: 0 4px 14px var(--primary-glow); }
-.btn-primary:hover { opacity: 0.95; transform: translateY(-1px); box-shadow: 0 6px 20px var(--primary-glow); }
-.btn-accent { background: linear-gradient(135deg, var(--accent), #6366f1); color: #fff; box-shadow: 0 4px 14px var(--accent-glow); }
-.btn-success { background: linear-gradient(135deg, var(--success), #059669); color: #fff; box-shadow: 0 4px 14px var(--success-glow); }
-.btn-danger { background: linear-gradient(135deg, var(--danger), #e11d48); color: #fff; }
-.btn-secondary { background: var(--card-solid); border: 1px solid var(--border); color: var(--text); }
-.btn-secondary:hover { background: var(--card-hover); border-color: var(--primary); }
-.btn-sm { padding: 5px 10px; font-size: 11px; border-radius: var(--radius-sm); }
-.btn-lg { padding: 12px 24px; font-size: 15px; border-radius: var(--radius-lg); }
 
-/* Metrics & Stats Grid */
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: #fff;
+  box-shadow: 0 3px 12px var(--primary-glow);
+}
+.btn-accent {
+  background: linear-gradient(135deg, var(--accent), #6366f1);
+  color: #fff;
+  box-shadow: 0 3px 12px var(--accent-glow);
+}
+.btn-success {
+  background: linear-gradient(135deg, var(--success), #059669);
+  color: #fff;
+  box-shadow: 0 3px 12px var(--success-glow);
+}
+.btn-danger {
+  background: linear-gradient(135deg, var(--danger), #e11d48);
+  color: #fff;
+}
+.btn-secondary {
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.btn-secondary:hover {
+  background: var(--card-hover);
+  border-color: var(--primary);
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 11px;
+  min-height: 32px;
+  border-radius: var(--radius-sm);
+}
+
+.btn-grid-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+@media (min-width: 540px) {
+  .btn-grid-actions { grid-template-columns: 1fr 1fr; }
+}
+@media (min-width: 860px) {
+  .btn-grid-actions { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* ==================== METRICS & STATS ==================== */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+@media (min-width: 768px) {
+  .stats-grid { grid-template-columns: repeat(4, 1fr); gap: 12px; }
+}
+
 .stat-card {
-  background: var(--card-solid); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 14px; text-align: center;
-  position: relative; overflow: hidden;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  text-align: center;
 }
-.stat-card .stat-val { font-size: 22px; font-weight: 800; color: var(--primary); margin-bottom: 2px; }
-.stat-card .stat-lbl { font-size: 11px; font-weight: 600; color: var(--text-dim); }
 
-/* Tab Switcher inside Views */
-.sub-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 18px; overflow-x: auto; }
-.sub-tab-btn {
-  padding: 6px 14px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600;
-  color: var(--text-dim); background: transparent; border: none; cursor: pointer; transition: all 0.2s;
+.stat-card .stat-val {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--primary);
+  margin-bottom: 2px;
 }
-.sub-tab-btn.active { color: var(--primary); background: rgba(56, 189, 248, 0.12); }
+
+.stat-card .stat-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+/* ==================== SUB-TABS CAROUSEL ==================== */
+.sub-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.sub-tabs::-webkit-scrollbar { display: none; }
+
+.sub-tab-btn {
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+.sub-tab-btn.active {
+  color: var(--primary);
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+/* ==================== CATALOG RESPONSIVE PRODUCTS ==================== */
+.products-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.p-mobile-card {
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  position: relative;
+  transition: all 0.2s;
+}
+.p-mobile-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+}
+
+.p-card-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: #111;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.p-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.p-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.p-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.p-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  align-items: center;
+}
 
 /* Tables */
-.table-wrap { width: 100%; overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--border); }
-table.data-table { width: 100%; border-collapse: collapse; text-align: right; font-size: 13px; }
-table.data-table th { background: var(--card-solid); padding: 12px 14px; color: var(--text-dim); font-weight: 700; border-bottom: 1px solid var(--border); }
-table.data-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; }
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: right;
+  font-size: 12px;
+  white-space: nowrap;
+}
+table.data-table th {
+  background: var(--card-solid);
+  padding: 10px 12px;
+  color: var(--text-dim);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+}
+table.data-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
 table.data-table tr:hover { background: var(--card-hover); }
 
-/* Chips & Badges */
-.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+/* Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
 .chip-primary { background: rgba(56, 189, 248, 0.15); color: var(--primary); }
 .chip-success { background: rgba(52, 211, 153, 0.15); color: var(--success); }
 .chip-warning { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
 .chip-danger { background: rgba(251, 113, 133, 0.15); color: var(--danger); }
 
-/* Product Grid Cards */
-.products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-.product-card {
-  background: var(--card-solid); border: 1px solid var(--border);
-  border-radius: var(--radius-md); overflow: hidden; display: flex;
-  flex-direction: column; transition: all 0.25s;
-}
-.product-card:hover { transform: translateY(-4px); border-color: var(--primary); box-shadow: var(--shadow-md); }
-.product-thumb { width: 100%; height: 160px; object-fit: cover; background: #000; }
-.product-body { padding: 12px; flex: 1; display: flex; flex-direction: column; justify-content: space-between; gap: 8px; }
-.product-title { font-size: 13px; font-weight: 700; color: var(--text); line-height: 1.4; max-height: 2.8em; overflow: hidden; }
-.product-price { font-size: 14px; font-weight: 800; color: var(--success); }
-
-/* Modals & Dialogs */
+/* ==================== MODALS & BOTTOM SHEETS ==================== */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  z-index: 200; display: flex; align-items: center; justify-content: center;
-  padding: 16px; opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
 }
-.modal-overlay.open { opacity: 1; pointer-events: auto; }
-.modal-box {
-  background: var(--card-solid); border: 1px solid var(--border);
-  border-radius: var(--radius-xl); width: 100%; max-width: 860px;
-  max-height: 90vh; display: flex; flex-direction: column;
-  box-shadow: var(--shadow-lg); transform: scale(0.95); transition: transform 0.25s ease;
+@media (min-width: 640px) {
+  .modal-overlay { align-items: center; padding: 16px; }
 }
-.modal-overlay.open .modal-box { transform: scale(1); }
-.modal-header { padding: 16px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.modal-body { padding: 22px; overflow-y: auto; flex: 1; }
-.modal-footer { padding: 14px 22px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
 
-/* Toast Notifications */
-.toast-container { position: fixed; top: 20px; left: 20px; z-index: 300; display: flex; flex-direction: column; gap: 10px; max-width: 340px; }
-.toast {
-  padding: 12px 18px; border-radius: var(--radius-md); background: var(--card-solid);
-  border: 1px solid var(--border); box-shadow: var(--shadow-md); color: var(--text);
-  font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 10px;
-  animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
 }
-@keyframes slideIn { from { transform: translateX(-100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+.modal-box {
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  width: 100%;
+  max-width: 820px;
+  height: 90vh;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  transform: translateY(40px);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (min-width: 640px) {
+  .modal-box {
+    border-radius: var(--radius-xl);
+    height: auto;
+    max-height: 85vh;
+    transform: scale(0.96);
+  }
+}
+.modal-overlay.open .modal-box {
+  transform: translateY(0) scale(1);
+}
+
+.modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+}
+.modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ==================== TOASTS ==================== */
+.toast-container {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  max-width: 380px;
+  margin: 0 auto;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: toastDrop 0.25s ease;
+  pointer-events: auto;
+}
+@keyframes toastDrop {
+  from { transform: translateY(-20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
 
 .view-panel { display: none; }
-.view-panel.active { display: block; animation: fadeIn 0.25s ease; }
+.view-panel.active { display: block; animation: fadeIn 0.2s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
@@ -1670,43 +2084,37 @@ table.data-table tr:hover { background: var(--card-hover); }
 
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- STICKY TOP APP HEADER -->
+<header class="top-bar">
+  <div class="brand-group">
+    <div class="brand-logo">⚡</div>
+    <div class="brand-text">
+      <h1>اسکریپر ۴ پایتون</h1>
+      <span class="version-badge">v5.0.0 · Full Parity</span>
+    </div>
+  </div>
+
+  <div class="top-actions">
+    <!-- Active Profile Selector -->
+    <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" style="width:85px; height:32px; font-size:11px; padding:2px 6px;">
+      <option value="">پیش‌فرض</option>
+    </select>
+
+    <!-- Task Pill -->
+    <div class="task-pill" onclick="openModal('tasksModal')" id="topTaskPill">
+      <span class="spinner" id="topTaskSpinner" style="display:none;"></span>
+      <span id="topTaskCount">۰ وظیفه</span>
+    </div>
+
+    <!-- Font Selector -->
+    <button class="icon-btn" onclick="openModal('fontModal')" title="فونت">🔤</button>
+
+    <!-- Theme Switcher -->
+    <button class="icon-btn" onclick="cycleTheme()" title="تم">🎨</button>
+  </div>
+</header>
+
 <div class="app-shell">
-  <!-- Top Navigation Bar -->
-  <header class="top-bar">
-    <div class="brand-group">
-      <div class="brand-logo">
-        <span>⚡</span>
-        <div class="brand-pulse"></div>
-      </div>
-      <div class="brand-text">
-        <h1>اسکریپر ۴ پایتون</h1>
-        <span class="version-badge">v5.0.0 · همسان PHP 10.123</span>
-      </div>
-    </div>
-
-    <div class="top-actions">
-      <!-- Active Profile Dropdown -->
-      <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" style="width:140px; height:34px; font-size:11px; padding:4px 8px;">
-        <option value="">پروفایل پیش‌فرض</option>
-      </select>
-
-      <!-- Task Manager Floating Pill -->
-      <div class="task-pill" onclick="openModal('tasksModal')" id="topTaskPill">
-        <span class="spinner" id="topTaskSpinner" style="display:none;"></span>
-        <span id="topTaskCount">۰ وظیفه</span>
-      </div>
-
-      <!-- Typography & Font Selector -->
-      <button class="icon-btn" onclick="openModal('fontModal')" title="تنظیم فونت و اندازه">🔤</button>
-
-      <!-- Theme Switcher -->
-      <button class="icon-btn" onclick="cycleTheme()" title="تغییر تم رنگی">🎨</button>
-
-      <!-- Fullscreen -->
-      <button class="icon-btn" onclick="toggleFullScreen()" title="تمام‌صفحه">⛶</button>
-    </div>
-  </header>
-
   <!-- TAB 1: شروع (START & EXTRACTION) -->
   <main id="tab-start" class="view-panel active">
     <div class="glass-card">
@@ -1715,60 +2123,60 @@ table.data-table tr:hover { background: var(--card-hover); }
           <span class="card-title-icon">🎯</span>
           <span>استخراج محصولات از سایت مبدأ</span>
         </div>
-        <span class="chip chip-primary" id="detectedEngineBadge">تشخیص هوشمند ساختار</span>
+        <span class="chip chip-primary" id="detectedEngineBadge">تشخیص هوشمند</span>
       </div>
 
       <div class="form-group">
         <label class="form-label">آدرس صفحه محصولات (URL مبدأ):</label>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:6px;">
           <input type="url" class="form-control" id="sourceUrl" placeholder="https://barfbox.ir/search/?page=1" style="flex:1;">
-          <button class="btn btn-secondary" onclick="pasteClipboardUrl()">📋 جای‌گذاری</button>
+          <button class="btn btn-secondary btn-sm" onclick="pasteClipboardUrl()">📋</button>
         </div>
       </div>
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">موتور دریافت صفحه:</label>
+          <label class="form-label">موتور دریافت:</label>
           <select class="form-control" id="fetchEngine">
-            <option value="requests">درخواست مستقیم (Requests - سریع)</option>
+            <option value="requests">درخواست مستقیم (Requests)</option>
             <option value="cloudscraper">ضد کلودفلر (Cloudscraper)</option>
-            <option value="curl_cffi">فینگرپرینت کروم (curl_cffi TLS)</option>
-            <option value="playwright">رندر کامل جاوااسکریپت (Playwright Stealth)</option>
+            <option value="curl_cffi">فینگرپرینت کروم (curl_cffi)</option>
+            <option value="playwright">رندر جاوااسکریپت (Playwright)</option>
           </select>
         </div>
 
         <div class="form-group">
-          <label class="form-label">تعداد صفحات برای استخراج:</label>
+          <label class="form-label">تعداد صفحات:</label>
           <input type="number" class="form-control" id="scrapePages" value="1" min="1" max="100">
         </div>
 
         <div class="form-group">
           <label class="form-label">نوع صفحه‌بندی:</label>
           <select class="form-control" id="pagType">
-            <option value="query">پارامتر کوئری (?page=2)</option>
-            <option value="path">مسیر در آدرس (/page/2/)</option>
+            <option value="query">کوئری (?page=2)</option>
+            <option value="path">مسیر (/page/2/)</option>
           </select>
         </div>
 
         <div class="form-group">
-          <label class="form-label">نام پارامتر یا الگوی مسیر:</label>
+          <label class="form-label">نام پارامتر یا مسیر:</label>
           <input type="text" class="form-control" id="pagVal" value="page">
         </div>
       </div>
 
-      <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-        <button class="btn btn-primary btn-lg" onclick="startScrape()">▶ شروع استخراج محصولات</button>
-        <button class="btn btn-accent btn-lg" onclick="startDetailScrape()">🔄 فاز ۲ (دریافت جزئیات و گالری)</button>
-        <button class="btn btn-secondary" onclick="openModal('pickerModal')">👆 انتخابگر بصری سلکتورها</button>
+      <div class="btn-grid-actions">
+        <button class="btn btn-primary" onclick="startScrape()">▶ شروع استخراج</button>
+        <button class="btn btn-accent" onclick="startDetailScrape()">🔄 فاز ۲ (جزئیات و گالری)</button>
+        <button class="btn btn-secondary" onclick="openModal('pickerModal')">👆 انتخابگر سلکتور</button>
         <button class="btn btn-danger" onclick="stopActiveTasks()">⏹ توقف همه</button>
       </div>
     </div>
 
     <!-- Live Metrics Deck -->
-    <div class="stats-grid" id="scrapeStatsDeck">
+    <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-val" id="statTotal">۰</div>
-        <div class="stat-lbl">کل محصولات استخراج‌شده</div>
+        <div class="stat-lbl">کل محصولات</div>
       </div>
       <div class="stat-card">
         <div class="stat-val" id="statWithPrice">۰</div>
@@ -1780,7 +2188,7 @@ table.data-table tr:hover { background: var(--card-hover); }
       </div>
       <div class="stat-card">
         <div class="stat-val" id="statEnriched">۰</div>
-        <div class="stat-lbl">غنی‌سازی‌شده فاز ۲</div>
+        <div class="stat-lbl">غنی‌سازی فاز ۲</div>
       </div>
     </div>
   </main>
@@ -1793,7 +2201,7 @@ table.data-table tr:hover { background: var(--card-hover); }
           <span class="card-title-icon">⚙️</span>
           <span>تنظیمات یکپارچه فروشگاه‌ها، هوش مصنوعی و شبکه</span>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="saveAllSettings()">💾 ذخیره سراسری تنظیمات</button>
+        <button class="btn btn-primary btn-sm" onclick="saveAllSettings()">💾 ذخیره تنظیمات</button>
       </div>
 
       <div class="sub-tabs">
@@ -1821,20 +2229,20 @@ table.data-table tr:hover { background: var(--card-hover); }
             <input type="password" class="form-control" id="wooCs">
           </div>
           <div class="form-group">
-            <label class="form-label">درصد افزایش قیمت (+٪):</label>
+            <label class="form-label">افزایش قیمت (+٪):</label>
             <input type="number" class="form-control" id="wooPricePct" value="0">
           </div>
           <div class="form-group">
-            <label class="form-label">مبلغ ثابت افزایش قیمت (تومان):</label>
+            <label class="form-label">مبلغ ثابت افزایش (تومان):</label>
             <input type="number" class="form-control" id="wooPriceFixed" value="0">
           </div>
           <div class="form-group">
-            <label class="form-label">گرد کردن قیمت به مضرب:</label>
+            <label class="form-label">گرد کردن قیمت به:</label>
             <input type="number" class="form-control" id="wooPriceRound" value="1000">
           </div>
         </div>
-        <div style="margin-top:14px;">
-          <button class="btn btn-secondary" onclick="testWooConnection()">🔗 تست اتصال به ووکامرس</button>
+        <div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="testWooConnection()">🔗 تست اتصال به ووکامرس</button>
         </div>
       </div>
 
@@ -1842,8 +2250,8 @@ table.data-table tr:hover { background: var(--card-hover); }
       <div id="set-sub-bsl" class="settings-sub-panel" style="display:none;">
         <div class="form-grid">
           <div class="form-group">
-            <label class="form-label">توکن احراز هویت باسلام (Bearer Token):</label>
-            <input type="password" class="form-control" id="bslToken" placeholder="Personal Access Token">
+            <label class="form-label">توکن باسلام (Bearer Token):</label>
+            <input type="password" class="form-control" id="bslToken">
           </div>
           <div class="form-group">
             <label class="form-label">شناسه غرفه (Vendor ID):</label>
@@ -1854,12 +2262,12 @@ table.data-table tr:hover { background: var(--card-hover); }
             <input type="number" class="form-control" id="bslCatId">
           </div>
           <div class="form-group">
-            <label class="form-label">زمان آماده‌سازی پیش‌فرض (روز):</label>
+            <label class="form-label">زمان آماده‌سازی (روز):</label>
             <input type="number" class="form-control" id="bslPrepDays" value="3">
           </div>
         </div>
-        <div style="margin-top:14px;">
-          <button class="btn btn-secondary" onclick="testBslConnection()">🔗 تست اتصال به باسلام</button>
+        <div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="testBslConnection()">🔗 تست اتصال به باسلام</button>
         </div>
       </div>
 
@@ -1867,21 +2275,21 @@ table.data-table tr:hover { background: var(--card-hover); }
       <div id="set-sub-ai" class="settings-sub-panel" style="display:none;">
         <div class="form-grid">
           <div class="form-group">
-            <label class="form-label">ارائه‌دهنده فعال هوش مصنوعی:</label>
+            <label class="form-label">ارائه‌دهنده فعال AI:</label>
             <select class="form-control" id="aiProvider">
-              <option value="openrouter">OpenRouter (شامل مدل‌های رایگان Llama و Gemini)</option>
+              <option value="openrouter">OpenRouter (مدل‌های رایگان و تجاری)</option>
               <option value="groq">Groq Cloud (فوق‌سریع)</option>
               <option value="deepseek">DeepSeek API (V3 / R1)</option>
               <option value="openai">OpenAI (GPT-4o Mini)</option>
-              <option value="ollama">Ollama Local (آفلاین و لوکال)</option>
+              <option value="ollama">Ollama Local (آفلاین)</option>
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">کلید API ارائه‌دهنده:</label>
+            <label class="form-label">کلید API:</label>
             <input type="password" class="form-control" id="aiApiKey">
           </div>
           <div class="form-group">
-            <label class="form-label">شناسه مدل هوش مصنوعی:</label>
+            <label class="form-label">شناسه مدل:</label>
             <input type="text" class="form-control" id="aiModel" value="meta-llama/llama-3.3-70b-instruct:free">
           </div>
         </div>
@@ -1893,9 +2301,9 @@ table.data-table tr:hover { background: var(--card-hover); }
           <div class="form-group">
             <label class="form-label">حالت دروازه خروجی:</label>
             <select class="form-control" id="netProxyMode">
-              <option value="direct">مستقیم بدون پروکسی (Direct)</option>
+              <option value="direct">مستقیم بدون پروکسی</option>
               <option value="relay">رله کلودفلر (Cloudflare Worker Relay)</option>
-              <option value="http">پروکسی استاندارد HTTP/SOCKS5</option>
+              <option value="http">پروکسی HTTP/SOCKS5</option>
             </select>
           </div>
           <div class="form-group">
@@ -1913,11 +2321,11 @@ table.data-table tr:hover { background: var(--card-hover); }
             <input type="text" class="form-control" id="tgToken">
           </div>
           <div class="form-group">
-            <label class="form-label">شناسه چت تلگرام (Chat ID):</label>
+            <label class="form-label">شناسه چت تلگرام:</label>
             <input type="text" class="form-control" id="tgChatId">
           </div>
           <div class="form-group">
-            <label class="form-label">توکن ربات بله (Bale Bot):</label>
+            <label class="form-label">توکن ربات بله:</label>
             <input type="text" class="form-control" id="baleToken">
           </div>
           <div class="form-group">
@@ -1925,9 +2333,9 @@ table.data-table tr:hover { background: var(--card-hover); }
             <input type="text" class="form-control" id="baleChatId">
           </div>
         </div>
-        <div style="display:flex; gap:10px; margin-top:14px;">
-          <button class="btn btn-secondary" onclick="testMessenger('telegram')">🔔 تست ارسال تلگرام</button>
-          <button class="btn btn-secondary" onclick="testMessenger('bale')">🔔 تست ارسال بله</button>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="testMessenger('telegram')">🔔 تست ارسال تلگرام</button>
+          <button class="btn btn-secondary btn-sm" onclick="testMessenger('bale')">🔔 تست ارسال بله</button>
         </div>
       </div>
 
@@ -1935,20 +2343,20 @@ table.data-table tr:hover { background: var(--card-hover); }
       <div id="set-sub-deploy" class="settings-sub-panel" style="display:none;">
         <div class="form-grid">
           <div class="form-group">
-            <label class="form-label">مخزن گیت‌هاب (GitHub Repo):</label>
+            <label class="form-label">مخزن گیت‌هاب:</label>
             <input type="text" class="form-control" id="deployRepo" value="fazilatma/amphp">
           </div>
           <div class="form-group">
-            <label class="form-label">برنچ گیت‌هاب (Branch):</label>
+            <label class="form-label">برنچ گیت‌هاب:</label>
             <input type="text" class="form-control" id="deployBranch" value="arena/01a06927-amphp">
           </div>
         </div>
-        <div style="display:flex; gap:10px; margin-top:14px;">
-          <button class="btn btn-secondary" onclick="checkDeploy()">🔄 بررسی نسخه جدید</button>
-          <button class="btn btn-accent" onclick="runDeployInstall()">🚀 دانلود و نصب از گیت‌هاب</button>
-          <button class="btn btn-secondary" onclick="reloadApp()">⚡ بارگذاری مجدد WSGI</button>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="checkDeploy()">🔄 بررسی نسخه جدید</button>
+          <button class="btn btn-accent btn-sm" onclick="runDeployInstall()">🚀 دانلود و نصب</button>
+          <button class="btn btn-secondary btn-sm" onclick="reloadApp()">⚡ ری‌استارت WSGI</button>
         </div>
-        <div id="deployStatusBox" style="margin-top:12px; font-size:12px; color:var(--text-dim); white-space:pre-wrap;"></div>
+        <div id="deployStatusBox" style="margin-top:12px; font-size:11.5px; color:var(--text-dim); white-space:pre-wrap;"></div>
       </div>
     </div>
   </main>
@@ -1961,56 +2369,56 @@ table.data-table tr:hover { background: var(--card-hover); }
           <span class="card-title-icon">🎨</span>
           <span>سلکتورهای استخراج لیست و جزئیات</span>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="openModal('pickerModal')">👆 انتخابگر بصری روی صفحه</button>
+        <button class="btn btn-secondary btn-sm" onclick="openModal('pickerModal')">👆 انتخابگر بصری</button>
       </div>
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">سلکتور کانتینر محصول (Container):</label>
+          <label class="form-label">کانتینر محصول:</label>
           <input type="text" class="form-control" id="selContainer" placeholder=".product-card, .item">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور عنوان (Title):</label>
+          <label class="form-label">عنوان محصول:</label>
           <input type="text" class="form-control" id="selTitle" placeholder="h2.title, .name">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور قیمت (Price):</label>
+          <label class="form-label">قیمت:</label>
           <input type="text" class="form-control" id="selPrice" placeholder=".price, .amount">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور تصویر اصلی (Image):</label>
+          <label class="form-label">تصویر اصلی:</label>
           <input type="text" class="form-control" id="selImage" placeholder="img.thumb">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور لینک محصول (URL):</label>
+          <label class="form-label">لینک محصول:</label>
           <input type="text" class="form-control" id="selUrl" placeholder="a.link">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور شناسه کالا (SKU):</label>
+          <label class="form-label">شناسه کالا (SKU):</label>
           <input type="text" class="form-control" id="selSku" placeholder=".sku">
         </div>
       </div>
 
-      <div class="card-header" style="margin-top:20px;">
+      <div class="card-header" style="margin-top:16px;">
         <div class="card-title"><span class="card-title-icon">📄</span><span>سلکتورهای صفحه جزئیات (فاز ۲)</span></div>
       </div>
 
       <div class="form-grid">
         <div class="form-group">
-          <label class="form-label">سلکتور توضیحات کامل:</label>
+          <label class="form-label">توضیحات کامل:</label>
           <input type="text" class="form-control" id="selDesc" placeholder="#description, .content">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور جدول مشخصات:</label>
+          <label class="form-label">جدول مشخصات:</label>
           <input type="text" class="form-control" id="selSpecs" placeholder=".specifications table">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور گالری تصاویر:</label>
+          <label class="form-label">گالری تصاویر:</label>
           <input type="text" class="form-control" id="selGallery" placeholder=".gallery-slider">
         </div>
         <div class="form-group">
-          <label class="form-label">سلکتور تنوع‌ها (رنگ و سایز):</label>
-          <input type="text" class="form-control" id="selVariations" placeholder=".variations select, .swatches">
+          <label class="form-label">تنوع‌ها (رنگ و سایز):</label>
+          <input type="text" class="form-control" id="selVariations" placeholder=".variations select">
         </div>
       </div>
     </div>
@@ -2022,75 +2430,81 @@ table.data-table tr:hover { background: var(--card-hover); }
       <div class="card-header">
         <div class="card-title">
           <span class="card-title-icon">📊</span>
-          <span>کاتالوگ محصولات استخراج‌شده (<span id="resultsCount">۰</span> مورد)</span>
+          <span>کاتالوگ محصولات (<span id="resultsCount">۰</span> مورد)</span>
         </div>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="switchViewMode('cards')">🎴 کارت‌ها</button>
           <button class="btn btn-secondary btn-sm" onclick="switchViewMode('table')">📋 جدول</button>
-          <button class="btn btn-secondary btn-sm" onclick="switchViewMode('grid')">📊 کارت</button>
           <button class="btn btn-secondary btn-sm" onclick="switchViewMode('json')">📝 JSON</button>
           <button class="btn btn-primary btn-sm" onclick="exportData('xlsx')">📥 اکسل</button>
         </div>
       </div>
 
-      <div style="display:flex; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
-        <input type="text" class="form-control" id="catalogSearch" placeholder="🔍 جستجو در عنوان، شناسه..." style="max-width:280px;" oninput="renderCatalog()">
-        <button class="btn btn-accent btn-sm" onclick="batchEnrichAI()">🤖 تولید محتوای AI برای انتخاب‌شده‌ها</button>
-        <button class="btn btn-danger btn-sm" onclick="batchDelete()">🗑 حذف انتخاب‌شده‌ها</button>
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+        <input type="text" class="form-control" id="catalogSearch" placeholder="🔍 جستجو در نتایج..." style="flex:1; min-width:180px;" oninput="renderCatalog()">
+        <button class="btn btn-accent btn-sm" onclick="batchEnrichAI()">🤖 تولید محتوای AI</button>
+        <button class="btn btn-danger btn-sm" onclick="batchDelete()">🗑 حذف</button>
       </div>
 
-      <div id="catalogTableView" class="table-wrap">
+      <!-- Mobile & Desktop Cards List View -->
+      <div id="catalogCardsView" class="products-cards-list"></div>
+
+      <!-- Table View -->
+      <div id="catalogTableView" class="table-wrap" style="display:none;">
         <table class="data-table">
           <thead>
             <tr>
               <th width="30"><input type="checkbox" id="selectAllCheck" onchange="toggleSelectAll(this.checked)"></th>
-              <th width="60">تصویر</th>
+              <th width="50">تصویر</th>
               <th>عنوان محصول</th>
               <th>قیمت (تومان)</th>
               <th>شناسه (SKU)</th>
               <th>وضعیت</th>
-              <th width="120">عملیات</th>
+              <th width="80">عملیات</th>
             </tr>
           </thead>
           <tbody id="catalogTableBody">
-            <tr><td colspan="7" style="text-align:center; padding:30px;">محصولی برای نمایش وجود ندارد.</td></tr>
+            <tr><td colspan="7" style="text-align:center; padding:24px;">محصولی برای نمایش وجود ندارد.</td></tr>
           </tbody>
         </table>
       </div>
 
-      <div id="catalogGridView" class="products-grid" style="display:none;"></div>
-      <div id="catalogJsonView" style="display:none;"><textarea class="form-control" id="rawJsonArea" style="height:350px; font-family:monospace;" readonly></textarea></div>
+      <!-- JSON View -->
+      <div id="catalogJsonView" style="display:none;">
+        <textarea class="form-control" id="rawJsonArea" style="height:320px; font-family:monospace; direction:ltr;" readonly></textarea>
+      </div>
     </div>
   </main>
 
-  <!-- TAB 5: ارسال و مغایرت‌گیری (SEND & SYNC MATRIX) -->
+  <!-- TAB 5: ارسال و ماتریس (SEND & SYNC MATRIX) -->
   <main id="tab-send" class="view-panel">
     <div class="glass-card">
       <div class="card-header">
         <div class="card-title">
           <span class="card-title-icon">📤</span>
-          <span>ارسال دسته‌ای و ماتریس همگام‌سازی چندفروشگاهی</span>
+          <span>ارسال دسته‌ای و ماتریس همگام‌سازی</span>
         </div>
       </div>
 
-      <div class="form-grid" style="margin-bottom:20px;">
+      <div class="form-grid" style="margin-bottom:16px;">
         <div class="stat-card" style="text-align:right;">
-          <h3 style="font-size:14px; font-weight:700; margin-bottom:8px;">🛒 ووکامرس</h3>
-          <p style="font-size:12px; color:var(--text-dim); margin-bottom:12px;">ارسال محصولات به فروشگاه وردپرس با تنوع و گالری</p>
-          <button class="btn btn-primary btn-sm" onclick="sendToWoo()">🚀 ارسال دسته‌ای به ووکامرس</button>
+          <h3 style="font-size:13.5px; font-weight:800; margin-bottom:6px;">🛒 ووکامرس</h3>
+          <p style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">ارسال محصولات به وردپرس با گالری و تنوع</p>
+          <button class="btn btn-primary btn-sm" style="width:100%;" onclick="sendToWoo()">🚀 ارسال به ووکامرس</button>
         </div>
 
         <div class="stat-card" style="text-align:right;">
-          <h3 style="font-size:14px; font-weight:700; margin-bottom:8px;">🏪 باسلام</h3>
-          <p style="font-size:12px; color:var(--text-dim); margin-bottom:12px;">ثبت محصولات در غرفه باسلام با تبدیل خودکار واحدها</p>
-          <button class="btn btn-success btn-sm" onclick="sendToBasalam()">🚀 ارسال دسته‌ای به باسلام</button>
+          <h3 style="font-size:13.5px; font-weight:800; margin-bottom:6px;">🏪 باسلام</h3>
+          <p style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">ثبت محصولات در غرفه باسلام</p>
+          <button class="btn btn-success btn-sm" style="width:100%;" onclick="sendToBasalam()">🚀 ارسال به باسلام</button>
         </div>
       </div>
 
       <div class="card-header">
         <div class="card-title"><span class="card-title-icon">⚖️</span><span>ماتریس همگام‌سازی (Sync Matrix)</span></div>
-        <div style="display:flex; gap:8px;">
-          <button class="btn btn-secondary btn-sm" onclick="startSyncMatrix()">🔄 اجرای مقایسه ۴طرفه</button>
-          <button class="btn btn-accent btn-sm" onclick="fixPricesServer()">⚡ اصلاح قیمت‌های مغایر</button>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="startSyncMatrix()">🔄 مقایسه ۴طرفه</button>
+          <button class="btn btn-accent btn-sm" onclick="fixPricesServer()">⚡ اصلاح قیمت‌ها</button>
         </div>
       </div>
 
@@ -2102,18 +2516,18 @@ table.data-table tr:hover { background: var(--card-hover); }
               <th>قیمت مبدأ</th>
               <th>قیمت ووکامرس</th>
               <th>قیمت باسلام</th>
-              <th>وضعیت همگام‌سازی</th>
+              <th>وضعیت</th>
             </tr>
           </thead>
           <tbody id="syncMatrixBody">
-            <tr><td colspan="5" style="text-align:center; padding:30px;">جهت محاسبه، دکمه «اجرای مقایسه ۴طرفه» را بزنید.</td></tr>
+            <tr><td colspan="5" style="text-align:center; padding:24px;">جهت محاسبه، دکمه «مقایسه ۴طرفه» را بزنید.</td></tr>
           </tbody>
         </table>
       </div>
     </div>
   </main>
 
-  <!-- TAB 6: هوش مصنوعی و چت آنلاین (AI LAB & CHAT DESK) -->
+  <!-- TAB 6: هوش مصنوعی و چت (AI LAB & CHAT) -->
   <main id="tab-ai" class="view-panel">
     <div class="glass-card">
       <div class="card-header">
@@ -2121,22 +2535,20 @@ table.data-table tr:hover { background: var(--card-hover); }
           <span class="card-title-icon">🤖</span>
           <span>آزمایشگاه هوش مصنوعی و میز گفت‌وگو با مشتریان</span>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openModal('chatDeskModal')">💬 بازکردن میز چت زنده</button>
+        <button class="btn btn-primary btn-sm" onclick="openModal('chatDeskModal')">💬 بازکردن میز چت</button>
       </div>
 
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">پرسش تستی از مدل فعال:</label>
-          <input type="text" class="form-control" id="aiTestPrompt" placeholder="یک متن معرفی برای ساعت هوشمند بنویس">
-        </div>
+      <div class="form-group">
+        <label class="form-label">پرسش تستی از مدل فعال AI:</label>
+        <input type="text" class="form-control" id="aiTestPrompt" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس">
       </div>
-      <button class="btn btn-accent" onclick="runAiTest()">🧪 اجرای آزمون هوش مصنوعی</button>
-      <div id="aiTestResult" style="margin-top:14px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none;"></div>
+      <button class="btn btn-accent btn-sm" onclick="runAiTest()">🧪 اجرای آزمون هوش مصنوعی</button>
+      <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size:12.5px; line-height:1.6;"></div>
     </div>
   </main>
 </div>
 
-<!-- Bottom Navigation Bar -->
+<!-- BOTTOM MOBILE-OPTIMIZED NAVBAR -->
 <nav class="bottom-nav">
   <div class="nav-item active" onclick="switchNavTab('start')">
     <span class="nav-icon">🎯</span>
@@ -2148,7 +2560,7 @@ table.data-table tr:hover { background: var(--card-hover); }
   </div>
   <div class="nav-item" onclick="switchNavTab('selectors')">
     <span class="nav-icon">🎨</span>
-    <span class="nav-label">سلکتورها</span>
+    <span class="nav-label">سلکتور</span>
   </div>
   <div class="nav-item" onclick="switchNavTab('results')">
     <span class="nav-icon">📊</span>
@@ -2161,7 +2573,7 @@ table.data-table tr:hover { background: var(--card-hover); }
   </div>
   <div class="nav-item" onclick="switchNavTab('ai')">
     <span class="nav-icon">🤖</span>
-    <span class="nav-label">هوش مصنوعی</span>
+    <span class="nav-label">هوش</span>
   </div>
 </nav>
 
@@ -2169,11 +2581,11 @@ table.data-table tr:hover { background: var(--card-hover); }
 <div class="modal-overlay" id="tasksModal">
   <div class="modal-box">
     <div class="modal-header">
-      <h3 style="font-size:16px; font-weight:700;">🗂 مدیر وظایف و کارهای پس‌زمینه (Task Manager)</h3>
+      <h3 style="font-size:14.5px; font-weight:800;">🗂 مدیریت کارهای پس‌زمینه (Task Manager)</h3>
       <button class="icon-btn" onclick="closeModal('tasksModal')">✕</button>
     </div>
     <div class="modal-body" id="tasksListBody">
-      <p style="color:var(--text-dim); text-align:center;">وظیفه‌ای در حال اجرا نیست.</p>
+      <p style="color:var(--text-dim); text-align:center; padding:20px;">وظیفه‌ای در صف وجود ندارد.</p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary btn-sm" onclick="loadTasks()">🔄 به‌روزرسانی</button>
@@ -2182,17 +2594,17 @@ table.data-table tr:hover { background: var(--card-hover); }
   </div>
 </div>
 
-<!-- MODAL: VISUAL PICKER -->
+<!-- MODAL: VISUAL SELECTOR PICKER -->
 <div class="modal-overlay" id="pickerModal">
-  <div class="modal-box" style="max-width:1100px; height:90vh;">
+  <div class="modal-box" style="height:92vh; max-height:92vh;">
     <div class="modal-header">
-      <h3 style="font-size:16px; font-weight:700;">👆 انتخابگر بصری سلکتورها (Visual DOM Inspector)</h3>
+      <h3 style="font-size:14.5px; font-weight:800;">👆 انتخابگر بصری سلکتورها (DOM Inspector)</h3>
       <button class="icon-btn" onclick="closeModal('pickerModal')">✕</button>
     </div>
-    <div class="modal-body" style="padding:10px; display:flex; flex-direction:column; gap:10px;">
-      <div style="display:flex; gap:8px;">
+    <div class="modal-body" style="padding:10px; display:flex; flex-direction:column; gap:8px;">
+      <div style="display:flex; gap:6px;">
         <input type="url" class="form-control" id="pickerUrlInput" placeholder="آدرس برای پیش‌نمایش" style="flex:1;">
-        <button class="btn btn-primary btn-sm" onclick="loadPickerIframe()">بارگذاری پیش‌نمایش</button>
+        <button class="btn btn-primary btn-sm" onclick="loadPickerIframe()">پیش‌نمایش</button>
       </div>
       <iframe id="pickerIframe" style="width:100%; flex:1; border:1px solid var(--border); border-radius:var(--radius-md); background:#fff;"></iframe>
     </div>
@@ -2201,20 +2613,18 @@ table.data-table tr:hover { background: var(--card-hover); }
 
 <!-- MODAL: CHAT DESK -->
 <div class="modal-overlay" id="chatDeskModal">
-  <div class="modal-box" style="max-width:900px; height:85vh;">
+  <div class="modal-box" style="height:92vh; max-height:92vh;">
     <div class="modal-header">
-      <h3 style="font-size:16px; font-weight:700;">💬 میز گفت‌وگو و چت آنلاین پشتیبانی</h3>
+      <h3 style="font-size:14.5px; font-weight:800;">💬 میز گفت‌وگو و پشتیبانی آنلاین</h3>
       <button class="icon-btn" onclick="closeModal('chatDeskModal')">✕</button>
     </div>
-    <div class="modal-body" style="display:flex; gap:16px; height:100%; padding:10px;">
-      <div id="chatThreadsList" style="width:260px; border-left:1px solid var(--border); overflow-y:auto; padding-left:8px;"></div>
-      <div id="chatMessagesArea" style="flex:1; display:flex; flex-direction:column; justify-content:space-between;">
-        <div id="messagesContainer" style="flex:1; overflow-y:auto; padding:10px;"></div>
-        <div style="display:flex; gap:8px; padding-top:10px; border-top:1px solid var(--border);">
-          <input type="text" class="form-control" id="chatReplyInput" placeholder="پاسخ به مشتری...">
-          <button class="btn btn-accent btn-sm" onclick="triggerAiChatReply()">🤖 هوش مصنوعی</button>
-          <button class="btn btn-primary btn-sm" onclick="sendChatReply()">ارسال</button>
-        </div>
+    <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; padding:10px;">
+      <div id="chatThreadsList" style="max-height:160px; overflow-y:auto; border-bottom:1px solid var(--border); padding-bottom:8px;"></div>
+      <div id="messagesContainer" style="flex:1; overflow-y:auto; padding:6px; background:var(--card); border-radius:var(--radius-md);"></div>
+      <div style="display:flex; gap:6px;">
+        <input type="text" class="form-control" id="chatReplyInput" placeholder="پاسخ شما...">
+        <button class="btn btn-accent btn-sm" onclick="triggerAiChatReply()">🤖</button>
+        <button class="btn btn-primary btn-sm" onclick="sendChatReply()">ارسال</button>
       </div>
     </div>
   </div>
@@ -2222,25 +2632,25 @@ table.data-table tr:hover { background: var(--card-hover); }
 
 <!-- MODAL: FONT & TYPOGRAPHY -->
 <div class="modal-overlay" id="fontModal">
-  <div class="modal-box" style="max-width:500px;">
+  <div class="modal-box" style="max-width:440px; height:auto;">
     <div class="modal-header">
-      <h3 style="font-size:16px; font-weight:700;">🔤 تنظیمات تایپوگرافی و اندازه فونت</h3>
+      <h3 style="font-size:14.5px; font-weight:800;">🔤 تنظیمات قلم و تایپوگرافی</h3>
       <button class="icon-btn" onclick="closeModal('fontModal')">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
         <label class="form-label">فونت رابط کاربری:</label>
         <select class="form-control" id="uiFontSelect" onchange="applyFont(this.value)">
-          <option value="vazir">وزیرمتن (Vazirmatn - پیش‌فرض)</option>
-          <option value="tahoma">تاهما (Tahoma استاندارد)</option>
-          <option value="system">فونت سیستم (System Default)</option>
+          <option value="vazirmatn">وزیرمتن (Vazirmatn - پیش‌فرض)</option>
+          <option value="tahoma">تاهما (Tahoma)</option>
+          <option value="system">فونت سیستم (System)</option>
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">اندازه قلم (بزرگ‌نمایی متن):</label>
-        <div style="display:flex; align-items:center; gap:12px;">
+        <label class="form-label">بزرگ‌نمایی قلم:</label>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
           <button class="btn btn-secondary btn-sm" onclick="adjustFontSize(-0.05)">A- کوچک‌تر</button>
-          <span id="fontSizeDisplay" style="font-weight:700;">100%</span>
+          <span id="fontSizeDisplay" style="font-weight:800; font-size:14px;">100%</span>
           <button class="btn btn-secondary btn-sm" onclick="adjustFontSize(0.05)">A+ بزرگ‌تر</button>
         </div>
       </div>
@@ -2252,9 +2662,9 @@ table.data-table tr:hover { background: var(--card-hover); }
 let appConfig = {};
 let currentProducts = [];
 let currentTab = 'start';
+let viewMode = 'cards';
 let selectedIndices = new Set();
 let taskPollingInterval = null;
-let activeChatThreadId = null;
 
 function toFa(num) {
   if (num === null || num === undefined) return '';
@@ -2267,7 +2677,7 @@ function showToast(msg, kind = 'info') {
   t.className = 'toast';
   t.innerHTML = `<span>${kind === 'success' ? '✅' : (kind === 'error' ? '❌' : 'ℹ️')}</span><span>${msg}</span>`;
   container.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 3500);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 3200);
 }
 
 function openModal(id) { document.getElementById(id).classList.add('open'); }
@@ -2296,8 +2706,9 @@ function switchSettingsSub(sub) {
 }
 
 function switchViewMode(mode) {
+  viewMode = mode;
+  document.getElementById('catalogCardsView').style.display = mode === 'cards' ? 'flex' : 'none';
   document.getElementById('catalogTableView').style.display = mode === 'table' ? 'block' : 'none';
-  document.getElementById('catalogGridView').style.display = mode === 'grid' ? 'grid' : 'none';
   document.getElementById('catalogJsonView').style.display = mode === 'json' ? 'block' : 'none';
   if (mode === 'json') {
     document.getElementById('rawJsonArea').value = JSON.stringify(currentProducts, null, 2);
@@ -2338,7 +2749,7 @@ function applyConfigToUi(cfg) {
     renderCatalog();
   }
   const profSelect = document.getElementById('topProfileSelect');
-  profSelect.innerHTML = '<option value="">پروفایل پیش‌فرض</option>';
+  profSelect.innerHTML = '<option value="">پیش‌فرض</option>';
   if (cfg.profiles) {
     for (const pName in cfg.profiles) {
       const opt = document.createElement('option');
@@ -2370,7 +2781,7 @@ async function saveAllSettings() {
   try {
     const res = await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const json = await res.json();
-    if (json.ok) showToast('تنظیمات با موفقیت ذخیره شد', 'success');
+    if (json.ok) showToast('تنظیمات ذخیره شد', 'success');
   } catch(e) {
     showToast('خطا در ذخیره تنظیمات', 'error');
   }
@@ -2398,7 +2809,7 @@ async function startScrape() {
     const res = await fetch('/api/scrape/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const json = await res.json();
     if (json.ok) {
-      showToast('عملیات استخراج آغاز شد', 'success');
+      showToast('استخراج آغاز شد', 'success');
       openModal('tasksModal');
       pollTasks();
     }
@@ -2420,7 +2831,7 @@ async function startDetailScrape() {
     const res = await fetch('/api/scrape/detail/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const json = await res.json();
     if (json.ok) {
-      showToast('فاز ۲ استخراج جزئیات آغاز شد', 'success');
+      showToast('فاز ۲ جزئیات آغاز شد', 'success');
       openModal('tasksModal');
       pollTasks();
     }
@@ -2441,15 +2852,40 @@ function renderCatalog() {
     badge.style.display = 'none';
   }
 
+  // Render Mobile / Responsive Cards
+  const cardsContainer = document.getElementById('catalogCardsView');
+  if (filtered.length === 0) {
+    cardsContainer.innerHTML = '<p style="color:var(--text-dim); text-align:center; padding:30px;">محصولی برای نمایش وجود ندارد.</p>';
+  } else {
+    cardsContainer.innerHTML = filtered.map((p, idx) => `
+      <div class="p-mobile-card">
+        <input type="checkbox" onchange="toggleSelectProduct(${idx}, this.checked)">
+        <img class="p-card-thumb" src="${p.image || ''}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'64\' height=\'64\' fill=\'%23334155\'><rect width=\'64\' height=\'64\'/><text x=\'50%25\' y=\'50%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%2394a3b8\' font-size=\'10\'>تصویر</text></svg>'">
+        <div class="p-card-info">
+          <div class="p-card-title">${p.title || 'بدون عنوان'}</div>
+          <div class="p-card-meta">
+            <span class="chip chip-success">${p.price ? toFa(p.price) + ' ت' : 'بدون قیمت'}</span>
+            <span class="chip chip-primary">${p.sku || 'SKU'}</span>
+            <span class="chip ${p.stock === 'out_of_stock' ? 'chip-danger' : 'chip-warning'}">${p.stock === 'out_of_stock' ? 'ناموجود' : 'موجود'}</span>
+          </div>
+        </div>
+        <div class="p-card-actions">
+          <button class="btn btn-secondary btn-sm" onclick="editProductPrompt(${idx})">✏️</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Render Table
   const tbody = document.getElementById('catalogTableBody');
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:30px;">محصولی یافت نشد.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px;">محصولی یافت نشد.</td></tr>';
   } else {
     tbody.innerHTML = filtered.map((p, idx) => `
       <tr>
         <td><input type="checkbox" onchange="toggleSelectProduct(${idx}, this.checked)"></td>
-        <td><img src="${p.image || ''}" style="width:40px; height:40px; object-fit:cover; border-radius:6px; background:#111;"></td>
-        <td><div style="font-weight:600;">${p.title || 'بدون عنوان'}</div></td>
+        <td><img src="${p.image || ''}" style="width:36px; height:36px; object-fit:cover; border-radius:6px; background:#111;"></td>
+        <td><div style="font-weight:700; max-width:260px; overflow:hidden; text-overflow:ellipsis;">${p.title || 'بدون عنوان'}</div></td>
         <td><span class="chip chip-success">${p.price ? toFa(p.price) + ' ت' : 'بدون قیمت'}</span></td>
         <td><code>${p.sku || '—'}</code></td>
         <td><span class="chip ${p.stock === 'out_of_stock' ? 'chip-danger' : 'chip-primary'}">${p.stock === 'out_of_stock' ? 'ناموجود' : 'موجود'}</span></td>
@@ -2457,17 +2893,6 @@ function renderCatalog() {
       </tr>
     `).join('');
   }
-
-  const grid = document.getElementById('catalogGridView');
-  grid.innerHTML = filtered.map((p, idx) => `
-    <div class="product-card">
-      <img class="product-thumb" src="${p.image || ''}">
-      <div class="product-body">
-        <div class="product-title">${p.title || 'بدون عنوان'}</div>
-        <div class="product-price">${p.price ? toFa(p.price) + ' تومان' : 'نامشخص'}</div>
-      </div>
-    </div>
-  `).join('');
 
   document.getElementById('statTotal').innerText = toFa(currentProducts.length);
   document.getElementById('statWithPrice').innerText = toFa(currentProducts.filter(p => p.price).length);
@@ -2479,9 +2904,7 @@ async function loadTasks() {
   try {
     const res = await fetch('/api/tasks');
     const json = await res.json();
-    if (json.ok) {
-      renderTasksList(json.tasks);
-    }
+    if (json.ok) renderTasksList(json.tasks);
   } catch(e) {}
 }
 
@@ -2498,19 +2921,19 @@ function renderTasksList(tasks) {
   document.getElementById('topTaskSpinner').style.display = runningCount > 0 ? 'inline-block' : 'none';
 
   container.innerHTML = tasks.map(t => `
-    <div style="background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; margin-bottom:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <span style="font-weight:700; font-size:13px;">${t.title}</span>
+    <div style="background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-weight:800; font-size:12.5px;">${t.title}</span>
         <span class="chip ${t.status === 'completed' ? 'chip-success' : (t.status === 'running' ? 'chip-primary' : 'chip-danger')}">${t.status}</span>
       </div>
-      <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; margin-bottom:8px;">
+      <div style="height:5px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; margin-bottom:6px;">
         <div style="height:100%; width:${t.progress}%; background:var(--primary); transition:width 0.3s;"></div>
       </div>
-      <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-dim);">
+      <div style="display:flex; justify-content:space-between; font-size:10.5px; color:var(--text-dim);">
         <span>${t.step || ''}</span>
         <span>${toFa(t.progress)}٪</span>
       </div>
-      ${t.status === 'running' ? `<button class="btn btn-danger btn-sm" style="margin-top:8px;" onclick="cancelTask('${t.id}')">⏹ لغو</button>` : ''}
+      ${t.status === 'running' ? `<button class="btn btn-danger btn-sm" style="margin-top:6px;" onclick="cancelTask('${t.id}')">⏹ لغو</button>` : ''}
     </div>
   `).join('');
 }
@@ -2524,7 +2947,6 @@ function pollTasks() {
   if (taskPollingInterval) clearInterval(taskPollingInterval);
   taskPollingInterval = setInterval(() => {
     loadTasks();
-    loadConfig();
   }, 2500);
 }
 
@@ -2551,7 +2973,7 @@ async function startSyncMatrix() {
   try {
     const res = await fetch('/api/sync-matrix/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}) });
     const json = await res.json();
-    if (json.ok) { showToast('محاسبه ماتریس همگام‌سازی آغاز شد', 'success'); openModal('tasksModal'); pollTasks(); }
+    if (json.ok) { showToast('ماتریس همگام‌سازی آغاز شد', 'success'); openModal('tasksModal'); pollTasks(); }
   } catch(e) { showToast('خطا در ماتریس همگام‌سازی', 'error'); }
 }
 
@@ -2559,46 +2981,41 @@ async function fixPricesServer() {
   try {
     const res = await fetch('/api/sync-matrix/fix-prices', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}) });
     const json = await res.json();
-    if (json.ok) { showToast('اصلاح قیمت‌ها در سرور آغاز شد', 'success'); openModal('tasksModal'); pollTasks(); }
+    if (json.ok) { showToast('اصلاح قیمت‌ها آغاز شد', 'success'); openModal('tasksModal'); pollTasks(); }
   } catch(e) { showToast('خطا در اصلاح قیمت‌ها', 'error'); }
 }
 
 async function runAiTest() {
-  const prompt = document.getElementById('aiTestPrompt').value.trim() || 'معرفی کوتاه یک گوشی هوشمند';
+  const prompt = document.getElementById('aiTestPrompt').value.trim() || 'یک معرفی کوتاه برای هدفون بی سیم بنویس';
   const resDiv = document.getElementById('aiTestResult');
   resDiv.style.display = 'block';
   resDiv.innerText = 'در حال ارتباط با هوش مصنوعی...';
   try {
     const res = await fetch('/api/chat/auto-reply', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:prompt}) });
     const json = await res.json();
-    if (json.ok) {
-      resDiv.innerText = json.reply;
-    } else {
-      resDiv.innerText = `خطا: ${json.error}`;
-    }
-  } catch(e) {
-    resDiv.innerText = `خطای ارتباطی: ${e.message}`;
-  }
+    if (json.ok) resDiv.innerText = json.reply;
+    else resDiv.innerText = `خطا: ${json.error}`;
+  } catch(e) { resDiv.innerText = `خطا: ${e.message}`; }
 }
 
 async function testWooConnection() {
-  showToast('در حال بررسی اتصال به ووکامرس...', 'info');
+  showToast('بررسی اتصال به ووکامرس...', 'info');
   try {
     const res = await fetch('/api/woo/test', { method:'POST' });
     const json = await res.json();
     if (json.ok) showToast('اتصال به ووکامرس برقرار است ✅', 'success');
     else showToast(`خطا در اتصال ووکامرس: ${json.error || json.status_code}`, 'error');
-  } catch(e) { showToast('خطای اتصال به سرور', 'error'); }
+  } catch(e) { showToast('خطای اتصال', 'error'); }
 }
 
 async function testBslConnection() {
-  showToast('در حال بررسی اتصال به باسلام...', 'info');
+  showToast('بررسی اتصال به باسلام...', 'info');
   try {
     const res = await fetch('/api/basalam/test', { method:'POST' });
     const json = await res.json();
     if (json.ok) showToast('اتصال به باسلام برقرار است ✅', 'success');
     else showToast(`خطا در اتصال باسلام: ${json.error || json.status_code}`, 'error');
-  } catch(e) { showToast('خطای اتصال به سرور', 'error'); }
+  } catch(e) { showToast('خطای اتصال', 'error'); }
 }
 
 async function testMessenger(m) {
@@ -2610,7 +3027,7 @@ async function testMessenger(m) {
 }
 
 async function checkDeploy() {
-  showToast('در حال بررسی گیت‌هاب...', 'info');
+  showToast('بررسی گیت‌هاب...', 'info');
   const box = document.getElementById('deployStatusBox');
   try {
     const res = await fetch('/api/deploy/check', { method:'POST' });
@@ -2664,10 +3081,19 @@ window.addEventListener('message', (e) => {
 
 let currentFontScale = 1;
 function adjustFontSize(delta) {
-  currentFontScale = Math.max(0.8, Math.min(1.4, currentFontScale + delta));
+  currentFontScale = Math.max(0.85, Math.min(1.35, currentFontScale + delta));
   document.documentElement.style.setProperty('--font-scale', currentFontScale);
   document.getElementById('fontSizeDisplay').innerText = `${Math.round(currentFontScale * 100)}%`;
 }
+
+function applyFont(font) {
+  let stack = "'Vazirmatn', Tahoma, sans-serif";
+  if (font === 'tahoma') stack = "Tahoma, 'Segoe UI', sans-serif";
+  else if (font === 'system') stack = "system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+  document.documentElement.style.setProperty('--app-font', stack);
+  document.body.style.fontFamily = stack;
+}
+
 const themes = ['theme-navy', 'theme-midnight', 'theme-emerald', 'theme-violet', 'theme-amber', 'theme-light'];
 let curThemeIdx = 0;
 function cycleTheme() {
@@ -2675,9 +3101,13 @@ function cycleTheme() {
   document.body.className = themes[curThemeIdx];
 }
 
-function toggleFullScreen() {
-  if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); }
-  else { document.exitFullscreen(); }
+async function pasteClipboardUrl() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) document.getElementById('sourceUrl').value = text.trim();
+  } catch(e) {
+    showToast('لطفاً آدرس را به صورت دستی وارد کنید', 'info');
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -2689,3 +3119,6 @@ window.addEventListener('DOMContentLoaded', () => {
 </body>
 </html>
 """
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

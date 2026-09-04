@@ -146,7 +146,7 @@ def default_data() -> dict[str, Any]:
         "woocommerce": {"url": "", "consumer_key": "", "consumer_secret": "", "api_mode": "relay", "relay_url": "https://proxy.fazilat-ma.workers.dev", "worker_key": ""},
         "network": {"timeout": 25, "gap_ms": 350, "proxy": "https://proxy.fazilat-ma.workers.dev", "proxy_mode": "relay", "worker_key": "", "verify_tls": True},
         "deploy": {
-            "repo": "fazilatma/amphp", "branch": "arena/01a0640f-amphp",
+            "repo": "Fazilatma/amphp", "branch": "arena/01a0640f-amphp",
             "branches": ["arena/01a06ac3-amphp", "arena/01a0640f-amphp"], "path": "scraper4.py",
             "github_token": "", "reload_file": "", "check_on_load": False,
         },
@@ -1233,7 +1233,7 @@ def deploy_config(data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         raw = {}
     branches = normalize_branches(raw.get("branches"), clean_text(raw.get("branch")))
     return {
-        "repo": clean_text(raw.get("repo")) or "fazilatma/amphp",
+        "repo": clean_text(raw.get("repo")) or "Fazilatma/amphp",
         "branch": branches[0],
         "branches": branches,
         "path": clean_text(raw.get("path")) or "scraper4.py",

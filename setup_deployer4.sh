@@ -3,7 +3,7 @@
 #
 # اجرا داخل Bash Console حساب PythonAnywhere (پلن رایگان کافی است):
 #   cd ~/scraper4
-#   curl -fsSL https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
+#   curl -fsSL https://raw.githubusercontent.com/Fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
 #   bash setup_deployer4.sh
 #
 # این اسکریپت چه می‌کند:
@@ -14,7 +14,7 @@
 #   ۳) وب‌اپ را reload می‌کند و سلامت هر دو آدرس را چک می‌کند.
 #
 # بعد از نصب، در نوار آدرس مرورگر بزنید:
-#   https://fazilatma.pythonanywhere.com/deployer/
+#   https://Fazilatma.pythonanywhere.com/deployer/
 # رمز ورود: همان رمز SCRAPER_DEPLOY_PASSWORD است (اسکریپت آخرش نشان می‌دهد).
 set -Eeuo pipefail
 umask 077
@@ -24,12 +24,13 @@ USER_NAME="$(id -un)"
 USER_LOWER="$(printf '%s' "$USER_NAME" | tr '[:upper:]' '[:lower:]')"
 HOME_DIR="$HOME"
 DOMAIN="${USER_LOWER}.pythonanywhere.com"
+DISPLAY_DOMAIN="Fazilatma.pythonanywhere.com"
 APP_DIR="$HOME_DIR/scraper4"
 APP_FILE="$APP_DIR/deployer4.py"
 TARGET_FILE="$APP_DIR/scraper4.py"
 TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
 VENV_DIR="$APP_DIR/venv"
-REPO="fazilatma/amphp"
+REPO="Fazilatma/amphp"
 DEFAULT_BRANCHES="arena/01a06ac3-amphp arena/01a0640f-amphp"
 if [ -n "${BRANCHES:-}" ]; then
   CANDIDATE_BRANCHES="$BRANCHES"
@@ -168,7 +169,7 @@ lines = [
     "# Serves the main site at / and the independent deployer at /deployer.",
     "import os as _os_deployer4",
     "_os_deployer4.environ.setdefault('DEPLOYER_PASSWORD', " + repr(password) + ")",
-    "_os_deployer4.environ.setdefault('DEPLOYER_REPO', 'fazilatma/amphp')",
+    "_os_deployer4.environ.setdefault('DEPLOYER_REPO', 'Fazilatma/amphp')",
     "_os_deployer4.environ.setdefault('DEPLOYER_BRANCHES', " + repr(branches) + ")",
     "_os_deployer4.environ.setdefault('DEPLOYER_PATH', 'scraper4.py')",
     "_os_deployer4.environ.setdefault('DEPLOYER_TARGET', " + repr(app_dir + "/scraper4.py") + ")",
@@ -208,8 +209,8 @@ for n in $(seq 1 18); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}
 
 echo "============================================================"
 echo "DEPLOYER INSTALLATION FINISHED"
-echo "Main site : https://$DOMAIN/"
-echo "Deployer  : https://$DOMAIN/deployer/"
+echo "Main site : https://$DISPLAY_DOMAIN/"
+echo "Deployer  : https://$DISPLAY_DOMAIN/deployer/"
 echo "Deployer version installed: $BEST_VERSION (branch $BEST_BRANCH)"
 if [ "$GENERATED" = 1 ]; then
   echo "Deployer password (NEW - save it): $EXISTING_PASS"
@@ -220,8 +221,8 @@ echo "WSGI      : $WSGI (backup kept in $APP_DIR)"
 echo "Live deployer health: HTTP $LIVE"
 echo "------------------------------------------------------------"
 echo "در نوار آدرس مرورگر بزنید:"
-echo "  https://$DOMAIN/deployer/"
+echo "  https://$DISPLAY_DOMAIN/deployer/"
 echo "و همین رمز بالا را وارد کنید."
 echo "============================================================"
-[ "$LIVE" = 200 ]||fail "Deployer health check failed; open https://$DOMAIN/deployer/ and inspect the error log."
+[ "$LIVE" = 200 ]||fail "Deployer health check failed; open https://$DISPLAY_DOMAIN/deployer/ and inspect the error log."
 unset EXISTING_PASS

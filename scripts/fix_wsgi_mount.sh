@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# fix_wsgi_mount.sh — wire the Scraper4 main site into the PythonAnywhere
+# WSGI without touching pip/venv, so it works around a quota-failed install.
+#
+# The /deployer installer leaves a guarded placeholder WSGI when the main
+# site is not configured ("Scraper4 main site is not configured yet..."),
+# and install_pythonanywhere.sh never reaches the WSGI step if dependency
+# install fails with Disk quota exceeded. This script ONLY rewrites the
+# WSGI: main site at /, the deployer at /deployer/ (kept when mounted).
+#
+# Run from the PythonAnywhere Bash console, from ~:
+#   bash fix_wsgi_mount.sh
+#
+# Optional env vars:
+#   DEPLOYER_PA_USER      account name (default: whoami)
+#   DEPLOYER_PA_API       PythonAnywhere API base (default real API)
+#   DEPLOYER_VARWWW       WSGI search dir            (default /var/www)
+#   DEPLOYER_HEALTH_URL   health URL to poll after reload
+#   DEPLOYER_APP_DIR      scraper4 app dir           (default ~/scraper4)
+#   DEPLOYER_WSGI_FILE    explicit WSGI file
+#   DEPLOYER_OFFLINE      0/1: skip API reload (default 0)
+# ---------------------------------------------------------------------------
+set -Eeuo pipefail
+umask 077
+
+USER_NAME="${DEPLOYER_PA_USER:-$(id -un)}"
+USER_LOWER="$(printf '%s' "$USER_NAME" | tr '[:upper:]' '[:lower:]')"
+HOME_DIR="$HOME"
+DOMAIN="${USER_LOWER}.pythonanywhere.com"
+APP_DIR="${DEPLOYER_APP_DIR:-$HOME_DIR/scraper4}"
+APP_FILE="$APP_DIR/scraper4.py"
+DATA_FILE="$APP_DIR/scraper4_data.json"
+PASSWORD_FILE="$APP_DIR/admin_password.txt"
+VENV_DIR="$APP_DIR/venv"
+TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
+VARWWW="${DEPLOYER_VARWWW:-/var/www}"
+API="${DEPLOYER_PA_API:-https://www.pythonanywhere.com/api/v0/user/$USER_NAME}"
+HEALTH_URL="${DEPLOYER_HEALTH_URL:-https://$DOMAIN/health}"
+SYSTEM_PY="$(command -v python3 || true)"
+
+fail(){ echo "ERROR: $*" >&2; exit 1; }
+
+[ -f "$APP_FILE" ] || fail "فایل سایت پیدا نشد: $APP_FILE — اول install_pythonanywhere.sh را اجرا کنید یا DEPLOYER_APP_DIR را بدهید"
+
+find_wsgi(){ local f; for f in "$VARWWW/${USER_LOWER}_pythonanywhere_com_wsgi.py" "$VARWWW/${USER_NAME}_pythonanywhere_com_wsgi.py"; do [ -f "$f" ] && { printf '%s' "$f"; return; }; done; find "$VARWWW" -maxdepth 1 -type f -name '*_wsgi.py' -writable 2>/dev/null | sort | head -n1; }
+WSGI_FILE="${DEPLOYER_WSGI_FILE:-$(find_wsgi || true)}"
+[ -n "$WSGI_FILE" ] || fail "هیچ فایل WSGI قابل نوشتن در $VARWWW پیدا نشد"
+[ -w "$WSGI_FILE" ] || fail "فایل WSGI قابل نوشتن نیست: $WSGI_FILE"
+echo "==> WSGI: $WSGI_FILE"
+
+# --- site-packages: prefer the app venv --------------------------------------
+SITE_PACKAGES=""
+if [ -x "$VENV_DIR/bin/python" ]; then
+    SITE_PACKAGES="$("$VENV_DIR/bin/python" -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+elif [ -n "$SYSTEM_PY" ]; then
+    SITE_PACKAGES="$("$SYSTEM_PY" -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+fi
+echo "==> venv: $VENV_DIR"
+echo "==> site-packages: ${SITE_PACKAGES:-(system/handled by PYTHONPATH)}"
+
+# --- admin password (create only when it does not exist) ----------------------
+if [ -s "$PASSWORD_FILE" ]; then
+    ADMIN_PASSWORD="$(tr -d '\r\n' < "$PASSWORD_FILE")"
+else
+    ADMIN_PASSWORD="$("$SYSTEM_PY" -c 'import secrets;print(secrets.token_urlsafe(32))' 2>/dev/null || echo "deployer-wsgi-no-password")"
+    printf '%s\n' "$ADMIN_PASSWORD" > "$PASSWORD_FILE"
+    chmod 600 "$PASSWORD_FILE"
+    echo "==> رمز ادمین ساخته شد: $PASSWORD_FILE"
+fi
+
+# --- import check (informational; never blocks the WSGI write) ----------------
+IMPORT_OK=0
+IMPORT_MSG=""
+if [ -x "$VENV_DIR/bin/python" ]; then
+    set +e
+    IMPORT_MSG="$(cd "$APP_DIR" && "$VENV_DIR/bin/python" -c 'import scraper4;print(scraper4.APP_VERSION)' 2>&1)"
+    RC=$?
+    set -e
+    if [ "$RC" = 0 ]; then IMPORT_OK=1; fi
+fi
+if [ "$IMPORT_OK" = 1 ]; then
+    echo "==> آزمون import: OK (v$IMPORT_MSG)"
+else
+    echo "==> آزمون import: مشکل دارد ($IMPORT_MSG)" | head -c 300 || true
+    echo
+    echo "    WSGI همچنان نوشته می‌شود؛ اگر سایت بعد از reload خطای 'Missing dependency' داد،"
+    echo "    وابستگی‌ها را نصب کنید:  cd ~ && bash install_pythonanywhere.sh"
+fi
+[ -n "$IMPORT_MSG" ] || IMPORT_MSG=""
+
+# --- write the composite WSGI ---------------------------------------------------
+TS="$(date +%Y%m%d-%H%M%S)"
+cp -f "$WSGI_FILE" "$WSGI_FILE.bak.$TS"
+echo "==> پشتیبان: $WSGI_FILE.bak.$TS"
+
+export APP_DIR_E APP_FILE_E DATA_FILE_E SITE_E PASSWORD_E VENV_DIR_E WSGI_FILE_E BROWSER_PATH_E
+APP_DIR_E="$APP_DIR"; APP_FILE_E="$APP_FILE"; DATA_FILE_E="$DATA_FILE"
+SITE_E="$SITE_PACKAGES"; PASSWORD_E="$ADMIN_PASSWORD"; VENV_DIR_E="$VENV_DIR"
+WSGI_FILE_E="$WSGI_FILE"
+BROWSER_PATH_E="$APP_DIR/ms-playwright"
+if [ -d /tmp/scraper4-${USER_NAME}-playwright ]; then BROWSER_PATH_E="/tmp/scraper4-${USER_NAME}-playwright"; fi
+
+"$SYSTEM_PY" - <<'PY'
+import os
+lines = [
+    "# Auto-generated by fix_wsgi_mount.sh — do not edit by hand.",
+    "import os, site, sys",
+]
+site = os.environ["SITE_E"]
+if site:
+    lines.append("site.addsitedir(" + repr(site) + ")")
+app_dir = os.environ["APP_DIR_E"]
+lines += [
+    "APP_DIRECTORY=" + repr(app_dir),
+    "if APP_DIRECTORY not in sys.path: sys.path.insert(0, APP_DIRECTORY)",
+    "os.environ['SCRAPER_PASSWORD']=''",
+    "os.environ['SCRAPER_DEPLOY_PASSWORD']=" + repr(os.environ["PASSWORD_E"]),
+    "os.environ['SCRAPER_DATA_FILE']=" + repr(os.environ["DATA_FILE_E"]),
+    "os.environ['PLAYWRIGHT_BROWSERS_PATH']=" + repr(os.environ["BROWSER_PATH_E"]),
+    "os.environ['SCRAPER_PLAYWRIGHT_PATH']=" + repr(os.environ["BROWSER_PATH_E"]),
+    "from scraper4 import app as application",
+    "",
+    "# --- scraper4 deployer mount (managed by fix_wsgi_mount.sh) ---",
+    "import os as _os",
+    "import sys as _sys",
+    "_deployer_app = None",
+    "try:",
+    "    _d = _os.path.expanduser('~/.deployer')",
+    "    if _d not in _sys.path: _sys.path.insert(0, _d)",
+    "    from deployer_wsgi import application as _deployer_app",
+    "except Exception:",
+    "    _deployer_app = None",
+    "_original_application = application",
+    "def application(environ, start_response):",
+    "    if _deployer_app is not None and environ.get('PATH_INFO', '').startswith('/deployer'):",
+    "        return _deployer_app(environ, start_response)",
+    "    return _original_application(environ, start_response)",
+    "",
+]
+path = os.environ["WSGI_FILE_E"]
+tmp = app_dir + "/.wsgi.tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines))
+os.replace(tmp, path)
+PY
+echo "==> WSGI نوشته شد (سایت اصلی + حفظ /deployer)"
+
+# --- sanity parse of the new WSGI ------------------------------------------------
+"$SYSTEM_PY" -c 'import ast,sys;ast.parse(open(sys.argv[1],encoding="utf-8").read());print("==> WSGI syntax OK")' "$WSGI_FILE"
+
+# --- reload --------------------------------------------------------------------------
+RELOAD_OK=0
+if [ "${DEPLOYER_OFFLINE:-0}" != 1 ] && [ -s "$TOKEN_FILE" ]; then
+    TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+    echo "==> reload از API..."
+    CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+        -H "Authorization: Token $TOKEN" --connect-timeout 20 --max-time 120 \
+        "$API/webapps/$DOMAIN/reload/" || true)"
+    if [ "$CODE" = 200 ] || [ "$CODE" = 201 ]; then RELOAD_OK=1; echo "==> reload شد ✔"; else
+        echo "==> reload API: HTTP $CODE — لمس WSGI به عنوان جایگزین"
+        touch "$WSGI_FILE"
+    fi
+else
+    echo "==> توکن API پیدا نشد — لطفاً در تب Web دکمه Reload را بزنید"
+fi
+
+# --- health check ---------------------------------------------------------------------
+LIVE=000
+for n in $(seq 1 12); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "$HEALTH_URL" || true)"; [ "$LIVE" != 200 ] || break; echo "Health $n/12: HTTP $LIVE"; done
+if [ "$LIVE" != 200 ]; then
+    echo "⚠️  سلامت سایت: HTTP $LIVE — بررسی لاگ‌های پایتون‌انی‌ورلد:"
+    for log in "/var/log/${DOMAIN}.error.log" "/var/log/${DOMAIN}.server.log"; do
+        [ -r "$log" ] && { echo "===== $log ====="; tail -n 60 "$log"; }
+    done
+fi
+
+echo
+echo "============================================================"
+echo "✅ WSGI وصل شد: $WSGI_FILE"
+echo "   سایت اصلی:  https://$DOMAIN/"
+echo "   دیپلوی‌ر:   https://$DOMAIN/deployer/"
+echo "   سلامت:      HTTP $LIVE"
+[ "$IMPORT_OK" = 1 ] || echo "   ⚠️  import هنوز OK نیست — $IMPORT_MSG"
+echo "============================================================"
+[ "$LIVE" = 200 ] || echo "نکته: اگر import مشکل دارد، اول وابستگی‌ها را کامل کنید (install_pythonanywhere.sh) و دوباره این اسکریپت را اجرا کنید."

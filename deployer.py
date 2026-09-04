@@ -18,6 +18,20 @@ Usage
     python3 deployer.py --check          # report only; nothing is written
     python3 deployer.py --rollback       # restore target from target.bak
     python3 deployer.py --branches dev,main,arena/01a0640f-amphp
+    python3 deployer.py --web            # local web UI on http://0.0.0.0:8787/deployer/
+
+Web UI on PythonAnywhere
+------------------------
+The WSGI callable `wsgi_application` serves a status/install page at the
+`/deployer/` path and can be mounted on your existing web app without a
+second web app (PythonAnywhere free plans allow one). Run
+`bash scripts/install_deployer_webapp.sh` in the PythonAnywhere console;
+it copies this file to ~/.deployer, writes a WSGI wrapper and patches the
+main WSGI file. The page is then at:
+
+    https://<username>.pythonanywhere.com/deployer/
+
+Set DEPLOYER_WEB_TOKEN for install/rollback actions (read-only otherwise).
 
 Configuration (CLI flags override env vars, env vars override defaults):
     DEPLOYER_REPO          repository as owner/repo          (default fazilatma/amphp)
@@ -41,6 +55,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -404,6 +419,177 @@ def run_once(cfg: dict, install: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Web UI (optional): /deployer page on an existing PythonAnywhere web app,
+# or a local server via `deployer.py --web`. Standard library only.
+# ---------------------------------------------------------------------------
+
+WEB_PAGE = r'''<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>دیپلوی‌ر اسکرپر۴</title><style>
+:root{--bg:#07111f;--card:#0d1c31;--line:#213650;--text:#eaf3ff;--muted:#9db0ca;--blue:#38bdf8;--green:#34d399;--red:#fb7185;--amber:#fbbf24}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(1200px 500px at 90% -10%,#16294f33,transparent),linear-gradient(155deg,#07111f,#0a1830);color:var(--text);font-family:Tahoma,"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.7}
+.wrap{max-width:920px;margin:auto;padding:34px 20px 80px}h1{font-size:24px;margin:0 0 4px}h1 small{color:var(--muted);font-size:13px;font-weight:500}.sub{color:var(--muted);margin-bottom:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:14px;box-shadow:0 14px 40px #00000055}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row>div{flex:1;min-width:150px}label{display:block;color:#b9c8dc;font-size:12px;font-weight:700;margin-bottom:5px}
+input{width:100%;background:#051326;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:10px 12px;font-family:inherit;font-size:14px}
+button{cursor:pointer;border-radius:10px;border:1px solid #2c4a6d;background:linear-gradient(135deg,#075985,#1d4ed8);color:#fff;font-family:inherit;font-weight:700;font-size:14px;padding:10px 18px}
+button.gray{background:#17263d;border-color:#33465f}button.green{background:linear-gradient(135deg,#047857,#065f46);border-color:#34d399}
+button:disabled{opacity:.55;cursor:wait}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+.status{white-space:pre-wrap;line-height:1.9;color:#b9cae0;border-right:3px solid var(--blue);padding-right:12px;min-height:40px}
+.ok{color:var(--green)}.err{color:var(--red)}.warn{color:var(--amber)}code{direction:ltr;display:inline-block;color:#a5e4ff;background:#061426;border-radius:6px;padding:1px 6px}
+.branch{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:#081528;margin-top:7px;font-size:13px}
+.branch.best{border-color:#34d39955;background:#052e2244}.branch .tag{font-weight:800;font-size:11px;padding:3px 8px;border-radius:99px;background:#11324a;color:#8ed0ff}
+.branch.best .tag{background:#064e3b;color:#6ee7b7}.branch small{color:var(--muted)}.err-row{border-color:#fb718544;color:#fda4af}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:4px 0 14px}.stat{padding:12px;border:1px solid var(--line);border-radius:12px;background:#0a1a2e;text-align:center}.stat b{display:block;font-size:19px}.stat span{color:var(--muted);font-size:12px}
+note{display:block;padding:10px 12px;border:1px solid #fbbf2444;background:#42200633;border-radius:10px;color:#fde68a;margin-bottom:12px}
+@media(max-width:640px){.stats{grid-template-columns:1fr 1fr}}
+</style></head><body><div class="wrap">
+<h1>⚙️ دیپلوی‌ر مستقل اسکرپر۴ <small>نصب خودکار جدیدترین نسخه از چند برنچ</small></h1>
+<div class="sub">چک خودکار GitHub → مقایسه نسخه‌ها → نصب اتمیک کنار <code>scraper4.py</code> با پشتیبان <code>.bak</code></div>
+<div class="card" id="tokenCard" style="display:none"><note>🔒 برای نصب و بازگشت، رمز وب دیپلوی‌ر لازم است. برای تنظیم آن <code>DEPLOYER_WEB_TOKEN</code> را در فایل WSGI ‌قرار دهید.</note></div>
+<div class="card">
+<div class="stats"><div class="stat"><b id="stCurrent">—</b><span>نسخه نصب‌شده</span></div><div class="stat"><b id="stBest">—</b><span>جدیدترین برنچ</span></div><div class="stat"><b id="stChecked">۰</b><span>برنچ بررسی‌شده</span></div></div>
+<div class="actions"><button onclick="refresh()">↻ بررسی نسخه‌ها</button><button class="green" id="btnInstall" onclick="act('install')">⬇ نصب جدیدترین نسخه</button><button class="gray" id="btnRollback" onclick="act('rollback')">↩ بازگشت به .bak</button><button class="gray" id="btnTok" onclick="askToken()">🔑 رمز</button></div>
+<div id="status" class="status">در حال بارگذاری…</div>
+<div id="branches"></div>
+</div>
+<div class="card"><b>پیکربندی فعلی</b><div id="cfg" class="status" style="margin-top:8px">—</div></div>
+<script>
+let T=sessionStorage.getItem('deployerTok')||'',hasToken=__HAS_TOKEN__;
+const $=id=>document.getElementById(id);
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function api(path,opt={}){const h={'Content-Type':'application/json',...(opt.headers||{})};if(T)h['X-Deployer-Token']=T;const r=await fetch(path,{...opt,headers:h});let j={};try{j=await r.json()}catch(e){};if(r.status===401||r.status===403)throw Error(j.error||'رمز لازم است');if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
+function msg(html,cls){$('status').innerHTML='<span class="'+(cls||'')+'">'+html+'</span>'}
+function askToken(){const v=prompt('رمز دیپلوی‌ر (DEPLOYER_WEB_TOKEN):');if(v){sessionStorage.setItem('deployerTok',v);T=v;location.reload()}}
+function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});$('status').textContent=b?'در حال اجرا…':$('status').textContent}
+function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
+ const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(x.newest?'<b class="tag">جدیدترین</b>':'')+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
+ $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+esc((r.branches||[]).join('، '));}
+async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');render(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
+async function act(kind){if(kind==='install'&&!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز/.test(e.message)){msg(esc(e.message),'err');if(!hasToken)$('tokenCard').style.display='block'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
+$('tokenCard').style.display=hasToken?'none':'block';$('btnTok').style.display=hasToken?'none':'inline-block';refresh();
+</script></div></body></html>'''
+
+
+def _web_config() -> dict:
+    """Config for the web app: like CLI but driven purely by DEPLOYER_* env vars."""
+    ns = argparse.Namespace(repo=None, branches=None, path=None, target=None, token=None,
+                            reload_file=None, interval=None, log_file=None, github_base=None)
+    return load_config(ns)
+
+
+def _report_public(report: dict) -> dict:
+    """JSON-safe copy of a report (candidate payloads are never exported)."""
+    rows = []
+    for row in report.get("rows", []):
+        item = {k: row[k] for k in ("branch", "version", "sha", "size", "newest") if k in row}
+        if "error" in row:
+            item["error"] = row["error"]
+        rows.append(item)
+    out = dict(report)
+    out["rows"] = rows
+    return out
+
+
+def _web_response(start_response, status: str, body: bytes, content_type: str = "application/json",
+                  extra: dict[str, str] | None = None) -> list[bytes]:
+    headers = [("Content-Type", content_type), ("Content-Length", str(len(body))), ("Cache-Control", "no-store")]
+    headers += [(k, v) for k, v in (extra or {}).items()]
+    start_response(status, headers)
+    return [body]
+
+
+def _web_json(start_response, payload: dict, status: str = "200 OK") -> list[bytes]:
+    return _web_response(start_response, status,
+                         json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _web_token_ok(environ: dict) -> bool:
+    token = os.environ.get("DEPLOYER_WEB_TOKEN", "").strip()
+    if not token:
+        return False
+    supplied = environ.get("HTTP_X_DEPLOYER_TOKEN", "")
+    if not supplied:
+        supplied = (urllib.parse.parse_qs(environ.get("QUERY_STRING", "")).get("token") or [""])[0]
+    return bool(supplied) and hmac.compare_digest(supplied, token)
+
+
+def wsgi_application(environ, start_response) -> list[bytes]:
+    """WSGI entry point. Mounted at /deployer by install_deployer_webapp.sh."""
+    path = environ.get("PATH_INFO", "/") or "/"
+    if path.startswith("/deployer"):
+        path = path[len("/deployer"):] or "/"
+    method = environ.get("REQUEST_METHOD", "GET").upper()
+    if path in ("/favicon.ico", "/favicon.png"):
+        return _web_response(start_response, "404 Not Found", b"", "text/plain")
+
+    if method == "GET" and path in ("/", ""):
+        page = WEB_PAGE.replace("__HAS_TOKEN__",
+                                "true" if os.environ.get("DEPLOYER_WEB_TOKEN", "").strip() else "false")
+        return _web_response(start_response, "200 OK", page.encode("utf-8"), "text/html; charset=utf-8")
+
+    if method == "GET" and path == "/status":
+        try:
+            cfg = _web_config()
+            report = build_report(cfg)
+            return _web_json(start_response, {"ok": True, "report": _report_public(report)})
+        except DeployerError as exc:
+            return _web_json(start_response, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("status failed")
+            return _web_json(start_response, {"ok": False, "error": str(exc)[:300]})
+
+    if method == "POST" and path in ("/check", "/install", "/rollback"):
+        if not _web_token_ok(environ):
+            if not os.environ.get("DEPLOYER_WEB_TOKEN", "").strip():
+                return _web_json(start_response,
+                                 {"ok": False, "error": "توکن وب دیپلوی‌ر تنظیم نشده است؛ فقط نمایش وضعیت فعال است (DEPLOYER_WEB_TOKEN)"},
+                                 "403 Forbidden")
+            return _web_json(start_response, {"ok": False, "error": "رمزِ توکن وب دیپلوی‌ر نادرست است"}, "401 Unauthorized")
+        try:
+            cfg = _web_config()
+            if path == "/check":
+                result = run_once(cfg, install=False)
+                payload = {"ok": True, "action": "check", "report": _report_public(result["report"])}
+            elif path == "/install":
+                result = run_once(cfg, install=True)
+                payload = {"ok": True, "action": "install", "changed": result["changed"],
+                           "message": result["message"] if "message" in result else (
+                               "نسخه " + result["version"] + " از برنچ " + result["branch"] + " نصب شد"
+                               if result["changed"] else "تغییری لازم نیست"),
+                           "version": result["version"], "branch": result["branch"],
+                           "report": _report_public(result["report"])}
+            else:
+                result = rollback(cfg)
+                cfg = _web_config()
+                payload = {"ok": True, "action": "rollback", "changed": True,
+                           "message": "نسخه " + result["version"] + " از .bak بازیابی شد",
+                           "version": result["version"],
+                           "report": _report_public(build_report(cfg))}
+            return _web_json(start_response, payload)
+        except DeployerError as exc:
+            return _web_json(start_response, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("web action %s failed", path)
+            return _web_json(start_response, {"ok": False, "error": str(exc)[:300]})
+
+    return _web_json(start_response, {"ok": False, "error": "مسیر پیدا نشد"}, "404 Not Found")
+
+
+def serve_web(cfg: dict, port: int, quiet: bool = False) -> None:
+    """Local HTTP server for `deployer.py --web` (same UI as the WSGI mount)."""
+    from wsgiref.simple_server import make_server
+    url = f"http://0.0.0.0:{port}/deployer/"
+    if not quiet:
+        log.info("وب دیپلوی‌ر اجرا شد: %s (برنچ‌ها: %s)", url, ", ".join(cfg["branches"]))
+    httpd = make_server("0.0.0.0", int(port), wsgi_application)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log.info("وب دیپلوی‌ر متوقف شد")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -422,6 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=int, help="seconds between auto checks (min 30)")
     parser.add_argument("--log-file", help="append log lines to this file")
     parser.add_argument("--github-base", help="GitHub API base (default https://api.github.com)")
+    parser.add_argument("--web", action="store_true", help="serve the web UI locally (WSGI app also available)")
+    parser.add_argument("--port", type=int, default=8787, help="port for --web (default 8787)")
     parser.add_argument("-v", "--verbose", action="store_true", help="log every detail")
     return parser
 
@@ -486,6 +674,9 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(cfg, args.verbose)
 
     try:
+        if args.web:
+            serve_web(cfg, args.port)
+            return 0
         if args.rollback:
             result = rollback(cfg)
             log.info("بازگشت انجام شد: v%s از %s", result["version"], result["backup"])

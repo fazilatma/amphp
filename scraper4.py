@@ -22,6 +22,7 @@ import uuid
 import base64
 import hashlib
 import tempfile
+import subprocess
 import urllib.parse
 import threading
 from datetime import datetime
@@ -128,6 +129,14 @@ def get_default_config() -> Dict[str, Any]:
             "path": DEFAULT_GITHUB_PATH,
             "github_token": "",
             "reload_file": ""
+        },
+        "autoupdate": {
+            "enabled": False,
+            "interval_sec": 300,
+            "auto_install": True,
+            "auto_reload": True,
+            "keep_backups": 5,
+            "min_interval_sec": 60
         },
         "ui_preferences": {
             "theme": "navy",
@@ -1292,6 +1301,435 @@ def api_deploy_cleanup():
             removed.append(os.path.basename(f))
         except OSError: pass
     return jsonify(ok=True, removed=removed, count=len(removed))
+
+# ==================== AUTO-UPDATE DAEMON ====================
+# Periodically asks GitHub for a newer build, verifies it BEFORE touching the
+# running file, installs atomically with a timestamped backup, and rolls the
+# change back automatically if the new file fails verification.
+
+AUTOUPDATE_LOCK = threading.Lock()
+AUTOUPDATE_STATE: Dict[str, Any] = {
+    "enabled": False,
+    "interval_sec": 300,
+    "auto_install": True,
+    "auto_reload": True,
+    "keep_backups": 5,
+    "running": False,
+    "checks": 0,
+    "updates_installed": 0,
+    "last_check_at": None,
+    "last_check_iso": None,
+    "last_result": "never",
+    "last_error": None,
+    "local_version": APP_VERSION,
+    "remote_version": None,
+    "local_sha": None,
+    "remote_sha": None,
+    "update_available": False,
+    "last_update_at": None,
+    "last_update_iso": None,
+    "last_backup": None,
+    "reload_attempted": False,
+    "reload_confirmed": False,
+    "next_check_eta": None,
+    "log": [],
+}
+_worker_thread: Optional[threading.Thread] = None
+
+
+def _au_log(msg: str, level: str = "info") -> None:
+    entry = {
+        "time": time.time(),
+        "iso": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "level": level,
+        "msg": msg,
+    }
+    with AUTOUPDATE_LOCK:
+        AUTOUPDATE_STATE["log"].append(entry)
+        del AUTOUPDATE_STATE["log"][:-60]
+
+
+def _au_set(**kw: Any) -> None:
+    with AUTOUPDATE_LOCK:
+        AUTOUPDATE_STATE.update(kw)
+
+
+def autoupdate_prefs() -> Dict[str, Any]:
+    """Live preferences = defaults, overlaid with what the user saved."""
+    data = load_data()
+    saved = data.get("autoupdate") if isinstance(data.get("autoupdate"), dict) else {}
+    prefs = dict(get_default_config()["autoupdate"])
+    prefs.update({k: v for k, v in saved.items() if v is not None})
+    try:
+        prefs["interval_sec"] = max(int(prefs.get("min_interval_sec", 60)), int(prefs["interval_sec"]))
+    except (TypeError, ValueError):
+        prefs["interval_sec"] = 300
+    try:
+        prefs["keep_backups"] = max(1, min(20, int(prefs["keep_backups"])))
+    except (TypeError, ValueError):
+        prefs["keep_backups"] = 5
+    return prefs
+
+
+def verify_source_bytes(source: bytes, timeout: int = 90) -> Tuple[bool, str]:
+    """Parse AND import the candidate build in a throwaway subprocess.
+
+    Importing catches failures ast.parse cannot see (bad import, syntax that
+    parses but explodes at module scope, missing dependency).
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+    try:
+        tmp.write(source)
+        tmp.flush()
+        tmp.close()
+        code = (
+            "import ast,importlib.util,sys\n"
+            f"p={tmp.name!r}\n"
+            "s=open(p,encoding='utf-8').read()\n"
+            "ast.parse(s, filename=p)\n"
+            "spec=importlib.util.spec_from_file_location('scraper4_candidate', p)\n"
+            "mod=importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "assert hasattr(mod,'app') and hasattr(mod,'APP_VERSION')\n"
+            "print('OK '+str(mod.APP_VERSION))\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=os.path.dirname(tmp.name) or None,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-4:]
+            return False, " | ".join(tail)[:500]
+        return True, (proc.stdout or "").strip()
+    except subprocess.TimeoutExpired:
+        return False, f"verification timed out after {timeout}s"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def acquire_install_lock(stale_after: int = 600) -> Optional[str]:
+    """Cross-process guard: under WSGI several workers may poll at once."""
+    lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)) or ".", ".autoupdate.lock")
+    try:
+        if os.path.exists(lock_path):
+            if time.time() - os.path.getmtime(lock_path) < stale_after:
+                return None
+            os.unlink(lock_path)
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(fd, f"{os.getpid()}".encode())
+        os.close(fd)
+        return lock_path
+    except OSError:
+        return None
+
+
+def release_install_lock(lock_path: Optional[str]) -> None:
+    if lock_path:
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
+
+
+def _sha256(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def trigger_reload(deploy_cfg: Dict[str, Any]) -> Tuple[bool, str]:
+    """Best-effort reload. Returns (attempted, detail)."""
+    detail = []
+    reload_file = (deploy_cfg.get("reload_file") or "").strip()
+    if reload_file and os.path.exists(reload_file):
+        try:
+            os.utime(reload_file, None)
+            detail.append(f"touched {reload_file}")
+        except OSError as e:
+            detail.append(f"touch failed: {e}")
+    else:
+        detail.append("no reload_file configured")
+
+    token_path = os.path.expanduser("~/.pythonanywhere_api_token")
+    if os.path.isfile(token_path):
+        try:
+            token = open(token_path, "r", encoding="utf-8").read().strip()
+            user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+            domain = f"{user.lower()}.pythonanywhere.com"
+            api = f"https://www.pythonanywhere.com/api/v0/user/{user}/webapps/{domain}/reload/"
+            r = requests.post(api, headers={"Authorization": f"Token {token}"}, timeout=30)
+            detail.append(f"PythonAnywhere reload API -> HTTP {r.status_code}")
+            return True, "; ".join(detail)
+        except Exception as e:
+            detail.append(f"reload API error: {e}")
+    return bool(detail), "; ".join(detail)
+
+
+def autoupdate_check_once(install: Optional[bool] = None) -> Dict[str, Any]:
+    """One check cycle. Safe to call from the worker, the API, or manually."""
+    prefs = autoupdate_prefs()
+    do_install = prefs["auto_install"] if install is None else install
+    data = load_data()
+    deploy_cfg = data.get("deploy", {})
+
+    target_path = os.path.abspath(__file__)
+    try:
+        current_bytes = open(target_path, "rb").read()
+    except OSError:
+        current_bytes = b""
+    local_sha = _sha256(current_bytes) if current_bytes else None
+
+    _au_set(last_check_at=time.time(),
+            last_check_iso=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            local_sha=local_sha)
+
+    try:
+        source_bytes, remote_sha, remote_version = deploy_download_source(deploy_cfg)
+    except Exception as e:
+        _au_set(last_result="check_failed", last_error=str(e), remote_sha=None,
+                update_available=False,
+                next_check_eta=time.time() + prefs["interval_sec"])
+        _au_log(f"بررسی ناموفق: {e}", "error")
+        return dict(AUTOUPDATE_STATE)
+
+    new_sha = _sha256(source_bytes)
+    _au_set(remote_sha=remote_sha, remote_version=remote_version,
+            last_error=None,
+            update_available=(local_sha != new_sha))
+    _au_log(f"بررسی انجام شد — نسخه مخزن {remote_version} (sha {new_sha[:10]})")
+
+    if local_sha == new_sha:
+        _au_set(last_result="up_to_date",
+                next_check_eta=time.time() + prefs["interval_sec"])
+        return dict(AUTOUPDATE_STATE)
+
+    if not do_install:
+        _au_set(last_result="update_pending",
+                next_check_eta=time.time() + prefs["interval_sec"])
+        _au_log(f"نسخه جدید {remote_version} یافت شد (نصب خودکار خاموش است)", "warn")
+        return dict(AUTOUPDATE_STATE)
+
+    # ---- verify BEFORE replacing the running file -------------------------
+    ok, detail = verify_source_bytes(source_bytes)
+    if not ok:
+        _au_set(last_result="verify_failed", last_error=detail,
+                next_check_eta=time.time() + prefs["interval_sec"])
+        _au_log(f"نسخه جدید رد شد (اعتبارسنجی شکست خورد): {detail}", "error")
+        return dict(AUTOUPDATE_STATE)
+    _au_log(f"اعتبارسنجی نسخه جدید موفق بود: {detail}")
+
+    lock = acquire_install_lock()
+    if not lock:
+        _au_set(last_result="locked",
+                next_check_eta=time.time() + prefs["interval_sec"])
+        _au_log("یک فرایند دیگر در حال نصب است؛ این چرخه رد شد.", "warn")
+        return dict(AUTOUPDATE_STATE)
+
+    try:
+        backup_path = f"{target_path}.{datetime.now().strftime('%Y%m%d-%H%M%S')}.bak"
+        if current_bytes:
+            with open(backup_path, "wb") as bf:
+                bf.write(current_bytes)
+
+        stage = f"{target_path}.{os.getpid()}.tmp"
+        with open(stage, "wb") as tf:
+            tf.write(source_bytes)
+        os.replace(stage, target_path)
+
+        # prune backups
+        dir_name = os.path.dirname(target_path) or "."
+        baks = sorted([os.path.join(dir_name, f) for f in os.listdir(dir_name)
+                       if f.startswith("scraper4.py.") and f.endswith(".bak")], reverse=True)
+        for old in baks[prefs["keep_backups"]:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+        _au_log(f"نسخه {remote_version} نصب شد؛ پشتیبان: {os.path.basename(backup_path)}", "ok")
+    except Exception as e:
+        _au_set(last_result="install_failed", last_error=str(e),
+                next_check_eta=time.time() + prefs["interval_sec"])
+        _au_log(f"نصب شکست خورد: {e}", "error")
+        release_install_lock(lock)
+        return dict(AUTOUPDATE_STATE)
+    finally:
+        release_install_lock(lock)
+
+    # ---- post-install safety net: re-verify what is actually on disk ------
+    try:
+        on_disk = open(target_path, "rb").read()
+    except OSError:
+        on_disk = b""
+    if _sha256(on_disk) != new_sha:
+        try:
+            with open(backup_path, "rb") as bf:
+                open(target_path, "wb").write(bf.read())
+            _au_set(last_result="rolled_back", last_error="written file did not match the verified build")
+            _au_log("فایل نصب‌شده با نسخه اعتبارسنجی‌شده تفاوت داشت؛ بازگردانی خودکار انجام شد.", "error")
+            return dict(AUTOUPDATE_STATE)
+        except OSError as e:
+            _au_log(f"بازگردانی خودکار ناموفق بود: {e}", "error")
+
+    attempted, reload_detail = (False, "skipped")
+    if prefs["auto_reload"]:
+        attempted, reload_detail = trigger_reload(deploy_cfg)
+        _au_log(f"بارگذاری مجدد: {reload_detail}", "ok")
+    else:
+        _au_log("نصب انجام شد؛ بارگذاری مجدد خودکار خاموش است (سایت را دستی Reload کنید).", "warn")
+
+    _au_set(last_result="updated", last_update_at=time.time(),
+            last_update_iso=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            local_version=remote_version, local_sha=new_sha,
+            update_available=False, last_backup=backup_path,
+            updates_installed=AUTOUPDATE_STATE["updates_installed"] + 1,
+            reload_attempted=attempted,
+            next_check_eta=time.time() + prefs["interval_sec"])
+    return dict(AUTOUPDATE_STATE)
+
+
+def run_autoupdate_worker() -> None:
+    _au_set(running=True)
+    _au_log("کارگردان به‌روزرسانی خودکار آغاز به کار کرد.")
+    while True:
+        prefs = autoupdate_prefs()
+        with AUTOUPDATE_LOCK:
+            enabled = bool(AUTOUPDATE_STATE.get("enabled"))
+        if not enabled:
+            _au_set(running=False)
+            _au_log("به‌روزرسانی خودکار غیرفعال شد؛ کارگردان متوقف گردید.")
+            return
+        try:
+            AUTOUPDATE_STATE["checks"] = AUTOUPDATE_STATE.get("checks", 0) + 1
+            autoupdate_check_once()
+        except Exception as e:
+            _au_set(last_result="worker_error", last_error=str(e))
+            _au_log(f"خطای غیرمنتظره در کارگردان: {e}", "error")
+        interval = autoupdate_prefs()["interval_sec"]
+        _au_set(next_check_eta=time.time() + interval)
+        # sleep in short slices so disabling takes effect quickly
+        slept = 0.0
+        while slept < interval:
+            time.sleep(min(5.0, interval - slept))
+            slept += 5.0
+            with AUTOUPDATE_LOCK:
+                if not AUTOUPDATE_STATE.get("enabled"):
+                    break
+
+
+def start_autoupdate_thread(force: bool = False) -> bool:
+    global _worker_thread
+    prefs = autoupdate_prefs()
+    if not force and not prefs["enabled"]:
+        return False
+    with AUTOUPDATE_LOCK:
+        AUTOUPDATE_STATE["enabled"] = True
+        AUTOUPDATE_STATE["interval_sec"] = prefs["interval_sec"]
+        AUTOUPDATE_STATE["auto_install"] = prefs["auto_install"]
+        AUTOUPDATE_STATE["auto_reload"] = prefs["auto_reload"]
+        AUTOUPDATE_STATE["keep_backups"] = prefs["keep_backups"]
+        if _worker_thread and _worker_thread.is_alive():
+            return True
+        _worker_thread = threading.Thread(target=run_autoupdate_worker, daemon=True, name="autoupdate")
+        _worker_thread.start()
+    return True
+
+
+def stop_autoupdate_thread() -> None:
+    _au_set(enabled=False)
+
+
+@app.get("/api/autoupdate/status")
+def api_autoupdate_status():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    with AUTOUPDATE_LOCK:
+        snap = dict(AUTOUPDATE_STATE)
+        snap["log"] = list(AUTOUPDATE_STATE["log"][-25:])
+    eta = snap.get("next_check_eta")
+    snap["next_check_in"] = max(0, int(eta - time.time())) if eta else None
+    snap["worker_alive"] = bool(_worker_thread and _worker_thread.is_alive())
+    snap["prefs"] = autoupdate_prefs()
+    return jsonify(ok=True, **snap)
+
+
+@app.post("/api/autoupdate/config")
+def api_autoupdate_config():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(force=True, silent=True) or {}
+    data = load_data()
+    cur = dict(get_default_config()["autoupdate"])
+    if isinstance(data.get("autoupdate"), dict):
+        cur.update(data["autoupdate"])
+    for key in ("enabled", "auto_install", "auto_reload"):
+        if key in body:
+            cur[key] = bool(body[key])
+    if "interval_sec" in body:
+        cur["interval_sec"] = max(int(cur.get("min_interval_sec", 60)), int(body["interval_sec"]))
+    if "keep_backups" in body:
+        cur["keep_backups"] = max(1, min(20, int(body["keep_backups"])))
+    data["autoupdate"] = cur
+    save_data(data)
+
+    if cur["enabled"]:
+        started = start_autoupdate_thread(force=True)
+        _au_log(f"تنظیمات ذخیره شد — بازه {cur['interval_sec']} ثانیه، کارگردان {'فعال' if started else 'در حال اجرا'}.")
+    else:
+        stop_autoupdate_thread()
+        _au_log("به‌روزرسانی خودکار غیرفعال شد.")
+    return jsonify(ok=True, autoupdate=cur)
+
+
+@app.post("/api/autoupdate/toggle")
+def api_autoupdate_toggle():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(force=True, silent=True) or {}
+    enable = bool(body.get("enabled", True))
+    data = load_data()
+    cur = data.get("autoupdate") if isinstance(data.get("autoupdate"), dict) else dict(get_default_config()["autoupdate"])
+    cur["enabled"] = enable
+    data["autoupdate"] = cur
+    save_data(data)
+    if enable:
+        start_autoupdate_thread(force=True)
+    else:
+        stop_autoupdate_thread()
+    return jsonify(ok=True, enabled=enable)
+
+
+@app.post("/api/autoupdate/check")
+def api_autoupdate_check():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(force=True, silent=True) or {}
+    install = body.get("install")
+    t = threading.Thread(target=lambda: autoupdate_check_once(install), daemon=True)
+    t.start()
+    t.join(timeout=100)
+    with AUTOUPDATE_LOCK:
+        snap = dict(AUTOUPDATE_STATE)
+    return jsonify(ok=True, **snap)
+
+
+# Autostart the daemon if the user previously enabled it, so the schedule
+# survives a restart or a redeploy. Set SCRAPER_AUTOUPDATE_DISABLE=1 to opt out
+# (useful for tests and for one-off scripts that import this module).
+if os.environ.get("SCRAPER_AUTOUPDATE_DISABLE", "").strip().lower() not in ("1", "true", "yes", "on"):
+    try:
+        start_autoupdate_thread()
+    except Exception as _au_boot_err:  # never let the daemon break startup
+        _au_log(f"راه‌اندازی کارگردان به‌روزرسانی ناموفق بود: {_au_boot_err}", "error")
+
 
 @app.get("/api/changelog")
 def api_changelog():
@@ -2645,6 +3083,52 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
         </div>
         <div id="deployStatusBox" style="margin-top:12px; font-size: calc(11.5px * var(--font-scale, 1)); color:var(--text-dim); white-space:pre-wrap;"></div>
       </div>
+
+      <!-- Auto-Update Daemon -->
+      <div class="glass-card" style="margin-top:14px;">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-title-icon">🤖</span>
+            <span>به‌روزرسانی خودکار دوره‌ای</span>
+          </div>
+          <span class="chip chip-primary" id="auStateChip">خاموش</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">بازه بررسی (ثانیه):</label>
+            <input type="number" class="form-control" id="auInterval" value="300" min="60" step="30">
+          </div>
+          <div class="form-group">
+            <label class="form-label">تعداد پشتیبان‌ها:</label>
+            <input type="number" class="form-control" id="auKeep" value="5" min="1" max="20">
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+          <label class="form-check" style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="auEnabled">
+            <span>فعال‌سازی بررسی خودکار نسخه جدید</span>
+          </label>
+          <label class="form-check" style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="auAutoInstall" checked>
+            <span>نصب خودکار پس از اعتبارسنجی موفق</span>
+          </label>
+          <label class="form-check" style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="auAutoReload" checked>
+            <span>بارگذاری مجدد سایت پس از نصب</span>
+          </label>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-accent btn-sm" onclick="saveAutoupdate()">💾 ذخیره و اعمال</button>
+          <button class="btn btn-secondary btn-sm" onclick="auCheckNow()">🔎 بررسی فوری</button>
+          <button class="btn btn-secondary btn-sm" onclick="auToggle(false)">⏸ توقف</button>
+        </div>
+
+        <div id="auStatusBox" style="margin-top:12px; font-size: calc(11.5px * var(--font-scale, 1)); color:var(--text-dim); white-space:pre-wrap;"></div>
+        <div id="auLogBox" style="margin-top:10px; max-height:190px; overflow-y:auto; font-size: calc(10.5px * var(--font-scale, 1)); line-height:1.7; color:var(--text-dim); border-top:1px solid var(--border); padding-top:8px;"></div>
+      </div>
     </div>
   </main>
 
@@ -3405,6 +3889,125 @@ async function reloadApp() {
   showToast(json.message, json.ok ? 'success' : 'error');
 }
 
+/* ==================== AUTO-UPDATE CONTROLLER ==================== */
+const AU_RESULT_LABEL = {
+  never: 'هنوز بررسی نشده',
+  up_to_date: 'به‌روز هستید',
+  update_pending: 'نسخه جدید یافت شد (نصب خودکار خاموش)',
+  updated: 'نسخه جدید نصب شد',
+  update_available: 'نسخه جدید موجود است',
+  verify_failed: 'نسخه جدید رد شد (اعتبارسنجی شکست خورد)',
+  install_failed: 'نصب شکست خورد',
+  check_failed: 'بررسی ناموفق بود',
+  rolled_back: 'بازگردانی خودکار انجام شد',
+  locked: 'فرایند دیگری در حال نصب است',
+  worker_error: 'خطای کارگردان'
+};
+let auTimer = null;
+
+function auRender(s) {
+  const chip = document.getElementById('auStateChip');
+  if (chip) {
+    if (s.enabled && s.worker_alive) { chip.textContent = 'فعال ✅'; chip.className = 'chip chip-success'; }
+    else if (s.enabled) { chip.textContent = 'در انتظار شروع'; chip.className = 'chip chip-warning'; }
+    else { chip.textContent = 'خاموش'; chip.className = 'chip chip-primary'; }
+  }
+  const box = document.getElementById('auStatusBox');
+  if (box) {
+    const eta = (s.next_check_in != null) ? `${s.next_check_in} ثانیه` : '—';
+    box.innerText =
+`وضعیت: ${AU_RESULT_LABEL[s.last_result] || s.last_result}
+نسخه فعلی: ${s.local_version || '—'}   |   نسخه مخزن: ${s.remote_version || '—'}
+آخرین بررسی: ${s.last_check_iso || '—'}   |   بررسی بعدی تا: ${eta}
+تعداد بررسی‌ها: ${s.checks || 0}   |   نصب‌های موفق: ${s.updates_installed || 0}` +
+(s.last_error ? `\nآخرین خطا: ${s.last_error}` : '') +
+(s.last_backup ? `\nآخرین پشتیبان: ${String(s.last_backup).split('/').pop()}` : '');
+  }
+  const logBox = document.getElementById('auLogBox');
+  if (logBox && Array.isArray(s.log)) {
+    logBox.innerHTML = s.log.slice().reverse().map(e => {
+      const icon = e.level === 'error' ? '❌' : (e.level === 'warn' ? '⚠️' : (e.level === 'ok' ? '✅' : '•'));
+      return `<div>${icon} <span style="opacity:.65">${e.iso}</span> ${String(e.msg).replace(/</g,'&lt;')}</div>`;
+    }).join('');
+  }
+}
+
+function auFillPrefs(s) {
+  const p = s.prefs || {};
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const chk = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.checked = !!v; };
+  set('auInterval', p.interval_sec);
+  set('auKeep', p.keep_backups);
+  chk('auEnabled', s.enabled);
+  chk('auAutoInstall', p.auto_install);
+  chk('auAutoReload', p.auto_reload);
+}
+
+async function auRefresh(fillPrefs = false) {
+  try {
+    const res = await fetch('/api/autoupdate/status');
+    const json = await res.json();
+    if (json.ok) { auRender(json); if (fillPrefs) auFillPrefs(json); }
+  } catch (e) { /* ignore transient polling errors */ }
+}
+
+async function saveAutoupdate() {
+  const payload = {
+    enabled: document.getElementById('auEnabled').checked,
+    auto_install: document.getElementById('auAutoInstall').checked,
+    auto_reload: document.getElementById('auAutoReload').checked,
+    interval_sec: parseInt(document.getElementById('auInterval').value || '300', 10),
+    keep_backups: parseInt(document.getElementById('auKeep').value || '5', 10)
+  };
+  showToast('ذخیره تنظیمات به‌روزرسانی خودکار...', 'info');
+  try {
+    const res = await fetch('/api/autoupdate/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (json.ok) {
+      showToast(payload.enabled ? `به‌روزرسانی خودکار فعال شد — هر ${json.autoupdate.interval_sec} ثانیه` : 'به‌روزرسانی خودکار غیرفعال شد', 'success');
+      startAuPolling();
+      await auRefresh(true);
+    } else showToast('خطا در ذخیره تنظیمات', 'error');
+  } catch (e) { showToast('خطای شبکه: ' + e.message, 'error'); }
+}
+
+async function auCheckNow() {
+  showToast('بررسی فوری نسخه جدید...', 'info');
+  try {
+    const res = await fetch('/api/autoupdate/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+    });
+    const json = await res.json();
+    if (json.ok) {
+      auRender(json);
+      const label = AU_RESULT_LABEL[json.last_result] || json.last_result;
+      showToast(label, json.last_result === 'updated' ? 'success' : 'info');
+      if (json.last_result === 'updated') setTimeout(() => location.reload(), 2500);
+    }
+  } catch (e) { showToast('خطای شبکه: ' + e.message, 'error'); }
+}
+
+async function auToggle(enable) {
+  try {
+    const res = await fetch('/api/autoupdate/toggle', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      showToast(json.enabled ? 'به‌روزرسانی خودکار فعال شد' : 'به‌روزرسانی خودکار متوقف شد', 'success');
+      startAuPolling();
+      await auRefresh(true);
+    }
+  } catch (e) { showToast('خطای شبکه: ' + e.message, 'error'); }
+}
+
+function startAuPolling() {
+  if (auTimer) clearInterval(auTimer);
+  auTimer = setInterval(() => auRefresh(false), 5000);
+}
+
 function exportData(format) {
   window.open(`/api/export.${format}`, '_blank');
 }
@@ -3482,6 +4085,8 @@ window.addEventListener('DOMContentLoaded', () => {
   loadConfig();
   loadTasks();
   pollTasks();
+  auRefresh(true);
+  startAuPolling();
 });
 </script>
 </body>

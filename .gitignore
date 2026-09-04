@@ -22,4 +22,5 @@ scraper4_data.json
 scraper4.py.*.bak
 chat_threads.json.tmp
 *.tmp
+.autoupdate.lock
 

@@ -1,7 +1,7 @@
 {
-  "id": "8f149dfa49",
+  "id": "b2fd5c4c6d",
   "type": "shell",
-  "cmd": "ls -la /var/www /var/www/html 2>/dev/null; echo ---; dpkg -l | grep -iE \"apache|php|python3|mysql|postgres|redis|nginx\" | awk \"{print \\$2,\\$3}\"; echo ---; python3 --version; php -v | head -1; apache2ctl -S 2>/dev/null | head -20; echo ---; ls /etc/apache2/sites-enabled 2>/dev/null",
-  "timeout": 180,
-  "ts": 1788565726
+  "cmd": "hostname; whoami; python3 --version; dpkg -l | grep -E 'apache2 |php8|python3-pip|python3-venv' | awk '{print $2,$3}'; ls /etc/apache2/sites-enabled; ls /var/www/html | head",
+  "timeout": 45,
+  "ts": 1788565836
 }

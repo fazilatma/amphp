@@ -1,0 +1,7 @@
+{
+  "id": "hello",
+  "code": 0,
+  "ts": 1788565337,
+  "stdout": "hostname=ubuntu---1-vcpu---1-gb-ram\nuid=0(root) gid=0(root) groups=0(root)\nLinux ubuntu---1-vcpu---1-gb-ram 6.8.0-138-generic #138-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31 22:41:49 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux\n",
+  "stderr": ""
+}

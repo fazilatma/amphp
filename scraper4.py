@@ -28,6 +28,7 @@ import tempfile
 import subprocess
 import urllib.parse
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -206,6 +207,26 @@ def check_auth() -> Optional[Response]:
 class FetchError(Exception):
     pass
 
+def worker_wrap_url(worker: str, url: str) -> Tuple[str, Dict[str, str]]:
+    """Rewrite a destination for a Worker relay, the way scraper4.php does in
+    both aiHttpPrepare() and bslCurlOpts():
+
+        {url} placeholder  ->  substituted with the rawurlencoded target
+        otherwise          ->  the target becomes a PATH segment
+
+    plus an X-Target-URL header carrying the real destination.
+
+    The Worker is a reverse proxy keyed on the path. A "?url=" query string
+    makes it fetch its own origin, so the upstream never sees the request's
+    Authorization header and answers 401 -- which is exactly the failure this
+    project hit before the AI transport was ported.
+    """
+    w = (worker or "").strip().rstrip("/")
+    if "{url}" in w:
+        return w.replace("{url}", urllib.parse.quote(url, safe="")), {"X-Target-URL": url}
+    return w + "/" + url.lstrip("/"), {"X-Target-URL": url}
+
+
 def fetch_url(url: str, network_cfg: Optional[Dict[str, Any]] = None, timeout: int = 25, headers: Optional[Dict[str, str]] = None) -> str:
     if network_cfg is None:
         cfg = load_data()
@@ -228,7 +249,9 @@ def fetch_url(url: str, network_cfg: Optional[Dict[str, Any]] = None, timeout: i
     target_url = url
     
     if proxy_mode == "relay" and relay_url:
-        target_url = f"{relay_url.rstrip('/')}/?url={urllib.parse.quote(url, safe='')}"
+        # Same protocol as the AI transport -- see worker_wrap_url().
+        target_url, relay_headers = worker_wrap_url(relay_url, url)
+        req_headers.update(relay_headers)
     elif proxy_mode == "http" and direct_proxy:
         proxies = {"http": direct_proxy, "https": direct_proxy}
 
@@ -670,12 +693,7 @@ def ai_build_request(endpoint: str, mode: str, ai_cfg: Dict[str, Any]) -> Tuple[
         worker = (ai_cfg.get("worker_url") or "").strip().rstrip("/")
         if not worker:
             raise AiHttpError("آدرس Worker خالی است — آن را در بخش «اتصال» وارد کنید", mode)
-        if "{url}" in worker:
-            req_url = worker.replace("{url}", urllib.parse.quote(endpoint, safe=""))
-        else:
-            # Path-based reverse proxy: https://worker.dev/https://api.x/v1/...
-            req_url = worker + "/" + endpoint.lstrip("/")
-        extra["X-Target-URL"] = endpoint
+        req_url, extra = worker_wrap_url(worker, endpoint)
         return req_url, extra, None
 
     if mode == "proxy":
@@ -1571,6 +1589,273 @@ def api_ai_candidates_compare():
         items.append(item)
 
     return jsonify(ok=True, task=task, title=inp, items=items, master=ai_master_key())
+
+
+# ==================== BULK MODEL TESTER ====================
+# Mirrors scraper4.php's ?ai_test_start: every model in the catalogue is probed
+# with a chat message and a category question. Scheduling is round-robin
+# (first model of every provider, then the second, ...) so no single provider's
+# rate limit is saturated while the whole list still finishes quickly.
+
+AI_NONCHAT_KEYWORDS = ("embed", "image", "vision-gen", "tts", "whisper", "dall-e",
+                       "flux", "sdxl", "stable-diffusion", "musicgen", "bark",
+                       "sora", "video", "speech", "audio", "moderation")
+AI_TOOL_KEYWORDS = ("llama-3.3", "llama-3.1", "llama-4", "mistral", "ministral",
+                    "devstral", "magistral", "codestral", "gpt-oss", "gpt-4",
+                    "gemini-2", "gemini-1.5", "qwen", "command-r", "firefunction",
+                    "hermes", "nemotron", "glm-4", "deepseek-v3", "kimi-k2", "grok")
+
+
+def ai_model_caps(model_id: str) -> Dict[str, bool]:
+    """Heuristic capabilities, mirroring PHP's aiModelCaps()."""
+    low = (model_id or "").lower()
+    chat = not any(k in low for k in AI_NONCHAT_KEYWORDS)
+    tools = chat and any(k in low for k in AI_TOOL_KEYWORDS)
+    reasoning = chat and any(k in low for k in ("reasoner", "o1", "o3", "r1", "thinking"))
+    return {"chat": chat, "tools": tools, "reasoning": reasoning}
+
+
+def ai_catalog_models(skip_non_chat: bool = True, per_provider: int = 50) -> List[Dict[str, str]]:
+    out = []
+    for provider, models in AI_MODEL_CATALOG.items():
+        taken = 0
+        for m in models:
+            caps = ai_model_caps(m)
+            if skip_non_chat and not caps["chat"]:
+                continue
+            out.append({"provider": provider, "model": m, **caps})
+            taken += 1
+            if taken >= per_provider:
+                break
+    return out
+
+
+def ai_test_rounds(models: List[Dict[str, str]]) -> List[List[Dict[str, str]]]:
+    """Round-robin: round i holds the i-th model of each provider."""
+    by_provider: Dict[str, List[Dict[str, str]]] = {}
+    for m in models:
+        by_provider.setdefault(m["provider"], []).append(m)
+    depth = max((len(v) for v in by_provider.values()), default=0)
+    rounds = []
+    for i in range(depth):
+        r = [v[i] for v in by_provider.values() if len(v) > i]
+        if r:
+            rounds.append(r)
+    return rounds
+
+
+AI_TEST_LOCK = threading.Lock()
+AI_TEST_STATE: Dict[str, Any] = {"running": False, "total": 0, "done": 0,
+                                 "ok": 0, "fail": 0, "started_at": 0, "finished_at": 0,
+                                 "last_error": "", "round": 0, "rounds": 0}
+_ai_test_thread: Optional[threading.Thread] = None
+
+
+def ai_test_results() -> Dict[str, Any]:
+    res = load_data().get("ai_test", {})
+    if not isinstance(res, dict) or not isinstance(res.get("results"), dict):
+        return {"results": {}, "updated_at": 0}
+    return res
+
+
+def ai_test_save_result(key: str, entry: Dict[str, Any]) -> None:
+    data = load_data()
+    cur = data.get("ai_test")
+    if not isinstance(cur, dict) or not isinstance(cur.get("results"), dict):
+        cur = {"results": {}, "updated_at": 0}
+    cur["results"][key] = entry
+    cur["updated_at"] = int(time.time())
+    data["ai_test"] = cur
+    save_data(data)
+
+
+def ai_test_one(provider: str, model: str, msg: str, cat: str) -> Dict[str, Any]:
+    cfg = dict(load_data().get("ai", {}))
+    cfg["provider"] = provider
+    cfg["model"] = model
+    started = time.time()
+    entry: Dict[str, Any] = {"provider": provider, "model": model, "at": int(time.time()),
+                             **ai_model_caps(model)}
+    try:
+        reply = call_ai_completion(msg, ai_cfg=cfg)
+        entry["ok"] = True
+        entry["reply"] = (reply or "")[:200]
+        entry["ms"] = int((time.time() - started) * 1000)
+    except AiHttpError as e:
+        entry["ok"] = False
+        entry["error"] = str(e)[:200]
+        entry["status"] = e.status
+        entry["ms"] = int((time.time() - started) * 1000)
+    except Exception as e:
+        entry["ok"] = False
+        entry["error"] = str(e)[:200]
+        entry["ms"] = int((time.time() - started) * 1000)
+    # category probe, only worth doing when the model answered at all
+    if entry.get("ok"):
+        try:
+            c = call_ai_completion(f"محصول «{cat}» را در کدام دستهٔ فروشگاه می‌گذاری؟ فقط نام دسته.",
+                                   ai_cfg=cfg)
+            entry["category"] = (c or "").strip()[:80]
+        except Exception:
+            entry["category"] = ""
+    return entry
+
+
+def run_ai_test_worker(per_provider: int, only_untested: bool, msg: str, cat: str,
+                       delay_ms: int, concurrency: int, skip_non_chat: bool) -> None:
+    with AI_TEST_LOCK:
+        AI_TEST_STATE["running"] = True
+    try:
+        models = ai_catalog_models(skip_non_chat, per_provider)
+        done_before = ai_test_results()["results"]
+        if only_untested:
+            models = [m for m in models if f"{m['provider']}::{m['model']}" not in done_before]
+        rounds = ai_test_rounds(models)
+        with AI_TEST_LOCK:
+            AI_TEST_STATE.update(total=len(models), done=0, ok=0, fail=0,
+                                 started_at=time.time(), finished_at=0, last_error="",
+                                 round=0, rounds=len(rounds))
+
+        for rnd in rounds:
+            with AI_TEST_LOCK:
+                if not AI_TEST_STATE.get("enabled", True):
+                    break
+                AI_TEST_STATE["round"] = AI_TEST_STATE.get("round", 0) + 1
+            workers = max(1, min(concurrency, len(rnd)))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(ai_test_one, m["provider"], m["model"], msg, cat): m
+                        for m in rnd}
+                for fut in as_completed(futs):
+                    m = futs[fut]
+                    try:
+                        entry = fut.result()
+                    except Exception as e:
+                        entry = {"provider": m["provider"], "model": m["model"], "ok": False,
+                                 "error": str(e)[:200], "at": int(time.time()), "ms": 0,
+                                 **ai_model_caps(m["model"])}
+                    ai_test_save_result(f"{m['provider']}::{m['model']}", entry)
+                    with AI_TEST_LOCK:
+                        AI_TEST_STATE["done"] += 1
+                        if entry.get("ok"):
+                            AI_TEST_STATE["ok"] += 1
+                        else:
+                            AI_TEST_STATE["fail"] += 1
+            if delay_ms:
+                time.sleep(min(delay_ms, 60000) / 1000.0)
+    except Exception as e:
+        with AI_TEST_LOCK:
+            AI_TEST_STATE["last_error"] = str(e)[:200]
+    finally:
+        with AI_TEST_LOCK:
+            AI_TEST_STATE["running"] = False
+            AI_TEST_STATE["finished_at"] = time.time()
+
+
+def ai_test_stats() -> Dict[str, Any]:
+    res = ai_test_results()["results"]
+    tested = [v for v in res.values() if isinstance(v, dict)]
+    ok = [v for v in tested if v.get("ok")]
+    # ms == 0 is a legitimate latency for a local model, so test for None, not truthiness.
+    fastest = sorted([v for v in ok if v.get("ms") is not None],
+                     key=lambda v: v["ms"])[:5]
+    by_provider: Dict[str, Dict[str, int]] = {}
+    for v in tested:
+        p = by_provider.setdefault(str(v.get("provider") or "?"), {"ok": 0, "fail": 0})
+        p["ok" if v.get("ok") else "fail"] += 1
+    return {"tested": len(tested), "ok": len(ok), "fail": len(tested) - len(ok),
+            "catalog": len(ai_catalog_models(False, 500)),
+            "fastest": [{"provider": v.get("provider"), "model": v.get("model"),
+                         "ms": v.get("ms")} for v in fastest],
+            "by_provider": by_provider,
+            "updated_at": ai_test_results()["updated_at"]}
+
+
+@app.post("/api/ai/test/start")
+def api_ai_test_start():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    with AI_TEST_LOCK:
+        if AI_TEST_STATE.get("running"):
+            return jsonify(ok=False, running=True,
+                           error="تست مدل‌ها در حال اجراست — برای شروع تازه اول متوقفش کنید"), 409
+        AI_TEST_STATE["enabled"] = True
+
+    def num(key, lo, hi, default):
+        try:
+            return max(lo, min(hi, int(body.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    per_provider = num("per_provider", 1, 500, 50)
+    delay_ms = num("delay", 0, 60000, 120)
+    concurrency = num("conc", 1, 16, 4)
+    only_untested = bool(body.get("only_untested", False))
+    skip_non_chat = body.get("nonchat", True) is not False and body.get("nonchat") != "0"
+    msg = str(body.get("msg") or "سلام").strip() or "سلام"
+    cat = str(body.get("cat") or "ادو پرفیوم").strip() or "ادو پرفیوم"
+
+    global _ai_test_thread
+    _ai_test_thread = threading.Thread(
+        target=run_ai_test_worker,
+        args=(per_provider, only_untested, msg, cat, delay_ms, concurrency, skip_non_chat),
+        daemon=True, name="ai-test")
+    _ai_test_thread.start()
+    return jsonify(ok=True, started=True,
+                   note="تست در پس‌زمینهٔ سرور ادامه دارد — می‌توانید صفحه را ببندید")
+
+
+@app.get("/api/ai/test/status")
+def api_ai_test_status():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    with AI_TEST_LOCK:
+        st = dict(AI_TEST_STATE)
+    # NB: the state's "ok" counter cannot be splatted alongside jsonify(ok=True),
+    # so it is exposed as ok_count.
+    return jsonify(ok=True,
+                   running=st.get("running", False), total=st.get("total", 0),
+                   done=st.get("done", 0), ok_count=st.get("ok", 0),
+                   fail=st.get("fail", 0), started_at=st.get("started_at", 0),
+                   finished_at=st.get("finished_at", 0), last_error=st.get("last_error", ""),
+                   round=st.get("round", 0), rounds=st.get("rounds", 0),
+                   stats=ai_test_stats())
+
+
+@app.post("/api/ai/test/stop")
+def api_ai_test_stop():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    with AI_TEST_LOCK:
+        AI_TEST_STATE["enabled"] = False
+        running = bool(AI_TEST_STATE.get("running"))
+    return jsonify(ok=True, was_running=running)
+
+
+@app.get("/api/ai/test/results")
+def api_ai_test_results():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    res = ai_test_results()
+    rows = sorted(res["results"].values(),
+                  key=lambda v: (0 if v.get("ok") else 1, v.get("ms") or 10 ** 9))
+    return jsonify(ok=True, results=rows, count=len(rows), stats=ai_test_stats(),
+                   updated_at=res["updated_at"])
+
+
+@app.delete("/api/ai/test/results")
+def api_ai_test_results_clear():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    data = load_data()
+    data["ai_test"] = {"results": {}, "updated_at": int(time.time())}
+    save_data(data)
+    return jsonify(ok=True)
 
 
 # ==================== PRODUCT-MANAGEMENT AGENT (tool calling) ====================
@@ -5418,27 +5703,79 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
 
       <!-- AI SUB: test -->
       <div id="ai-sub-test" class="settings-sub-panel" style="display:none;">
-        <div class="form-group">
-          <label class="form-label">پرسش تستی از مدل فعال:</label>
-          <textarea class="form-control" id="aiTestPrompt" rows="2" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس"></textarea>
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          همهٔ مدل‌های کاتالوگ را یک‌جا بیازمایید تا «در دسترس» بودن، سرعت و پاسخِ دسته‌بندیِ هرکدام مشخص شود.
+          تست <b>چرخشی</b> است: اول مدلِ اولِ همهٔ ارائه‌دهنده‌ها، بعد مدلِ دومِ همه و… تا ریت‌لیمیتِ هیچ
+          ارائه‌دهنده‌ای پر نشود. اجرا در پس‌زمینهٔ سرور ادامه دارد و با بستنِ صفحه قطع نمی‌شود.
+        </p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">سقف به‌ازای هر ارائه‌دهنده:</label>
+            <input type="number" class="form-control" id="aiTestPerProvider" value="50" min="1" max="500">
+          </div>
+          <div class="form-group">
+            <label class="form-label">درخواست هم‌زمان (۱..۱۶):</label>
+            <input type="number" class="form-control" id="aiTestConc" value="4" min="1" max="16">
+          </div>
+          <div class="form-group">
+            <label class="form-label">پیام تست:</label>
+            <input type="text" class="form-control" id="aiTestMsg" value="سلام">
+          </div>
+          <div class="form-group">
+            <label class="form-label">دستهٔ تست:</label>
+            <input type="text" class="form-control" id="aiTestCat" value="ادو پرفیوم">
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label">روش اتصال برای این تست:</label>
-          <select class="form-control" id="aiTestMode">
-            <option value="">طبق تنظیمات ذخیره‌شده</option>
-            <option value="direct">direct</option>
-            <option value="worker">worker</option>
-            <option value="gateway">gateway</option>
-            <option value="doh">doh</option>
-            <option value="dns">dns</option>
-            <option value="proxy">proxy</option>
-          </select>
+          <label class="form-label">تاخیر بین هر دور (میلی‌ثانیه):</label>
+          <input type="number" class="form-control" id="aiTestDelay" value="120" min="0" max="60000" step="50">
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="btn btn-accent btn-sm" onclick="runAiTest()">🧪 اجرای آزمون</button>
-          <button class="btn btn-secondary btn-sm" onclick="aiTestCategory()">🏷️ تست دسته‌بندی</button>
+        <label style="display:flex; align-items:center; gap:7px; cursor:pointer; font-size:calc(11px * var(--font-scale, 1));">
+          <input type="checkbox" id="aiTestOnlyUntested"> فقط مدل‌های تست‌نشده
+        </label>
+        <label style="display:flex; align-items:center; gap:7px; cursor:pointer; font-size:calc(11px * var(--font-scale, 1)); margin-top:4px;">
+          <input type="checkbox" id="aiTestSkipNonChat" checked> ردکردن مدل‌های غیرچت (تصویر/صدا/امبدینگ)
+        </label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+          <button class="btn btn-success btn-sm" id="aiBulkStartBtn" onclick="aiBulkStart()">▶ شروع / ادامه</button>
+          <button class="btn btn-danger btn-sm" id="aiBulkStopBtn" onclick="aiBulkStop()" style="display:none;">⏹ توقف</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiBulkShowTable()">📊 نمایش جدول</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiBulkClear()">🗑 پاک‌کردن نتایج</button>
         </div>
-        <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.7; white-space:pre-wrap;"></div>
+        <div class="ai-agent-sum" id="aiBulkSum" style="display:none;">
+          <div><b id="aiBulkDone" style="color:var(--primary);">۰</b><span>آزموده</span></div>
+          <div><b id="aiBulkTotal" style="color:var(--text-dim);">۰</b><span>کل</span></div>
+          <div><b id="aiBulkOk" style="color:var(--success);">۰</b><span>سالم</span></div>
+          <div><b id="aiBulkFail" style="color:var(--danger);">۰</b><span>خطا</span></div>
+          <div><b id="aiBulkRound" style="color:var(--accent);">۰</b><span>دور</span></div>
+        </div>
+        <div id="aiBulkStatus" style="margin-top:8px; font-size:calc(11px * var(--font-scale, 1)); color:var(--primary);"></div>
+        <div id="aiBulkTable" style="margin-top:10px;"></div>
+
+        <div style="border-top:1px solid var(--border); margin-top:14px; padding-top:10px;">
+          <div style="font-weight:800; font-size:calc(11.5px * var(--font-scale, 1)); margin-bottom:6px;">🧪 تست تک‌مدل (مدل فعال)</div>
+          <div class="form-group">
+            <label class="form-label">پرسش تستی:</label>
+            <textarea class="form-control" id="aiTestPrompt" rows="2" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">روش اتصال برای این تست:</label>
+            <select class="form-control" id="aiTestMode">
+              <option value="">طبق تنظیمات ذخیره‌شده</option>
+              <option value="direct">direct</option>
+              <option value="worker">worker</option>
+              <option value="gateway">gateway</option>
+              <option value="doh">doh</option>
+              <option value="dns">dns</option>
+              <option value="proxy">proxy</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" onclick="runAiTest()">🧪 اجرای آزمون</button>
+            <button class="btn btn-secondary btn-sm" onclick="aiTestCategory()">🏷️ تست دسته‌بندی</button>
+          </div>
+          <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere;"></div>
+        </div>
       </div>
 
       <!-- AI SUB: prompts -->
@@ -6943,6 +7280,7 @@ async function aiInitStudio() {
   aiRenderModels();
   await aiCandRender();
   await apInit();
+  await aiBulkInit();
 }
 
 function aiRenderModels() {
@@ -7269,6 +7607,138 @@ async function aiShowWorkerCode() {
     }
     showToast('کد Worker نمایش داده شد', 'success');
   } catch (e) { showToast('خطا در دریافت کد Worker', 'error'); }
+}
+
+/* ---------- Bulk model tester ---------- */
+let aiBulkTimer = null;
+
+async function aiBulkStart() {
+  await saveAllSettings({ silent: true });
+  const body = {
+    per_provider: parseInt(document.getElementById('aiTestPerProvider').value, 10) || 50,
+    conc: parseInt(document.getElementById('aiTestConc').value, 10) || 4,
+    delay: parseInt(document.getElementById('aiTestDelay').value, 10) || 0,
+    msg: document.getElementById('aiTestMsg').value.trim() || 'سلام',
+    cat: document.getElementById('aiTestCat').value.trim() || 'ادو پرفیوم',
+    only_untested: document.getElementById('aiTestOnlyUntested').checked,
+    nonchat: document.getElementById('aiTestSkipNonChat').checked
+  };
+  const res = await fetch('/api/ai/test/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'تست شروع نشد', 'error'); return; }
+  showToast('تست در پس‌زمینه شروع شد', 'success');
+  document.getElementById('aiBulkSum').style.display = 'flex';
+  aiBulkWatch();
+}
+
+async function aiBulkStop() {
+  try { await fetch('/api/ai/test/stop', { method: 'POST' }); } catch (e) { /* ignore */ }
+  showToast('درخواست توقف ارسال شد', 'info');
+}
+
+async function aiBulkWatch() {
+  let d;
+  try {
+    const res = await fetch('/api/ai/test/status');
+    d = await res.json();
+  } catch (e) { aiBulkTimer = setTimeout(aiBulkWatch, 2000); return; }
+  if (!d.ok) return;
+
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = toFa(v || 0); };
+  set('aiBulkDone', d.done); set('aiBulkTotal', d.total);
+  set('aiBulkOk', d.ok_count); set('aiBulkFail', d.fail); set('aiBulkRound', d.round);
+
+  const st = document.getElementById('aiBulkStatus');
+  const startBtn = document.getElementById('aiBulkStartBtn');
+  const stopBtn = document.getElementById('aiBulkStopBtn');
+  if (d.running) {
+    if (st) st.textContent = `🔄 دور ${toFa(d.round)} از ${toFa(d.rounds)} — ${toFa(d.done)} از ${toFa(d.total)} مدل آزموده شد`;
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.style.display = '';
+    aiBulkTimer = setTimeout(aiBulkWatch, 1500);
+    return;
+  }
+  if (startBtn) startBtn.disabled = false;
+  if (stopBtn) stopBtn.style.display = 'none';
+  if (st) {
+    st.textContent = d.done
+      ? `✅ پایان — ${toFa(d.ok_count)} سالم، ${toFa(d.fail)} خطا از ${toFa(d.total)} مدل`
+      : 'تستی در جریان نیست.';
+  }
+  if (aiBulkTimer) { clearTimeout(aiBulkTimer); aiBulkTimer = null; }
+  await aiBulkShowTable();
+}
+
+async function aiBulkShowTable() {
+  const box = document.getElementById('aiBulkTable');
+  if (!box) return;
+  let d;
+  try {
+    const res = await fetch('/api/ai/test/results');
+    d = await res.json();
+  } catch (e) { box.innerHTML = `<div class="ai-model-empty">✗ خطا در دریافت نتایج</div>`; return; }
+  if (!d.ok) { box.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(d.error || 'خطا')}</div>`; return; }
+
+  const stt = d.stats || {};
+  let html = `<div class="ai-cand-card">
+    <div style="font-weight:800; margin-bottom:6px;">📊 آمار مدل‌ها</div>
+    <div class="meta">آزموده ${toFa(stt.tested || 0)} از ${toFa(stt.catalog || 0)} ·
+      سالم ${toFa(stt.ok || 0)} · خطا ${toFa(stt.fail || 0)}</div>`;
+  if ((stt.fastest || []).length) {
+    html += `<div class="ai-compare-text">⚡ سریع‌ترین‌ها: ${
+      stt.fastest.map(f => escHtml(f.model) + ' (' + toFa(f.ms) + 'ms)').join(' · ')}</div>`;
+  }
+  html += '</div>';
+
+  if (!d.results.length) {
+    box.innerHTML = html + '<div class="ai-model-empty">هنوز نتیجه‌ای نیست — «شروع» را بزنید.</div>';
+    return;
+  }
+  html += '<div class="ai-model-list">' + d.results.map(r => {
+    const caps = [r.chat ? '' : 'غیرچت', r.tools ? '🔧' : '', r.reasoning ? '🧠' : '']
+      .filter(Boolean).join(' ');
+    return `<div class="ai-model-row">
+      <span class="grow">${r.ok ? '✅' : '❌'} ${escHtml(r.provider)} · <span dir="ltr">${escHtml(r.model)}</span>
+        <span class="meta">${caps}</span>
+        ${r.ok
+          ? `<div class="ai-compare-text">🏷️ ${escHtml(r.category || '—')} · ${toFa(r.ms)}ms</div>`
+          : `<div class="ai-compare-text" style="color:var(--danger);">${escHtml(r.error || 'خطا')}</div>`}
+      </span>
+    </div>`;
+  }).join('') + '</div>';
+  box.innerHTML = html;
+}
+
+async function aiBulkClear() {
+  if (!confirm('همهٔ نتایج تست مدل‌ها پاک شود؟')) return;
+  const res = await fetch('/api/ai/test/results', { method: 'DELETE' });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'پاک نشد', 'error'); return; }
+  showToast('نتایج پاک شد', 'success');
+  await aiBulkShowTable();
+}
+
+async function aiBulkInit() {
+  const box = document.getElementById('aiBulkSum');
+  if (box) box.style.display = 'flex';
+  await aiBulkShowTable();
+  try {
+    const res = await fetch('/api/ai/test/status');
+    const d = await res.json();
+    if (d.ok && d.running) aiBulkWatch();
+    else {
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = toFa(v || 0); };
+      set('aiBulkDone', d.done); set('aiBulkTotal', d.total);
+      set('aiBulkOk', d.ok_count); set('aiBulkFail', d.fail); set('aiBulkRound', d.round);
+      const st = document.getElementById('aiBulkStatus');
+      if (st) st.textContent = d.done
+        ? `آخرین اجرا: ${toFa(d.ok_count)} سالم، ${toFa(d.fail)} خطا از ${toFa(d.total)} مدل`
+        : 'تستی در جریان نیست.';
+    }
+  } catch (e) { /* offline is fine here */ }
 }
 
 async function runAiTest() {

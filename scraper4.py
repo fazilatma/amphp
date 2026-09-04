@@ -1299,7 +1299,7 @@ def api_changelog():
         "version": APP_VERSION,
         "release_notes": [
             "نسخه ۵.۰.۰: برابری ۱۰۰٪ ویژگی‌ها با نسخه scraper4.php ۱۰.۱۲۳",
-            "طراحی مجدد رابط کاربری با شیشه‌گرایی مدرن، ۶ تم زنده و پشتیبانی از تایپوگرافی پویای وزیرمتن",
+            "طراحی مجدد رابط کاربری با شیشه‌گرایی مدرن، منوی همبرگری کشویی و ۶ تم زنده",
             "موتور ماتریس همگام‌سازی ۴طرفه قیمت و موجودی فروشگاه‌ها",
             "ماژول پالایش و رفع هوشمند موارد تکراری (DEDUP)",
             "اصلاح خودکار دسته‌بندی‌های باسلام (CATFIX)",
@@ -1430,7 +1430,7 @@ body {
   color: var(--text);
   font-family: var(--app-font);
   line-height: 1.5;
-  padding-top: 68px;
+  padding-top: 66px;
   padding-bottom: 84px;
   overflow-x: hidden;
   direction: rtl;
@@ -1461,7 +1461,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px;
+  padding: 0 12px;
   z-index: 990;
   box-shadow: var(--shadow-sm);
 }
@@ -1472,6 +1472,31 @@ body {
   gap: 8px;
   min-width: 0;
   flex-shrink: 1;
+}
+
+/* HAMBURGER BUTTON (☰) */
+.hamburger-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(129, 140, 248, 0.15));
+  border: 1px solid var(--border);
+  color: var(--primary);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+.hamburger-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+.hamburger-btn:active {
+  transform: scale(0.92);
 }
 
 .brand-logo {
@@ -1562,6 +1587,97 @@ body {
   flex-shrink: 0;
 }
 .icon-btn:active { transform: scale(0.92); background: var(--card-hover); border-color: var(--primary); }
+
+/* ==================== SLIDING DRAWER / SETTINGS PANEL ==================== */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 10000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.drawer-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  right: -360px;
+  width: 340px;
+  max-width: 90vw;
+  background: var(--card-solid);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 40px rgba(0,0,0,0.6);
+  z-index: 10001;
+  display: flex;
+  flex-direction: column;
+  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.drawer-panel.open {
+  right: 0;
+}
+.drawer-panel.full {
+  width: 100vw;
+  max-width: 100vw;
+}
+
+.drawer-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--card);
+}
+.drawer-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.drawer-body {
+  padding: 14px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+.drawer-menu-item:hover, .drawer-menu-item:active {
+  border-color: var(--primary);
+  background: var(--card-hover);
+  transform: translateX(-3px);
+}
+.drawer-menu-item .d-icon {
+  font-size: 18px;
+  margin-left: 10px;
+}
 
 /* ==================== BOTTOM TAB BAR ==================== */
 .bottom-nav {
@@ -2087,6 +2203,8 @@ table.data-table tr:hover { background: var(--card-hover); }
 <!-- STICKY TOP APP HEADER -->
 <header class="top-bar">
   <div class="brand-group">
+    <!-- PROMINENT HAMBURGER BUTTON (☰) -->
+    <button class="hamburger-btn" id="hamburgerBtn" onclick="toggleDrawer()" title="منوی اصلی و تنظیمات پیشرفته">☰</button>
     <div class="brand-logo">⚡</div>
     <div class="brand-text">
       <h1>اسکریپر ۴ پایتون</h1>
@@ -2113,6 +2231,78 @@ table.data-table tr:hover { background: var(--card-hover); }
     <button class="icon-btn" onclick="cycleTheme()" title="تم">🎨</button>
   </div>
 </header>
+
+<!-- SLIDING DRAWER SETTINGS PANEL -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
+<aside class="drawer-panel" id="drawerPanel">
+  <div class="drawer-header">
+    <div class="drawer-title">
+      <span>☰</span>
+      <span>منوی تنظیمات و ابزارها</span>
+    </div>
+    <div style="display:flex; gap:6px;">
+      <button class="icon-btn" onclick="toggleDrawerFull()" title="تمام‌عرض">⛶</button>
+      <button class="icon-btn" onclick="toggleDrawer()" title="بستن">✕</button>
+    </div>
+  </div>
+
+  <div class="drawer-body">
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'woo')">
+      <div><span class="d-icon">🛒</span><span>تنظیمات ووکامرس</span></div>
+      <span class="chip chip-primary">فعال</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'bsl')">
+      <div><span class="d-icon">🏪</span><span>تنظیمات باسلام</span></div>
+      <span class="chip chip-success">غرفه</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'ai')">
+      <div><span class="d-icon">🤖</span><span>هوش مصنوعی و مدل‌ها</span></div>
+      <span class="chip chip-warning">OpenRouter</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'network')">
+      <div><span class="d-icon">🌐</span><span>دروازه و رله کلودفلر</span></div>
+      <span class="chip chip-primary">Direct/Relay</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'msg')">
+      <div><span class="d-icon">🔔</span><span>هاب پیام‌رسان‌ها (تلگرام/بله)</span></div>
+      <span class="chip chip-primary">ربات‌ها</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'deploy')">
+      <div><span class="d-icon">🚀</span><span>استقرار و به‌روزرسانی گیت‌هاب</span></div>
+      <span class="chip chip-accent">v5.0.0</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="openModal('chatDeskModal'); toggleDrawer();">
+      <div><span class="d-icon">💬</span><span>میز گفت‌وگوی زنده مشتریان</span></div>
+      <span class="chip chip-primary">چت</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="openModal('tasksModal'); toggleDrawer();">
+      <div><span class="d-icon">🗂</span><span>مدیریت کارهای پس‌زمینه</span></div>
+      <span class="chip chip-success" id="drawerTaskCount">۰ وظیفه</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="openModal('pickerModal'); toggleDrawer();">
+      <div><span class="d-icon">👆</span><span>انتخابگر بصری سلکتورها</span></div>
+      <span class="chip chip-warning">DOM</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="openModal('fontModal'); toggleDrawer();">
+      <div><span class="d-icon">🔤</span><span>تنظیمات قلم و تایپوگرافی</span></div>
+      <span class="chip chip-primary">وزیرمتن</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="cycleTheme(); showToast('تم تغییر کرد', 'info');">
+      <div><span class="d-icon">🎨</span><span>تغییر تم رنگی</span></div>
+      <span class="chip chip-primary">۶ تم</span>
+    </div>
+  </div>
+</aside>
 
 <div class="app-shell">
   <!-- TAB 1: شروع (START & EXTRACTION) -->
@@ -2683,6 +2873,26 @@ function showToast(msg, kind = 'info') {
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
+function toggleDrawer() {
+  const panel = document.getElementById('drawerPanel');
+  const overlay = document.getElementById('drawerOverlay');
+  panel.classList.toggle('open');
+  overlay.classList.toggle('open');
+}
+
+function toggleDrawerFull() {
+  const panel = document.getElementById('drawerPanel');
+  panel.classList.toggle('full');
+}
+
+function drawerNavigate(tab, sub) {
+  toggleDrawer();
+  switchNavTab(tab);
+  if (sub) {
+    setTimeout(() => switchSettingsSub(sub), 50);
+  }
+}
+
 function switchNavTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.view-panel').forEach(el => el.classList.remove('active'));
@@ -2702,7 +2912,10 @@ function switchSettingsSub(sub) {
   document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
   const p = document.getElementById(`set-sub-${sub}`);
   if (p) p.style.display = 'block';
-  event.target.classList.add('active');
+  const btns = document.querySelectorAll('.sub-tab-btn');
+  const subNames = ['woo', 'bsl', 'ai', 'network', 'msg', 'deploy'];
+  const sIdx = subNames.indexOf(sub);
+  if (sIdx !== -1 && btns[sIdx]) btns[sIdx].classList.add('active');
 }
 
 function switchViewMode(mode) {
@@ -2852,7 +3065,7 @@ function renderCatalog() {
     badge.style.display = 'none';
   }
 
-  // Render Mobile / Responsive Cards
+  // Render Mobile & Desktop Cards
   const cardsContainer = document.getElementById('catalogCardsView');
   if (filtered.length === 0) {
     cardsContainer.innerHTML = '<p style="color:var(--text-dim); text-align:center; padding:30px;">محصولی برای نمایش وجود ندارد.</p>';
@@ -2913,11 +3126,15 @@ function renderTasksList(tasks) {
   if (!tasks || tasks.length === 0) {
     container.innerHTML = '<p style="color:var(--text-dim); text-align:center; padding:20px;">وظیفه‌ای در صف وجود ندارد.</p>';
     document.getElementById('topTaskCount').innerText = '۰ وظیفه';
+    const dCount = document.getElementById('drawerTaskCount');
+    if (dCount) dCount.innerText = '۰ وظیفه';
     document.getElementById('topTaskSpinner').style.display = 'none';
     return;
   }
   const runningCount = tasks.filter(t => t.status === 'running').length;
   document.getElementById('topTaskCount').innerText = `${toFa(runningCount)} فعال`;
+  const dCount = document.getElementById('drawerTaskCount');
+  if (dCount) dCount.innerText = `${toFa(runningCount)} فعال`;
   document.getElementById('topTaskSpinner').style.display = runningCount > 0 ? 'inline-block' : 'none';
 
   container.innerHTML = tasks.map(t => `

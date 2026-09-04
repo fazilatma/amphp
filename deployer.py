@@ -72,7 +72,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-DEPLOYER_VERSION = "1.2.0"
+DEPLOYER_VERSION = "1.3.0"
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
@@ -530,28 +530,40 @@ note{display:block;padding:10px 12px;border:1px solid #fbbf2444;background:#4220
 </style></head><body><div class="wrap">
 <h1>⚙️ دیپلوی‌ر مستقل اسکرپر۴ <small>جستجوی همه برنچ‌های ریپو و نصب جدیدترین نسخه</small></h1>
 <div class="sub">فهرست‌کشی خودکار برنچ‌ها از GitHub → مقایسه نسخه‌ها → نصب اتمیک کنار <code>scraper4.py</code> با پشتیبان <code>.bak</code></div>
-<div class="card" id="tokenCard" style="display:none"><note>🔒 برای نصب و بازگشت، رمز وب دیپلوی‌ر لازم است. برای تنظیم آن <code>DEPLOYER_WEB_TOKEN</code> را در فایل WSGI ‌قرار دهید.</note></div>
+<div class="card" id="tokenCard">
+<b>🔑 رمز مدیریت دیپلوی‌ر</b>
+<div class="row" style="margin-top:10px">
+<div><input id="tokenInput" type="password" dir="ltr" autocomplete="off" placeholder="رمز را از deployer_token.txt کپی و اینجا وارد کنید"></div>
+<button id="btnSaveToken" onclick="saveToken()">ثبت رمز</button>
+<button class="gray" onclick="clearToken()">پاک کردن</button>
+</div>
+<div id="tokenHint" class="status" style="margin-top:10px">در حال بررسی…</div>
+<small class="warn">🔒 بدون رمز، دکمه‌های «نصب جدیدترین نسخه» و «بازگشت به .bak» کار نمی‌کنند. رمز در فایل <code>deployer_token.txt</code> کنار <code>scraper4.py</code> است (پنل PythonAnywhere → Files → پوشه scraper4).</small>
+</div>
 <div class="card">
 <div class="stats"><div class="stat"><b id="stCurrent">—</b><span>نسخه نصب‌شده</span></div><div class="stat"><b id="stBest">—</b><span>جدیدترین برنچ</span></div><div class="stat"><b id="stChecked">۰</b><span>برنچ بررسی‌شده</span></div></div>
-<div class="actions"><button onclick="refresh()">↻ بررسی نسخه‌ها</button><button class="green" id="btnInstall" onclick="act('install')">⬇ نصب جدیدترین نسخه</button><button class="gray" id="btnRollback" onclick="act('rollback')">↩ بازگشت به .bak</button><button class="gray" id="btnTok" onclick="askToken()">🔑 رمز</button></div>
+<div class="actions"><button onclick="refresh()">↻ بررسی نسخه‌ها</button><button class="green" id="btnInstall" onclick="act('install')">⬇ نصب جدیدترین نسخه</button><button class="gray" id="btnRollback" onclick="act('rollback')">↩ بازگشت به .bak</button><button class="gray" id="btnTok" onclick="openToken()">🔑 رمز مدیریت</button></div>
 <div id="status" class="status">در حال بارگذاری…</div>
 <div id="branches"></div>
 </div>
 <div class="card"><b>پیکربندی فعلی</b><div id="cfg" class="status" style="margin-top:8px">—</div></div>
 <script>
-let T=sessionStorage.getItem('deployerTok')||'',hasToken=__HAS_TOKEN__;
+let T=sessionStorage.getItem('deployerTok')||'',tokenConfigured=false;
 const $=id=>document.getElementById(id);
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function api(path,opt={}){const h={'Content-Type':'application/json',...(opt.headers||{})};if(T)h['X-Deployer-Token']=T;const r=await fetch(path,{...opt,headers:h});let j={};try{j=await r.json()}catch(e){};if(r.status===401||r.status===403)throw Error(j.error||'رمز لازم است');if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
 function msg(html,cls){$('status').innerHTML='<span class="'+(cls||'')+'">'+html+'</span>'}
-function askToken(){const v=prompt('رمز دیپلوی‌ر (DEPLOYER_WEB_TOKEN):');if(v){sessionStorage.setItem('deployerTok',v);T=v;location.reload()}}
+function saveToken(){const v=$('tokenInput').value.trim();if(!v){alert('محتوای deployer_token.txt را کپی و اینجا وارد کنید');return}sessionStorage.setItem('deployerTok',v);T=v;$('tokenInput').value='';$('tokenHint').innerHTML='<span class="ok">✅ رمز در همین مرورگر ذخیره شد.</span>';msg('رمز ذخیره شد؛ اکنون می‌توانید نصب/بازگشت را انجام دهید.','ok')}
+function clearToken(){sessionStorage.removeItem('deployerTok');T='';$('tokenInput').value='';$('tokenHint').innerHTML='رمز از این مرورگر حذف شد؛ هنگام عملیات بعدی دوباره وارد کنید.';msg('رمز حذف شد.','ok')}
+function openToken(){$('tokenCard').scrollIntoView({behavior:'smooth'});$('tokenInput').focus();$('tokenInput').select()}
+function tokenUI(d){const tf=(d&&d.token_file)||'deployer_token.txt';if(tokenConfigured){$('tokenHint').innerHTML='<span class="ok">✔ رمز روی سرور تنظیم است</span> — از فایل <code>'+esc(tf)+'</code> (پنل Files → پوشه scraper4) کپی و در کادر بالا «ثبت رمز» را بزنید.'+(T?'<br><span class="ok">✅ رمز در همین مرورگر ذخیره شده است.</span>':'')}else{$('tokenHint').innerHTML='<span class="err">✖ رمز روی سرور تنظیم نشده است.</span> اسکریپت نصب را دوباره اجرا کنید؛ رمز را در <code>'+esc(tf)+'</code> می‌سازد و همان را اینجا وارد می‌کنید.'}}
 function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});$('status').textContent=b?'در حال اجرا…':$('status').textContent}
 function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
  const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(x.newest?'<b class="tag">جدیدترین</b>':'')+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
  $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0);}
-async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');render(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
-async function act(kind){if(kind==='install'&&!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز/.test(e.message)){msg(esc(e.message),'err');if(!hasToken)$('tokenCard').style.display='block'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
-$('tokenCard').style.display=hasToken?'none':'block';$('btnTok').style.display=hasToken?'none':'inline-block';refresh();
+async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;render(d);tokenUI(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
+async function act(kind){if(kind==='install'&&!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز|نادرست|تنظیم نشده/.test(e.message)){openToken();$('tokenHint').innerHTML='<span class="err">'+esc(e.message)+'</span><br>اگر رمز ندارید، از پنل Files فایل <code>deployer_token.txt</code> را باز و کپی کنید.'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
+refresh();
 </script></div></body></html>'''
 
 
@@ -588,8 +600,32 @@ def _web_json(start_response, payload: dict, status: str = "200 OK") -> list[byt
                          json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
 
+def _web_token_file(cfg: dict) -> str:
+    return os.path.join(os.path.dirname(cfg["target"]) or ".", "deployer_token.txt")
+
+
+def _web_token_value() -> str:
+    """Preferred token: deployer_token.txt next to the target, else DEPLOYER_WEB_TOKEN env.
+
+    The text file is the single source of truth; editing it takes effect on
+    the next request without reinstalling anything.
+    """
+    token = ""
+    try:
+        cfg = _web_config()
+        path = _web_token_file(cfg)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                token = fh.read().strip()
+    except Exception:
+        pass
+    if not token:
+        token = os.environ.get("DEPLOYER_WEB_TOKEN", "").strip()
+    return token
+
+
 def _web_token_ok(environ: dict) -> bool:
-    token = os.environ.get("DEPLOYER_WEB_TOKEN", "").strip()
+    token = _web_token_value()
     if not token:
         return False
     supplied = environ.get("HTTP_X_DEPLOYER_TOKEN", "")
@@ -608,15 +644,17 @@ def wsgi_application(environ, start_response) -> list[bytes]:
         return _web_response(start_response, "404 Not Found", b"", "text/plain")
 
     if method == "GET" and path in ("/", ""):
-        page = WEB_PAGE.replace("__HAS_TOKEN__",
-                                "true" if os.environ.get("DEPLOYER_WEB_TOKEN", "").strip() else "false")
-        return _web_response(start_response, "200 OK", page.encode("utf-8"), "text/html; charset=utf-8")
+        return _web_response(start_response, "200 OK", WEB_PAGE.encode("utf-8"), "text/html; charset=utf-8")
 
     if method == "GET" and path == "/status":
         try:
             cfg = _web_config()
             report = build_report(cfg)
-            return _web_json(start_response, {"ok": True, "report": _report_public(report)})
+            return _web_json(start_response, {
+                "ok": True, "report": _report_public(report),
+                "token_configured": bool(_web_token_value()),
+                "token_file": _web_token_file(cfg),
+            })
         except DeployerError as exc:
             return _web_json(start_response, {"ok": False, "error": str(exc)})
         except Exception as exc:
@@ -625,11 +663,13 @@ def wsgi_application(environ, start_response) -> list[bytes]:
 
     if method == "POST" and path in ("/check", "/install", "/rollback"):
         if not _web_token_ok(environ):
-            if not os.environ.get("DEPLOYER_WEB_TOKEN", "").strip():
+            if not _web_token_value():
                 return _web_json(start_response,
-                                 {"ok": False, "error": "توکن وب دیپلوی‌ر تنظیم نشده است؛ فقط نمایش وضعیت فعال است (DEPLOYER_WEB_TOKEN)"},
+                                 {"ok": False, "error": "رمز وب دیپلوی‌ر تنظیم نشده است؛ اسکریپت نصب را دوباره اجرا کنید تا deployer_token.txt کنار scraper4.py ساخته شود"},
                                  "403 Forbidden")
-            return _web_json(start_response, {"ok": False, "error": "رمزِ توکن وب دیپلوی‌ر نادرست است"}, "401 Unauthorized")
+            return _web_json(start_response,
+                             {"ok": False, "error": "رمز نادرست است؛ محتوای deployer_token.txt کنار scraper4.py را کپی کنید"},
+                             "401 Unauthorized")
         try:
             cfg = _web_config()
             if path == "/check":

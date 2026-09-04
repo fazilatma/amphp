@@ -35,7 +35,8 @@ Set DEPLOYER_WEB_TOKEN for install/rollback actions (read-only otherwise).
 
 Configuration (CLI flags override env vars, env vars override defaults):
     DEPLOYER_REPO          repository as owner/repo          (default fazilatma/amphp)
-    DEPLOYER_BRANCHES      comma separated branch list        (default arena/01a0640f-amphp)
+    DEPLOYER_ALL_BRANCHES  search EVERY branch of the repo   (default 1/true; '0' disables)
+    DEPLOYER_BRANCHES      explicit comma separated branch list (overrides all-branches)
     DEPLOYER_PATH          file inside the repository         (default scraper4.py)
     DEPLOYER_TARGET        local file to update (default: scraper4.py next to this file)
     DEPLOYER_GITHUB_TOKEN  private repository token (optional)
@@ -44,9 +45,11 @@ Configuration (CLI flags override env vars, env vars override defaults):
     DEPLOYER_LOG_FILE      append logs here (optional)
     DEPLOYER_GITHUB_BASE   GitHub API base (default https://api.github.com)
 
-In auto mode the deployer checks immediately, then repeats every interval.
-Use --once (e.g. from a PythonAnywhere scheduled task) or --check only to
-decide manually. A failed branch never blocks the others; the newest valid
+In ALL-BRANCHES mode (the default) the deployer lists every branch of the
+repository through the GitHub API, downloads scraper4.py from each of them
+in parallel, compares APP_VERSION values and installs the newest. Set
+DEPLOYER_BRANCHES (or pass --branches) to limit the check to specific
+branches. A failed branch never blocks the others; the newest valid
 version wins, and the installed version is never downgraded.
 """
 
@@ -67,7 +70,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
+DEPLOYER_VERSION = "1.2.0"
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
@@ -75,6 +80,8 @@ DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 30
 CONNECT_TIMEOUT = 30
 MAX_CONTENT_BYTES = 2 * 1024 * 1024
+MAX_BRANCHES = 500
+BRANCH_WORKERS = 8
 REQUIRED_MARKERS = ("APP_VERSION", "Flask(", '@app.get("/")', "/api/deploy/run")
 VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*["\']([^"\']+)', re.MULTILINE)
 PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -175,13 +182,21 @@ def load_config(args: argparse.Namespace) -> dict:
         return os.environ.get(name, default).strip()
 
     branches_raw = env("DEPLOYER_BRANCHES")
-    branches = ([clean_text(x) for x in branches_raw.split(",") if clean_text(x)]
-                if branches_raw else list(DEFAULT_BRANCHES))
+    all_raw = env("DEPLOYER_ALL_BRANCHES", "1").lower()
+    all_branches = all_raw not in {"0", "false", "off", "no", ""}
+    if branches_raw:
+        branches = [clean_text(x) for x in branches_raw.split(",") if clean_text(x)]
+        all_branches = False  # explicit list wins
+    elif all_branches:
+        branches = []  # resolved from the GitHub branch list at run time
+    else:
+        branches = list(DEFAULT_BRANCHES)
     env_target = env("DEPLOYER_TARGET")
     target = os.path.abspath(os.path.expanduser(env_target)) if env_target else os.path.abspath(default_target())
     cfg = {
         "repo": env("DEPLOYER_REPO", DEFAULT_REPO) or DEFAULT_REPO,
         "branches": branches,
+        "all_branches": all_branches,
         "path": env("DEPLOYER_PATH", DEFAULT_PATH) or DEFAULT_PATH,
         "target": target,
         "token": env("DEPLOYER_GITHUB_TOKEN"),
@@ -195,6 +210,11 @@ def load_config(args: argparse.Namespace) -> dict:
         cfg["repo"] = args.repo
     if args.branches:
         cfg["branches"] = [clean_text(x) for x in args.branches.split(",") if clean_text(x)]
+        cfg["all_branches"] = False
+    if args.all_branches is not None:
+        cfg["all_branches"] = args.all_branches
+        if cfg["all_branches"] and not args.branches:
+            cfg["branches"] = []
     if args.path:
         cfg["path"] = args.path
     if args.target:
@@ -209,7 +229,7 @@ def load_config(args: argparse.Namespace) -> dict:
         cfg["log_file"] = args.log_file
     if args.github_base:
         cfg["github_base"] = args.github_base.rstrip("/")
-    if not cfg["branches"]:
+    if not cfg["branches"] and not cfg["all_branches"]:
         raise DeployerError("هیچ برنچی پیکربندی نشده است")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", cfg["repo"]):
         raise DeployerError("نام repository باید به صورت owner/repo باشد")
@@ -220,20 +240,16 @@ def load_config(args: argparse.Namespace) -> dict:
 # GitHub access
 # ---------------------------------------------------------------------------
 
-def fetch_file(cfg: dict, branch: str) -> dict:
-    """Fetch one file from a branch; returns sha/size/content/html_url."""
-    url = (
-        f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}"
-        f"/contents/{urllib.parse.quote(cfg['path'], safe='/')}"
-        + "?ref=" + urllib.parse.quote(branch, safe="")
-    )
+def _github_request(url: str, cfg: dict, not_found_message: str = "برنچ یا فایل در GitHub پیدا نشد (HTTP 404)"):
+    """GET a GitHub JSON endpoint with unified error handling."""
     headers = {"User-Agent": "scraper4-standalone-deployer", "Accept": "application/vnd.github+json"}
     if cfg.get("token"):
         headers["Authorization"] = "Bearer " + cfg["token"]
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=CONNECT_TIMEOUT) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+            return json.loads(raw), response
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -245,12 +261,49 @@ def fetch_file(cfg: dict, branch: str) -> dict:
         if exc.code == 403:
             raise DeployerError("دسترسی GitHub رد شد یا محدودیت نرخ تمام شده است (HTTP 403)") from exc
         if exc.code == 404:
-            raise DeployerError("برنچ یا فایل در GitHub پیدا نشد (HTTP 404)") from exc
+            raise DeployerError(not_found_message) from exc
         raise DeployerError(f"GitHub HTTP {exc.code}: {body}") from exc
     except urllib.error.URLError as exc:
         raise DeployerError(f"ارتباط با GitHub ناموفق بود: {exc.reason}") from exc
     except (ValueError, json.JSONDecodeError) as exc:
         raise DeployerError("پاسخ GitHub معتبر نیست") from exc
+
+
+def fetch_branches(cfg: dict, limit: int = MAX_BRANCHES) -> list[str]:
+    """List every branch of the repository (paginated), deduplicated."""
+    branches: list[str] = []
+    page = 1
+    seen: set[str] = set()
+    while page <= 20 and len(branches) < limit:
+        url = (
+            f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}/branches"
+            f"?per_page=100&page={page}"
+        )
+        payload, _ = _github_request(url, cfg, "repository یا API برنچ‌ها در GitHub پیدا نشد (HTTP 404)")
+        if not isinstance(payload, list):
+            raise DeployerError("پاسخ فهرست برنچ‌های GitHub معتبر نیست")
+        for item in payload:
+            if isinstance(item, dict):
+                name = clean_text(item.get("name"))
+                if name and name not in seen:
+                    seen.add(name)
+                    branches.append(name)
+        if len(payload) < 100:
+            break
+        page += 1
+    if not branches:
+        raise DeployerError("فهرست برنچ‌های repository از GitHub خالی دریافت شد")
+    return branches[:limit]
+
+
+def fetch_file(cfg: dict, branch: str) -> dict:
+    """Fetch one file from a branch; returns sha/size/content/html_url."""
+    url = (
+        f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}"
+        f"/contents/{urllib.parse.quote(cfg['path'], safe='/')}"
+        + "?ref=" + urllib.parse.quote(branch, safe="")
+    )
+    payload, _ = _github_request(url, cfg)
     if not isinstance(payload, dict) or payload.get("type") != "file":
         raise DeployerError("مسیر GitHub یک فایل نیست")
     size = int(payload.get("size") or 0)
@@ -270,19 +323,47 @@ def fetch_file(cfg: dict, branch: str) -> dict:
     }
 
 
-def collect_candidates(cfg: dict) -> tuple[list[dict], list[dict]]:
-    """Fetch the file from every branch; newest valid version comes first."""
+def resolve_branches(cfg: dict) -> list[str]:
+    """Return the branch list to scan: explicit config or every repo branch."""
+    branches = list(cfg.get("branches") or [])
+    if cfg.get("all_branches") and not branches:
+        branches = fetch_branches(cfg)
+        cfg["branches"] = branches
+        cfg["branches_resolved"] = True
+    seen: set[str] = set()
+    unique = []
+    for branch in branches:
+        branch = clean_text(branch)
+        if branch and branch not in seen:
+            seen.add(branch)
+            unique.append(branch)
+    if not unique:
+        raise DeployerError("هیچ برنچی برای بررسی در دسترس نیست")
+    return unique
+
+
+def collect_candidates(cfg: dict) -> tuple[list[dict], list[dict], list[str]]:
+    """Fetch the file from every branch (in parallel); newest valid version first."""
+    branches = resolve_branches(cfg)
     candidates: list[dict] = []
     errors: list[dict] = []
-    for branch in cfg["branches"]:
+
+    def fetch_one(branch: str):
         try:
             meta = fetch_file(cfg, branch)
             meta["version"] = validate_source(meta["content"])
-            candidates.append(meta)
+            return branch, meta, None
         except Exception as exc:  # keep going; a bad branch never blocks the rest
-            errors.append({"branch": branch, "error": str(exc)[:300]})
+            return branch, None, str(exc)[:300]
+
+    with ThreadPoolExecutor(max_workers=BRANCH_WORKERS) as pool:
+        for branch, meta, error in pool.map(fetch_one, branches):
+            if error:
+                errors.append({"branch": branch, "error": error})
+            else:
+                candidates.append(meta)
     candidates.sort(key=lambda item: version_key(item["version"]), reverse=True)
-    return candidates, errors
+    return candidates, errors, branches
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +444,7 @@ def rollback(cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def build_report(cfg: dict) -> dict:
-    candidates, errors = collect_candidates(cfg)
+    candidates, errors, branches = collect_candidates(cfg)
     best = candidates[0] if candidates else None
     target = cfg["target"]
     current_version = "unknown"
@@ -380,17 +461,19 @@ def build_report(cfg: dict) -> dict:
         rows.append({"branch": error["branch"], "error": error["error"]})
     return {
         "ok": bool(candidates),
-        "repo": cfg["repo"], "branches": cfg["branches"], "path": cfg["path"],
-        "target": target, "current_version": current_version,
+        "repo": cfg["repo"], "branches": branches, "all_branches": bool(cfg.get("all_branches")),
+        "path": cfg["path"], "target": target, "current_version": current_version,
         "best": {"branch": best["branch"], "version": best["version"], "sha": best["sha"]} if best else None,
-        "rows": rows, "total_checked": total,
+        "rows": rows, "total_checked": total, "found_with_file": len(candidates),
     }
 
 
 def format_report(cfg: dict, report: dict) -> str:
+    source = "همه برنچ‌های ریپو (خودکار از GitHub)" if report.get("all_branches") else "برنچ‌های پیکربندی‌شده"
     lines = [
         f"فایل هدف: {report['target']}",
         f"فایل محلی: v{report['current_version']}",
+        f"منبع برنچ‌ها: {source}",
     ]
     if report["best"]:
         lines.append(f"جدیدترین برنچ: {report['best']['branch']} — v{report['best']['version']}")
@@ -436,6 +519,7 @@ button{cursor:pointer;border-radius:10px;border:1px solid #2c4a6d;background:lin
 button.gray{background:#17263d;border-color:#33465f}button.green{background:linear-gradient(135deg,#047857,#065f46);border-color:#34d399}
 button:disabled{opacity:.55;cursor:wait}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
 .status{white-space:pre-wrap;line-height:1.9;color:#b9cae0;border-right:3px solid var(--blue);padding-right:12px;min-height:40px}
+#branches{max-height:340px;overflow:auto;margin-top:4px}
 .ok{color:var(--green)}.err{color:var(--red)}.warn{color:var(--amber)}code{direction:ltr;display:inline-block;color:#a5e4ff;background:#061426;border-radius:6px;padding:1px 6px}
 .branch{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:#081528;margin-top:7px;font-size:13px}
 .branch.best{border-color:#34d39955;background:#052e2244}.branch .tag{font-weight:800;font-size:11px;padding:3px 8px;border-radius:99px;background:#11324a;color:#8ed0ff}
@@ -444,8 +528,8 @@ button:disabled{opacity:.55;cursor:wait}.actions{display:flex;gap:9px;flex-wrap:
 note{display:block;padding:10px 12px;border:1px solid #fbbf2444;background:#42200633;border-radius:10px;color:#fde68a;margin-bottom:12px}
 @media(max-width:640px){.stats{grid-template-columns:1fr 1fr}}
 </style></head><body><div class="wrap">
-<h1>⚙️ دیپلوی‌ر مستقل اسکرپر۴ <small>نصب خودکار جدیدترین نسخه از چند برنچ</small></h1>
-<div class="sub">چک خودکار GitHub → مقایسه نسخه‌ها → نصب اتمیک کنار <code>scraper4.py</code> با پشتیبان <code>.bak</code></div>
+<h1>⚙️ دیپلوی‌ر مستقل اسکرپر۴ <small>جستجوی همه برنچ‌های ریپو و نصب جدیدترین نسخه</small></h1>
+<div class="sub">فهرست‌کشی خودکار برنچ‌ها از GitHub → مقایسه نسخه‌ها → نصب اتمیک کنار <code>scraper4.py</code> با پشتیبان <code>.bak</code></div>
 <div class="card" id="tokenCard" style="display:none"><note>🔒 برای نصب و بازگشت، رمز وب دیپلوی‌ر لازم است. برای تنظیم آن <code>DEPLOYER_WEB_TOKEN</code> را در فایل WSGI ‌قرار دهید.</note></div>
 <div class="card">
 <div class="stats"><div class="stat"><b id="stCurrent">—</b><span>نسخه نصب‌شده</span></div><div class="stat"><b id="stBest">—</b><span>جدیدترین برنچ</span></div><div class="stat"><b id="stChecked">۰</b><span>برنچ بررسی‌شده</span></div></div>
@@ -464,7 +548,7 @@ function askToken(){const v=prompt('رمز دیپلوی‌ر (DEPLOYER_WEB_TOKEN
 function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});$('status').textContent=b?'در حال اجرا…':$('status').textContent}
 function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
  const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(x.newest?'<b class="tag">جدیدترین</b>':'')+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
- $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+esc((r.branches||[]).join('، '));}
+ $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0);}
 async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');render(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
 async function act(kind){if(kind==='install'&&!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز/.test(e.message)){msg(esc(e.message),'err');if(!hasToken)$('tokenCard').style.display='block'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
 $('tokenCard').style.display=hasToken?'none':'block';$('btnTok').style.display=hasToken?'none':'inline-block';refresh();
@@ -473,8 +557,8 @@ $('tokenCard').style.display=hasToken?'none':'block';$('btnTok').style.display=h
 
 def _web_config() -> dict:
     """Config for the web app: like CLI but driven purely by DEPLOYER_* env vars."""
-    ns = argparse.Namespace(repo=None, branches=None, path=None, target=None, token=None,
-                            reload_file=None, interval=None, log_file=None, github_base=None)
+    ns = argparse.Namespace(repo=None, branches=None, all_branches=None, path=None, target=None,
+                            token=None, reload_file=None, interval=None, log_file=None, github_base=None)
     return load_config(ns)
 
 
@@ -600,7 +684,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true", help="report latest versions only; do not write anything")
     parser.add_argument("--rollback", action="store_true", help="restore scrap4.py from scraper4.py.bak")
     parser.add_argument("--repo", help="repository as owner/repo")
-    parser.add_argument("--branches", help="comma separated branch list")
+    parser.add_argument("--branches", help="comma separated branch list (disables all-branches)")
+    parser.add_argument("--all-branches", action=argparse.BooleanOptionalAction, default=None,
+                        help="scan every branch of the repository (default: on)")
     parser.add_argument("--path", help="file inside the repository")
     parser.add_argument("--target", help="local main file to update")
     parser.add_argument("--token", help="GitHub token (or DEPLOYER_GITHUB_TOKEN)")
@@ -611,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--web", action="store_true", help="serve the web UI locally (WSGI app also available)")
     parser.add_argument("--port", type=int, default=8787, help="port for --web (default 8787)")
     parser.add_argument("-v", "--verbose", action="store_true", help="log every detail")
+    parser.add_argument("--version", action="version", version=f"deployer {DEPLOYER_VERSION}")
     return parser
 
 

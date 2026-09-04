@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 EXPECTED_USER="Fazilatma"
-USER_NAME="$(id -un)"
+USER_NAME="${DEPLOYER_PA_USER:-$(id -un)}"
 USER_LOWER="$(printf '%s' "$USER_NAME" | tr '[:upper:]' '[:lower:]')"
 HOME_DIR="$HOME"
 DOMAIN="${USER_LOWER}.pythonanywhere.com"
@@ -13,10 +13,12 @@ DATA_FILE="$APP_DIR/scraper4_data.json"
 PASSWORD_FILE="$APP_DIR/admin_password.txt"
 TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
 VENV_DIR="$APP_DIR/venv"
-REPO="fazilatma/amphp"
-BRANCH="arena/01a0640f-amphp"
-SOURCE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH/scraper4.py"
-API="https://www.pythonanywhere.com/api/v0/user/$USER_NAME"
+REPO="${DEPLOYER_REPO:-fazilatma/amphp}"
+BRANCH="${DEPLOYER_SOURCE_BRANCH:-arena/01a06abd-amphp}"
+SOURCE_URL="${DEPLOYER_SOURCE_RAW:-https://raw.githubusercontent.com/$REPO/$BRANCH/scraper4.py}"
+API="${DEPLOYER_PA_API:-https://www.pythonanywhere.com/api/v0/user/$USER_NAME}"
+VARWWW="${DEPLOYER_VARWWW:-/var/www}"
+HEALTH_URL="${DEPLOYER_HEALTH_URL:-https://$DOMAIN/health}"
 AUTH=""; RESP=""; DOWN=""
 
 cleanup(){ unset TOKEN ADMIN_PASSWORD APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E 2>/dev/null||true; [ -z "${AUTH:-}" ]||rm -f "$AUTH"; [ -z "${RESP:-}" ]||rm -f "$RESP"; [ -z "${DOWN:-}" ]||rm -f "$DOWN"; }
@@ -50,28 +52,75 @@ missing=[x for x in ("APP_VERSION","Flask(","/api/scrape","/api/deploy/run") if 
 if missing: raise SystemExit("Invalid download; missing: "+", ".join(missing))
 ast.parse(s,filename=str(p)); print("Downloaded source syntax is valid.")
 PY
-[ ! -f "$APP_FILE" ]||cp -p "$APP_FILE" "$APP_FILE.$(date +%Y%m%d-%H%M%S).bak"
-mv "$DOWN" "$APP_FILE"; DOWN=""; chmod 600 "$APP_FILE"
+
+# Never downgrade the installed site: keep the file when the local version
+# is already equal to or newer than the source branch (FORCE=1 replaces).
+SKIP_REPLACE=0
+if [ -f "$APP_FILE" ] && [ "${FORCE:-0}" != 1 ]; then
+    NEW_VER="$("$SYSTEM_PY" - "$DOWN" <<'PY'
+import re,sys,pathlib
+s=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+m=re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)',s,re.M)
+print(m.group(1) if m else "unknown")
+PY
+)"
+    OLD_VER="$("$SYSTEM_PY" - "$APP_FILE" <<'PY'
+import re,sys,pathlib
+s=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+m=re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)',s,re.M)
+print(m.group(1) if m else "unknown")
+PY
+)"
+    NEWER_OR_EQUAL="$("$SYSTEM_PY" - "$OLD_VER" "$NEW_VER" <<'PY'
+import re,sys
+def key(v):
+    m=re.match(r'^v?(\d+(?:\.\d+){0,3})',v)
+    nums=[int(x) for x in m.group(1).split(".")] if m else [0]
+    return (nums+[0,0,0])[:4]
+ka,kb=key(sys.argv[1]),key(sys.argv[2])
+cmpv=0
+for x,y in zip(ka,kb):
+    if x!=y:
+        cmpv=1 if x>y else -1
+        break
+print(1 if cmpv>=0 else 0)
+PY
+)"
+    if [ "$NEWER_OR_EQUAL" = 1 ]; then
+        SKIP_REPLACE=1
+        echo "Installed scraper4.py v$OLD_VER is already >= branch v$NEW_VER; keeping the installed file (FORCE=1 replaces)."
+    fi
+fi
+if [ "$SKIP_REPLACE" != 1 ]; then
+    [ ! -f "$APP_FILE" ]||cp -p "$APP_FILE" "$APP_FILE.$(date +%Y%m%d-%H%M%S).bak"
+    mv "$DOWN" "$APP_FILE"; DOWN=""; chmod 600 "$APP_FILE"
+    echo "Installed scraper4.py v$NEW_VER from branch $BRANCH."
+fi
 
 echo "Creating isolated virtual environment..."
 if [ ! -x "$VENV_DIR/bin/python" ]; then "$SYSTEM_PY" -m venv "$VENV_DIR"; fi
 VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
-# Free-plan quota: clear only disposable caches and install packages used by this app.
-rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
-PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright basalam-sdk cloudscraper curl_cffi
-BROWSER_PATH="$APP_DIR/ms-playwright"
-export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
-echo "Installing the smaller Chromium Headless Shell for Playwright..."
-if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
- echo "Home quota blocked the browser; retrying in /tmp outside the account quota..."
- BROWSER_PATH="/tmp/scraper4-${USER_NAME}-playwright"
- rm -rf "$BROWSER_PATH"; mkdir -p "$BROWSER_PATH"; chmod 700 "$BROWSER_PATH"
- export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
- if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
-  echo "WARNING: Browser download failed in both locations. Direct HTML extraction remains available; retry with the in-app lightweight installer."
- fi
+BROWSER_PATH=""
+if [ "${DEPLOYER_SKIP_DEPS:-0}" = 1 ]; then
+    echo "Skipping dependency install (DEPLOYER_SKIP_DEPS=1)."
+else
+    # Free-plan quota: clear only disposable caches and install packages used by this app.
+    rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
+    PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright basalam-sdk cloudscraper curl_cffi
+    BROWSER_PATH="$APP_DIR/ms-playwright"
+    export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
+    echo "Installing the smaller Chromium Headless Shell for Playwright..."
+    if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
+     echo "Home quota blocked the browser; retrying in /tmp outside the account quota..."
+     BROWSER_PATH="/tmp/scraper4-${USER_NAME}-playwright"
+     rm -rf "$BROWSER_PATH"; mkdir -p "$BROWSER_PATH"; chmod 700 "$BROWSER_PATH"
+     export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
+     if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
+      echo "WARNING: Browser download failed in both locations. Direct HTML extraction remains available; retry with the in-app lightweight installer."
+     fi
+    fi
+    "$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright,basalam_sdk,cloudscraper,curl_cffi; print("Required scraper dependencies OK")'
 fi
-"$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright,basalam_sdk,cloudscraper,curl_cffi; print("Required scraper dependencies OK")'
 "$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
 SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"
 
@@ -99,19 +148,42 @@ fi
 STATUS="$(api_call PATCH "$API/webapps/$DOMAIN/" --data-urlencode "virtualenv_path=$VENV_DIR")"
 [[ "$STATUS" = 200||"$STATUS" = 201 ]]||{ cat "$RESP"||true; fail "Could not set virtualenv: HTTP $STATUS"; }
 
-find_wsgi(){ local f; for f in "/var/www/${USER_LOWER}_pythonanywhere_com_wsgi.py" "/var/www/${USER_NAME}_pythonanywhere_com_wsgi.py"; do [ ! -f "$f" ]||{ printf '%s' "$f"; return; }; done; find /var/www -maxdepth 1 -type f -name '*_pythonanywhere_com_wsgi.py' -writable -print 2>/dev/null|head -n1; }
+find_wsgi(){ local f; for f in "$VARWWW/${USER_LOWER}_pythonanywhere_com_wsgi.py" "$VARWWW/${USER_NAME}_pythonanywhere_com_wsgi.py"; do [ ! -f "$f" ]||{ printf '%s' "$f"; return; }; done; find "$VARWWW" -maxdepth 1 -type f -name '*_pythonanywhere_com_wsgi.py' -writable -print 2>/dev/null|head -n1; }
 WSGI=""
 for n in $(seq 1 30); do WSGI="$(find_wsgi||true)"; [ -z "$WSGI" ]||break; echo "Waiting for WSGI ($n/30)..."; sleep 2; done
-[ -n "$WSGI" ]&&[ -w "$WSGI" ]||fail "No writable WSGI file found in /var/www."
+[ -n "$WSGI" ]&&[ -w "$WSGI" ]||fail "No writable WSGI file found in $VARWWW."
 echo "Using WSGI: $WSGI"
 
-export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES" BROWSER_PATH_E="$BROWSER_PATH"
+export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES" BROWSER_PATH_E="$BROWSER_PATH" REPO_E="$REPO" BRANCH_E="$BRANCH"
 "$VENV_PY" - <<'PY'
 import datetime,json,os,pathlib,shutil
-app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]
+app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]; repo=os.environ["REPO_E"]; branch=os.environ["BRANCH_E"]
 shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
 source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(browser_path),"os.environ['SCRAPER_PLAYWRIGHT_PATH']="+repr(browser_path),"from scraper4 import app as application",""))
+# Keep the deployer /deployer mount when it was already patched into the WSGI,
+# so install_deployer_webapp.sh does not need to be re-run afterwards.
+had_mount = False
+try:
+    had_mount = "# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---" in wsgi.read_text(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
+if had_mount:
+    mount = ("\n\n# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---\n"
+             "import os as _os\n"
+             "import sys as _sys\n"
+             "_d = _os.path.expanduser('~/.deployer')\n"
+             "if _d not in _sys.path:\n"
+             "    _sys.path.insert(0, _d)\n"
+             "from deployer_wsgi import application as _deployer_app\n"
+             "_original_application = application\n"
+             "def application(environ, start_response):\n"
+             "    if environ.get('PATH_INFO', '').startswith('/deployer'):\n"
+             "        return _deployer_app(environ, start_response)\n"
+             "    return _original_application(environ, start_response)\n")
+    with wsgi.open("a", encoding="utf-8") as fh:
+        fh.write(mount)
+    print("Deployer /deployer mount preserved in WSGI.")
 data={}
 if datafile.exists():
  try:
@@ -119,11 +191,12 @@ if datafile.exists():
  except Exception: pass
 data.setdefault("profiles",{}); data.setdefault("woocommerce",{"url":"","consumer_key":"","consumer_secret":""}); data.setdefault("network",{"timeout":25,"gap_ms":350,"proxy":"","verify_tls":True}); data.setdefault("last_result",[])
 old=data.get("deploy") if isinstance(data.get("deploy"),dict) else {}
-data["deploy"]={"repo":"fazilatma/amphp","branch":"arena/01a0640f-amphp","path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
+data["deploy"]={"repo":repo,"branch":branch,"path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
 tmp=datafile.with_suffix(".json.tmp"); tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8"); tmp.replace(datafile)
 PY
 unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E BROWSER_PATH_E; chmod 600 "$DATA_FILE"
 
+if [ "${DEPLOYER_SKIP_DEPS:-0}" != 1 ]; then
 "$VENV_PY" - "$APP_DIR" <<'PY'
 import pathlib,sys
 sys.path.insert(0,str(pathlib.Path(sys.argv[1]).resolve())); import scraper4
@@ -132,6 +205,9 @@ if need-routes: raise RuntimeError("Missing routes: "+", ".join(need-routes))
 assert scraper4.app.test_client().get("/health").status_code==200
 print("Local Flask test passed:",scraper4.APP_VERSION)
 PY
+else
+echo "Skipping local Flask test (DEPLOYER_SKIP_DEPS=1)."
+fi
 
 echo "Enabling web app..."
 ENABLE_STATUS="$(api_call POST "$API/webapps/$DOMAIN/enable/")"
@@ -155,7 +231,7 @@ if [ "$RELOAD_OK" != 1 ]; then
 fi
 rm -f "$AUTH" "$RESP"; AUTH=""; RESP=""
 LIVE=000
-for n in $(seq 1 18); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "https://$DOMAIN/health"||true)"; [ "$LIVE" != 200 ]||break; echo "Health $n/18: HTTP $LIVE"; done
+for n in $(seq 1 18); do sleep 5; LIVE="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 "$HEALTH_URL"||true)"; [ "$LIVE" != 200 ]||break; echo "Health $n/18: HTTP $LIVE"; done
 
 if [ "$LIVE" != 200 ]; then
  echo "Recent PythonAnywhere logs:"

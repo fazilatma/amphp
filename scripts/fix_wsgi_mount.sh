@@ -229,10 +229,26 @@ lines += [
     "",
 ]
 path = os.environ["WSGI_FILE_E"]
-tmp = app_dir + "/.wsgi.tmp"
-with open(tmp, "w", encoding="utf-8") as fh:
-    fh.write("\n".join(lines))
-os.replace(tmp, path)
+content = "\n".join(lines)
+# /var/www lives on a different filesystem from /home on PythonAnywhere, so a
+# rename from app_dir (home) to /var/www fails with EXDEV. Write the temp file
+# next to the WSGI itself and only drop back to a direct write if needed.
+try:
+    tmp = os.path.join(os.path.dirname(path), ".wsgi.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        import shutil
+        shutil.copyfile(tmp, path)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+except OSError:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
 PY
 echo "==> WSGI نوشته شد (محافظت‌شده: سایت اصلی + /deployer)"
 

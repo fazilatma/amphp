@@ -119,9 +119,15 @@ def get_default_config() -> Dict[str, Any]:
             "provider": "openrouter",
             "api_key": "",
             "model": "meta-llama/llama-3.3-70b-instruct:free",
+            "base_url": "",
             "temperature": 0.7,
             "max_tokens": 1500,
-            "system_prompt": "شما دستیار ارشد نگارش کاتالوگ فروشگاه آنلاین و پشتیبانی مشتریان هستید."
+            "system_prompt": "شما دستیار ارشد نگارش کاتالوگ فروشگاه آنلاین و پشتیبانی مشتریان هستید.",
+            "net_mode": "direct",
+            "worker_url": DEFAULT_CLOUDFLARE_RELAY,
+            "doh_url": "https://cloudflare-dns.com/dns-query",
+            "resolve_ip": "",
+            "fallback": True
         },
         "network": {
             "timeout": 25,
@@ -565,54 +571,209 @@ def run_basalam_catfix_worker(task_id: str):
     except Exception as e:
         update_task(task_id, error=str(e))
 
-# AI Content Generation Engine
-def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Dict[str, Any]] = None) -> str:
+# ==================== AI HTTP LAYER ====================
+# Mirrors scraper4.php aiHttpPrepare(): the destination is handed to the
+# Cloudflare Worker as a PATH (or via a {url} placeholder) plus an
+# X-Target-URL header -- NOT as a "?url=" query string. Sending it as a query
+# parameter makes the worker fetch its own origin, so the upstream never sees
+# the Authorization header and answers 401 Unauthorized.
+
+AI_ENDPOINTS = {
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+    "openai": "https://api.openai.com/v1/chat/completions",
+    "groq": "https://api.groq.com/openai/v1/chat/completions",
+    "deepseek": "https://api.deepseek.com/chat/completions",
+    "mistral": "https://api.mistral.ai/v1/chat/completions",
+    "cerebras": "https://api.cerebras.ai/v1/chat/completions",
+    "together": "https://api.together.xyz/v1/chat/completions",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "ollama": "http://localhost:11434/v1/chat/completions",
+}
+AI_DEFAULT_MODELS = {
+    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
+    "openai": "gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
+    "deepseek": "deepseek-chat",
+    "mistral": "mistral-large-latest",
+    "cerebras": "llama3.1-70b",
+    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "gemini": "gemini-2.0-flash",
+    "ollama": "llama3",
+}
+# Order used by the auto-fallback chain and the diagnostics probe.
+AI_NET_MODES = ["direct", "worker", "gateway", "doh", "dns", "proxy"]
+
+
+class AiHttpError(Exception):
+    def __init__(self, message: str, mode: str = "", status: int = 0, body: str = ""):
+        super().__init__(message)
+        self.mode = mode
+        self.status = status
+        self.body = body
+
+
+def ai_resolve_endpoint(ai_cfg: Dict[str, Any]) -> str:
+    """A user-supplied base URL (gateway mode) always wins over the preset."""
+    provider = (ai_cfg.get("provider") or "openrouter").strip().lower()
+    base = (ai_cfg.get("base_url") or "").strip().rstrip("/")
+    if base:
+        if base.endswith("/chat/completions"):
+            return base
+        return f"{base}/chat/completions"
+    return AI_ENDPOINTS.get(provider, AI_ENDPOINTS["openrouter"])
+
+
+def ai_build_request(endpoint: str, mode: str, ai_cfg: Dict[str, Any]) -> Tuple[str, Dict[str, str], Optional[Dict[str, str]]]:
+    """Return (request_url, extra_headers, proxies) for the chosen transport."""
+    extra: Dict[str, str] = {}
+    proxies: Optional[Dict[str, str]] = None
+
+    if mode == "worker":
+        # Do NOT silently substitute a default relay here: that would push the
+        # user's API key through a proxy they never configured. PHP errors out
+        # on an empty worker URL, and so do we.
+        worker = (ai_cfg.get("worker_url") or "").strip().rstrip("/")
+        if not worker:
+            raise AiHttpError("آدرس Worker خالی است — آن را در بخش «اتصال» وارد کنید", mode)
+        if "{url}" in worker:
+            req_url = worker.replace("{url}", urllib.parse.quote(endpoint, safe=""))
+        else:
+            # Path-based reverse proxy: https://worker.dev/https://api.x/v1/...
+            req_url = worker + "/" + endpoint.lstrip("/")
+        extra["X-Target-URL"] = endpoint
+        return req_url, extra, None
+
+    if mode == "proxy":
+        px = (ai_cfg.get("proxy") or "").strip()
+        if not px:
+            raise AiHttpError("آدرس پروکسی خالی است", mode)
+        if "://" not in px:
+            px = "http://" + px
+        proxies = {"http": px, "https": px}
+        return endpoint, extra, proxies
+
+    if mode in ("doh", "dns"):
+        host = urllib.parse.urlparse(endpoint).hostname or ""
+        if mode == "dns":
+            ip = (ai_cfg.get("resolve_ip") or "").strip()
+            if not ip:
+                raise AiHttpError("IP دستی وارد نشده است", mode)
+        else:
+            ip = doh_resolve(host, (ai_cfg.get("doh_url") or "https://cloudflare-dns.com/dns-query").strip())
+        if not ip:
+            raise AiHttpError("نام میزبان resolve نشد", mode)
+        parts = urllib.parse.urlsplit(endpoint)
+        scheme = parts.scheme or "https"
+        port = parts.port or (443 if scheme == "https" else 80)
+        # Hostname stays in the Host header; only the TCP destination changes.
+        pinned = urllib.parse.urlunsplit((scheme, f"{ip}:{port}", parts.path, parts.query, ""))
+        extra["Host"] = host
+        return pinned, extra, None
+
+    # direct / gateway
+    return endpoint, extra, None
+
+
+def doh_resolve(host: str, doh_url: str, timeout: int = 10) -> str:
+    """DNS-over-HTTPS lookup, to survive poisoned DNS resolvers."""
+    try:
+        sep = "&" if "?" in doh_url else "?"
+        r = requests.get(f"{doh_url}{sep}name={urllib.parse.quote(host)}&type=A",
+                         headers={"Accept": "application/dns-json"}, timeout=timeout)
+        r.raise_for_status()
+        for ans in r.json().get("Answer", []) or []:
+            if ans.get("type") == 1 and ans.get("data"):
+                return str(ans["data"]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def ai_extract_text(res_json: Dict[str, Any]) -> str:
+    try:
+        return (res_json["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        raise AiHttpError("پاسخ مدل ساختار مورد انتظار را نداشت")
+
+
+def ai_post_once(endpoint: str, payload: Dict[str, Any], api_key: str,
+                 mode: str, ai_cfg: Dict[str, Any], timeout: int) -> str:
+    req_url, extra, proxies = ai_build_request(endpoint, mode, ai_cfg)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    headers.update(extra)
+    try:
+        resp = requests.post(req_url, headers=headers, json=payload,
+                             proxies=proxies, timeout=timeout,
+                             verify=bool(ai_cfg.get("verify_tls", True)))
+    except requests.RequestException as e:
+        raise AiHttpError(f"خطای اتصال: {e}", mode)
+
+    if resp.status_code >= 400:
+        detail = (resp.text or "")[:220].replace("\n", " ")
+        raise AiHttpError(f"{resp.status_code} {resp.reason}: {detail}", mode, resp.status_code, resp.text)
+    try:
+        res_json = resp.json()
+    except ValueError:
+        raise AiHttpError("پاسخ JSON نبود", mode, resp.status_code, resp.text[:220])
+    if isinstance(res_json, dict) and res_json.get("error"):
+        err = res_json["error"]
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        raise AiHttpError(f"خطای ارائه‌دهنده: {msg}", mode, resp.status_code)
+    return ai_extract_text(res_json)
+
+
+def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Dict[str, Any]] = None,
+                       mode_override: Optional[str] = None) -> str:
+    """Chat completion with PHP-compatible transports and auto-fallback."""
     if ai_cfg is None:
-        cfg = load_data()
-        ai_cfg = cfg.get("ai", {})
-    
-    provider = ai_cfg.get("provider", "openrouter")
-    api_key = ai_cfg.get("api_key", "").strip()
-    model = ai_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free").strip()
+        ai_cfg = load_data().get("ai", {})
+    # Merge network-level proxy settings so both places keep working.
     net_cfg = load_data().get("network", {})
-    
-    endpoint = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    merged = dict(ai_cfg)
+    if not merged.get("proxy") and net_cfg.get("proxy"):
+        merged["proxy"] = net_cfg["proxy"]
+    if not merged.get("worker_url") and net_cfg.get("relay_url"):
+        merged["worker_url"] = net_cfg["relay_url"]
+    if merged.get("net_mode") in (None, "", "direct") and net_cfg.get("proxy_mode") in ("relay", "worker"):
+        merged["net_mode"] = "worker"
 
-    if provider == "groq":
-        endpoint = "https://api.groq.com/openai/v1/chat/completions"
-        if not model: model = "llama3-70b-8192"
-    elif provider == "deepseek":
-        endpoint = "https://api.deepseek.com/chat/completions"
-        if not model: model = "deepseek-chat"
-    elif provider == "openai":
-        endpoint = "https://api.openai.com/v1/chat/completions"
-        if not model: model = "gpt-4o-mini"
-    elif provider == "ollama":
-        endpoint = "http://localhost:11434/v1/chat/completions"
-        if not model: model = "llama3"
+    provider = (merged.get("provider") or "openrouter").strip().lower()
+    api_key = (merged.get("api_key") or "").strip()
+    model = (merged.get("model") or "").strip() or AI_DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+    if not api_key and provider != "ollama":
+        raise AiHttpError("کلید API وارد نشده است؛ آن را در بخش هوش مصنوعی ذخیره کنید")
 
+    endpoint = ai_resolve_endpoint(merged)
+    timeout = int(net_cfg.get("timeout", 25) or 25)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": system_prompt or ai_cfg.get("system_prompt", "شما دستیار حرفه‌ای نگارش کاتالوگ فروشگاهی هستید.")},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": system_prompt or merged.get(
+                "system_prompt", "شما دستیار حرفه‌ای نگارش کاتالوگ فروشگاهی هستید.")},
+            {"role": "user", "content": prompt},
         ],
-        "temperature": float(ai_cfg.get("temperature", 0.7)),
-        "max_tokens": int(ai_cfg.get("max_tokens", 1500))
+        "temperature": float(merged.get("temperature", 0.7) or 0.7),
+        "max_tokens": int(merged.get("max_tokens", 1500) or 1500),
     }
 
-    # Use network proxy / relay if configured
-    relay_url = net_cfg.get("relay_url", DEFAULT_CLOUDFLARE_RELAY).strip()
-    proxy_mode = net_cfg.get("proxy_mode", "direct")
-    target_url = endpoint
-    if proxy_mode == "relay" and relay_url:
-        target_url = f"{relay_url.rstrip('/')}/?url={urllib.parse.quote(endpoint, safe='')}"
+    primary = (mode_override or merged.get("net_mode") or "direct").strip()
+    order = [primary]
+    if merged.get("fallback", True) and not mode_override:
+        for m in ("direct", "worker"):
+            if m not in order:
+                order.append(m)
 
-    resp = requests.post(target_url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    res_json = resp.json()
-    return res_json["choices"][0]["message"]["content"].strip()
+    last_err: Optional[AiHttpError] = None
+    for mode in order:
+        try:
+            return ai_post_once(endpoint, payload, api_key, mode, merged, timeout)
+        except AiHttpError as e:
+            last_err = e
+    raise last_err or AiHttpError("تماس با مدل ناموفق بود")
 
 def run_aicontent_worker(task_id: str, prompt_template: str, selected_indices: List[int]):
     try:
@@ -957,6 +1118,150 @@ def api_catfix_start():
     return jsonify({"ok": True, "task_id": task_id, "message": "عملیات اصلاح دسته‌بندی باسلام آغاز شد"})
 
 # AICONTENT API
+# ==================== AI DIAGNOSTICS ====================
+@app.get("/api/ai/catalog")
+def api_ai_catalog():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    providers = [{"id": p, "endpoint": u, "default_model": AI_DEFAULT_MODELS.get(p, "")}
+                 for p, u in AI_ENDPOINTS.items()]
+    return jsonify(ok=True, providers=providers, net_modes=AI_NET_MODES,
+                   default_providers=[
+                       {"id": "openrouter", "label": "OpenRouter (تجمیع‌کنندهٔ مدل‌ها)"},
+                       {"id": "groq", "label": "Groq (سریع و رایگان)"},
+                       {"id": "mistral", "label": "Mistral AI"},
+                       {"id": "gemini", "label": "Google Gemini"},
+                       {"id": "deepseek", "label": "DeepSeek"},
+                       {"id": "cerebras", "label": "Cerebras"},
+                       {"id": "together", "label": "Together AI"},
+                       {"id": "openai", "label": "OpenAI"},
+                       {"id": "ollama", "label": "Ollama (محلی)"},
+                   ])
+
+
+@app.post("/api/ai/test")
+def api_ai_test():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(force=True, silent=True) or {}
+    ai_cfg = load_data().get("ai", {})
+    if body.get("prompt"):
+        prompt = body["prompt"]
+    else:
+        prompt = "در یک جمله بگو اسکریپر فروشگاه چیست."
+    mode = body.get("mode")
+    started = time.time()
+    try:
+        text = call_ai_completion(prompt, ai_cfg=ai_cfg, mode_override=mode)
+        return jsonify(ok=True, reply=text, mode=mode or ai_cfg.get("net_mode", "direct"),
+                       provider=ai_cfg.get("provider"), model=ai_cfg.get("model"),
+                       elapsed_ms=int((time.time() - started) * 1000))
+    except AiHttpError as e:
+        return jsonify(ok=False, error=str(e), mode=e.mode, status=e.status,
+                       elapsed_ms=int((time.time() - started) * 1000)), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 200
+
+
+@app.post("/api/ai/probe")
+def api_ai_probe():
+    """Test every transport mode and report which ones work on this server."""
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    ai_cfg = load_data().get("ai", {})
+    provider = (ai_cfg.get("provider") or "openrouter").strip().lower()
+    endpoint = ai_resolve_endpoint(ai_cfg)
+    results = []
+    for mode in AI_NET_MODES:
+        entry = {"mode": mode}
+        started = time.time()
+        try:
+            url, extra, proxies = ai_build_request(endpoint, mode, ai_cfg)
+            entry["request_url"] = url
+            if extra:
+                entry["extra_headers"] = list(extra.keys())
+            if proxies:
+                entry["proxy"] = proxies.get("https")
+            # A lightweight probe: POST a 1-token request.
+            payload = {"model": ai_cfg.get("model") or AI_DEFAULT_MODELS.get(provider, ""),
+                       "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+            api_key = (ai_cfg.get("api_key") or "").strip()
+            text = ai_post_once(endpoint, payload, api_key, mode, ai_cfg, 15)
+            entry.update(ok=True, reply=text[:80], elapsed_ms=int((time.time() - started) * 1000))
+        except AiHttpError as e:
+            entry.update(ok=False, error=str(e), status=e.status,
+                         elapsed_ms=int((time.time() - started) * 1000))
+        except Exception as e:
+            entry.update(ok=False, error=f"{type(e).__name__}: {e}",
+                         elapsed_ms=int((time.time() - started) * 1000))
+        results.append(entry)
+    working = [r["mode"] for r in results if r.get("ok")]
+    return jsonify(ok=True, endpoint=endpoint, results=results, working=working,
+                   suggested=(working[0] if working else None))
+
+
+@app.get("/api/ai/worker-code")
+def api_ai_worker_code():
+    """Ready-to-deploy Cloudflare Worker that matches ai_build_request()."""
+    code = r'''// Cloudflare Worker — reverse proxy for AI providers
+// Deploy: dash.cloudflare.com -> Workers & Pages -> Create Worker -> paste -> Deploy
+// Then put the *.workers.dev URL into Scraper4 -> AI -> Connection -> Worker.
+const ALLOWED = [
+  "openrouter.ai", "api.openai.com", "api.groq.com", "api.deepseek.com",
+  "api.mistral.ai", "api.cerebras.ai", "api.together.xyz",
+  "generativelanguage.googleapis.com",
+];
+
+export default {
+  async fetch(request) {
+    const u = new URL(request.url);
+
+    // Health check
+    if (u.pathname === "/" || u.pathname === "/health") {
+      return new Response(JSON.stringify({ ok: true, service: "scraper4-ai-relay" }), {
+        headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+      });
+    }
+
+    // Pattern A: /?url=<encoded target>   Pattern B: /https://host/path
+    let target = u.searchParams.get("url") || "";
+    if (!target) {
+      target = decodeURIComponent(u.pathname.replace(/^\//, "") + u.search.replace(/^\?url=/, ""));
+    }
+    target = request.headers.get("X-Target-URL") || target;
+
+    let parsed;
+    try { parsed = new URL(target); }
+    catch { return new Response(JSON.stringify({ error: "bad target url" }), { status: 400,
+      headers: { "content-type": "application/json", "access-control-allow-origin": "*" } }); }
+
+    if (!ALLOWED.includes(parsed.hostname)) {
+      return new Response(JSON.stringify({ error: "host not allowed: " + parsed.hostname }),
+        { status: 403, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
+    }
+
+    // Forward the original body and auth headers untouched.
+    const init = { method: request.method, headers: {}, redirect: "follow" };
+    for (const [k, v] of request.headers.entries()) {
+      const lk = k.toLowerCase();
+      if (lk === "host" || lk === "connection" || lk === "x-target-url") continue;
+      init.headers[k] = v;
+    }
+    if (request.method !== "GET" && request.method !== "HEAD") init.body = await request.arrayBuffer();
+
+    const upstream = await fetch(parsed.toString(), init);
+    const resp = new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+    resp.headers.set("access-control-allow-origin", "*");
+    return resp;
+  },
+};
+'''
+    return Response(code, mimetype="text/plain; charset=utf-8")
+
+
 @app.post("/api/aicontent/start")
 def api_aicontent_start():
     auth_err = check_auth()
@@ -3591,17 +3896,178 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
       <div class="card-header">
         <div class="card-title">
           <span class="card-title-icon">🤖</span>
-          <span>آزمایشگاه هوش مصنوعی و میز گفت‌وگو با مشتریان</span>
+          <span>استودیوی هوش مصنوعی</span>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openModal('chatDeskModal')">💬 بازکردن میز چت</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <span class="chip chip-primary" id="aiProviderChip">—</span>
+          <button class="btn btn-primary btn-sm" onclick="openModal('chatDeskModal')">💬 میز چت</button>
+        </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">پرسش تستی از مدل فعال AI:</label>
-        <input type="text" class="form-control" id="aiTestPrompt" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس">
+      <div class="sub-tabs">
+        <button class="sub-tab-btn active" onclick="switchAiSub('providers')">🧠 ارائه‌دهنده‌ها</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('net')">🌐 اتصال</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('test')">🧪 تست مدل</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('prompts')">📝 پرامپت‌ها</button>
       </div>
-      <button class="btn btn-accent btn-sm" onclick="runAiTest()">🧪 اجرای آزمون هوش مصنوعی</button>
-      <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.6;"></div>
+
+      <!-- AI SUB: providers -->
+      <div id="ai-sub-providers" class="settings-sub-panel active">
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">ارائه‌دهنده:</label>
+            <select class="form-control" id="aiProvider" onchange="aiProviderChanged()">
+              <option value="openrouter">OpenRouter (تجمیع‌کنندهٔ مدل‌ها)</option>
+              <option value="groq">Groq (سریع و رایگان)</option>
+              <option value="mistral">Mistral AI</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="cerebras">Cerebras</option>
+              <option value="together">Together AI</option>
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama (محلی)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">کلید API:</label>
+            <input type="password" class="form-control" id="aiApiKey" placeholder="sk-or-...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">مدل:</label>
+            <input type="text" class="form-control" id="aiModel" placeholder="meta-llama/llama-3.3-70b-instruct:free">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Base URL دلخواه (درگاه واسط):</label>
+            <input type="text" class="form-control" id="aiBaseUrl" placeholder="https://my-gateway.example/v1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">دما (Temperature):</label>
+            <input type="number" class="form-control" id="aiTemperature" value="0.7" step="0.1" min="0" max="2">
+          </div>
+          <div class="form-group">
+            <label class="form-label">حداکثر توکن:</label>
+            <input type="number" class="form-control" id="aiMaxTokens" value="1500" step="100">
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label class="form-label">پرامپت سیستمی:</label>
+          <textarea class="form-control" id="aiSystemPrompt" rows="3"></textarea>
+        </div>
+        <div style="margin-top:6px; font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);" id="aiEndpointHint"></div>
+      </div>
+
+      <!-- AI SUB: net -->
+      <div id="ai-sub-net" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          اگر سرور در ایران است و به سرویس هوش مصنوعی وصل نمی‌شود، یکی از روش‌های زیر را انتخاب کنید.
+          با «🩺 عیب‌یابی» همهٔ روش‌ها یک‌جا سنجیده می‌شوند.
+        </p>
+        <div class="form-group">
+          <label class="form-label">روش اتصال:</label>
+          <select class="form-control" id="aiNetMode" onchange="aiNetToggle()">
+            <option value="direct">مستقیم — بدون تغییر</option>
+            <option value="worker">Cloudflare Worker / پروکسی معکوس</option>
+            <option value="gateway">درگاه واسط سازگار با OpenAI</option>
+            <option value="doh">DNS-over-HTTPS — دور زدن DNS آلوده</option>
+            <option value="dns">IP دستی — وقتی IP درست را می‌دانید</option>
+            <option value="proxy">پروکسی HTTP یا SOCKS5</option>
+          </select>
+        </div>
+
+        <div id="aiNetWorkerBox" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">آدرس Worker:</label>
+            <input type="text" class="form-control" id="aiWorkerUrl" dir="ltr" placeholder="https://xxx.workers.dev">
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+            <button class="btn btn-secondary btn-sm" onclick="aiShowWorkerCode()">📄 کد آمادهٔ Worker</button>
+          </div>
+          <p style="font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.8;">
+            آدرس مقصد به‌صورت <b>مسیر</b> به Worker داده می‌شود
+            (<code dir="ltr">worker.dev/https://api.../chat/completions</code>) به‌همراه هدر
+            <code dir="ltr">X-Target-URL</code>. اگر آدرس شامل <code dir="ltr">{url}</code> باشد،
+            مقصد جای آن می‌نشیند.
+          </p>
+        </div>
+
+        <div id="aiNetDohBox" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">سرور DoH:</label>
+            <select class="form-control" id="aiDohUrl">
+              <option value="https://cloudflare-dns.com/dns-query">Cloudflare — cloudflare-dns.com</option>
+              <option value="https://dns.google/resolve">Google — dns.google</option>
+              <option value="https://dns.quad9.net:5053/dns-query">Quad9</option>
+              <option value="https://doh.sb/dns-query">DNS.SB</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="aiNetDnsBox" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">IP مقصد:</label>
+            <input type="text" class="form-control" id="aiResolveIp" dir="ltr" placeholder="104.18.7.192">
+          </div>
+        </div>
+
+        <div id="aiNetProxyBox" style="display:none;">
+          <div class="form-group">
+            <label class="form-label">آدرس پروکسی:</label>
+            <input type="text" class="form-control" id="aiProxy" dir="ltr" placeholder="127.0.0.1:1080">
+          </div>
+        </div>
+
+        <div id="aiNetGatewayBox" style="display:none;">
+          <p style="font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9;">
+            در این حالت کافی است <b>Base URL</b> را در تب «ارائه‌دهنده‌ها» روی آدرس درگاه واسط بگذارید
+            و کلید همان سرویس را وارد کنید. درخواست مستقیم به همان آدرس می‌رود.
+          </p>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:8px; margin:10px 0; font-size: calc(11.5px * var(--font-scale, 1));">
+          <input type="checkbox" id="aiFallback" checked>
+          <span>تلاش خودکار با روش‌های دیگر در صورت شکست</span>
+        </label>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-accent btn-sm" onclick="aiProbe()">🩺 عیب‌یابی همهٔ روش‌ها</button>
+          <button class="btn btn-secondary btn-sm" onclick="saveAllSettings()">💾 ذخیره</button>
+        </div>
+        <div id="aiProbeResult" style="margin-top:12px; font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); white-space:pre-wrap; line-height:1.9;"></div>
+      </div>
+
+      <!-- AI SUB: test -->
+      <div id="ai-sub-test" class="settings-sub-panel" style="display:none;">
+        <div class="form-group">
+          <label class="form-label">پرسش تستی از مدل فعال:</label>
+          <textarea class="form-control" id="aiTestPrompt" rows="2" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">روش اتصال برای این تست:</label>
+          <select class="form-control" id="aiTestMode">
+            <option value="">طبق تنظیمات ذخیره‌شده</option>
+            <option value="direct">direct</option>
+            <option value="worker">worker</option>
+            <option value="gateway">gateway</option>
+            <option value="doh">doh</option>
+            <option value="dns">dns</option>
+            <option value="proxy">proxy</option>
+          </select>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-accent btn-sm" onclick="runAiTest()">🧪 اجرای آزمون</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiTestCategory()">🏷️ تست دسته‌بندی</button>
+        </div>
+        <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.7; white-space:pre-wrap;"></div>
+      </div>
+
+      <!-- AI SUB: prompts -->
+      <div id="ai-sub-prompts" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          این الگوها هنگام «تولید محتوای AI» برای محصولات استفاده می‌شوند.
+          متغیرهای در دسترس: <code dir="ltr">{title} {price} {specs} {description}</code>
+        </p>
+        <div id="aiPromptList" style="display:flex; flex-direction:column; gap:8px;"></div>
+      </div>
     </div>
   </main>
 
@@ -3915,7 +4381,13 @@ const SETTINGS_FIELDS = {
     token: 'bslToken', vendor_id: 'bslVendorId',
     category_id: 'bslCatId', prep_days: 'bslPrepDays'
   },
-  ai: { provider: 'aiProvider', api_key: 'aiApiKey', model: 'aiModel' },
+  ai: {
+    provider: 'aiProvider', api_key: 'aiApiKey', model: 'aiModel',
+    base_url: 'aiBaseUrl', temperature: 'aiTemperature', max_tokens: 'aiMaxTokens',
+    system_prompt: 'aiSystemPrompt', net_mode: 'aiNetMode', worker_url: 'aiWorkerUrl',
+    doh_url: 'aiDohUrl', resolve_ip: 'aiResolveIp', proxy: 'aiProxy',
+    fallback: 'aiFallback'
+  },
   network: { proxy_mode: 'netProxyMode', proxy: 'netProxy' },
   messengers: {
     telegram_token: 'tgToken', telegram_chat_id: 'tgChatId',
@@ -3995,6 +4467,8 @@ function applyConfigToUi(cfg) {
     renderCatalog();
   }
   renderProfileOptions(appConfig);
+  aiNetToggle();
+  aiUpdateChip();
 }
 
 function renderProfileOptions(cfg) {
@@ -4651,17 +5125,150 @@ async function fixPricesServer() {
   } catch(e) { showToast('خطا در اصلاح قیمت‌ها', 'error'); }
 }
 
+/* ==================== AI STUDIO ==================== */
+const AI_DEFAULT_MODELS = {
+  openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
+  openai: 'gpt-4o-mini',
+  groq: 'llama-3.3-70b-versatile',
+  deepseek: 'deepseek-chat',
+  mistral: 'mistral-large-latest',
+  cerebras: 'llama3.1-70b',
+  together: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+  gemini: 'gemini-2.0-flash',
+  ollama: 'llama3'
+};
+const AI_PROMPT_PRESETS = [
+  { name: 'معرفی محصول (کاتالوگ)', tpl: 'یک معرفی جذاب و فروشنده برای محصول {title} با ویژگی‌های {specs} بنویس. قیمت: {price} تومان.' },
+  { name: 'توضیحات سئو محور', tpl: 'برای محصول {title} یک توضیح ۱۵۰ کلمه‌ای سئو محور با لحن دوستانه بنویس. ویژگی‌ها: {specs}' },
+  { name: 'بازنویسی توضیحات موجود', tpl: 'این توضیح محصول را بازنویسی کن تا جذاب‌تر و کوتاه‌تر شود:\n{description}' },
+  { name: 'پاسخ پشتیبانی مشتری', tpl: 'به این پیام مشتری پاسخ مودبانه و راهنما بده:\n{description}' },
+  { name: 'برچسب و کلیدواژه', tpl: 'برای محصول {title} پنج کلیدواژهٔ جست‌وجو و سه برچسب کوتاه پیشنهاد بده.' }
+];
+
+function switchAiSub(sub) {
+  document.querySelectorAll('[id^="ai-sub-"]').forEach(el => { el.style.display = 'none'; el.classList.remove('active'); });
+  const target = document.getElementById('ai-sub-' + sub);
+  if (target) { target.style.display = 'block'; target.classList.add('active'); }
+  document.querySelectorAll('.sub-tab-btn').forEach(b => {
+    const label = (b.getAttribute('onclick') || '');
+    b.classList.toggle('active', label.includes("'" + sub + "'") && label.includes('switchAiSub'));
+  });
+}
+
+function aiProviderChanged() {
+  const p = document.getElementById('aiProvider').value;
+  const modelEl = document.getElementById('aiModel');
+  if (modelEl && !modelEl.value) modelEl.value = AI_DEFAULT_MODELS[p] || '';
+  modelEl.placeholder = AI_DEFAULT_MODELS[p] || '';
+  aiUpdateChip();
+}
+
+function aiUpdateChip() {
+  const chip = document.getElementById('aiProviderChip');
+  if (!chip) return;
+  const p = document.getElementById('aiProvider').value;
+  const m = document.getElementById('aiModel').value || AI_DEFAULT_MODELS[p] || '';
+  chip.textContent = `${p} · ${m}`;
+  const hint = document.getElementById('aiEndpointHint');
+  if (hint) hint.textContent = 'نشانی پیش‌فرض این ارائه‌دهنده در صورت خالی بودن Base URL استفاده می‌شود.';
+}
+
+function aiNetToggle() {
+  const mode = document.getElementById('aiNetMode').value;
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? 'block' : 'none'; };
+  show('aiNetWorkerBox', mode === 'worker');
+  show('aiNetDohBox', mode === 'doh');
+  show('aiNetDnsBox', mode === 'dns');
+  show('aiNetProxyBox', mode === 'proxy');
+  show('aiNetGatewayBox', mode === 'gateway');
+}
+
+function aiRenderPrompts() {
+  const box = document.getElementById('aiPromptList');
+  if (!box) return;
+  box.innerHTML = AI_PROMPT_PRESETS.map((p, i) => `
+    <div style="padding:10px; background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md);">
+      <div style="font-weight:800; font-size: calc(12px * var(--font-scale, 1)); margin-bottom:6px;">${p.name}</div>
+      <textarea class="form-control" rows="2" id="aiPreset_${i}">${p.tpl.replace(/</g, '&lt;')}</textarea>
+      <button class="btn btn-secondary btn-sm" style="margin-top:6px;"
+        onclick="navigator.clipboard.writeText(document.getElementById('aiPreset_${i}').value).then(()=>showToast('الگو کپی شد','success'))">📋 کپی</button>
+    </div>`).join('');
+}
+
+async function aiShowWorkerCode() {
+  try {
+    const res = await fetch('/api/ai/worker-code');
+    const code = await res.text();
+    const box = document.getElementById('aiProbeResult');
+    if (box) {
+      box.style.display = 'block';
+      box.innerText = 'کد زیر را در Cloudflare Workers قرار دهید و Deploy کنید، سپس آدرس *.workers.dev را در بالا بگذارید:\n\n' + code;
+    }
+    showToast('کد Worker نمایش داده شد', 'success');
+  } catch (e) { showToast('خطا در دریافت کد Worker', 'error'); }
+}
+
 async function runAiTest() {
-  const prompt = document.getElementById('aiTestPrompt').value.trim() || 'یک معرفی کوتاه برای هدفون بی سیم بنویس';
+  const prompt = document.getElementById('aiTestPrompt').value.trim() || 'یک معرفی کوتاه برای هدفون بی‌سیم بنویس';
+  const mode = document.getElementById('aiTestMode').value || null;
   const resDiv = document.getElementById('aiTestResult');
   resDiv.style.display = 'block';
-  resDiv.innerText = 'در حال ارتباط با هوش مصنوعی...';
+  resDiv.innerText = 'در حال ارتباط با مدل...';
+  // Save first so the test uses exactly what the user just typed.
+  await saveAllSettings({ silent: true });
   try {
-    const res = await fetch('/api/chat/auto-reply', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:prompt}) });
+    const res = await fetch('/api/ai/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, mode })
+    });
     const json = await res.json();
-    if (json.ok) resDiv.innerText = json.reply;
-    else resDiv.innerText = `خطا: ${json.error}`;
-  } catch(e) { resDiv.innerText = `خطا: ${e.message}`; }
+    if (json.ok) {
+      resDiv.innerText = `✅ پاسخ مدل (${json.provider} / ${json.model} via ${json.mode}) — ${json.elapsed_ms}ms\n\n${json.reply}`;
+      showToast('مدل با موفقیت پاسخ داد', 'success');
+    } else {
+      resDiv.innerText = `❌ خطا${json.status ? ' (HTTP ' + json.status + ')' : ''}${json.mode ? ' via ' + json.mode : ''}:\n${json.error}`;
+      showToast('آزمون مدل ناموفق بود', 'error');
+    }
+  } catch (e) { resDiv.innerText = `خطای شبکه: ${e.message}`; }
+}
+
+async function aiTestCategory() {
+  const box = document.getElementById('aiTestResult');
+  if (box) { box.style.display = 'block'; box.innerText = 'در حال تست دسته‌بندی...'; }
+  try {
+    const res = await fetch('/api/ai/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'محصول «ساعت هوشمند مدل X بند سیلیکونی» را در کدام دستهٔ فروشگاه قرار می‌دهی؟ فقط نام دسته را بنویس.' })
+    });
+    const json = await res.json();
+    if (box) box.innerText = json.ok ? `🏷️ دستهٔ پیشنهادی: ${json.reply}` : `❌ ${json.error}`;
+  } catch (e) { if (box) box.innerText = 'خطای شبکه: ' + e.message; }
+}
+
+async function aiProbe() {
+  const box = document.getElementById('aiProbeResult');
+  if (box) { box.style.display = 'block'; box.innerText = '🩺 در حال سنجش همهٔ روش‌های اتصال... (ممکن است چند ثانیه طول بکشد)'; }
+  await saveAllSettings({ silent: true });
+  try {
+    const res = await fetch('/api/ai/probe', { method: 'POST' });
+    const json = await res.json();
+    if (!json.ok) { if (box) box.innerText = 'خطا در عیب‌یابی'; return; }
+    const lines = json.results.map(r => {
+      const icon = r.ok ? '✅' : '❌';
+      const extra = r.ok ? `(${r.elapsed_ms}ms) ${r.reply || ''}`.trim() : (r.error || '');
+      return `${icon} ${r.mode.padEnd(8)} ${extra}`;
+    });
+    const head = `مقصد: ${json.endpoint}\n`;
+    const tail = json.working.length
+      ? `\nروش‌های کارآمد: ${json.working.join('، ')}\nپیشنهاد: «${json.suggested}» را در کشوی روش اتصال انتخاب کنید.`
+      : '\nهیچ روشی پاسخ نگرفت. کلید API و آدرس Worker/پروکسی را بررسی کنید.';
+    if (box) box.innerText = head + lines.join('\n') + tail;
+    if (json.suggested) {
+      const sel = document.getElementById('aiNetMode');
+      if (sel) { sel.value = json.suggested; aiNetToggle(); }
+      showToast(`عیب‌یابی انجام شد — روش پیشنهادی: ${json.suggested}`, 'success');
+    } else showToast('هیچ روشی پاسخ نگرفت', 'error');
+  } catch (e) { if (box) box.innerText = 'خطای شبکه: ' + e.message; }
 }
 
 async function testWooConnection() {
@@ -4950,6 +5557,9 @@ async function pasteClipboardUrl() {
 window.addEventListener('DOMContentLoaded', () => {
   restoreFontScale();
   initAutoSave();
+  aiRenderPrompts();
+  aiNetToggle();
+  aiUpdateChip();
   loadConfig();
   loadTasks();
   pollTasks();

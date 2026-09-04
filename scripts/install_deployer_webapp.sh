@@ -263,6 +263,14 @@ else
     echo "==> deployer.py در ~/.deployer/deployer.py موجود است (بدون کپی)"
 fi
 
+# quick sanity: the version that fixes the endless "در حال بررسی…" is 1.6.0+
+DEPLOYER_INSTALLED_VERSION="$(grep -oE 'DEPLOYER_VERSION = "[0-9.]+"' "$DST_DEPLOYER" | head -n1 | grep -oE '[0-9.]+' || echo '?')"
+if [ "$DEPLOYER_INSTALLED_VERSION" = "1.6.0" ] || [ "$DEPLOYER_INSTALLED_VERSION" = "1.6.1" ] || [ "$DEPLOYER_INSTALLED_VERSION" = "1.6.2" ]; then
+    echo "==> نسخه deployer.py تأیید شد: $DEPLOYER_INSTALLED_VERSION (رفع گیرکردن در 'در حال بررسی…')"
+else
+    echo "!! نسخه deployer.py: ${DEPLOYER_INSTALLED_VERSION:-?} — اگر صفحه در 'بررسی' گیر می‌کند، باید 1.6.0+ باشد"
+fi
+
 # --- 2. write WSGI wrapper (env values escaped by Python) ---------------------
 python3 - "$HOME_DIR/.deployer/deployer_wsgi.py" "$REPO" "$BRANCHES" "$TARGET" "$GH_TOKEN" "$WEB_TOKEN" <<'PY'
 import json, os, sys

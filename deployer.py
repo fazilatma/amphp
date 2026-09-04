@@ -58,9 +58,11 @@ stale cache, and the branch list is cached. Rate-limit 403/429 responses are
 detected, retried with backoff, and the previous results are used when the
 quota is exhausted so the site still updates.
 
-Web UI never blocks on GitHub: /status returns the last finished report
-immediately and the scan runs in a background thread; the page polls until
-it shows "بررسی کامل شد".
+Web UI never blocks on GitHub: /status returns instantly and the scan runs
+in a background thread with a HARD DEADLINE (~45s) and a watchdog — it can
+never stay on "در حال بررسی…" forever. The last finished report is cached
+on disk, so page reloads/app restarts show it immediately, and a file lock
+prevents parallel scans from several web processes.
 
 In ALL-BRANCHES mode (the default) the deployer lists every branch of the
 repository through the GitHub API, downloads scraper4.py from each of them
@@ -90,7 +92,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-DEPLOYER_VERSION = "1.5.0"
+DEPLOYER_VERSION = "1.6.0"
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
@@ -107,6 +109,11 @@ DEFAULT_CACHE_DIR = "~/.deployer/cache"
 DEFAULT_RETRIES = 2          # extra attempts after a 403/429/5xx
 DEFAULT_BACKOFF = 3.0        # seconds; grows exponentially
 BRANCH_CACHE_TTL = 300       # seconds before re-listing branches
+WEB_BRANCH_LIMIT = 40        # max branches scanned by the web UI
+WEB_DEADLINE = 45.0          # hard deadline (seconds) for one web scan
+WEB_CHECK_CUTOFF = 90.0      # watchdog: a scan older than this is declared dead
+WEB_REPORT_CACHE_KEY = "web_report"
+WEB_CHECK_LOCK = "web_check.lock"
 REQUIRED_MARKERS = ("APP_VERSION", "Flask(", '@app.get("/")', "/api/deploy/run")
 VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*["\']([^"\']+)', re.MULTILINE)
 PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -301,8 +308,11 @@ def _http_get(url: str, headers: dict[str, str], timeout: int = CONNECT_TIMEOUT)
         except OSError:
             body = b""
         return exc.code, dict(getattr(exc, "headers", {}) or {}), body
-    except urllib.error.URLError as exc:
-        raise DeployerError(f"ارتباط با GitHub ناموفق بود: {exc.reason}") from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        # Connection resets / timeouts must become clean errors, never a
+        # worker stuck inside urlopen.
+        reason = getattr(exc, "reason", exc)
+        raise DeployerError(f"ارتباط با GitHub ناموفق بود: {reason}") from exc
 
 
 def _rate_limit_info(headers: dict[str, str], body: bytes) -> tuple[bool, int, str]:
@@ -552,13 +562,22 @@ def resolve_branches(cfg: dict) -> list[str]:
     return unique
 
 
-def collect_candidates(cfg: dict) -> tuple[list[dict], list[dict], list[str]]:
-    """Fetch the file from every branch (in parallel); newest valid version first."""
+def collect_candidates(cfg: dict, deadline: float = 0.0) -> tuple[list[dict], list[dict], list[str]]:
+    """Fetch the file from every branch (in parallel); newest valid version first.
+
+    `deadline` (epoch seconds, 0 = unlimited) bounds the SCAN: branches not
+    started by then are reported as timed out instead of blocking forever.
+    """
     branches = resolve_branches(cfg)
+    limit = int(cfg.get("web_branch_limit", 0) or 0)
+    if limit and len(branches) > limit:
+        branches = branches[:limit]
     candidates: list[dict] = []
     errors: list[dict] = []
 
     def fetch_one(branch: str):
+        if deadline and time.time() > deadline:
+            return branch, None, "زمان بررسی تمام شد (دوباره تلاش کنید)"
         try:
             meta = fetch_file(cfg, branch)
             meta["version"] = validate_source(meta["content"])
@@ -566,7 +585,8 @@ def collect_candidates(cfg: dict) -> tuple[list[dict], list[dict], list[str]]:
         except Exception as exc:  # keep going; a bad branch never blocks the rest
             return branch, None, str(exc)[:300]
 
-    with ThreadPoolExecutor(max_workers=BRANCH_WORKERS) as pool:
+    workers = max(1, min(BRANCH_WORKERS, len(branches) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         for branch, meta, error in pool.map(fetch_one, branches):
             if error:
                 errors.append({"branch": branch, "error": error})
@@ -653,8 +673,8 @@ def rollback(cfg: dict) -> dict:
 # Report / run
 # ---------------------------------------------------------------------------
 
-def build_report(cfg: dict) -> dict:
-    candidates, errors, branches = collect_candidates(cfg)
+def build_report(cfg: dict, deadline: float = 0.0) -> dict:
+    candidates, errors, branches = collect_candidates(cfg, deadline=deadline)
     best = candidates[0] if candidates else None
     target = cfg["target"]
     current_version = "unknown"
@@ -776,10 +796,12 @@ function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.
 function humanTime(ts){if(!ts)return '—';try{return new Date(ts*1000).toLocaleString('fa-IR')}catch(e){return '—'}}
 function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
  const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';const src={'raw':'raw','api':'API','cache':'کش'}[x.source]||'';const warn=x.warning?' <small class="warn">'+esc(x.warning)+'</small>':'';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(src?'<small>['+src+']</small>':'')+(x.newest?'<b class="tag">جدیدترین</b>':'')+warn+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
- $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0)+'<br>آخرین بررسی: '+humanTime(d.checked_at);}
-let pollTimer=null;
+ $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0)+'<br>آخرین بررسی: '+humanTime(d.checked_at)+(d.deployer_version?'<br>نسخه دیپلوی‌ر: <code>'+esc(d.deployer_version)+'</code>':'');}
+let pollTimer=null,checkStart=0,errRetries=0;
 function schedulePoll(ms){clearTimeout(pollTimer);pollTimer=setTimeout(()=>refresh(false),ms)}
-async function refresh(force){setBusy(true);try{const d=await api('/deployer/status'+(force?'?force=1':''));if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;tokenUI(d);if(d.report)render(d);if(d.checking){msg('در حال بررسی نسخه‌ها…');schedulePoll(2000);return}setBusy(false);if(d.report){msg('بررسی کامل شد.','ok')}else{msg(esc(d.error||'هنوز نتیجه‌ای در دسترس نیست'),'err')}}catch(e){setBusy(false);msg(esc(e.message),'err')}}
+async function refresh(force){setBusy(true);try{const d=await api('/deployer/status'+(force?'?force=1':''));if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;tokenUI(d);if(d.report)render(d);
+ if(d.checking){if(!checkStart)checkStart=Date.now();const el=(Date.now()-checkStart)/1000;if(el>75){checkStart=0;errRetries=0;setBusy(false);msg('بررسی بیش از حد طول کشید؛ لطفاً دوباره روی «بررسی نسخه‌ها» بزنید (نسخه دیپلوی‌ر باید 1.6.0 باشد).','err');return}msg('در حال بررسی نسخه‌ها… ('+Math.round(el)+' ثانیه)');schedulePoll(2500);return}
+ checkStart=0;errRetries=0;setBusy(false);if(d.report){msg('بررسی کامل شد.','ok')}else{msg(esc(d.error||'هنوز نتیجه‌ای در دسترس نیست'),'err')}}catch(e){setBusy(false);if(++errRetries<=5){msg('اتصال قطع شد؛ تلاش مجدد…','warn');schedulePoll(3000)}else{errRetries=0;msg('اتصال به سرور برقرار نشد: '+esc(e.message),'err')}}}
 async function act(kind){if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز|نادرست|تنظیم نشده/.test(e.message)){openToken();$('tokenHint').innerHTML='<span class="err">'+esc(e.message)+'</span><br>اگر رمز ندارید، از پنل Files فایل <code>deployer_token.txt</code> را باز و کپی کنید.'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
 refresh(true);
 </script></div></body></html>'''
@@ -789,13 +811,22 @@ def _web_config() -> dict:
     """Config for the web app: like CLI but driven purely by DEPLOYER_* env vars."""
     ns = argparse.Namespace(repo=None, branches=None, all_branches=None, path=None, target=None,
                             token=None, reload_file=None, interval=None, log_file=None, github_base=None)
-    return load_config(ns)
+    cfg = load_config(ns)
+    # Web mode must never scan for minutes: ≤10s per attempt, one retry,
+    # short backoff, and a bounded number of branches.
+    cfg["retries"] = min(int(cfg.get("retries", DEFAULT_RETRIES)), 1)
+    cfg["timeout"] = max(5, min(int(cfg.get("timeout", DEFAULT_REQUEST_TIMEOUT)), 10))
+    cfg["backoff"] = min(float(cfg.get("backoff", DEFAULT_BACKOFF)), 2.0)
+    cfg["web_branch_limit"] = WEB_BRANCH_LIMIT
+    return cfg
 
 
 # ---------------------------------------------------------------------------
-# Async web check: /status must never block on GitHub. The first request
-# starts a background scan and returns instantly; the page polls /status
-# (every 2s) until the report is ready. Previous result is kept meanwhile.
+# Async web check: /status must never block on GitHub AND must never stay
+# "در حال بررسی…" forever. The scan runs in a background thread with a hard
+# deadline; the last finished report is persisted so a restarted web process
+# (which PythonAnywhere does) still shows results instantly, and a file lock
+# keeps several web processes from scanning GitHub in parallel.
 # ---------------------------------------------------------------------------
 WEB_CHECK_INTERVAL = 30.0       # seconds; a report older than this refreshes in background
 WEB_REPORT_MAX_AGE = 300.0      # seconds; actions may reuse a report this fresh
@@ -805,32 +836,102 @@ _WEB_STATE = {
     "report": None,
     "checked_at": 0.0,
     "checking": False,
+    "started_at": 0.0,
     "error": "",
 }
 
 
+def _web_lock_file(cfg: dict) -> str:
+    return os.path.join(cfg["cache_dir"], WEB_CHECK_LOCK)
+
+
+def _web_try_lock(cfg: dict) -> bool:
+    """Cross-process scan lock; stale locks (older than the watchdog) are taken over."""
+    path = _web_lock_file(cfg)
+    try:
+        os.makedirs(cfg["cache_dir"], exist_ok=True)
+    except OSError:
+        return False
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(path) > WEB_CHECK_CUTOFF:
+                os.unlink(path)
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            else:
+                return False
+        except OSError:
+            return False
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"{int(time.time())}\n{os.getpid()}\n")
+    except OSError:
+        pass
+    return True
+
+
+def _web_unlock(cfg: dict) -> None:
+    try:
+        os.unlink(_web_lock_file(cfg))
+    except OSError:
+        pass
+
+
+def _web_save_report(cfg: dict, report: dict) -> None:
+    _cache_write(cfg, WEB_REPORT_CACHE_KEY, {
+        "checked_at": int(time.time()),
+        "report": _report_public(report),
+    })
+
+
+def _web_load_report(cfg: dict):
+    data = _cache_read(cfg, WEB_REPORT_CACHE_KEY)
+    if isinstance(data, dict) and isinstance(data.get("report"), dict):
+        return data["report"], float(data.get("checked_at", 0) or 0)
+    return None, 0.0
+
+
 def _web_start_check() -> bool:
-    """Start a background branch scan once. Returns False if one is already running."""
+    """Start one background scan at a time (in-process AND cross-process lock)."""
+    try:
+        cfg = _web_config()
+    except Exception:
+        return False
+    if not _web_try_lock(cfg):
+        return False
     with _WEB_STATE["lock"]:
         if _WEB_STATE["checking"]:
+            _web_unlock(cfg)
             return False
         _WEB_STATE["checking"] = True
+        _WEB_STATE["started_at"] = time.time()
         _WEB_STATE["error"] = ""
 
     def worker() -> None:
+        report = None
         try:
-            report = build_report(_web_config())
-            with _WEB_STATE["lock"]:
-                _WEB_STATE["report"] = report
-                _WEB_STATE["checked_at"] = time.time()
-                _WEB_STATE["error"] = ""
+            report = build_report(cfg, deadline=time.time() + WEB_DEADLINE)
         except Exception as exc:  # keep the previous report visible
             log.exception("بررسی وب ناموفق بود")
             with _WEB_STATE["lock"]:
                 _WEB_STATE["error"] = str(exc)[:300]
+        else:
+            with _WEB_STATE["lock"]:
+                _WEB_STATE["report"] = report
+                _WEB_STATE["checked_at"] = time.time()
+                _WEB_STATE["started_at"] = 0.0
+                _WEB_STATE["error"] = ""
+            try:
+                _web_save_report(cfg, report)
+            except Exception:
+                log.exception("ذخیره گزارش وب ناموفق بود")
         finally:
             with _WEB_STATE["lock"]:
                 _WEB_STATE["checking"] = False
+            _web_unlock(cfg)
 
     threading.Thread(target=worker, daemon=True, name="deployer-web-check").start()
     return True
@@ -920,21 +1021,47 @@ def wsgi_application(environ, start_response) -> list[bytes]:
         try:
             params = urllib.parse.parse_qs(environ.get("QUERY_STRING", ""))
             force = (params.get("force") or [""])[0].lower() in ("1", "true", "yes")
+            cfg = _web_config()
+            now = time.time()
             with _WEB_STATE["lock"]:
                 report = _WEB_STATE["report"]
                 checking = _WEB_STATE["checking"]
                 error = _WEB_STATE["error"]
                 checked_at = _WEB_STATE["checked_at"]
-            stale = (time.time() - checked_at) > WEB_CHECK_INTERVAL
+                started_at = _WEB_STATE["started_at"]
+            # Watchdog: a scan that overran (e.g. the process was recycled
+            # mid-check) must never leave the page on "در حال بررسی…".
+            if checking and started_at and now - started_at > WEB_CHECK_CUTOFF:
+                with _WEB_STATE["lock"]:
+                    _WEB_STATE["checking"] = False
+                    _WEB_STATE["started_at"] = 0.0
+                    _WEB_STATE["error"] = "بررسی بیش از حد طول کشید؛ دوباره تلاش کنید"
+                checking, started_at, error = False, 0.0, "بررسی بیش از حد طول کشید؛ دوباره تلاش کنید"
+                # Only reclaim a lock that is itself stale; a fresh lock
+                # belongs to another (still scanning) process.
+                try:
+                    if time.time() - os.path.getmtime(_web_lock_file(cfg)) > WEB_CHECK_CUTOFF:
+                        _web_unlock(cfg)
+                except OSError:
+                    pass
+            if report is None:  # process restarted: fall back to the persisted report
+                cached_report, cached_at = _web_load_report(cfg)
+                if cached_report is not None:
+                    report, checked_at = cached_report, cached_at or checked_at
+            stale = (now - checked_at) > WEB_CHECK_INTERVAL
             if not checking and (force or not report or stale):
-                checking = _web_start_check()
-            cfg = _web_config()
+                if _web_start_check():
+                    checking, error = True, ""
+                    with _WEB_STATE["lock"]:
+                        started_at = _WEB_STATE["started_at"]
             return _web_json(start_response, {
                 "ok": True,
                 "report": _report_public(report) if report else None,
                 "checking": checking,
                 "error": error,
                 "checked_at": int(checked_at) if checked_at else 0,
+                "checking_since": int(started_at) if started_at else 0,
+                "deployer_version": DEPLOYER_VERSION,
                 "token_configured": bool(_web_token_value()),
                 "token_file": _web_token_file(cfg),
             })
@@ -953,14 +1080,17 @@ def wsgi_application(environ, start_response) -> list[bytes]:
                              "401 Unauthorized")
         try:
             cfg = _web_config()
+            # Explicit actions use the cached scan, otherwise a BOUNDED scan
+            # (same hard deadline as the background one — never minutes).
+            def _bounded_report():
+                return _web_recent_report() or build_report(cfg, deadline=time.time() + WEB_DEADLINE)
             if path == "/check":
-                report = _web_recent_report() or build_report(cfg)
+                report = _bounded_report()
                 payload = {"ok": True, "action": "check", "report": _report_public(report)}
             elif path == "/install":
                 # reuse the last finished background scan when it is fresh
-                # enough; otherwise run one (actions are explicit, so waiting
-                # a little is acceptable, but it must still finish).
-                report = _web_recent_report() or build_report(cfg)
+                # enough; otherwise run one (bounded, so it still ends).
+                report = _bounded_report()
                 best = report.get("best")
                 if not best:
                     raise DeployerError("هیچ برنچی در دسترس نیست")
@@ -974,7 +1104,7 @@ def wsgi_application(environ, start_response) -> list[bytes]:
                            "report": _report_public(result["report"])}
             else:
                 result = rollback(cfg)
-                report = _web_recent_report() or build_report(cfg)
+                report = _bounded_report()
                 payload = {"ok": True, "action": "rollback", "changed": True,
                            "message": "نسخه " + result["version"] + " از .bak بازیابی شد",
                            "version": result["version"],

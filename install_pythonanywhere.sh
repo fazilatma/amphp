@@ -14,7 +14,7 @@ PASSWORD_FILE="$APP_DIR/admin_password.txt"
 TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
 VENV_DIR="$APP_DIR/venv"
 REPO="fazilatma/amphp"
-BRANCH="arena/01a0640f-amphp"
+BRANCH="${SCRAPER_BRANCH:-arena/01a06927-amphp}"
 SOURCE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH/scraper4.py"
 API="https://www.pythonanywhere.com/api/v0/user/$USER_NAME"
 AUTH=""; RESP=""; DOWN=""
@@ -105,10 +105,10 @@ for n in $(seq 1 30); do WSGI="$(find_wsgi||true)"; [ -z "$WSGI" ]||break; echo 
 [ -n "$WSGI" ]&&[ -w "$WSGI" ]||fail "No writable WSGI file found in /var/www."
 echo "Using WSGI: $WSGI"
 
-export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES" BROWSER_PATH_E="$BROWSER_PATH"
+export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWORD_E="$ADMIN_PASSWORD" SITE_E="$SITE_PACKAGES" BROWSER_PATH_E="$BROWSER_PATH" REPO_E="$REPO" BRANCH_E="$BRANCH"
 "$VENV_PY" - <<'PY'
 import datetime,json,os,pathlib,shutil
-app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]
+app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]; repo=os.environ.get("REPO_E","fazilatma/amphp"); branch=os.environ.get("BRANCH_E","arena/01a06927-amphp")
 shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
 source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(browser_path),"os.environ['SCRAPER_PLAYWRIGHT_PATH']="+repr(browser_path),"from scraper4 import app as application",""))
 tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
@@ -119,10 +119,10 @@ if datafile.exists():
  except Exception: pass
 data.setdefault("profiles",{}); data.setdefault("woocommerce",{"url":"","consumer_key":"","consumer_secret":""}); data.setdefault("network",{"timeout":25,"gap_ms":350,"proxy":"","verify_tls":True}); data.setdefault("last_result",[])
 old=data.get("deploy") if isinstance(data.get("deploy"),dict) else {}
-data["deploy"]={"repo":"fazilatma/amphp","branch":"arena/01a0640f-amphp","path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
+data["deploy"]={"repo":repo,"branch":branch,"path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi)}
 tmp=datafile.with_suffix(".json.tmp"); tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8"); tmp.replace(datafile)
 PY
-unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E BROWSER_PATH_E; chmod 600 "$DATA_FILE"
+unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E BROWSER_PATH_E REPO_E BRANCH_E; chmod 600 "$DATA_FILE"
 
 "$VENV_PY" - "$APP_DIR" <<'PY'
 import pathlib,sys

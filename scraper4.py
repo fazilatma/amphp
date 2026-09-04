@@ -1679,6 +1679,33 @@ body {
   margin-left: 10px;
 }
 
+/* One-tap update CTA at the top of the drawer */
+.drawer-cta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--primary);
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  color: #fff;
+  cursor: pointer;
+  text-align: right;
+  box-shadow: 0 6px 18px rgba(56, 189, 248, 0.28);
+  transition: transform 0.18s, box-shadow 0.18s, opacity 0.18s;
+}
+.drawer-cta:hover, .drawer-cta:active {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.4);
+}
+.drawer-cta:disabled { opacity: 0.55; cursor: progress; transform: none; }
+.drawer-cta .cta-icon { font-size: 20px; flex: 0 0 auto; }
+.drawer-cta .cta-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.drawer-cta .cta-text strong { font-size: 13.5px; font-weight: 800; }
+.drawer-cta .cta-text small { font-size: 10.5px; opacity: 0.88; line-height: 1.4; }
+.drawer-cta .cta-state { font-size: 15px; flex: 0 0 auto; }
+
 /* ==================== BOTTOM TAB BAR ==================== */
 .bottom-nav {
   position: fixed;
@@ -2247,6 +2274,15 @@ table.data-table tr:hover { background: var(--card-hover); }
   </div>
 
   <div class="drawer-body">
+    <button class="drawer-cta" id="drawerUpdateBtn" onclick="quickUpdate()">
+      <span class="cta-icon">🚀</span>
+      <span class="cta-text">
+        <strong>نصب آپدیت آخرین کد</strong>
+        <small id="drawerUpdateHint">دریافت تازه‌ترین نسخه از گیت‌هاب و ری‌استارت سایت</small>
+      </span>
+      <span class="cta-state" id="drawerUpdateState">⬇</span>
+    </button>
+
     <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'woo')">
       <div><span class="d-icon">🛒</span><span>تنظیمات ووکامرس</span></div>
       <span class="chip chip-primary">فعال</span>
@@ -3272,6 +3308,32 @@ async function runDeployInstall() {
       box.innerText = json.message || 'تغییری حاصل نشد';
     }
   } catch(e) { box.innerText = `خطا: ${e.message}`; }
+}
+
+async function quickUpdate() {
+  const btn = document.getElementById('drawerUpdateBtn');
+  const state = document.getElementById('drawerUpdateState');
+  const hint = document.getElementById('drawerUpdateHint');
+  // Show the deploy panel so the detailed status box is visible, then install.
+  const panel = document.getElementById('drawerPanel');
+  const overlay = document.getElementById('drawerOverlay');
+  if (panel && panel.classList.contains('open')) toggleDrawer();
+  switchNavTab('settings');
+  setTimeout(() => switchSettingsSub('deploy'), 50);
+  if (btn) btn.disabled = true;
+  if (state) state.textContent = '⏳';
+  if (hint) hint.textContent = 'در حال بررسی و نصب نسخه تازه...';
+  try {
+    await runDeployInstall();
+    if (state) state.textContent = '✅';
+    if (hint) hint.textContent = 'بررسی نسخه جدید انجام شد';
+  } catch (e) {
+    if (state) state.textContent = '❌';
+    if (hint) hint.textContent = 'خطا در به‌روزرسانی: ' + e.message;
+    showToast('خطا در به‌روزرسانی', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function reloadApp() {

@@ -26,6 +26,9 @@
 #   DEPLOYER_GITHUB_TOKEN   token for private repositories
 #   DEPLOYER_WEB_TOKEN      password for the /deployer/ page (install/rollback)
 #   DEPLOYER_WSGI_FILE      override the WSGI file path (testing)
+#   DEPLOYER_VARWWW         WSGI search dir (default /var/www; testing)
+#   DEPLOYER_PA_API         PythonAnywhere API base (testing)
+#   DEPLOYER_PA_USER        override the account name reported by whoami
 #
 # It is safe to re-run: existing backups are kept and the WSGI patch is
 # applied only once (marker-detected). Always back up the WSGI file first
@@ -33,7 +36,7 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-PA_USER="$(whoami)"
+PA_USER="${DEPLOYER_PA_USER:-$(whoami)}"
 HOME_DIR="$HOME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repo root: explicit argument, else the folder containing this script.
@@ -60,7 +63,8 @@ fi
 TARGET="${2:-}"
 if [ -z "$TARGET" ]; then
     for candidate in "$HOME_DIR/amphp/scraper4.py" "$HOME_DIR/scraper4.py" \
-                     "$HOME_DIR/mysite/scraper4.py" "$REPO_SRC/scraper4.py"; do
+                     "$HOME_DIR/scraper4/scraper4.py" "$HOME_DIR/mysite/scraper4.py" \
+                     "$REPO_SRC/scraper4.py"; do
         if [ -f "$candidate" ]; then TARGET="$candidate"; break; fi
     done
 fi
@@ -73,24 +77,135 @@ BRANCHES="${3:-${DEPLOYER_BRANCHES:-arena/01a0640f-amphp}}"
 REPO="${DEPLOYER_REPO:-fazilatma/amphp}"
 GH_TOKEN="${DEPLOYER_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 WEB_TOKEN="${DEPLOYER_WEB_TOKEN:-}"
-WSGI_FILE="${DEPLOYER_WSGI_FILE:-/var/www/${PA_USER}_pythonanywhere_com_wsgi.py}"
+USER_LOWER="$(printf '%s' "$PA_USER" | tr '[:upper:]' '[:lower:]')"
+DOMAIN_LOWER="$USER_LOWER.pythonanywhere.com"
+TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
+VARWWW="${DEPLOYER_VARWWW:-/var/www}"
+API="${DEPLOYER_PA_API:-https://www.pythonanywhere.com/api/v0/user/$PA_USER}"
+SYSTEM_PY="$(command -v python3 || true)"
 
 echo "==> کاربر:        $PA_USER"
 echo "==> پوشه کد:      $REPO_SRC"
 echo "==> فایل هدف:     ${TARGET:-پیدا نشد!}"
 echo "==> برنچ‌ها:      $BRANCHES"
-echo "==> WSGI:         $WSGI_FILE"
 
 # --- checks -------------------------------------------------------------------
 [ -f "$REPO_SRC/deployer.py" ] || { echo "خطا: deployer.py در $REPO_SRC پیدا نشد" >&2; exit 1; }
 [ -n "$TARGET" ] || { echo "خطا: مسیر scraper4.py را به عنوان آرگومان دوم بدهید" >&2; exit 1; }
 [ -f "$TARGET" ] || { echo "خطا: فایل هدف وجود ندارد: $TARGET" >&2; exit 1; }
-[ -f "$WSGI_FILE" ] || { echo "خطا: فایل WSGI پیدا نشد: $WSGI_FILE — اگر وب‌اپ ندارید ابتدا از تب Web یک وب‌اپ بسازید" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Locate (or create) the real WSGI file.
+# The filename depends on the web app domain: default apps live at
+# /var/www/<username>_pythonanywhere_com_wsgi.py; custom domains produce
+# /var/www/<username>_<domain_with_underscores>_wsgi.py. We discover it
+# instead of guessing, and only create a web app when none exists.
+# ---------------------------------------------------------------------------
+find_wsgi() {
+    local f
+    for f in "$VARWWW/${USER_LOWER}_pythonanywhere_com_wsgi.py" \
+             "$VARWWW/${PA_USER}_pythonanywhere_com_wsgi.py"; do
+        [ -f "$f" ] && { printf '%s' "$f"; return; }
+    done
+    find "$VARWWW" -maxdepth 1 -type f -name '*_wsgi.py' -writable 2>/dev/null | sort | head -n 1
+}
+WSGI_FILE="${DEPLOYER_WSGI_FILE:-}"
+if [ -z "$WSGI_FILE" ]; then
+    WSGI_FILE="$(find_wsgi || true)"
+fi
+
+if [ -z "$WSGI_FILE" ] && [ -s "$TOKEN_FILE" ] && [ -n "$SYSTEM_PY" ]; then
+    echo "==> وب‌اپی پیدا نشد؛ ایجاد web app از طریق API پایتون‌انی‌ورلد…"
+    API_AUTH="$HOME_DIR/.deployer/.pa-auth-$$"
+    API_RESP="$HOME_DIR/.deployer/.pa-response-$$"
+    TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+    printf 'header = "Authorization: Token %s"\n' "$TOKEN" > "$API_AUTH"
+    chmod 600 "$API_AUTH"
+    unset TOKEN
+    api_call() {
+        curl --config "$API_AUTH" -sS --show-error -o "$API_RESP" \
+            --write-out '%{http_code}' --request "$1" --connect-timeout 20 \
+            --max-time 120 "${@:2}"
+    }
+    STATUS="$(api_call GET "$API/webapps/")"
+    if [ "$STATUS" != 200 ]; then
+        cat "$API_RESP" || true
+        rm -f "$API_AUTH" "$API_RESP"
+        echo "خطا: احراز هویت API پایتون‌انی‌ورلد ناموفق بود (HTTP $STATUS)" >&2
+        exit 1
+    fi
+    DOMAIN_EXISTS=0
+    if "$SYSTEM_PY" - "$API_RESP" "$DOMAIN_LOWER" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8"))
+wanted = sys.argv[2].lower()
+sys.exit(0 if any(str(r.get("domain_name", "")).lower() == wanted for r in rows if isinstance(r, dict)) else 1)
+PY
+    then DOMAIN_EXISTS=1; fi
+
+    if [ "$DOMAIN_EXISTS" != 1 ]; then
+        MAJOR="$("$SYSTEM_PY" -c 'import sys;print(sys.version_info.major)')"
+        MINOR="$("$SYSTEM_PY" -c 'import sys;print(sys.version_info.minor)')"
+        STATUS="$(api_call POST "$API/webapps/" \
+            --data-urlencode "domain_name=$DOMAIN_LOWER" \
+            --data-urlencode "python_version=python${MAJOR}${MINOR}")"
+        if [ "$STATUS" != 200 ] && [ "$STATUS" != 201 ]; then
+            cat "$API_RESP" || true
+            rm -f "$API_AUTH" "$API_RESP"
+            echo "خطا: ساخت وب‌اپ ناموفق بود (HTTP $STATUS)" >&2
+            exit 1
+        fi
+        echo "==> وب‌اپ به نام $DOMAIN_LOWER ساخته شد؛ منتظر ساخته‌شدن فایل WSGI…"
+        # Point a new app at the Scraper4 venv when this layout exists.
+        if [ -d "$HOME_DIR/scraper4/venv" ]; then
+            api_call PATCH "$API/webapps/$DOMAIN_LOWER/" \
+                --data-urlencode "virtualenv_path=$HOME_DIR/scraper4/venv" >/dev/null || true
+        fi
+    else
+        echo "==> وب‌اپ موجود است ولی فایل WSGI هنوز در /var/www نیست؛ منتظر می‌مانیم…"
+    fi
+    rm -f "$API_AUTH" "$API_RESP"
+
+    for n in $(seq 1 30); do
+        WSGI_FILE="$(find_wsgi || true)"
+        [ -n "$WSGI_FILE" ] && break
+        echo "    منتظر WSGI ($n/30)…"
+        sleep 2
+    done
+fi
+
+if [ -z "$WSGI_FILE" ]; then
+    cat >&2 <<'EOF'
+خطا: هیچ فایل WSGI در /var/www پیدا نشد و توکن API پایتون‌انی‌ورلد هم موجود نیست.
+
+برای ساخت وب‌اپ (یک‌بار) در پایتون‌انی‌ورلد:
+  تب Web → Create a new web app → Manual configuration → Python 3.10 → Next
+سپس همین اسکریپت را دوباره اجرا کنید؛ خودش فایل WSGI را پیدا و پچ می‌کند.
+
+اگر token دارید ولی می‌خواهید دستی بدهید:
+  export DEPLOYER_WSGI_FILE=/var/www/Fazilatma_pythonanywhere_com_wsgi.py
+EOF
+    exit 1
+fi
+[ -w "$WSGI_FILE" ] || { echo "خطا: فایل WSGI قابل نوشتن نیست: $WSGI_FILE" >&2; exit 1; }
+
+echo "==> WSGI:         $WSGI_FILE"
+ALL_WSGI="$(find "$VARWWW" -maxdepth 1 -type f -name '*_wsgi.py' -writable 2>/dev/null | sort || true)"
+if [ -n "$ALL_WSGI" ]; then
+    echo "---- فایل‌های WSGI موجود در /var/www ----"
+    echo "$ALL_WSGI" | sed 's/^/     /'
+fi
 
 # --- 1. copy deployer ---------------------------------------------------------
 mkdir -p "$HOME_DIR/.deployer"
-cp -f "$REPO_SRC/deployer.py" "$HOME_DIR/.deployer/deployer.py"
-echo "==> deployer.py کپی شد → ~/.deployer/deployer.py"
+SRC_DEPLOYER="$(readlink -f "$REPO_SRC/deployer.py" 2>/dev/null || printf '%s' "$REPO_SRC/deployer.py")"
+DST_DEPLOYER="$HOME_DIR/.deployer/deployer.py"
+if [ "$SRC_DEPLOYER" != "$(readlink -f "$DST_DEPLOYER" 2>/dev/null || printf '%s' "$DST_DEPLOYER")" ]; then
+    cp -f "$REPO_SRC/deployer.py" "$DST_DEPLOYER"
+    echo "==> deployer.py کپی شد → ~/.deployer/deployer.py"
+else
+    echo "==> deployer.py در ~/.deployer/deployer.py موجود است (بدون کپی)"
+fi
 
 # --- 2. write WSGI wrapper (env values escaped by Python) ---------------------
 python3 - "$HOME_DIR/.deployer/deployer_wsgi.py" "$REPO" "$BRANCHES" "$TARGET" "$GH_TOKEN" "$WEB_TOKEN" <<'PY'
@@ -147,33 +262,48 @@ else
 fi
 
 # --- 4. reload ------------------------------------------------------------------
-DOMAIN="$(echo "$PA_USER" | tr 'A-Z' 'a-z').pythonanywhere.com"
-TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
-if [ -f "$TOKEN_FILE" ]; then
+if [ -s "$TOKEN_FILE" ]; then
     API_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
     echo "==> درخواست reload از API…"
     curl -sS -X POST -H "Authorization: Token $API_TOKEN" \
-        "https://www.pythonanywhere.com/api/v0/user/$PA_USER/webapps/$DOMAIN/reload/" || true
+        "$API/webapps/$DOMAIN_LOWER/reload/" || true
     echo
 else
     echo "==> توکن API پیدا نشد — لطفاً در تب Web دکمه Reload را بزنید"
 fi
 
-# --- 5. result -------------------------------------------------------------------
+# --- 5. derived page URL (from the actual WSGI file name) ------------------------
+WSGI_NAME="$(basename "$WSGI_FILE")"
+WSGI_CORE="${WSGI_NAME%_wsgi.py}"
+if [[ "$WSGI_CORE" == *_pythonanywhere_com ]]; then
+    PAGE_DOMAIN="$DOMAIN_LOWER"
+else
+    # /var/www/<username>_<domain_with_underscores>_wsgi.py -> domain
+    PAGE_DOMAIN="${WSGI_CORE#${PA_USER}_}"
+    [ "$PAGE_DOMAIN" = "$WSGI_CORE" ] && PAGE_DOMAIN="${WSGI_CORE#${USER_LOWER}_}"
+    [ "$PAGE_DOMAIN" = "$WSGI_CORE" ] && PAGE_DOMAIN="${WSGI_CORE#*_}"
+    PAGE_DOMAIN="${PAGE_DOMAIN//_/.}"
+fi
+DEPLOYER_URL="https://$PAGE_DOMAIN/deployer/"
+
 cat <<EOF
 
 ============================================================
-✅ نصب شد. صفحه دیپلوی‌ر از این آدرس باز می‌شود:
+✅ نصب شد. صفحه دیپلوی‌ر از این آدرس در مرورگر باز می‌شود:
 
-   https://$DOMAIN/deployer/
+   $DEPLOYER_URL
 
    (منتظر reload بمانید؛ چند ثانیه طول می‌کشد)
 
 بررسی سریع با curl:
-   curl -s https://$DOMAIN/deployer/ | head -5
+   curl -s $DEPLOYER_URL | head -5
 
 اگر DEPLOYER_WEB_TOKEN تنظیم کرده‌اید، دکمه‌های
 «نصب» و «بازگشت» با همان رمز فعال می‌شوند؛ بدون آن،
 صفحه فقط وضعیت را نمایش می‌دهد (حالت امن).
+
+نکته: اگر سایت اصلی هنوز اجرا نشده، اسکریپت اصلی پروژه
+(install_pythonanywhere.sh در ریپو) را هم اجرا کنید تا
+سایت اصلی روی همان وب‌اپ راه‌اندازی شود.
 ============================================================
 EOF

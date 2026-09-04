@@ -19,6 +19,8 @@ import sys
 import time
 import json
 import uuid
+import csv
+import io
 import base64
 import hashlib
 import tempfile
@@ -137,6 +139,18 @@ def get_default_config() -> Dict[str, Any]:
             "auto_reload": True,
             "keep_backups": 5,
             "min_interval_sec": 60
+        },
+        "selectors": {
+            "container": "",
+            "title": "",
+            "price": "",
+            "image": "",
+            "url": "",
+            "sku": "",
+            "description": "",
+            "specs": "",
+            "gallery": "",
+            "variations": ""
         },
         "ui_preferences": {
             "theme": "navy",
@@ -762,15 +776,12 @@ def api_save_profile():
         return jsonify({"ok": False, "error": "نام پروفایل الزامی است"}), 400
     data = load_data()
     profiles = data.setdefault("profiles", {})
-    profiles[name] = {
-        "woocommerce": data.get("woocommerce", {}),
-        "basalam": data.get("basalam", {}),
-        "ai": data.get("ai", {}),
-        "network": data.get("network", {})
-    }
+    profiles[name] = {k: data.get(k, {}) for k in PROFILE_SECTIONS}
     data["active_profile"] = name
     save_data(data)
     return jsonify({"ok": True, "message": f"پروفایل '{name}' ذخیره شد"})
+
+PROFILE_SECTIONS = ["woocommerce", "basalam", "ai", "network", "messengers", "selectors"]
 
 @app.post("/api/profile/active")
 def api_set_active_profile():
@@ -782,16 +793,18 @@ def api_set_active_profile():
     data = load_data()
     if name and name in data.get("profiles", {}):
         prof = data["profiles"][name]
-        for k in ["woocommerce", "basalam", "ai", "network"]:
+        for k in PROFILE_SECTIONS:
             if k in prof:
                 data[k] = prof[k]
         data["active_profile"] = name
         save_data(data)
         return jsonify({"ok": True, "message": f"پروفایل '{name}' فعال شد", "data": data})
     elif not name:
+        # Returning to the default must hand back the full config too, so the
+        # UI can refresh instead of keeping the previous profile's values.
         data["active_profile"] = ""
         save_data(data)
-        return jsonify({"ok": True, "message": "پروفایل پیش‌فرض فعال شد"})
+        return jsonify({"ok": True, "message": "پروفایل پیش‌فرض فعال شد", "data": data})
     return jsonify({"ok": False, "error": "پروفایل یافت نشد"}), 404
 
 @app.delete("/api/profile/<path:name>")
@@ -1052,7 +1065,172 @@ def api_batch_products():
         return jsonify(ok=True, remaining=len(data["last_result"]))
     return jsonify(ok=False, error="عملیات نامعتبر است"), 400
 
-# Messenger Hub & Customer Chat Desk
+# ==================== IMPORT (درون‌ریزی) ====================
+# Mirrors the PHP build's درون‌ریزی tab: paste or upload CSV/TSV/JSON, map the
+# columns, apply the pricing formula, then merge into the results list.
+
+IMPORT_FIELDS = ["title", "price", "sku", "image", "url", "description", "stock", "category"]
+
+# Common Persian/English header aliases -> canonical field
+IMPORT_ALIASES = {
+    "title": ["title", "name", "product", "product_name", "عنوان", "نام", "نام محصول", "کالا", "محصول"],
+    "price": ["price", "amount", "cost", "قیمت", "قیمت (تومان)", "مبلغ", "بها"],
+    "sku": ["sku", "code", "product_id", "شناسه", "کد", "کد محصول", "اس‌کی‌یو"],
+    "image": ["image", "img", "photo", "picture", "تصویر", "عکس", "تصویر محصول"],
+    "url": ["url", "link", "permalink", "لینک", "آدرس", "نشانی"],
+    "description": ["description", "desc", "body", "توضیحات", "شرح", "توضیح"],
+    "stock": ["stock", "inventory", "status", "موجودی", "وضعیت"],
+    "category": ["category", "cat", "دسته", "دسته‌بندی"],
+}
+
+
+def detect_import_format(text: str) -> str:
+    stripped = (text or "").lstrip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        return "json"
+    return "delimited"
+
+
+def sniff_delimiter(text: str) -> str:
+    head = "\n".join((text or "").splitlines()[:5])
+    counts = {d: head.count(d) for d in (",", ";", "\t", "|")}
+    best = max(counts, key=lambda d: counts[d])
+    return best if counts[best] > 0 else ","
+
+
+def guess_import_mapping(columns: List[str]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for field, aliases in IMPORT_ALIASES.items():
+        for col in columns:
+            norm = str(col).strip().lower()
+            if norm in [a.lower() for a in aliases] and col not in mapping.values():
+                mapping[field] = col
+                break
+    return mapping
+
+
+def parse_import_text(text: str) -> Dict[str, Any]:
+    fmt = detect_import_format(text)
+    if fmt == "json":
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            for key in ("products", "items", "data", "results"):
+                if isinstance(payload.get(key), list):
+                    payload = payload[key]
+                    break
+        if not isinstance(payload, list):
+            raise ValueError("ساختار JSON باید آرایه‌ای از محصولات باشد")
+        rows = [r for r in payload if isinstance(r, dict)]
+        columns: List[str] = []
+        for r in rows:
+            for k in r.keys():
+                if k not in columns:
+                    columns.append(k)
+        return {"format": "json", "columns": columns, "rows": rows}
+
+    delim = sniff_delimiter(text)
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
+    columns = list(reader.fieldnames or [])
+    rows = [dict(r) for r in reader]
+    return {"format": "delimited", "delimiter": delim, "columns": columns, "rows": rows}
+
+
+@app.post("/api/import/parse")
+def api_import_parse():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    text = ""
+    if request.files and "file" in request.files:
+        raw = request.files["file"].read()
+        text = raw.decode("utf-8-sig", errors="replace")
+    else:
+        body = request.get_json(force=True, silent=True) or {}
+        text = body.get("text", "") or ""
+    if not text.strip():
+        return jsonify(ok=False, error="متن یا فایلی برای درون‌ریزی ارسال نشد"), 400
+    try:
+        parsed = parse_import_text(text)
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify(ok=False, error=f"خطا در خواندن داده: {e}"), 400
+
+    columns = parsed["columns"]
+    return jsonify(
+        ok=True,
+        format=parsed["format"],
+        delimiter=parsed.get("delimiter", ""),
+        columns=columns,
+        row_count=len(parsed["rows"]),
+        sample=parsed["rows"][:5],
+        suggested_mapping=guess_import_mapping(columns),
+        fields=IMPORT_FIELDS,
+    )
+
+
+@app.post("/api/import/apply")
+def api_import_apply():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("text", "") or ""
+    mapping = body.get("mapping", {}) or {}
+    mode = body.get("mode", "append")
+    pct = float(body.get("price_pct", 0) or 0)
+    fixed = float(body.get("price_fixed", 0) or 0)
+    round_to = int(body.get("round_to", 0) or 0)
+
+    if not text.strip():
+        return jsonify(ok=False, error="داده‌ای برای درون‌ریزی وجود ندارد"), 400
+    try:
+        parsed = parse_import_text(text)
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify(ok=False, error=f"خطا در خواندن داده: {e}"), 400
+
+    title_col = mapping.get("title")
+    imported: List[Dict[str, Any]] = []
+    for row in parsed["rows"]:
+        def pick(field: str) -> str:
+            col = mapping.get(field)
+            if not col:
+                return ""
+            val = row.get(col, "")
+            return "" if val is None else str(val).strip()
+
+        title = pick("title") or (row.get(title_col, "") if title_col else "")
+        if not title and not pick("image") and not pick("url"):
+            continue
+        price = extract_price_numbers(pick("price"))
+        if price > 0 and (pct or fixed or round_to > 1):
+            price = apply_pricing_rules(price, pct, fixed, round_to)
+        imported.append({
+            "title": title,
+            "price": price,
+            "price_raw": pick("price"),
+            "sku": pick("sku"),
+            "image": pick("image"),
+            "url": pick("url"),
+            "description": pick("description"),
+            "stock": pick("stock") or "in_stock",
+            "category": pick("category"),
+            "specs": {},
+            "gallery": [],
+            "variations": [],
+            "source": "import",
+            "scraped_at": datetime.now().isoformat(),
+        })
+
+    if not imported:
+        return jsonify(ok=False, error="هیچ ردیف معتبری پیدا نشد؛ نگاشت ستون «عنوان» را بررسی کنید"), 400
+
+    data = load_data()
+    existing = data.get("last_result", []) or []
+    if mode == "replace":
+        data["last_result"] = imported
+    else:
+        data["last_result"] = existing + imported
+    save_data(data)
+    return jsonify(ok=True, imported=len(imported), total=len(data["last_result"]), mode=mode)
 @app.get("/api/chat/threads")
 def api_chat_threads():
     auth_err = check_auth()
@@ -2144,6 +2322,31 @@ body {
 .drawer-cta .cta-text small { font-size: calc(10.5px * var(--font-scale, 1)); opacity: 0.88; line-height: 1.4; }
 .drawer-cta .cta-state { font-size: calc(15px * var(--font-scale, 1)); flex: 0 0 auto; }
 
+/* Auto-save state chip in the top bar */
+.autosave-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-solid);
+  font-size: calc(10px * var(--font-scale, 1));
+  font-weight: 700;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.autosave-chip[data-state="saving"] { color: var(--primary); border-color: var(--primary); }
+.autosave-chip[data-state="saved"]  { color: var(--success, #34d399); border-color: var(--success, #34d399); }
+.autosave-chip[data-state="error"]  { color: var(--danger, #f87171); border-color: var(--danger, #f87171); }
+.autosave-chip[data-state="saving"] #autosaveDot { animation: auPulse 0.9s ease-in-out infinite; }
+@keyframes auPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (max-width: 640px) {
+  .autosave-chip #autosaveText { display: none; }
+  .autosave-chip { padding: 4px 7px; }
+}
+
 /* ==================== BOTTOM TAB BAR ==================== */
 .bottom-nav {
   position: fixed;
@@ -2739,8 +2942,13 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
   </div>
 
   <div class="top-actions">
+    <!-- Auto-save state -->
+    <span class="autosave-chip" id="autosaveChip" title="تغییرات به‌صورت خودکار ذخیره می‌شوند">
+      <span id="autosaveDot">●</span><span id="autosaveText">ذخیره خودکار</span>
+    </span>
+
     <!-- Active Profile Selector -->
-    <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" style="width:85px; height:32px; font-size: calc(11px * var(--font-scale, 1)); padding:2px 6px;">
+    <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" title="انتخاب پروفایل — بلافاصله بارگذاری می‌شود" style="width:85px; height:32px; font-size: calc(11px * var(--font-scale, 1)); padding:2px 6px;">
       <option value="">پیش‌فرض</option>
     </select>
 
@@ -2810,6 +3018,11 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
     <div class="drawer-menu-item" onclick="drawerNavigate('settings', 'deploy')">
       <div><span class="d-icon">🚀</span><span>استقرار و به‌روزرسانی گیت‌هاب</span></div>
       <span class="chip chip-accent">v5.0.0</span>
+    </div>
+
+    <div class="drawer-menu-item" onclick="drawerNavigate('import')">
+      <div><span class="d-icon">📥</span><span>درون‌ریزی محصولات (CSV/JSON)</span></div>
+      <span class="chip chip-primary">فایل</span>
     </div>
 
     <div class="drawer-menu-item" onclick="openModal('chatDeskModal'); toggleDrawer();">
@@ -2926,7 +3139,15 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
           <span class="card-title-icon">⚙️</span>
           <span>تنظیمات یکپارچه فروشگاه‌ها، هوش مصنوعی و شبکه</span>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="saveAllSettings()">💾 ذخیره تنظیمات</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="saveCurrentProfile()" title="ذخیره تنظیمات فعلی به‌عنوان یک پروفایل">👤 ذخیره پروفایل</button>
+          <button class="btn btn-secondary btn-sm" onclick="deleteActiveProfile()" title="حذف پروفایل انتخاب‌شده">🗑 حذف</button>
+          <button class="btn btn-primary btn-sm" onclick="saveAllSettings()" title="تغییرات به‌صورت خودکار هم ذخیره می‌شوند">💾 ذخیره تنظیمات</button>
+        </div>
+      </div>
+
+      <div style="margin:-4px 0 12px; font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim);">
+        ℹ️ همهٔ تغییرات به‌صورت خودکار ذخیره می‌شوند. با انتخاب پروفایل از کشوی بالای صفحه، بلافاصله بارگذاری می‌شود.
       </div>
 
       <div class="sub-tabs">
@@ -3317,6 +3538,78 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
       <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.6;"></div>
     </div>
   </main>
+
+  <!-- TAB: درون‌ریزی (IMPORT) -->
+  <main id="tab-import" class="view-panel">
+    <div class="glass-card">
+      <div class="card-header">
+        <div class="card-title">
+          <span class="card-title-icon">📥</span>
+          <span>درون‌ریزی محصولات از فایل یا متن (CSV / TSV / JSON)</span>
+        </div>
+        <span class="chip chip-primary" id="importFormatChip">تشخیص خودکار</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">متن یا محتوای فایل را اینجا بچسبانید:</label>
+        <textarea class="form-control" id="importText" rows="7" placeholder="title,price,sku,image&#10;ساعت هوشمند,1250000,SW-01,https://..."></textarea>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+          📂 انتخاب فایل
+          <input type="file" id="importFile" accept=".csv,.tsv,.txt,.json" style="display:none;" onchange="importPickFile(this)">
+        </label>
+        <button class="btn btn-primary btn-sm" onclick="importParse()">🔍 شناسایی ستون‌ها</button>
+        <button class="btn btn-secondary btn-sm" onclick="importLoadSample()">🧪 دادهٔ نمونه</button>
+      </div>
+
+      <div id="importMappingBox" style="display:none;">
+        <div class="card-header" style="margin-bottom:8px;">
+          <div class="card-title">
+            <span class="card-title-icon">🧭</span>
+            <span>نگاشت ستون‌ها</span>
+          </div>
+          <span class="chip chip-success" id="importRowCount">۰ ردیف</span>
+        </div>
+        <div class="form-grid" id="importMappingGrid"></div>
+
+        <div class="card-header" style="margin:14px 0 8px;">
+          <div class="card-title">
+            <span class="card-title-icon">💰</span>
+            <span>فرمول قیمت‌گذاری هنگام درون‌ریزی</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">درصد افزایش:</label>
+            <input type="number" class="form-control" id="importPct" value="0" step="0.5">
+          </div>
+          <div class="form-group">
+            <label class="form-label">مبلغ ثابت (تومان):</label>
+            <input type="number" class="form-control" id="importFixed" value="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">گرد کردن به:</label>
+            <input type="number" class="form-control" id="importRound" value="1000">
+          </div>
+          <div class="form-group">
+            <label class="form-label">نحوهٔ ادغام:</label>
+            <select class="form-control" id="importMode">
+              <option value="append">افزودن به نتایج فعلی</option>
+              <option value="replace">جایگزینی کامل نتایج</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+          <button class="btn btn-accent btn-sm" onclick="importApply()">✅ درون‌ریزی نهایی</button>
+          <button class="btn btn-secondary btn-sm" onclick="switchNavTab('results')">📊 مشاهده نتایج</button>
+        </div>
+        <div id="importStatus" style="margin-top:12px; font-size: calc(11.5px * var(--font-scale, 1)); color:var(--text-dim); white-space:pre-wrap;"></div>
+      </div>
+    </div>
+  </main>
 </div>
 
 <!-- BOTTOM MOBILE-OPTIMIZED NAVBAR -->
@@ -3345,6 +3638,10 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
   <div class="nav-item" onclick="switchNavTab('ai')">
     <span class="nav-icon">🤖</span>
     <span class="nav-label">هوش</span>
+  </div>
+  <div class="nav-item" onclick="switchNavTab('import')">
+    <span class="nav-icon">📥</span>
+    <span class="nav-label">درون‌ریزی</span>
   </div>
 </nav>
 
@@ -3451,7 +3748,10 @@ function showToast(msg, kind = 'info') {
   setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 3200);
 }
 
-function openModal(id) { document.getElementById(id).classList.add('open'); }
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+  if (id === 'chatDeskModal') loadChatThreads();
+}
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 function toggleDrawer() {
@@ -3483,7 +3783,7 @@ function switchNavTab(tab) {
   if (target) target.classList.add('active');
   
   const navBtns = document.querySelectorAll('.nav-item');
-  const tabNames = ['start', 'settings', 'selectors', 'results', 'send', 'ai'];
+  const tabNames = ['start', 'settings', 'selectors', 'results', 'send', 'ai', 'import'];
   const idx = tabNames.indexOf(tab);
   if (idx !== -1 && navBtns[idx]) navBtns[idx].classList.add('active');
 }
@@ -3524,63 +3824,246 @@ async function loadConfig() {
   }
 }
 
-function applyConfigToUi(cfg) {
-  if (cfg.woocommerce) {
-    document.getElementById('wooUrl').value = cfg.woocommerce.url || '';
-    document.getElementById('wooCk').value = cfg.woocommerce.consumer_key || '';
-    document.getElementById('wooCs').value = cfg.woocommerce.consumer_secret || '';
+/* ==================== SETTINGS FIELD MAP ====================
+   One source of truth: every key maps a config path to a DOM id, so loading a
+   profile and auto-saving read/write exactly the same fields. Nothing can be
+   saved without being restored, or vice versa. */
+const SETTINGS_FIELDS = {
+  woocommerce: {
+    url: 'wooUrl', consumer_key: 'wooCk', consumer_secret: 'wooCs',
+    price_pct: 'wooPricePct', price_fixed: 'wooPriceFixed', round_to: 'wooPriceRound'
+  },
+  basalam: {
+    token: 'bslToken', vendor_id: 'bslVendorId',
+    category_id: 'bslCatId', prep_days: 'bslPrepDays'
+  },
+  ai: { provider: 'aiProvider', api_key: 'aiApiKey', model: 'aiModel' },
+  network: { proxy_mode: 'netProxyMode', proxy: 'netProxy' },
+  messengers: {
+    telegram_token: 'tgToken', telegram_chat_id: 'tgChatId',
+    bale_token: 'baleToken', bale_chat_id: 'baleChatId'
+  },
+  deploy: { repo: 'deployRepo', branch: 'deployBranch' },
+  selectors: {
+    container: 'selContainer', title: 'selTitle', price: 'selPrice',
+    image: 'selImage', url: 'selUrl', sku: 'selSku',
+    description: 'selDesc', specs: 'selSpecs',
+    gallery: 'selGallery', variations: 'selVariations'
   }
-  if (cfg.basalam) {
-    document.getElementById('bslToken').value = cfg.basalam.token || '';
-    document.getElementById('bslVendorId').value = cfg.basalam.vendor_id || '';
-    document.getElementById('bslCatId').value = cfg.basalam.category_id || '';
+};
+const NUMERIC_KEYS = { price_pct:1, price_fixed:1, round_to:1, prep_days:1 };
+
+function _el(id) { return document.getElementById(id); }
+
+function readFieldValue(el, key) {
+  if (!el) return null;
+  if (el.type === 'checkbox') return el.checked;
+  const v = el.value;
+  if (NUMERIC_KEYS[key]) { const n = parseFloat(v); return isNaN(n) ? 0 : n; }
+  return v;
+}
+
+function collectSettings() {
+  const payload = {};
+  for (const section in SETTINGS_FIELDS) {
+    const row = {};
+    let touched = false;
+    for (const key in SETTINGS_FIELDS[section]) {
+      const el = _el(SETTINGS_FIELDS[section][key]);
+      if (!el) continue;
+      row[key] = readFieldValue(el, key);
+      touched = true;
+    }
+    if (touched) payload[section] = row;
   }
-  if (cfg.ai) {
-    document.getElementById('aiProvider').value = cfg.ai.provider || 'openrouter';
-    document.getElementById('aiApiKey').value = cfg.ai.api_key || '';
-    document.getElementById('aiModel').value = cfg.ai.model || '';
-  }
-  if (cfg.last_result) {
-    currentProducts = cfg.last_result;
-    renderCatalog();
-  }
-  const profSelect = document.getElementById('topProfileSelect');
-  profSelect.innerHTML = '<option value="">پیش‌فرض</option>';
-  if (cfg.profiles) {
-    for (const pName in cfg.profiles) {
-      const opt = document.createElement('option');
-      opt.value = pName; opt.innerText = pName;
-      if (cfg.active_profile === pName) opt.selected = true;
-      profSelect.appendChild(opt);
+  return payload;
+}
+
+function applySettingsToUi(cfg) {
+  if (!cfg) return;
+  for (const section in SETTINGS_FIELDS) {
+    const data = cfg[section];
+    if (!data || typeof data !== 'object') continue;
+    for (const key in SETTINGS_FIELDS[section]) {
+      const el = _el(SETTINGS_FIELDS[section][key]);
+      if (!el) continue;
+      const val = data[key];
+      if (el.type === 'checkbox') el.checked = !!val;
+      else el.value = (val === null || val === undefined) ? '' : val;
     }
   }
 }
 
-async function saveAllSettings() {
-  const payload = {
-    woocommerce: {
-      url: document.getElementById('wooUrl').value,
-      consumer_key: document.getElementById('wooCk').value,
-      consumer_secret: document.getElementById('wooCs').value
-    },
-    basalam: {
-      token: document.getElementById('bslToken').value,
-      vendor_id: document.getElementById('bslVendorId').value,
-      category_id: document.getElementById('bslCatId').value
-    },
-    ai: {
-      provider: document.getElementById('aiProvider').value,
-      api_key: document.getElementById('aiApiKey').value,
-      model: document.getElementById('aiModel').value
-    }
-  };
-  try {
-    const res = await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-    const json = await res.json();
-    if (json.ok) showToast('تنظیمات ذخیره شد', 'success');
-  } catch(e) {
-    showToast('خطا در ذخیره تنظیمات', 'error');
+function applyConfigToUi(cfg) {
+  appConfig = cfg || appConfig;
+  applySettingsToUi(appConfig);
+
+  // Autoupdate lives behind its own endpoint but still belongs to the form.
+  const au = (appConfig && appConfig.autoupdate) || {};
+  const setV = (id, v) => { const el = _el(id); if (el && v !== undefined && v !== null) el.value = v; };
+  const setC = (id, v) => { const el = _el(id); if (el && v !== undefined && v !== null) el.checked = !!v; };
+  setV('auInterval', au.interval_sec);
+  setV('auKeep', au.keep_backups);
+  setC('auEnabled', au.enabled);
+  setC('auAutoInstall', au.auto_install);
+  setC('auAutoReload', au.auto_reload);
+
+  if (appConfig.last_result) {
+    currentProducts = appConfig.last_result;
+    renderCatalog();
   }
+  renderProfileOptions(appConfig);
+}
+
+function renderProfileOptions(cfg) {
+  const profSelect = _el('topProfileSelect');
+  if (!profSelect) return;
+  const active = (cfg && cfg.active_profile) || '';
+  profSelect.innerHTML = '<option value="">پیش‌فرض</option>';
+  const profiles = (cfg && cfg.profiles) || {};
+  for (const pName in profiles) {
+    const opt = document.createElement('option');
+    opt.value = pName;
+    opt.innerText = pName;
+    if (active === pName) opt.selected = true;
+    profSelect.appendChild(opt);
+  }
+  profSelect.value = active;
+}
+
+/* ==================== AUTO-SAVE ==================== */
+let autoSaveTimer = null;
+let autoSaveInFlight = null;
+let autoSavePending = false;
+
+function setAutoSaveState(state, text) {
+  const chip = _el('autosaveChip');
+  const label = _el('autosaveText');
+  if (chip) chip.setAttribute('data-state', state);
+  if (label && text) label.textContent = text;
+}
+
+async function saveAllSettings(opts) {
+  const silent = !!(opts && opts.silent);
+  const payload = collectSettings();
+  setAutoSaveState('saving', 'در حال ذخیره...');
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (json.ok) {
+      setAutoSaveState('saved', silent ? 'ذخیره شد ✓' : 'تنظیمات ذخیره شد ✓');
+      if (!silent) showToast('تنظیمات ذخیره شد', 'success');
+    } else {
+      setAutoSaveState('error', 'خطا در ذخیره');
+      if (!silent) showToast(json.error || 'خطا در ذخیره تنظیمات', 'error');
+    }
+  } catch (e) {
+    setAutoSaveState('error', 'خطای شبکه');
+    if (!silent) showToast('خطا در ذخیره تنظیمات', 'error');
+  }
+  // A change arrived while we were saving -> run once more so nothing is lost.
+  if (autoSavePending) {
+    autoSavePending = false;
+    autoSaveTimer = setTimeout(() => saveAllSettings({ silent: true }), 400);
+  }
+}
+
+function scheduleAutoSave(delay) {
+  setAutoSaveState('saving', 'در انتظار ذخیره...');
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  if (autoSaveInFlight) { autoSavePending = true; return; }
+  autoSaveTimer = setTimeout(() => {
+    autoSaveInFlight = saveAllSettings({ silent: true })
+      .finally(() => { autoSaveInFlight = null; });
+  }, delay === undefined ? 700 : delay);
+}
+
+function initAutoSave() {
+  const root = document.body;
+  if (!root) return;
+  // Every setting field anywhere in the app auto-saves, including the
+  // selectors tab and the deploy panel.
+  const selector = 'input, select, textarea';
+  root.addEventListener('input', (e) => {
+    const t = e.target;
+    if (!t.matches || !t.matches(selector)) return;
+    if (t.closest('#chatDeskModal')) return;   // chat input is not a setting
+    scheduleAutoSave();
+  });
+  root.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t.matches || !t.matches(selector)) return;
+    if (t.closest('#chatDeskModal')) return;
+    // Autoupdate has its own endpoint; keep it in sync too.
+    if (t.id && ['auEnabled','auAutoInstall','auAutoReload','auInterval','auKeep'].includes(t.id)) {
+      saveAutoupdate({ silent: true });
+      return;
+    }
+    if (t.type === 'checkbox' || t.tagName === 'SELECT') scheduleAutoSave(250);
+  });
+  window.addEventListener('beforeunload', () => {
+    if (autoSaveTimer) { clearTimeout(autoSaveTimer); saveAllSettings({ silent: true }); }
+  });
+  setAutoSaveState('idle', 'ذخیره خودکار');
+}
+
+/* ==================== PROFILES ==================== */
+async function onProfileChange(name) {
+  const sel = _el('topProfileSelect');
+  showToast(name ? `در حال بارگذاری پروفایل «${name}»...` : 'بازگشت به پروفایل پیش‌فرض', 'info');
+  try {
+    const res = await fetch('/api/profile/active', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || '' })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      appConfig = json.data || appConfig;
+      applyConfigToUi(appConfig);
+      restoreFontScale();
+      auRefresh(true);
+      if (sel) sel.value = name || '';
+      showToast(json.message || 'پروفایل بارگذاری شد', 'success');
+    } else {
+      showToast(json.error || 'خطا در بارگذاری پروفایل', 'error');
+      await loadConfig();   // roll the dropdown back to the real state
+    }
+  } catch (e) {
+    showToast('خطای شبکه در بارگذاری پروفایل', 'error');
+    await loadConfig();
+  }
+}
+
+async function saveCurrentProfile() {
+  const name = (prompt('نام پروفایل جدید:') || '').trim();
+  if (!name) return;
+  // Persist the form first so the snapshot contains the latest edits.
+  await saveAllSettings({ silent: true });
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const json = await res.json();
+    showToast(json.ok ? (json.message || 'پروفایل ذخیره شد') : (json.error || 'خطا'), json.ok ? 'success' : 'error');
+    if (json.ok) await loadConfig();
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+async function deleteActiveProfile() {
+  const sel = _el('topProfileSelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('ابتدا یک پروفایل را انتخاب کنید', 'info'); return; }
+  if (!confirm(`پروفایل «${name}» حذف شود؟`)) return;
+  try {
+    const res = await fetch('/api/profile/' + encodeURIComponent(name), { method: 'DELETE' });
+    const json = await res.json();
+    showToast(json.ok ? (json.message || 'حذف شد') : (json.error || 'خطا'), json.ok ? 'success' : 'error');
+    if (json.ok) await loadConfig();
+  } catch (e) { showToast('خطای شبکه', 'error'); }
 }
 
 async function startScrape() {
@@ -3655,7 +4138,7 @@ function renderCatalog() {
   } else {
     cardsContainer.innerHTML = filtered.map((p, idx) => `
       <div class="p-mobile-card">
-        <input type="checkbox" onchange="toggleSelectProduct(${idx}, this.checked)">
+        <input type="checkbox" class="prod-check" data-idx="${idx}" ${selectedIndices.has(idx) ? 'checked' : ''} onchange="toggleSelectProduct(${idx}, this.checked)">
         <img class="p-card-thumb" src="${p.image || ''}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'64\' height=\'64\' fill=\'%23334155\'><rect width=\'64\' height=\'64\'/><text x=\'50%25\' y=\'50%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%2394a3b8\' font-size=\'10\'>تصویر</text></svg>'">
         <div class="p-card-info">
           <div class="p-card-title">${p.title || 'بدون عنوان'}</div>
@@ -3679,7 +4162,7 @@ function renderCatalog() {
   } else {
     tbody.innerHTML = filtered.map((p, idx) => `
       <tr>
-        <td><input type="checkbox" onchange="toggleSelectProduct(${idx}, this.checked)"></td>
+        <td><input type="checkbox" class="prod-check" data-idx="${idx}" ${selectedIndices.has(idx) ? 'checked' : ''} onchange="toggleSelectProduct(${idx}, this.checked)"></td>
         <td><img src="${p.image || ''}" style="width:36px; height:36px; object-fit:cover; border-radius:6px; background:#111;"></td>
         <td><div style="font-weight:700; max-width:260px; overflow:hidden; text-overflow:ellipsis;">${p.title || 'بدون عنوان'}</div></td>
         <td><span class="chip chip-success">${p.price ? toFa(p.price) + ' ت' : 'بدون قیمت'}</span></td>
@@ -3736,6 +4219,291 @@ function renderTasksList(tasks) {
       ${t.status === 'running' ? `<button class="btn btn-danger btn-sm" style="margin-top:6px;" onclick="cancelTask('${t.id}')">⏹ لغو</button>` : ''}
     </div>
   `).join('');
+}
+
+/* ============ SELECTION + BATCH ACTIONS (wired to real endpoints) ============ */
+function toggleSelectProduct(idx, checked) {
+  const i = Number(idx);
+  if (checked) selectedIndices.add(i); else selectedIndices.delete(i);
+  syncSelectAllState();
+}
+
+function toggleSelectAll(checked) {
+  selectedIndices.clear();
+  if (checked) currentProducts.forEach((_, i) => selectedIndices.add(i));
+  document.querySelectorAll('.prod-check').forEach(cb => { cb.checked = !!checked; });
+  syncSelectAllState();
+}
+
+function syncSelectAllState() {
+  const all = document.getElementById('selectAllCheck');
+  if (all) all.checked = currentProducts.length > 0 && selectedIndices.size === currentProducts.length;
+}
+
+function _selectedList() { return Array.from(selectedIndices).sort((a, b) => a - b); }
+
+async function batchDelete() {
+  const idxs = _selectedList();
+  if (idxs.length === 0) { showToast('هیچ محصولی انتخاب نشده است', 'info'); return; }
+  if (!confirm(`${idxs.length} محصول انتخاب‌شده حذف شود؟`)) return;
+  try {
+    const res = await fetch('/api/results/batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete', indices: idxs })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      selectedIndices.clear();
+      showToast(`${idxs.length} محصول حذف شد`, 'success');
+      await loadConfig();
+    } else showToast(json.error || 'حذف ناموفق بود', 'error');
+  } catch (e) { showToast('خطای شبکه در حذف', 'error'); }
+}
+
+async function batchEnrichAI() {
+  const idxs = _selectedList();
+  if (idxs.length === 0) { showToast('ابتدا محصولاتی را انتخاب کنید', 'info'); return; }
+  const template = prompt(
+    'الگوی درخواست هوش مصنوعی ({title} {price} {specs} {description}):',
+    'یک معرفی جذاب و فروشنده برای محصول {title} با ویژگی‌های {specs} بنویس.'
+  );
+  if (template === null) return;
+  try {
+    const res = await fetch('/api/aicontent/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ indices: idxs, template: template })
+    });
+    const json = await res.json();
+    if (json.ok) { showToast('تولید محتوای AI آغاز شد', 'success'); openModal('tasksModal'); loadTasks(); }
+    else showToast(json.error || 'شروع ناموفق بود', 'error');
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+async function editProductPrompt(idx) {
+  const p = currentProducts[idx];
+  if (!p) { showToast('محصول یافت نشد', 'error'); return; }
+  const title = prompt('عنوان محصول:', p.title || '');
+  if (title === null) return;
+  const priceRaw = prompt('قیمت (تومان):', p.price || '');
+  if (priceRaw === null) return;
+  const desc = prompt('توضیحات:', p.description || '');
+  if (desc === null) return;
+  try {
+    const res = await fetch('/api/results/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index: idx, title: title, price: parseInt(priceRaw || '0', 10) || 0, description: desc })
+    });
+    const json = await res.json();
+    if (json.ok) { showToast('محصول به‌روزرسانی شد', 'success'); await loadConfig(); }
+    else showToast(json.error || 'به‌روزرسانی ناموفق بود', 'error');
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+async function stopActiveTasks() {
+  try {
+    const res = await fetch('/api/tasks');
+    const json = await res.json();
+    const running = (json.tasks || []).filter(t => t.status === 'running');
+    if (running.length === 0) { showToast('وظیفهٔ در حال اجرایی وجود ندارد', 'info'); return; }
+    if (!confirm(`${running.length} وظیفهٔ در حال اجرا متوقف شود؟`)) return;
+    for (const t of running) await fetch(`/api/tasks/${t.id}/cancel`, { method: 'POST' });
+    showToast(`${running.length} وظیفه متوقف شد`, 'success');
+    loadTasks();
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+/* ==================== CHAT DESK (was referenced but never defined) ============ */
+let currentThreadId = null;
+
+async function loadChatThreads() {
+  const list = document.getElementById('chatThreadsList');
+  try {
+    const res = await fetch('/api/chat/threads');
+    const json = await res.json();
+    const threads = json.threads || [];
+    if (list) {
+      list.innerHTML = threads.length
+        ? threads.map(t => `<div class="drawer-menu-item" style="margin-bottom:6px;" onclick="selectChatThread('${t.id}')">
+            <div><span class="d-icon">💬</span><span>${String(t.name || t.id).replace(/</g,'&lt;')}</span></div>
+            <span class="chip chip-primary">${(t.messages || []).length} پیام</span>
+          </div>`).join('')
+        : '<p style="color:var(--text-dim); font-size:calc(11px * var(--font-scale,1));">گفت‌وگویی ثبت نشده است.</p>';
+    }
+    if (threads.length && !currentThreadId) selectChatThread(threads[0].id, threads);
+  } catch (e) { if (list) list.innerHTML = '<p style="color:var(--text-dim);">خطا در بارگذاری گفت‌وگوها</p>'; }
+}
+
+function selectChatThread(id, preloaded) {
+  currentThreadId = id;
+  if (preloaded) {
+    const th = preloaded.find(t => t.id === id);
+    if (th) renderChatMessages(th);
+    return;
+  }
+  fetch('/api/chat/threads').then(r => r.json()).then(j => {
+    const th = (j.threads || []).find(t => t.id === id);
+    if (th) renderChatMessages(th);
+  }).catch(() => {});
+}
+
+function renderChatMessages(thread) {
+  const box = document.getElementById('messagesContainer');
+  if (!box) return;
+  const msgs = (thread && thread.messages) || [];
+  box.innerHTML = msgs.length ? msgs.map(m => `
+    <div style="margin-bottom:8px; padding:7px 10px; border-radius:10px; max-width:85%;
+         background:${m.sender === 'admin' ? 'var(--primary)' : 'var(--card-solid)'};
+         color:${m.sender === 'admin' ? '#fff' : 'var(--text)'};
+         margin-inline-start:${m.sender === 'admin' ? 'auto' : '0'};">
+      <div style="font-size:calc(10px * var(--font-scale,1)); opacity:.7;">${String(m.sender_name || m.sender || '')} · ${String(m.time || '')}</div>
+      <div style="font-size:calc(12px * var(--font-scale,1));">${String(m.text || '').replace(/</g,'&lt;')}</div>
+    </div>`).join('') : '<p style="color:var(--text-dim);">پیامی وجود ندارد.</p>';
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendChatReply() {
+  const input = document.getElementById('chatReplyInput');
+  const text = (input.value || '').trim();
+  if (!text) { showToast('متن پاسخ خالی است', 'info'); return; }
+  if (!currentThreadId) { showToast('ابتدا یک گفت‌وگو را انتخاب کنید', 'info'); return; }
+  try {
+    const res = await fetch('/api/chat/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_id: currentThreadId, text: text })
+    });
+    const json = await res.json();
+    if (json.ok) { input.value = ''; showToast('پاسخ ارسال شد', 'success'); selectChatThread(currentThreadId); }
+    else showToast(json.error || 'ارسال ناموفق بود', 'error');
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+async function triggerAiChatReply() {
+  const input = document.getElementById('chatReplyInput');
+  const msg = (input.value || '').trim();
+  if (!msg) { showToast('ابتدا پیام مشتری را بنویسید تا پاسخ پیشنهادی ساخته شود', 'info'); return; }
+  showToast('در حال ساخت پاسخ هوشمند...', 'info');
+  try {
+    const res = await fetch('/api/chat/auto-reply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg })
+    });
+    const json = await res.json();
+    if (json.ok) { input.value = json.reply || ''; showToast('پاسخ پیشنهادی آماده شد — ویرایش و ارسال کنید', 'success'); }
+    else showToast(json.error || 'ساخت پاسخ ناموفق بود', 'error');
+  } catch (e) { showToast('خطای شبکه', 'error'); }
+}
+
+/* ==================== IMPORT (درون‌ریزی) ==================== */
+let importColumns = [];
+let importFields = ['title', 'price', 'sku', 'image', 'url', 'description', 'stock', 'category'];
+const IMPORT_FIELD_FA = {
+  title: 'عنوان محصول *', price: 'قیمت', sku: 'شناسه (SKU)', image: 'تصویر',
+  url: 'لینک محصول', description: 'توضیحات', stock: 'موجودی', category: 'دسته‌بندی'
+};
+
+function importPickFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const ta = document.getElementById('importText');
+    if (ta) ta.value = e.target.result || '';
+    showToast(`فایل «${file.name}» بارگذاری شد`, 'success');
+    importParse();
+  };
+  reader.onerror = () => showToast('خطا در خواندن فایل', 'error');
+  reader.readAsText(file, 'utf-8');
+}
+
+function importLoadSample() {
+  const ta = document.getElementById('importText');
+  if (ta) ta.value = 'title,price,sku,image,url\nساعت هوشمند مدل X,1250000,SW-01,https://cdn.example/sw.jpg,https://shop.example/sw\nهدفون بی‌سیم پرو,890000,HP-02,https://cdn.example/hp.jpg,https://shop.example/hp';
+  showToast('دادهٔ نمونه بارگذاری شد', 'info');
+  importParse();
+}
+
+async function importParse() {
+  const text = (document.getElementById('importText').value || '').trim();
+  if (!text) { showToast('ابتدا متن یا فایلی وارد کنید', 'info'); return; }
+  showToast('در حال شناسایی ستون‌ها...', 'info');
+  try {
+    const res = await fetch('/api/import/parse', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    const json = await res.json();
+    if (!json.ok) {
+      showToast(json.error || 'شناسایی ناموفق بود', 'error');
+      const st = document.getElementById('importStatus');
+      if (st) st.innerText = 'خطا: ' + (json.error || '');
+      return;
+    }
+    importColumns = json.columns || [];
+    importFields = json.fields || importFields;
+    const chip = document.getElementById('importFormatChip');
+    if (chip) chip.textContent = json.format === 'json' ? 'JSON' : `متن جداشده (${json.delimiter === '\t' ? 'TAB' : json.delimiter})`;
+    const rc = document.getElementById('importRowCount');
+    if (rc) rc.textContent = toFa(json.row_count) + ' ردیف';
+
+    const grid = document.getElementById('importMappingGrid');
+    const suggested = json.suggested_mapping || {};
+    if (grid) {
+      grid.innerHTML = importFields.map(f => `
+        <div class="form-group">
+          <label class="form-label">${IMPORT_FIELD_FA[f] || f}</label>
+          <select class="form-control" id="map_${f}">
+            <option value="">— بدون نگاشت —</option>
+            ${importColumns.map(c => `<option value="${String(c).replace(/"/g,'&quot;')}" ${suggested[f] === c ? 'selected' : ''}>${String(c).replace(/</g,'&lt;')}</option>`).join('')}
+          </select>
+        </div>`).join('');
+    }
+    const box = document.getElementById('importMappingBox');
+    if (box) box.style.display = 'block';
+    const st = document.getElementById('importStatus');
+    if (st) st.innerText = `ستون‌های شناسایی‌شده: ${importColumns.join(' | ')}`;
+    showToast(`${json.row_count} ردیف و ${importColumns.length} ستون شناسایی شد`, 'success');
+  } catch (e) { showToast('خطای شبکه: ' + e.message, 'error'); }
+}
+
+function collectImportMapping() {
+  const mapping = {};
+  for (const f of importFields) {
+    const el = document.getElementById('map_' + f);
+    if (el && el.value) mapping[f] = el.value;
+  }
+  return mapping;
+}
+
+async function importApply() {
+  const text = (document.getElementById('importText').value || '').trim();
+  const mapping = collectImportMapping();
+  if (!mapping.title) { showToast('نگاشت ستون «عنوان محصول» الزامی است', 'error'); return; }
+  const st = document.getElementById('importStatus');
+  if (st) st.innerText = 'در حال درون‌ریزی...';
+  try {
+    const res = await fetch('/api/import/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text, mapping,
+        mode: document.getElementById('importMode').value,
+        price_pct: parseFloat(document.getElementById('importPct').value || '0'),
+        price_fixed: parseFloat(document.getElementById('importFixed').value || '0'),
+        round_to: parseInt(document.getElementById('importRound').value || '0', 10)
+      })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      showToast(`${json.imported} محصول درون‌ریزی شد (مجموع ${json.total})`, 'success');
+      if (st) st.innerText = `${json.imported} محصول درون‌ریزی شد.\nمجموع محصولات فعلی: ${json.total}\nحالت: ${json.mode === 'replace' ? 'جایگزینی' : 'افزودن'}`;
+      await loadConfig();
+    } else {
+      showToast(json.error || 'درون‌ریزی ناموفق بود', 'error');
+      if (st) st.innerText = 'خطا: ' + (json.error || '');
+    }
+  } catch (e) {
+    showToast('خطای شبکه', 'error');
+    if (st) st.innerText = 'خطای شبکه: ' + e.message;
+  }
 }
 
 async function cancelTask(id) {
@@ -3951,7 +4719,8 @@ async function auRefresh(fillPrefs = false) {
   } catch (e) { /* ignore transient polling errors */ }
 }
 
-async function saveAutoupdate() {
+async function saveAutoupdate(opts) {
+  const silent = !!(opts && opts.silent);
   const payload = {
     enabled: document.getElementById('auEnabled').checked,
     auto_install: document.getElementById('auAutoInstall').checked,
@@ -3959,18 +4728,18 @@ async function saveAutoupdate() {
     interval_sec: parseInt(document.getElementById('auInterval').value || '300', 10),
     keep_backups: parseInt(document.getElementById('auKeep').value || '5', 10)
   };
-  showToast('ذخیره تنظیمات به‌روزرسانی خودکار...', 'info');
+  if (!silent) showToast('ذخیره تنظیمات به‌روزرسانی خودکار...', 'info');
   try {
     const res = await fetch('/api/autoupdate/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     });
     const json = await res.json();
     if (json.ok) {
-      showToast(payload.enabled ? `به‌روزرسانی خودکار فعال شد — هر ${json.autoupdate.interval_sec} ثانیه` : 'به‌روزرسانی خودکار غیرفعال شد', 'success');
+      if (!silent) showToast(payload.enabled ? `به‌روزرسانی خودکار فعال شد — هر ${json.autoupdate.interval_sec} ثانیه` : 'به‌روزرسانی خودکار غیرفعال شد', 'success');
       startAuPolling();
       await auRefresh(true);
-    } else showToast('خطا در ذخیره تنظیمات', 'error');
-  } catch (e) { showToast('خطای شبکه: ' + e.message, 'error'); }
+    } else if (!silent) showToast('خطا در ذخیره تنظیمات', 'error');
+  } catch (e) { if (!silent) showToast('خطای شبکه: ' + e.message, 'error'); }
 }
 
 async function auCheckNow() {
@@ -4082,6 +4851,7 @@ async function pasteClipboardUrl() {
 
 window.addEventListener('DOMContentLoaded', () => {
   restoreFontScale();
+  initAutoSave();
   loadConfig();
   loadTasks();
   pollTasks();

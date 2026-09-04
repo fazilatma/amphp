@@ -1,96 +1,78 @@
 {
+  "ollama": {
+    "id": "ollama",
+    "name": "Ollama",
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+    "apiKey": "",
+    "enabled": false,
+    "models": []
+  },
   "openrouter": {
     "id": "openrouter",
     "name": "OpenRouter",
-    "url": "https://openrouter.ai/api/v1/chat/completions",
     "endpoint": "https://openrouter.ai/api/v1/chat/completions",
     "apiKey": "",
     "enabled": true,
     "models": [
       {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B (رایگان)",
-        "free": true
-      },
-      {
-        "id": "google/gemini-2.0-flash-exp:free",
-        "name": "Gemini 2.0 Flash (رایگان)",
-        "free": true
-      },
-      {
-        "id": "deepseek/deepseek-chat",
-        "name": "DeepSeek V3",
-        "free": false
-      }
-    ]
-  },
-  "groq": {
-    "id": "groq",
-    "name": "Groq Cloud",
-    "url": "https://api.groq.com/openai/v1/chat/completions",
-    "endpoint": "https://api.groq.com/openai/v1/chat/completions",
-    "apiKey": "",
-    "enabled": true,
-    "models": [
-      {
-        "id": "llama-3.3-70b-versatile",
-        "name": "Llama 3.3 70B Versatile",
-        "free": true
-      },
-      {
-        "id": "mixtral-8x7b-32768",
-        "name": "Mixtral 8x7B",
-        "free": true
-      }
-    ]
-  },
-  "deepseek": {
-    "id": "deepseek",
-    "name": "DeepSeek API",
-    "url": "https://api.deepseek.com/chat/completions",
-    "endpoint": "https://api.deepseek.com/chat/completions",
-    "apiKey": "",
-    "enabled": true,
-    "models": [
-      {
-        "id": "deepseek-chat",
-        "name": "DeepSeek Chat (V3)",
-        "free": false
-      }
-    ]
-  },
-  "openai": {
-    "id": "openai",
-    "name": "OpenAI (ChatGPT)",
-    "url": "https://api.openai.com/v1/chat/completions",
-    "endpoint": "https://api.openai.com/v1/chat/completions",
-    "apiKey": "",
-    "enabled": true,
-    "models": [
-      {
-        "id": "gpt-4o-mini",
-        "name": "GPT-4o Mini",
+        "id": "bytedance-seed/seed-2-1-turbo",
+        "name": "ByteDance Seed: Seed 2.1 Turbo",
         "free": false
       },
       {
-        "id": "gpt-4o",
-        "name": "GPT-4o",
+        "id": "qwen/qwen3.8-2.4t-a95b",
+        "name": "Qwen: Qwen3.8 2.4T A95B",
         "free": false
-      }
-    ]
-  },
-  "ollama": {
-    "id": "ollama",
-    "name": "Ollama Local (لوکال بدون نیاز به اینترنت)",
-    "url": "http://127.0.0.1:11434/v1/chat/completions",
-    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
-    "apiKey": "ollama",
-    "enabled": false,
-    "models": [
+      },
       {
-        "id": "llama3.2",
-        "name": "Llama 3.2 Local",
+        "id": "bytedance-seed/seed-2.0-code",
+        "name": "ByteDance Seed: Seed-2.0-Code",
+        "free": false
+      },
+      {
+        "id": "deepseek/deepseek-v4-pro-0813",
+        "name": "DeepSeek: DeepSeek V4 Pro 0813",
+        "free": false
+      },
+      {
+        "id": "x-ai/grok-4.6",
+        "name": "SpaceXAI: Grok 4.6",
+        "free": false
+      },
+      {
+        "id": "liquid/lfm-2.5-2.6b:free",
+        "name": "LiquidAI: LFM2.5-2.6B (free)",
         "free": true
+      },
+      {
+        "id": "nvidia/nemotron-3.5-lightning",
+        "name": "NVIDIA: Nemotron 3.5 Lightning",
+        "free": false
+      },
+      {
+        "id": "nvidia/nemotron-3.5-lightning:free",
+        "name": "NVIDIA: Nemotron 3.5 Lightning (free)",
+        "free": true
+      },
+      {
+        "id": "sakana/sakana-namazu",
+        "name": "Sakana: Sakana Namazu",
+        "free": false
+      },
+      {
+        "id": "upstage/solar-pro4",
+        "name": "Upstage: Solar Pro 4",
+        "free": false
+      },
+      {
+        "id": "meta/muse-glimmer-30b",
+        "name": "Meta: Muse Glimmer 30B",
+        "free": false
+      },
+      {
+        "id": "meta/muse-spark-1.2",
+        "name": "Meta: Muse Spark 1.2",
+        "free": false
       }
     ]
   }

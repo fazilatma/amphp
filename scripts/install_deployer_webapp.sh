@@ -99,6 +99,31 @@ fi
 [ -f "$TARGET" ] || { echo "خطا: فایل هدف وجود ندارد: $TARGET" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# Web token: kept in a plain text file NEXT TO the main file (scraper4.py) so
+# you can open it from the PythonAnywhere Files panel and copy it.
+# Order: explicit DEPLOYER_WEB_TOKEN > existing token file > generate new one.
+# ---------------------------------------------------------------------------
+WEB_TOKEN_DIR="$(dirname "$TARGET")"
+WEB_TOKEN_FILE="$WEB_TOKEN_DIR/deployer_token.txt"
+if [ -n "${DEPLOYER_WEB_TOKEN:-}" ]; then
+    WEB_TOKEN="$DEPLOYER_WEB_TOKEN"
+    printf '%s\n' "$WEB_TOKEN" > "$WEB_TOKEN_FILE"
+    chmod 600 "$WEB_TOKEN_FILE"
+    echo "==> رمز تعیین‌شده در فایل ذخیره شد → $WEB_TOKEN_FILE"
+elif [ -s "$WEB_TOKEN_FILE" ]; then
+    WEB_TOKEN="$(tr -d '[:space:]' < "$WEB_TOKEN_FILE")"
+    echo "==> رمز از فایل خوانده شد → $WEB_TOKEN_FILE"
+else
+    WEB_TOKEN="$("${SYSTEM_PY:-python3}" -c 'import secrets;print(secrets.token_urlsafe(24))' 2>/dev/null \
+               || "${SYSTEM_PY:-python3}" -c 'import secrets;print(secrets.token_hex(32))')"
+    printf '%s\n' "$WEB_TOKEN" > "$WEB_TOKEN_FILE"
+    chmod 600 "$WEB_TOKEN_FILE"
+    echo "==> رمز جدید ساخته و ذخیره شد → $WEB_TOKEN_FILE"
+fi
+TOKEN_HOME_PATH="${WEB_TOKEN_FILE#$HOME_DIR/}"
+[ "$TOKEN_HOME_PATH" = "$WEB_TOKEN_FILE" ] && TOKEN_HOME_PATH="$WEB_TOKEN_FILE"
+
+# ---------------------------------------------------------------------------
 # Locate (or create) the real WSGI file.
 # The filename depends on the web app domain: default apps live at
 # /var/www/<username>_pythonanywhere_com_wsgi.py; custom domains produce
@@ -332,9 +357,19 @@ cat <<EOF
 بررسی سریع با curl:
    curl -s $DEPLOYER_URL | head -5
 
-اگر DEPLOYER_WEB_TOKEN تنظیم کرده‌اید، دکمه‌های
-«نصب» و «بازگشت» با همان رمز فعال می‌شوند؛ بدون آن،
-صفحه فقط وضعیت را نمایش می‌دهد (حالت امن).
+🔑 رمز دیپلوی‌ر (برای دکمه‌های «نصب» و «بازگشت») در این فایل است:
+
+   فایل:  $WEB_TOKEN_FILE
+   مسیر در پنل:  ~/$TOKEN_HOME_PATH
+
+   📂 از پنل PythonAnywhere باز کنید:  منوی Files → نام پوشه (مثلاً scraper4) →
+      deployer_token.txt را باز کنید و محتوا را کپی کنید.
+
+   یا همین الان در کنسول:
+      cat ~/$TOKEN_HOME_PATH
+
+   همان رمز را هنگام کلیک روی «نصب جدیدترین نسخه» یا «بازگشت به .bak»
+   در صفحه دیپلوی‌ر وارد می‌کنید (یک‌بار؛ در همین مرورگر ذخیره می‌شود).
 EOF
 if [ "$PLACEHOLDER" = 1 ]; then
 cat <<'EOF'

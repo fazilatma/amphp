@@ -44,6 +44,18 @@ Configuration (CLI flags override env vars, env vars override defaults):
     DEPLOYER_INTERVAL      seconds between auto checks (min 30, default 300)
     DEPLOYER_LOG_FILE      append logs here (optional)
     DEPLOYER_GITHUB_BASE   GitHub API base (default https://api.github.com)
+    DEPLOYER_RAW_BASE      raw.githubusercontent base (default https://raw.githubusercontent.com)
+    DEPLOYER_RAW           "0" disables raw downloads (then API+cache is used)
+    DEPLOYER_CACHE_DIR     cache location (default ~/.deployer/cache)
+    DEPLOYER_RETRIES       retries after a 403/429/5xx (default 2)
+    DEPLOYER_BACKOFF       seconds before first retry (default 3, grows exponentially)
+    DEPLOYER_BRANCH_CACHE_TTL  seconds to cache the branch list (default 300)
+
+GitHub 403 tolerance: file content is downloaded from raw.githubusercontent.com
+(no API quota), the API is only a fallback with ETag/If-None-Match and a local
+stale cache, and the branch list is cached. Rate-limit 403/429 responses are
+detected, retried with backoff, and the previous results are used when the
+quota is exhausted so the site still updates.
 
 In ALL-BRANCHES mode (the default) the deployer lists every branch of the
 repository through the GitHub API, downloads scraper4.py from each of them
@@ -72,7 +84,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-DEPLOYER_VERSION = "1.3.0"
+DEPLOYER_VERSION = "1.4.0"
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
@@ -82,6 +94,11 @@ CONNECT_TIMEOUT = 30
 MAX_CONTENT_BYTES = 2 * 1024 * 1024
 MAX_BRANCHES = 500
 BRANCH_WORKERS = 8
+RAW_BASE = "https://raw.githubusercontent.com"
+DEFAULT_CACHE_DIR = "~/.deployer/cache"
+DEFAULT_RETRIES = 2          # extra attempts after a 403/429/5xx
+DEFAULT_BACKOFF = 3.0        # seconds; grows exponentially
+BRANCH_CACHE_TTL = 300       # seconds before re-listing branches
 REQUIRED_MARKERS = ("APP_VERSION", "Flask(", '@app.get("/")', "/api/deploy/run")
 VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*["\']([^"\']+)', re.MULTILINE)
 PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -91,6 +108,14 @@ log = logging.getLogger("scraper4-deployer")
 
 class DeployerError(Exception):
     """Raised for any expected failure; the message is user facing."""
+
+
+class RateLimitError(DeployerError):
+    """GitHub API rate limit exhausted (403/429). Carries the suggested wait."""
+
+    def __init__(self, message: str, retry_after: int = 0):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +229,12 @@ def load_config(args: argparse.Namespace) -> dict:
         "interval": max(MIN_INTERVAL, int(env("DEPLOYER_INTERVAL", str(DEFAULT_INTERVAL)) or DEFAULT_INTERVAL)),
         "log_file": env("DEPLOYER_LOG_FILE"),
         "github_base": env("DEPLOYER_GITHUB_BASE", "https://api.github.com").rstrip("/"),
+        "raw_base": env("DEPLOYER_RAW_BASE", RAW_BASE).rstrip("/"),
+        "cache_dir": os.path.abspath(os.path.expanduser(env("DEPLOYER_CACHE_DIR") or DEFAULT_CACHE_DIR)),
+        "retries": max(0, int(env("DEPLOYER_RETRIES", str(DEFAULT_RETRIES)) or DEFAULT_RETRIES)),
+        "backoff": max(0.5, float(env("DEPLOYER_BACKOFF", str(DEFAULT_BACKOFF)) or DEFAULT_BACKOFF)),
+        "branches_cache_ttl": max(60, int(env("DEPLOYER_BRANCH_CACHE_TTL", str(BRANCH_CACHE_TTL)) or BRANCH_CACHE_TTL)),
+        "disable_raw": env("DEPLOYER_RAW", "1").lower() in {"0", "false", "off", "no"},
     }
     # CLI overrides
     if args.repo:
@@ -240,87 +271,255 @@ def load_config(args: argparse.Namespace) -> dict:
 # GitHub access
 # ---------------------------------------------------------------------------
 
-def _github_request(url: str, cfg: dict, not_found_message: str = "برنچ یا فایل در GitHub پیدا نشد (HTTP 404)"):
-    """GET a GitHub JSON endpoint with unified error handling."""
+def _github_headers(cfg: dict, extra: dict[str, str] | None = None) -> dict[str, str]:
     headers = {"User-Agent": "scraper4-standalone-deployer", "Accept": "application/vnd.github+json"}
     if cfg.get("token"):
         headers["Authorization"] = "Bearer " + cfg["token"]
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def _http_get(url: str, headers: dict[str, str], timeout: int = CONNECT_TIMEOUT):
+    """Plain GET returning (status, headers_dict, body). Network errors become DeployerError."""
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=CONNECT_TIMEOUT) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw), response
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, dict(response.headers), response.read()
     except urllib.error.HTTPError as exc:
-        body = ""
         try:
-            body = exc.read().decode("utf-8", "replace")[:250]
+            body = exc.read()
         except OSError:
-            pass
-        if exc.code == 401:
-            raise DeployerError("توکن GitHub نامعتبر یا منقضی است (HTTP 401)") from exc
-        if exc.code == 403:
-            raise DeployerError("دسترسی GitHub رد شد یا محدودیت نرخ تمام شده است (HTTP 403)") from exc
-        if exc.code == 404:
-            raise DeployerError(not_found_message) from exc
-        raise DeployerError(f"GitHub HTTP {exc.code}: {body}") from exc
+            body = b""
+        return exc.code, dict(getattr(exc, "headers", {}) or {}), body
     except urllib.error.URLError as exc:
         raise DeployerError(f"ارتباط با GitHub ناموفق بود: {exc.reason}") from exc
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise DeployerError("پاسخ GitHub معتبر نیست") from exc
+
+
+def _rate_limit_info(headers: dict[str, str], body: bytes) -> tuple[bool, int, str]:
+    """Detect GitHub API rate-limit 403/429 and return (is_rate_limit, retry_after, message)."""
+    text = body.decode("utf-8", "replace").lower() if body else ""
+    is_rate = (
+        "rate limit" in text
+        or "secondary rate limit" in text
+        or headers.get("X-RateLimit-Remaining") == "0"
+        or str(headers.get("Status", "")).startswith("429")
+    )
+    retry_after = 0
+    try:
+        retry_after = max(0, int(headers.get("Retry-After", "0") or 0))
+    except ValueError:
+        pass
+    if not retry_after and headers.get("X-RateLimit-Reset"):
+        try:
+            retry_after = max(0, int(headers["X-RateLimit-Reset"]) - int(time.time()))
+        except ValueError:
+            pass
+    return is_rate, retry_after, text[:200] or ""
+
+
+def _sleep(seconds: float) -> None:
+    if seconds > 0:
+        time.sleep(min(seconds, 60))
+
+
+def _github_request(url: str, cfg: dict, not_found_message: str = "برنچ یا فایل در GitHub پیدا نشد (HTTP 404)",
+                    etag: str = ""):
+    """GET a GitHub JSON endpoint with rate-limit detection, backoff retries and ETag support.
+
+    Returns (payload, headers); payload is None on a 304 Not Modified.
+    Raises RateLimitError when the API quota is exhausted after retries.
+    """
+    headers = _github_headers(cfg, {"If-None-Match": etag} if etag else None)
+    last_error = ""
+    for attempt in range(cfg.get("retries", DEFAULT_RETRIES) + 1):
+        status, rheaders, body = _http_get(url, headers)
+        if status == 200:
+            try:
+                return json.loads(body.decode("utf-8")), rheaders
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise DeployerError("پاسخ GitHub معتبر نیست") from exc
+        if status == 304:
+            return None, rheaders
+        if status == 401:
+            raise DeployerError("توکن GitHub نامعتبر یا منقضی است (HTTP 401)")
+        if status == 404:
+            raise DeployerError(not_found_message)
+        is_rate, retry_after, text = _rate_limit_info(rheaders, body)
+        if status in (403, 429) and is_rate:
+            wait = retry_after or (cfg.get("backoff", DEFAULT_BACKOFF) * (2 ** attempt))
+            last_error = f"محدودیت نرخ GitHub (HTTP {status})"
+            if attempt < cfg.get("retries", DEFAULT_RETRIES):
+                _sleep(wait)
+                continue
+            raise RateLimitError(f"{last_error}؛ {retry_after or cfg.get('backoff', DEFAULT_BACKOFF)} ثانیه صبر کنید", retry_after)
+        if attempt < cfg.get("retries", DEFAULT_RETRIES):
+            _sleep(cfg.get("backoff", DEFAULT_BACKOFF) * (attempt + 1))
+            continue
+        raise DeployerError(f"GitHub HTTP {status}: {text[:200] or body.decode('utf-8', 'replace')[:200]}")
+    raise DeployerError(last_error or "درخواست GitHub ناموفق بود")
+
+
+# ---------------------------------------------------------------------------
+# Local cache (lets the deployer survive API 403s: stale-if-error)
+# ---------------------------------------------------------------------------
+
+def _cache_path(cfg: dict, key: str) -> str:
+    return os.path.join(cfg["cache_dir"], key + ".json")
+
+
+def _cache_read(cfg: dict, key: str) -> dict | None:
+    try:
+        with open(_cache_path(cfg, key), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_write(cfg: dict, key: str, data: dict) -> None:
+    try:
+        os.makedirs(cfg["cache_dir"], exist_ok=True)
+        atomic_write(_cache_path(cfg, key), json.dumps(data, ensure_ascii=False).encode("utf-8"), 0o600)
+    except OSError:
+        pass
+
+
+def download_raw(cfg: dict, branch: str) -> bytes:
+    """Fetch the file from raw.githubusercontent.com — no GitHub API quota.
+
+    Falls back to the contents API (fetch_file) when this fails, e.g. for
+    private repositories or when raw is disabled via DEPLOYER_RAW=0.
+    """
+    url = (
+        f"{cfg['raw_base']}/{urllib.parse.quote(cfg['repo'], safe='/')}"
+        f"/{urllib.parse.quote(branch, safe='/')}/{urllib.parse.quote(cfg['path'], safe='/')}"
+    )
+    last = ""
+    for attempt in range(cfg.get("retries", DEFAULT_RETRIES) + 1):
+        status, _rheaders, body = _http_get(url, _github_headers(cfg))
+        if status == 200:
+            if len(body) > MAX_CONTENT_BYTES:
+                raise DeployerError("فایل به‌روزرسانی بزرگ‌تر از ۲ مگابایت است")
+            return body
+        if status in (403, 429, 500, 502, 503):
+            last = f"HTTP {status}"
+            if attempt < cfg.get("retries", DEFAULT_RETRIES):
+                _sleep(cfg.get("backoff", DEFAULT_BACKOFF) * (attempt + 1))
+                continue
+        if status == 404:
+            raise DeployerError("فایل در مسیر raw GitHub پیدا نشد (HTTP 404)")
+        raise DeployerError(f"دریافت فایل از raw GitHub ناموفق بود ({last or f'HTTP {status}'})")
+    raise DeployerError(f"دریافت فایل از raw GitHub ناموفق بود ({last})")
+
+
+def _meta_from_cache(cached: dict, branch: str, warning: str = "") -> dict:
+    content = base64.b64decode(str(cached.get("content_b64", "")), validate=True)
+    return {
+        "branch": branch, "sha": str(cached.get("sha", "")), "size": len(content),
+        "html_url": "", "content": content, "source": "cache", "warning": warning,
+    }
+
+
+def _file_cache_key(cfg: dict, branch: str) -> str:
+    return "file-" + hashlib.sha256(f"{cfg['repo']}\0{cfg['path']}\0{branch}".encode()).hexdigest()[:32]
 
 
 def fetch_branches(cfg: dict, limit: int = MAX_BRANCHES) -> list[str]:
-    """List every branch of the repository (paginated), deduplicated."""
-    branches: list[str] = []
-    page = 1
-    seen: set[str] = set()
-    while page <= 20 and len(branches) < limit:
-        url = (
-            f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}/branches"
-            f"?per_page=100&page={page}"
-        )
-        payload, _ = _github_request(url, cfg, "repository یا API برنچ‌ها در GitHub پیدا نشد (HTTP 404)")
-        if not isinstance(payload, list):
-            raise DeployerError("پاسخ فهرست برنچ‌های GitHub معتبر نیست")
-        for item in payload:
-            if isinstance(item, dict):
-                name = clean_text(item.get("name"))
-                if name and name not in seen:
-                    seen.add(name)
-                    branches.append(name)
-        if len(payload) < 100:
-            break
-        page += 1
-    if not branches:
-        raise DeployerError("فهرست برنچ‌های repository از GitHub خالی دریافت شد")
-    return branches[:limit]
+    """List every branch of the repository (paginated, deduplicated, cached)."""
+    cache_key = "branches-" + hashlib.sha256(cfg["repo"].encode()).hexdigest()[:32]
+    cached = _cache_read(cfg, cache_key)
+    now = time.time()
+    if cached and isinstance(cached.get("branches"), list):
+        fresh = now - float(cached.get("fetched_at", 0) or 0) < cfg.get("branches_cache_ttl", BRANCH_CACHE_TTL)
+        if fresh:
+            return cached["branches"][:limit]
+    try:
+        branches: list[str] = []
+        page = 1
+        seen: set[str] = set()
+        while page <= 20 and len(branches) < limit:
+            url = (
+                f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}/branches"
+                f"?per_page=100&page={page}"
+            )
+            payload, _ = _github_request(url, cfg, "repository یا API برنچ‌ها در GitHub پیدا نشد (HTTP 404)")
+            if not isinstance(payload, list):
+                raise DeployerError("پاسخ فهرست برنچ‌های GitHub معتبر نیست")
+            for item in payload:
+                if isinstance(item, dict):
+                    name = clean_text(item.get("name"))
+                    if name and name not in seen:
+                        seen.add(name)
+                        branches.append(name)
+            if len(payload) < 100:
+                break
+            page += 1
+        if not branches:
+            raise DeployerError("فهرست برنچ‌های repository از GitHub خالی دریافت شد")
+        _cache_write(cfg, cache_key, {"fetched_at": now, "branches": branches})
+        return branches[:limit]
+    except (DeployerError, RateLimitError) as exc:
+        if cached and isinstance(cached.get("branches"), list):
+            log.warning("فهرست برنچ‌ها از کش استفاده شد (خطا: %s)", exc)
+            return cached["branches"][:limit]
+        raise
 
 
 def fetch_file(cfg: dict, branch: str) -> dict:
-    """Fetch one file from a branch; returns sha/size/content/html_url."""
+    """Fetch one file from a branch: raw first, then API with ETag cache, stale-if-error."""
+    cache_key = _file_cache_key(cfg, branch)
+    cached = _cache_read(cfg, cache_key)
+    raw_error = ""
+    if not cfg.get("disable_raw"):
+        try:
+            content = download_raw(cfg, branch)
+            meta = {"branch": branch, "sha": blob_sha(content), "size": len(content),
+                    "html_url": "", "content": content, "source": "raw"}
+            _cache_write(cfg, cache_key, {
+                "sha": meta["sha"], "content_b64": base64.b64encode(content).decode(),
+                "version": source_version(content), "fetched_at": time.time(),
+            })
+            return meta
+        except DeployerError as exc:
+            raw_error = str(exc)
     url = (
         f"{cfg['github_base']}/repos/{urllib.parse.quote(cfg['repo'], safe='/')}"
         f"/contents/{urllib.parse.quote(cfg['path'], safe='/')}"
         + "?ref=" + urllib.parse.quote(branch, safe="")
     )
-    payload, _ = _github_request(url, cfg)
-    if not isinstance(payload, dict) or payload.get("type") != "file":
-        raise DeployerError("مسیر GitHub یک فایل نیست")
-    size = int(payload.get("size") or 0)
-    if size > MAX_CONTENT_BYTES:
-        raise DeployerError("فایل به‌روزرسانی بزرگ‌تر از ۲ مگابایت است")
-    encoded = str(payload.get("content", "")).replace("\n", "")
     try:
-        content = base64.b64decode(encoded, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise DeployerError("محتوای فایل از GitHub قابل خواندن نیست") from exc
-    return {
-        "branch": branch,
-        "sha": str(payload.get("sha", "")),
-        "size": size,
-        "html_url": str(payload.get("html_url", "")),
-        "content": content,
-    }
+        payload, rheaders = _github_request(url, cfg, etag=str((cached or {}).get("etag", "") or ""))
+        if payload is None:  # 304 Not Modified
+            if cached:
+                meta = _meta_from_cache(cached, branch, "cache(304)")
+                meta["version"] = str(cached.get("version", ""))
+                return meta
+            raise DeployerError("پاسخ 304 بدون کش محلی دریافت شد")
+        if not isinstance(payload, dict) or payload.get("type") != "file":
+            raise DeployerError("مسیر GitHub یک فایل نیست")
+        size = int(payload.get("size") or 0)
+        if size > MAX_CONTENT_BYTES:
+            raise DeployerError("فایل به‌روزرسانی بزرگ‌تر از ۲ مگابایت است")
+        encoded = str(payload.get("content", "")).replace("\n", "")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise DeployerError("محتوای فایل از GitHub قابل خواندن نیست") from exc
+        meta = {"branch": branch, "sha": str(payload.get("sha", "")), "size": size,
+                "html_url": str(payload.get("html_url", "")), "content": content, "source": "api"}
+        _cache_write(cfg, cache_key, {
+            "etag": str(rheaders.get("ETag", "") or ""), "sha": meta["sha"],
+            "content_b64": base64.b64encode(content).decode(),
+            "version": source_version(content), "fetched_at": time.time(),
+        })
+        return meta
+    except (DeployerError, RateLimitError) as exc:
+        if cached:
+            meta = _meta_from_cache(cached, branch, f"cache(خطا: {exc})")
+            meta["version"] = str(cached.get("version", ""))
+            return meta
+        raise
 
 
 def resolve_branches(cfg: dict) -> list[str]:
@@ -456,7 +655,8 @@ def build_report(cfg: dict) -> dict:
     for index, candidate in enumerate(candidates):
         newest = index == 0
         rows.append({"branch": candidate["branch"], "version": candidate["version"], "sha": candidate["sha"],
-                     "size": candidate["size"], "newest": newest, "candidate": candidate})
+                     "size": candidate["size"], "newest": newest, "candidate": candidate,
+                     "source": candidate.get("source", "api"), "warning": candidate.get("warning", "")})
     for error in errors:
         rows.append({"branch": error["branch"], "error": error["error"]})
     return {
@@ -483,7 +683,11 @@ def format_report(cfg: dict, report: dict) -> str:
             lines.append(f"  - {row['branch']:<34} خطا: {row['error']}")
         else:
             mark = "جدیدترین" if row["newest"] else ""
-            lines.append(f"  - {row['branch']:<34} v{row['version']}  {mark}")
+            source = { "raw": "raw", "api": "API", "cache": "کش" }.get(row.get("source", ""), "")
+            note = f"  [{source}]" if source else ""
+            if row.get("warning"):
+                note += " ⚠ " + row["warning"]
+            lines.append(f"  - {row['branch']:<34} v{row['version']}  {mark}{note}")
     return "\n".join(lines)
 
 
@@ -559,10 +763,10 @@ function openToken(){$('tokenCard').scrollIntoView({behavior:'smooth'});$('token
 function tokenUI(d){const tf=(d&&d.token_file)||'deployer_token.txt';if(tokenConfigured){$('tokenHint').innerHTML='<span class="ok">✔ رمز روی سرور تنظیم است</span> — از فایل <code>'+esc(tf)+'</code> (پنل Files → پوشه scraper4) کپی و در کادر بالا «ثبت رمز» را بزنید.'+(T?'<br><span class="ok">✅ رمز در همین مرورگر ذخیره شده است.</span>':'')}else{$('tokenHint').innerHTML='<span class="err">✖ رمز روی سرور تنظیم نشده است.</span> اسکریپت نصب را دوباره اجرا کنید؛ رمز را در <code>'+esc(tf)+'</code> می‌سازد و همان را اینجا وارد می‌کنید.'}}
 function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});$('status').textContent=b?'در حال اجرا…':$('status').textContent}
 function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
- const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(x.newest?'<b class="tag">جدیدترین</b>':'')+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
+ const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';const src={'raw':'raw','api':'API','cache':'کش'}[x.source]||'';const warn=x.warning?' <small class="warn">'+esc(x.warning)+'</small>':'';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(src?'<small>['+src+']</small>':'')+(x.newest?'<b class="tag">جدیدترین</b>':'')+warn+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
  $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0);}
 async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;render(d);tokenUI(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
-async function act(kind){if(kind==='install'&&!confirm('فایل جاری جایگزین و نسخه قبلی در .bak ذخیره شود؟'))return;if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز|نادرست|تنظیم نشده/.test(e.message)){openToken();$('tokenHint').innerHTML='<span class="err">'+esc(e.message)+'</span><br>اگر رمز ندارید، از پنل Files فایل <code>deployer_token.txt</code> را باز و کپی کنید.'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
+async function act(kind){if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز|نادرست|تنظیم نشده/.test(e.message)){openToken();$('tokenHint').innerHTML='<span class="err">'+esc(e.message)+'</span><br>اگر رمز ندارید، از پنل Files فایل <code>deployer_token.txt</code> را باز و کپی کنید.'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
 refresh();
 </script></div></body></html>'''
 
@@ -578,7 +782,7 @@ def _report_public(report: dict) -> dict:
     """JSON-safe copy of a report (candidate payloads are never exported)."""
     rows = []
     for row in report.get("rows", []):
-        item = {k: row[k] for k in ("branch", "version", "sha", "size", "newest") if k in row}
+        item = {k: row[k] for k in ("branch", "version", "sha", "size", "newest", "source", "warning") if k in row}
         if "error" in row:
             item["error"] = row["error"]
         rows.append(item)

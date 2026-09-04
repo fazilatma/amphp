@@ -348,7 +348,22 @@ MARKER="# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) --
 PLACEHOLDER=0
 # fix_wsgi_mount.sh may have already mounted the deployer; treat that as applied.
 if grep -qE '# --- scraper4 deployer mount \(managed by (install_deployer_webapp|fix_wsgi_mount)\.sh\) ---' "$WSGI_FILE"; then
-    echo "==> پچ /deployer از قبل اعمال شده است (تغییری ندادیم)"
+    if grep -q 'guarded WSGI v2' "$WSGI_FILE"; then
+        echo "==> پچ /deployer از قبل اعمال شده و WSGI محافظت‌شده است (تغییری ندادیم)"
+    else
+        echo "==> WSGI قدیمی/بدون محافظ پیدا شد؛ تعمیر خودکار با fix_wsgi_mount.sh…"
+        HEAL="$HOME_DIR/.fix_wsgi_mount_$$.sh"
+        if download_github_file "$HEAL" "scripts/fix_wsgi_mount.sh"; then
+            DEPLOYER_APP_DIR="$(dirname "$TARGET")" bash "$HEAL" || true
+            rm -f "$HEAL"
+        fi
+        if grep -q 'guarded WSGI v2' "$WSGI_FILE"; then
+            echo "==> WSGI محافظت‌شده شد ✔"
+        else
+            echo "!! نتوانستیم WSGI را محافظت‌شده کنیم؛ علت را از صفحه وب/لاگ‌ها ببینید" >&2
+            exit 1
+        fi
+    fi
 elif grep -qE '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE"; then
     ORIG_NAME="$(grep -E '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE" | head -n 1 | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*//')"
     cp -f "$WSGI_FILE" "$WSGI_FILE.bak.$(date +%Y%m%d%H%M%S)"

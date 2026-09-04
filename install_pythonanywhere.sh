@@ -197,12 +197,43 @@ export APP_DIR_E="$APP_DIR" DATA_FILE_E="$DATA_FILE" WSGI_FILE_E="$WSGI" PASSWOR
 import datetime,json,os,pathlib,shutil
 app=pathlib.Path(os.environ["APP_DIR_E"]); datafile=pathlib.Path(os.environ["DATA_FILE_E"]); wsgi=pathlib.Path(os.environ["WSGI_FILE_E"]); password=os.environ["PASSWORD_E"]; site=os.environ["SITE_E"]; browser_path=os.environ["BROWSER_PATH_E"]; repo=os.environ["REPO_E"]; branch=os.environ["BRANCH_E"]
 shutil.copy2(wsgi,app/("wsgi-"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".bak"))
-source="\n".join(("import os,site,sys","site.addsitedir("+repr(site)+")","APP_DIRECTORY="+repr(str(app)),"if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)","os.environ['SCRAPER_PASSWORD']=''","os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),"os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),"os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(browser_path),"os.environ['SCRAPER_PLAYWRIGHT_PATH']="+repr(browser_path),"from scraper4 import app as application",""))
+source="\n".join((
+    "import os,site,sys,traceback",
+    "# --- guarded WSGI v2: a broken import never takes down the whole site ---",
+    "site.addsitedir("+repr(site)+")",
+    "APP_DIRECTORY="+repr(str(app)),
+    "if APP_DIRECTORY not in sys.path: sys.path.insert(0,APP_DIRECTORY)",
+    "os.environ['SCRAPER_PASSWORD']=''",
+    "os.environ['SCRAPER_DEPLOY_PASSWORD']="+repr(password),
+    "os.environ['SCRAPER_DATA_FILE']="+repr(str(datafile)),
+    "os.environ['PLAYWRIGHT_BROWSERS_PATH']="+repr(browser_path),
+    "os.environ['SCRAPER_PLAYWRIGHT_PATH']="+repr(browser_path),
+    "__wsgi_err="+repr(str(app)+'/wsgi_error.txt'),
+    "__main_app=None",
+    "__main_error=''",
+    "try:",
+    "    from scraper4 import app as __main_app",
+    "except Exception:",
+    "    __main_error=traceback.format_exc()",
+    "    try:",
+    "        with open(__wsgi_err,'w',encoding='utf-8') as _f: _f.write(__main_error)",
+    "    except Exception: pass",
+    "def _short(exc):",
+    "    ll=[l for l in str(exc).strip().splitlines() if l.strip()]",
+    "    return ll[-1] if ll else 'unknown'",
+    "def application(environ,start_response):",
+    "    if __main_app is not None:",
+    "        return __main_app(environ,start_response)",
+    "    body=('سایت اصلی در دسترس نیست: '+_short(__main_error)+'\\nجزئیات: '+__wsgi_err+' — اول وابستگی‌ها را نصب کنید: bash install_pythonanywhere.sh').encode('utf-8')",
+    "    start_response('503 Service Unavailable',[('Content-Type','text/plain; charset=utf-8'),('Content-Length',str(len(body)))])",
+    "    return [body]",
+    ""))
 # Keep the deployer /deployer mount when it was already patched into the WSGI,
 # so install_deployer_webapp.sh does not need to be re-run afterwards.
 had_mount = False
 try:
-    had_mount = "# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---" in wsgi.read_text(encoding="utf-8", errors="replace")
+    _wtext = wsgi.read_text(encoding="utf-8", errors="replace")
+    had_mount = ("# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---" in _wtext) or ("managed by fix_wsgi_mount.sh" in _wtext)
 except Exception:
     pass
 tmp=app/".wsgi.tmp"; tmp.write_text(source,encoding="utf-8"); shutil.copyfile(tmp,wsgi); tmp.unlink()
@@ -213,11 +244,24 @@ if had_mount:
              "_d = _os.path.expanduser('~/.deployer')\n"
              "if _d not in _sys.path:\n"
              "    _sys.path.insert(0, _d)\n"
-             "from deployer_wsgi import application as _deployer_app\n"
+             "__deployer_app = None\n"
+             "__deployer_error = ''\n"
+             "try:\n"
+             "    from deployer_wsgi import application as __deployer_app\n"
+             "except Exception:\n"
+             "    __deployer_error = __import__('traceback').format_exc()\n"
+             "    try:\n"
+             "        with open(_os.path.join(_d, 'wsgi_error.txt'), 'w', encoding='utf-8') as _f: _f.write(__deployer_error)\n"
+             "    except Exception: pass\n"
              "_original_application = application\n"
              "def application(environ, start_response):\n"
-             "    if environ.get('PATH_INFO', '').startswith('/deployer'):\n"
-             "        return _deployer_app(environ, start_response)\n"
+             "    path = environ.get('PATH_INFO', '')\n"
+             "    if __deployer_app is not None and path.startswith('/deployer'):\n"
+             "        return __deployer_app(environ, start_response)\n"
+             "    if path.startswith('/deployer'):\n"
+             "        body = ('دیپلوی‌ر در دسترس نیست: ' + _short(__deployer_error) + '\\nجزئیات: ' + _os.path.join(_d, 'wsgi_error.txt') + ' — install_deployer_webapp.sh را دوباره اجرا کنید').encode('utf-8')\n"
+             "        start_response('503 Service Unavailable', [('Content-Type', 'text/plain; charset=utf-8'), ('Content-Length', str(len(body)))])\n"
+             "        return [body]\n"
              "    return _original_application(environ, start_response)\n")
     with wsgi.open("a", encoding="utf-8") as fh:
         fh.write(mount)

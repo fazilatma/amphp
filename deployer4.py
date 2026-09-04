@@ -4,7 +4,7 @@
 Deployer4 — فایل مستقل نصب/به‌روزرسانی چندبرنچی برای Scraper4 (PythonAnywhere).
 
 این فایل کنار scraper4.py می‌نشیند و کاملاً مستقل است (چیزی از scraper4
-ایمپورت نمی‌کند). همه برنچ‌های کاندید را از GitHub بررسی می‌کند و برنچی که
+ایمپورت نمی‌کند). همه برنچ‌های ریپو را در GitHub جستجو و بررسی می‌کند و برنچی که
 جدیدترین APP_VERSION را داشته باشد به‌صورت اتمیک روی scraper4.py نصب می‌کند.
 
 نصب روی PythonAnywhere (داخل Bash Console):
@@ -56,7 +56,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.0.0"
+DEPLOYER_VERSION = "1.1.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
@@ -72,6 +72,7 @@ DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a06ac3-amphp", "arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
 MAX_BRANCHES = 8
+MAX_SCAN_BRANCHES = 30
 
 # نشانه‌هایی که فایل مقصد حتماً باید داشته باشد تا معتبر شناخته شود.
 TARGET_MARKERS = ("APP_VERSION", "Flask(", '@app.get("/")', "/api/deploy/run")
@@ -243,6 +244,13 @@ def eff_config() -> dict[str, Any]:
             clean_text(os.environ.get("DEPLOYER_RELOAD_FILE"))
         ),
         "check_on_load": bool(state.get("check_on_load", False)),
+        "search_all_branches": bool(
+            state.get(
+                "search_all_branches",
+                os.environ.get("DEPLOYER_SEARCH_ALL", "1").lower()
+                not in {"0", "false", "off", "no"},
+            )
+        ),
         "auto_update": bool(
             state.get(
                 "auto_update",
@@ -510,6 +518,28 @@ def pythonanywhere_reload() -> bool:
         return False
 
 
+def resolve_branches(cfg: dict[str, Any]) -> tuple[list[str], str]:
+    """Pinned branches first, then every other branch of the repo.
+
+    Returns (branches_to_scan, discovery_error). When the branch list
+    cannot be fetched (offline / rate limit), falls back to pinned only.
+    """
+    pinned = list(cfg.get("branches") or [])
+    if not cfg.get("search_all_branches"):
+        return pinned, ""
+    try:
+        discovered = [
+            b["name"] for b in github_branch_list(cfg["repo"], cfg.get("github_token", ""))
+        ]
+    except (ValueError, FetchError) as exc:
+        return pinned, f"فهرست برنچ‌ها گرفته نشد ({exc})؛ فقط برنچ‌های ثابت بررسی شدند"
+    merged = list(pinned)
+    for name in sorted(discovered):
+        if name not in merged:
+            merged.append(name)
+    return merged[:MAX_SCAN_BRANCHES], ""
+
+
 def check_all() -> dict[str, Any]:
     cfg = eff_config()
     try:
@@ -521,8 +551,12 @@ def check_all() -> dict[str, Any]:
             "local_error": str(exc), "newest_branch": "", "newest_version": "",
             "update_available": False, "candidates": [],
             "check_on_load": cfg["check_on_load"],
+            "searched_all": False, "total_branches": 0, "discovery_error": "",
         }
-    candidates, local_sha = fetch_candidates(cfg, include_content=True)
+    scan_branches, discovery_error = resolve_branches(cfg)
+    scan_cfg = dict(cfg)
+    scan_cfg["branches"] = scan_branches
+    candidates, local_sha = fetch_candidates(scan_cfg, include_content=True)
     for cand in candidates:
         if cand.get("content") is not None and not cand.get("version"):
             try:
@@ -546,6 +580,8 @@ def check_all() -> dict[str, Any]:
         "newest_branch": newest["branch"], "newest_version": newest.get("version", "unknown"),
         "update_available": local_sha != newest["sha"],
         "candidates": candidates, "check_on_load": cfg["check_on_load"],
+        "searched_all": bool(cfg.get("search_all_branches")),
+        "total_branches": len(scan_branches), "discovery_error": discovery_error,
     }
 
 
@@ -555,11 +591,14 @@ def install_branch(requested_branch: str = "") -> dict[str, Any]:
     try:
         cfg = eff_config()
         wanted = clean_branch(requested_branch)
-        branches = list(cfg["branches"])
-        if wanted and wanted not in branches:
-            branches = ([wanted] + branches)[:MAX_BRANCHES]
         cfg = dict(cfg)
-        cfg["branches"] = branches
+        if wanted:
+            cfg["branches"] = [wanted]
+        else:
+            # No explicit branch: scan EVERY branch of the repo and install
+            # whichever carries the newest APP_VERSION.
+            scan_branches, _ = resolve_branches(cfg)
+            cfg["branches"] = scan_branches
         candidates, _ = fetch_candidates(cfg, include_content=True)
         target_cand: Optional[dict[str, Any]] = None
         if wanted:
@@ -658,7 +697,13 @@ def auto_cycle() -> str:
         info = local_info()
     except FetchError as exc:
         return f"خطا: {exc}"
-    candidates, _ = fetch_candidates(cfg, include_content=True)
+    scan_branches, discovery_error = resolve_branches(cfg)
+    if discovery_error:
+        # Offline or rate-limited: never auto-install blindly; report and retry later.
+        return discovery_error
+    scan_cfg = dict(cfg)
+    scan_cfg["branches"] = scan_branches
+    candidates, _ = fetch_candidates(scan_cfg, include_content=True)
     ok = [c for c in candidates if c.get("content") is not None]
     for cand in ok:
         if not cand.get("version"):
@@ -779,6 +824,7 @@ def api_config():
         path=cfg["path"],
         target=cfg["target"],
         check_on_load=cfg["check_on_load"],
+        search_all_branches=cfg["search_all_branches"],
         auto_update=cfg["auto_update"],
         auto_interval=cfg["auto_interval"],
         has_token=has_token,
@@ -819,6 +865,8 @@ def api_settings():
             state["path"] = path
     if "check_on_load" in body:
         state["check_on_load"] = bool(body.get("check_on_load"))
+    if "search_all_branches" in body:
+        state["search_all_branches"] = bool(body.get("search_all_branches"))
     if "auto_update" in body:
         state["auto_update"] = bool(body.get("auto_update"))
     if "auto_interval" in body:
@@ -962,9 +1010,9 @@ button:disabled{opacity:.6;cursor:wait}
 @media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🧭</div><div><h1>دیپلویِر مستقل <small id="depVer">v1.0.0</small></h1><div class="sub">بررسی چندبرنچی و نصب خودکار جدیدترین نسخه scraper4.py</div></div></header>
+<header class="hero"><div class="logo">🧭</div><div><h1>دیپلویِر مستقل <small id="depVer">v1.1.0</small></h1><div class="sub">بررسی چندبرنچی و نصب خودکار جدیدترین نسخه scraper4.py</div></div></header>
 <div class="card"><h3>🔄 نسخهٔ کد اصلی</h3>
-<div class="note">همه برنچ‌های کاندید بررسی می‌شوند و برنچی که <b>جدیدترین <code>APP_VERSION</code></b> را داشته باشد نصب می‌شود. آپدیت خودکار سرور فقط ارتقا می‌دهد و هرگز دانگرید نمی‌کند. نسخه قبلی در <code>scraper4.py.bak</code> می‌ماند.</div>
+<div class="note">همه برنچ‌های ریپو (اول ثابت‌ها، بعد بقیه) بررسی می‌شوند و برنچی که <b>جدیدترین <code>APP_VERSION</code></b> را داشته باشد نصب می‌شود. آپدیت خودکار سرور فقط ارتقا می‌دهد و هرگز دانگرید نمی‌کند. نسخه قبلی در <code>scraper4.py.bak</code> می‌ماند. بدون توکن گیت‌هاب سقف ۶۰ درخواست در ساعت است؛ برای ریپوی پربرنچ توکن بدهید.</div>
 <div id="localBox" class="local">—</div>
 <button class="green" id="mainBtn" onclick="checkInstall(true)" style="width:100%;padding:12px">🔍 بررسی و نصب نسخهٔ جدید</button>
 <button class="gray hidden" id="updateBtn" onclick="updateNewest()" style="width:100%;padding:11px;margin-top:8px">⬇ نصب جدیدترین نسخه</button>
@@ -977,7 +1025,8 @@ button:disabled{opacity:.6;cursor:wait}
 <div><label>مسیر فایل در repository</label><div style="position:relative"><input id="path" dir="ltr" autocomplete="off" oninput="filterFiles()" onfocus="filterFiles()"><div class="drop" id="fileDrop"></div></div><small id="fileCount" style="color:var(--muted);font-size:10px"></small></div>
 <div class="wide"><label>برنچ‌های کاندید — هر خط یک برنچ (جدیدترین نسخه نصب می‌شود)</label><textarea id="branches" dir="ltr" rows="3"></textarea>
 <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><div style="flex:1;position:relative;min-width:150px"><input id="branchPick" dir="ltr" autocomplete="off" placeholder="کلیک یا تایپ برای انتخاب برنچ…" oninput="filterBranches()" onfocus="filterBranches()"><div class="drop" id="branchDrop"></div></div><button class="gray" onclick="addBranch()" style="width:auto">＋ افزودن برنچ</button></div>
-<div id="chips" class="chips"></div></div>
+<div id="chips" class="chips"></div>
+<label class="checkline"><input type="checkbox" id="searchAll" checked onchange="saveSettings(true)"> جستجوی همه برنچ‌های ریپو و نصب جدیدترین (خاموش = فقط برنچ‌های ثابت بالا)</label></div>
 <div class="wide"><label>GitHub token اختیاری (فقط ریپوی خصوصی)</label><input id="token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی"></div>
 </div>
 <div class="actions"><button onclick="saveSettings()">💾 ذخیره تنظیمات</button><button class="gray" onclick="check(true)">بررسی نسخه‌ها</button><button class="green" onclick="updateNewest()">⬇ نصب جدیدترین</button><button class="gray" onclick="rollback()">بازگشت به .bak</button><button class="gray" onclick="autoRun()">⚡ اجرای فوری آپدیت خودکار</button></div>
@@ -1008,10 +1057,10 @@ async function loadBranches(m){let repo=($('repo').value||'').trim();if(!repo){i
 function filterBranches(){let box=$('branchDrop');if(!box)return;let q=($('branchPick').value||'').trim().toLowerCase();let items=(BRANCHES||[]).filter(b=>!q||b.name.toLowerCase().includes(q)).slice(0,30);if(!items.length){box.innerHTML='<div class="opt"><span>موردی یافت نشد — نام کامل را تایپ و «افزودن برنچ» را بزنید</span></div>';box.classList.add('open');return}box.innerHTML=items.map((b,i)=>'<div class="opt" data-i="'+i+'"><span>'+esc(b.name)+'</span><span class="meta">'+(b.protected?'protected':'')+'</span></div>').join('');box.querySelectorAll('.opt').forEach(el=>{el.onmousedown=e=>{e.preventDefault();let b=items[+el.dataset.i];if(b){$('branchPick').value=b.name;closeDrops()}}});box.classList.add('open')}
 async function loadFiles(){let repo=($('repo').value||'').trim(),br=uiBranches();if(!repo||!br.length)return;try{let d=await api('api/files?repo='+encodeURIComponent(repo)+'&branch='+encodeURIComponent(br[0]));FILES=d.files||[];$('fileCount').textContent=FILES.length?toFa(FILES.length)+' فایل Python در برنچ '+br[0]:''}catch(e){FILES=[];$('fileCount').textContent=''}filterFiles()}
 function filterFiles(){let box=$('fileDrop');if(!box)return;let q=($('path').value||'').trim().toLowerCase();let items=(FILES||[]).filter(f=>!q||f.toLowerCase().includes(q)).slice(0,30);if(!items.length){box.classList.remove('open');return}box.innerHTML=items.map((f,i)=>'<div class="opt" data-i="'+i+'"><span>'+esc(f)+'</span></div>').join('');box.querySelectorAll('.opt').forEach(el=>{el.onmousedown=e=>{e.preventDefault();let f=items[+el.dataset.i];if(f){$('path').value=f;closeDrops()}}});box.classList.add('open')}
-async function saveSettings(silent){try{let t=$('token').value.trim();let body={repo:$('repo').value.trim(),branches:uiBranches(),path:$('path').value.trim(),check_on_load:$('autoCheck').checked,auto_update:$('autoUpdate').checked,auto_interval:+$('autoInterval').value||300};if(t==='__CLEAR__')body.clear_token=true;else if(t)body.github_token=t;else body.github_token='';if(!body.github_token)delete body.github_token;await api('api/settings',{method:'POST',body:JSON.stringify(body)});$('token').value='';renderChips();if(!silent){$('status').innerHTML='<span class="ok">تنظیمات ذخیره شد.</span>';showToast('✓ ذخیره شد')}}catch(e){if(!silent){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}throw e}}
+async function saveSettings(silent){try{let t=$('token').value.trim();let body={repo:$('repo').value.trim(),branches:uiBranches(),path:$('path').value.trim(),check_on_load:$('autoCheck').checked,search_all_branches:$('searchAll').checked,auto_update:$('autoUpdate').checked,auto_interval:+$('autoInterval').value||300};if(t==='__CLEAR__')body.clear_token=true;else if(t)body.github_token=t;else body.github_token='';if(!body.github_token)delete body.github_token;await api('api/settings',{method:'POST',body:JSON.stringify(body)});$('token').value='';renderChips();if(!silent){$('status').innerHTML='<span class="ok">تنظیمات ذخیره شد.</span>';showToast('✓ ذخیره شد')}}catch(e){if(!silent){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}throw e}}
 async function check(manual){try{$('status').textContent='در حال بررسی همه برنچ‌ها…';let d=await api('api/check',{method:'POST',body:'{}'});renderChips(d.newest_branch);
 $('localBox').innerHTML='فایل اصلی: <b>'+esc(d.target||'scraper4.py')+'</b> · نسخه محلی <b>v'+esc(d.local_version)+'</b><br><span>SHA محلی:</span> '+esc(d.local_sha||'—')+'<br><span>جدیدترین:</span> v'+esc(d.newest_version||'?')+' در برنچ '+esc(d.newest_branch||'—');
-if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';
+if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';if(d.discovery_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.discovery_error)+'</span>';else $('localBox').innerHTML+='<br><span>'+toFa(d.total_branches||0)+' برنچ بررسی شد'+(d.searched_all?' (همه برنچ‌های ریپو)':' (فقط برنچ‌های ثابت)')+'</span>';
 if(!d.update_available){$('status').innerHTML='<span class="ok">✓ به‌روز است — v'+esc(d.local_version)+'</span>';$('updateBtn').classList.add('hidden');hideBanner()}
 else{$('status').innerHTML='⬆ نسخه جدید: <b>v'+esc(d.newest_version||'?')+'</b> در برنچ <code>'+esc(d.newest_branch||'')+'</code> · جاری v'+esc(d.local_version);$('updateBtn').classList.remove('hidden');showBanner('⬆ نسخه جدید v'+(d.newest_version||'')+' در برنچ '+(d.newest_branch||'')+' موجود است')}
 $('cands').innerHTML=(d.candidates||[]).map(c=>{if(c.error)return '<div class="cand"><div><b dir="ltr">'+esc(c.branch)+'</b><small class="error">'+esc(c.error)+'</small></div></div>';let isN=c.branch===(d.newest_branch||'');return '<div class="cand'+(isN?' new':'')+'"><div><b dir="ltr">'+esc(c.branch)+'</b>'+(isN?' <span style="color:var(--green);font-size:10px">★ جدیدترین</span>':'')+'<small>نسخه: <b>v'+esc(c.version||'?')+'</b> · SHA: <code>'+esc((c.sha||'').slice(0,10))+'</code> · '+(c.update_available?'متفاوت از فایل اصلی':'یکسان')+'</small></div><div><button class="gray" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب این برنچ</button></div></div>'}).join('')||'<div class="note">کاندیدی یافت نشد.</div>';
@@ -1021,7 +1070,7 @@ async function updateNewest(){let t='';try{let d0=await api('api/check',{method:
 async function updateBranch(branch){let label=branch?(' برنچ '+branch):' جدیدترین نسخه';if(!confirm('فایل اصلی جایگزین و نسخه قبلی در .bak ذخیره شود؟\n\nمقصد:'+label))return;try{$('status').textContent='در حال دانلود، اعتبارسنجی و نصب'+label+'…';let d=await api('api/update',{method:'POST',body:JSON.stringify(branch?{branch}:{})});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد؛ چند ثانیه بعد صفحه را رفرش کنید.':'فایل WSGI تنظیم نشده؛ از تب Web دکمه Reload را بزنید.');hideBanner();$('updateBtn').classList.add('hidden');showToast('✓ نصب شد: v'+d.version)}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function rollback(){if(!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{let d=await api('api/rollback',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>'}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function autoRun(){try{$('status').textContent='در حال اجرای چرخه خودکار…';let d=await api('api/auto/run',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.result||'انجام شد')+'</span>';check(false).catch(()=>{})}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function init(){let d=await api('api/config');$('depVer').textContent='v'+(d.deployer||'1.0.0');$('repo').value=d.repo||'';$('branches').value=(d.branches||[]).join('\n');$('path').value=d.path||'';$('autoCheck').checked=!!d.check_on_load;$('autoUpdate').checked=d.auto_update!==false;$('autoInterval').value=d.auto_interval||300;$('token').placeholder=d.has_token?'توکن تنظیم شده؛ خالی = نگه‌داشتن':'GitHub token اختیاری';$('foot').innerHTML='هدف: <code>'+esc(d.target||'')+'</code> · خودکار: '+(d.auto_update?'روشن':'خاموش')+' · آخرین چرخه: '+esc(d.auto_state?.last_result||'—');renderChips();await loadBranches(false).catch(()=>{});await loadFiles().catch(()=>{});try{$('localBox').innerHTML='نسخه محلی: <b>v'+esc(d.local_version)+'</b> · SHA: '+esc((d.local_sha||'').slice(0,12)||'—')}catch(e){}}
+async function init(){let d=await api('api/config');$('depVer').textContent='v'+(d.deployer||'1.0.0');$('repo').value=d.repo||'';$('branches').value=(d.branches||[]).join('\n');$('path').value=d.path||'';$('autoCheck').checked=!!d.check_on_load;$('searchAll').checked=d.search_all_branches!==false;$('autoUpdate').checked=d.auto_update!==false;$('autoInterval').value=d.auto_interval||300;$('token').placeholder=d.has_token?'توکن تنظیم شده؛ خالی = نگه‌داشتن':'GitHub token اختیاری';$('foot').innerHTML='هدف: <code>'+esc(d.target||'')+'</code> · خودکار: '+(d.auto_update?'روشن':'خاموش')+' · آخرین چرخه: '+esc(d.auto_state?.last_result||'—');renderChips();await loadBranches(false).catch(()=>{});await loadFiles().catch(()=>{});try{$('localBox').innerHTML='نسخه محلی: <b>v'+esc(d.local_version)+'</b> · SHA: '+esc((d.local_sha||'').slice(0,12)||'—')}catch(e){}}
 init().then(()=>{if($('autoCheck').checked)check(false).catch(()=>{})}).catch(e=>{$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'});
 </script></body></html>'''
 

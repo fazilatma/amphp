@@ -297,7 +297,8 @@ echo "==> ~/.deployer/deployer_wsgi.py نوشته شد"
 # --- 3. patch main WSGI (idempotent, with backup) ------------------------------
 MARKER="# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---"
 PLACEHOLDER=0
-if grep -qF "$MARKER" "$WSGI_FILE"; then
+# fix_wsgi_mount.sh may have already mounted the deployer; treat that as applied.
+if grep -qE '# --- scraper4 deployer mount \(managed by (install_deployer_webapp|fix_wsgi_mount)\.sh\) ---' "$WSGI_FILE"; then
     echo "==> پچ /deployer از قبل اعمال شده است (تغییری ندادیم)"
 elif grep -qE '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE"; then
     ORIG_NAME="$(grep -E '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE" | head -n 1 | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*//')"

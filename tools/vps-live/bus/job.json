@@ -1,1 +1,7 @@
-{"id":"idle","type":"shell","cmd":""}
+{
+  "id": "9ae762f109",
+  "type": "shell",
+  "cmd": "hostname; whoami; uptime; date -u; python3 --version; command -v nginx docker php-fpm php nginx 2>/dev/null; ss -tlnp | head -40",
+  "timeout": 60,
+  "ts": 1788565488
+}

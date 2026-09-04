@@ -100,26 +100,54 @@ fi
 echo "Creating isolated virtual environment..."
 if [ ! -x "$VENV_DIR/bin/python" ]; then "$SYSTEM_PY" -m venv "$VENV_DIR"; fi
 VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
-BROWSER_PATH=""
+BROWSER_PATH="$APP_DIR/ms-playwright"
 if [ "${DEPLOYER_SKIP_DEPS:-0}" = 1 ]; then
     echo "Skipping dependency install (DEPLOYER_SKIP_DEPS=1)."
 else
-    # Free-plan quota: clear only disposable caches and install packages used by this app.
-    rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
-    PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml playwright basalam-sdk cloudscraper curl_cffi
-    BROWSER_PATH="$APP_DIR/ms-playwright"
-    export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
-    echo "Installing the smaller Chromium Headless Shell for Playwright..."
-    if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
-     echo "Home quota blocked the browser; retrying in /tmp outside the account quota..."
-     BROWSER_PATH="/tmp/scraper4-${USER_NAME}-playwright"
-     rm -rf "$BROWSER_PATH"; mkdir -p "$BROWSER_PATH"; chmod 700 "$BROWSER_PATH"
-     export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
-     if ! "$VENV_PY" -m playwright install chromium-headless-shell; then
-      echo "WARNING: Browser download failed in both locations. Direct HTML extraction remains available; retry with the in-app lightweight installer."
-     fi
+    echo "Free space in home: $(df -h "$HOME_DIR" 2>/dev/null | awk 'NR==2{print $4" free of "$2" ("$5" used)"}' || true)"
+    # A quota error leaves a half-installed venv; rebuild it fresh.
+    if ! "$VENV_PY" -c 'import flask,requests,bs4' 2>/dev/null; then
+        echo "Old/partial venv is not healthy; rebuilding $VENV_DIR ..."
+        rm -rf "$VENV_DIR"
+        "$SYSTEM_PY" -m venv "$VENV_DIR"
+        VENV_PY="$VENV_DIR/bin/python"; VENV_PIP="$VENV_DIR/bin/pip"
     fi
-    "$VENV_PY" -c 'import flask,requests,bs4,lxml,playwright,basalam_sdk,cloudscraper,curl_cffi; print("Required scraper dependencies OK")'
+    # Free-plan quota is small: clear disposable caches first.
+    rm -rf "$HOME_DIR/.cache/pip" "$HOME_DIR/.cache/ms-playwright" "$APP_DIR/__pycache__"
+
+    echo "Installing CORE packages (flask requests beautifulsoup4 lxml)..."
+    PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir flask requests beautifulsoup4 lxml
+    "$VENV_PY" -c 'import flask,requests,bs4,lxml; print("Core scraper dependencies OK")'
+
+    # Heavy engines are OPTIONAL: if the quota blocks them the site still
+    # starts; a missing engine shows a clear error only when that engine is
+    # actually selected. Details go to /tmp/scraper4-install-<pid>.log.
+    INSTALL_LOG="/tmp/scraper4-install-$$.log"
+    if [ "${DEPLOYER_EXTRAS:-1}" != 0 ]; then
+        for PKG in playwright cloudscraper curl_cffi basalam-sdk; do
+            if PIP_NO_CACHE_DIR=1 "$VENV_PIP" install --no-cache-dir "$PKG" >>"$INSTALL_LOG" 2>&1; then
+                echo "  optional installed: $PKG"
+            else
+                echo "  WARNING: optional $PKG skipped (quota/network; see $INSTALL_LOG)"
+            fi
+        done
+    fi
+    "$VENV_PY" - <<'PY' || true
+import importlib.util
+for name in ("playwright", "cloudscraper", "curl_cffi", "basalam_sdk"):
+    ok = importlib.util.find_spec(name) is not None
+    print(("+ " if ok else "- ") + name + ("  available" if ok else "  missing (optional)"))
+PY
+    export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
+    if "$VENV_PY" -c 'import playwright' 2>/dev/null \
+       && [ "${DEPLOYER_PLAYWRIGHT:-1}" != 0 ] && [ ! -d "$BROWSER_PATH" ]; then
+        echo "Installing the smaller Chromium Headless Shell for Playwright..."
+        if ! "$VENV_PY" -m playwright install chromium-headless-shell >>"$INSTALL_LOG" 2>&1; then
+            echo "WARNING: Chromium download skipped (quota/network; see $INSTALL_LOG)."
+            echo "         Install later from the console:"
+            echo "         cd ~/scraper4 && ./venv/bin/python -m playwright install chromium-headless-shell"
+        fi
+    fi
 fi
 "$VENV_PY" -m py_compile "$APP_FILE"; rm -rf "$APP_DIR/__pycache__"
 SITE_PACKAGES="$($VENV_PY -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"

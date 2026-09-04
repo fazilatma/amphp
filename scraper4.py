@@ -603,6 +603,27 @@ AI_DEFAULT_MODELS = {
 # Order used by the auto-fallback chain and the diagnostics probe.
 AI_NET_MODES = ["direct", "worker", "gateway", "doh", "dns", "proxy"]
 
+# Human-readable provider labels, mirrored from scraper4.php's aiProvidersLoad().
+AI_PROVIDER_LABELS = {
+    "openrouter": "OpenRouter", "openai": "OpenAI", "groq": "Groq",
+    "deepseek": "DeepSeek", "mistral": "Mistral AI", "cerebras": "Cerebras",
+    "together": "Together AI", "gemini": "Google Gemini", "ollama": "Ollama",
+}
+# Selectable models per provider, for the candidates / models tabs.
+AI_MODEL_CATALOG = {
+    "openrouter": ["meta-llama/llama-3.3-70b-instruct:free", "qwen/qwen-2.5-72b-instruct",
+                   "google/gemini-2.0-flash-exp:free", "deepseek/deepseek-chat",
+                   "mistralai/mistral-large", "anthropic/claude-3.5-haiku"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
+    "cerebras": ["llama3.1-70b", "llama3.1-8b"],
+    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"],
+    "gemini": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+    "ollama": ["llama3", "mistral", "qwen2.5"],
+}
+
 
 class AiHttpError(Exception):
     def __init__(self, message: str, mode: str = "", status: int = 0, body: str = ""):
@@ -1124,20 +1145,12 @@ def api_ai_catalog():
     auth_err = check_auth()
     if auth_err:
         return auth_err
-    providers = [{"id": p, "endpoint": u, "default_model": AI_DEFAULT_MODELS.get(p, "")}
+    providers = [{"id": p, "label": AI_PROVIDER_LABELS.get(p, p),
+                  "endpoint": u, "default_model": AI_DEFAULT_MODELS.get(p, ""),
+                  "models": AI_MODEL_CATALOG.get(p, [])}
                  for p, u in AI_ENDPOINTS.items()]
     return jsonify(ok=True, providers=providers, net_modes=AI_NET_MODES,
-                   default_providers=[
-                       {"id": "openrouter", "label": "OpenRouter (تجمیع‌کنندهٔ مدل‌ها)"},
-                       {"id": "groq", "label": "Groq (سریع و رایگان)"},
-                       {"id": "mistral", "label": "Mistral AI"},
-                       {"id": "gemini", "label": "Google Gemini"},
-                       {"id": "deepseek", "label": "DeepSeek"},
-                       {"id": "cerebras", "label": "Cerebras"},
-                       {"id": "together", "label": "Together AI"},
-                       {"id": "openai", "label": "OpenAI"},
-                       {"id": "ollama", "label": "Ollama (محلی)"},
-                   ])
+                   model_catalog=AI_MODEL_CATALOG, labels=AI_PROVIDER_LABELS)
 
 
 @app.post("/api/ai/test")
@@ -1260,6 +1273,243 @@ export default {
 };
 '''
     return Response(code, mimetype="text/plain; charset=utf-8")
+
+
+# ==================== CANDIDATE MODELS + MASTER ELECTION ====================
+# Mirrors scraper4.php: aiCandidates(), aiVoteRecord(), aiMasterKey().
+# Several models are enrolled as "candidates"; every comparison records a vote
+# for the one the user picks, and the statistically best one becomes the
+# "master" model used as the reference for everything else.
+
+def ai_votes_path() -> str:
+    """Votes live beside the data file so SCRAPER_DATA_FILE overrides are honoured."""
+    return os.path.join(os.path.dirname(os.path.abspath(get_data_filepath())) or ".",
+                        "ai_votes.json")
+
+
+def ai_cand_key(provider: str, model: str) -> str:
+    return f"{provider}::{model}"
+
+
+def ai_candidates_load() -> List[Dict[str, Any]]:
+    cfg = load_data().get("ai", {})
+    raw = cfg.get("candidates") or []
+    out, seen = [], set()
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        p = str(c.get("provider") or "").strip()
+        m = str(c.get("model") or "").strip()
+        if not p or not m:
+            continue
+        key = ai_cand_key(p, m)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"provider": p, "model": m, "key": key})
+    return out
+
+
+def ai_candidates_save(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    clean, seen = [], set()
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        p = str(c.get("provider") or "").strip()
+        m = str(c.get("model") or "").strip()
+        if not p or not m or p not in AI_ENDPOINTS:
+            continue
+        key = ai_cand_key(p, m)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({"provider": p, "model": m})
+    data = load_data()
+    data.setdefault("ai", {})["candidates"] = clean
+    save_data(data)
+    return clean
+
+
+def ai_votes_load() -> Dict[str, Any]:
+    path = ai_votes_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                d["scores"] = d.get("scores") if isinstance(d.get("scores"), dict) else {}
+                d["history"] = d.get("history") if isinstance(d.get("history"), list) else []
+                d["pin"] = str(d.get("pin") or "")
+                d["master"] = str(d.get("master") or "")
+                return d
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"updated_at": 0, "scores": {}, "history": [], "pin": "", "master": ""}
+
+
+def ai_votes_save(v: Dict[str, Any]) -> None:
+    v["updated_at"] = int(time.time())
+    path = ai_votes_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(v, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def ai_score_of(s: Dict[str, Any]) -> float:
+    """A model's score = wins / total appearances."""
+    votes = int(s.get("votes") or 0)
+    if votes <= 0:
+        return 0.0
+    return round(int(s.get("wins") or 0) / votes, 3)
+
+
+def ai_master_key(v: Optional[Dict[str, Any]] = None) -> str:
+    """Master = manual pin, else the statistically best candidate.
+
+    Pass the in-memory votes dict when the pin has just been changed but not
+    written yet; otherwise the state is read from disk.
+    """
+    if v is None:
+        v = ai_votes_load()
+    if v.get("pin"):
+        return v["pin"]
+    cands = ai_candidates_load()
+    if not cands:
+        return ""
+    best, best_s = "", -1.0
+    for c in cands:
+        s = ai_score_of(v.get("scores", {}).get(c["key"], {}))
+        if s > best_s:
+            best_s, best = s, c["key"]
+    return best or cands[0]["key"]
+
+
+def ai_vote_record(task: str, inp: str, winner: str, candidates: List[str]) -> Dict[str, Any]:
+    v = ai_votes_load()
+    cands = list(candidates)
+    if winner not in cands:
+        cands.append(winner)
+    for k in cands:
+        s = v["scores"].get(k)
+        if not isinstance(s, dict):
+            s = {"wins": 0, "losses": 0, "votes": 0, "last_at": 0}
+        s["votes"] = int(s.get("votes") or 0) + 1
+        s["last_at"] = int(time.time())
+        if k == winner:
+            s["wins"] = int(s.get("wins") or 0) + 1
+        else:
+            s["losses"] = int(s.get("losses") or 0) + 1
+        s["score"] = ai_score_of(s)
+        v["scores"][k] = s
+    v["history"].append({"at": int(time.time()), "task": task, "input": inp[:150],
+                         "winner": winner, "candidates": cands})
+    if len(v["history"]) > 300:
+        v["history"] = v["history"][-300:]
+    v["master"] = ai_master_key(v)
+    ai_votes_save(v)
+    return v
+
+
+@app.get("/api/ai/candidates")
+def api_ai_candidates_get():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    v = ai_votes_load()
+    cands = []
+    for c in ai_candidates_load():
+        s = v["scores"].get(c["key"], {})
+        cands.append({**c,
+                      "providerName": AI_PROVIDER_LABELS.get(c["provider"], c["provider"]),
+                      "modelName": c["model"],
+                      "wins": int(s.get("wins") or 0), "votes": int(s.get("votes") or 0),
+                      "losses": int(s.get("losses") or 0), "score": ai_score_of(s)})
+    return jsonify(ok=True, candidates=cands, master=v["master"], pin=v["pin"],
+                   history_count=len(v["history"]))
+
+
+@app.post("/api/ai/candidates")
+def api_ai_candidates_post():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    raw = body.get("candidates")
+    if not isinstance(raw, list):
+        return jsonify(ok=False, error="فهرست کاندیدها نامعتبر است"), 400
+    clean = ai_candidates_save(raw)
+    pin = body.get("pin")
+    if isinstance(pin, str):
+        v = ai_votes_load()
+        v["pin"] = pin.strip()
+        v["master"] = ai_master_key(v)
+        ai_votes_save(v)
+    return jsonify(ok=True, count=len(clean), candidates=clean)
+
+
+@app.post("/api/ai/vote")
+def api_ai_vote():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    task = body.get("task") if body.get("task") in ("category", "autoreply") else "category"
+    inp = str(body.get("input") or "")
+    winner = str(body.get("winner") or "").strip()
+    cands = body.get("candidates")
+    if not winner or not isinstance(cands, list):
+        return jsonify(ok=False, error="رأی نامعتبر"), 400
+    v = ai_vote_record(task, inp, winner, [str(x) for x in cands])
+    return jsonify(ok=True, master=v["master"], pin=v["pin"], scores=v["scores"])
+
+
+def _ai_cfg_for(provider: str, model: str) -> Dict[str, Any]:
+    """Config that targets one specific provider/model, reusing the saved
+    API key, transport mode and worker URL."""
+    cfg = dict(load_data().get("ai", {}))
+    cfg["provider"] = provider
+    cfg["model"] = model
+    return cfg
+
+
+@app.post("/api/ai/candidates/compare")
+def api_ai_candidates_compare():
+    """Ask every enrolled candidate the same question; return all answers."""
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    task = "reply" if body.get("task") == "reply" else "category"
+    inp = str(body.get("input") or "").strip()
+    if not inp:
+        return jsonify(ok=False, error="متن ورودی خالی است"), 400
+    cands = ai_candidates_load()
+    if not cands:
+        return jsonify(ok=False, error="کاندیدی ثبت نشده است"), 400
+
+    if task == "category":
+        system = "تو یک دسته‌بندی‌کنندهٔ فروشگاه اینترنتی هستی. فقط نام دسته را بگو."
+        prompt = f"برای این محصول یک نام دستهٔ کوتاه فارسی پیشنهاد بده: {inp}"
+    else:
+        system = "تو کارشناس پشتیبانی یک فروشگاه اینترنتی هستی. کوتاه و مودبانه جواب بده."
+        prompt = inp
+
+    items = []
+    for c in cands:
+        started = time.time()
+        item = {"key": c["key"], "provider": c["provider"], "model": c["model"],
+                "providerName": AI_PROVIDER_LABELS.get(c["provider"], c["provider"])}
+        try:
+            text = call_ai_completion(prompt, system_prompt=system,
+                                      ai_cfg=_ai_cfg_for(c["provider"], c["model"]))
+            item.update(ok=True, text=text.strip())
+        except Exception as e:
+            item.update(ok=False, error=str(e)[:220])
+        item["latency"] = int((time.time() - started) * 1000)
+        items.append(item)
+
+    return jsonify(ok=True, task=task, title=inp, items=items, master=ai_master_key())
 
 
 @app.post("/api/aicontent/start")
@@ -3011,6 +3261,63 @@ textarea.form-control {
   border-color: rgba(56, 189, 248, 0.4);
 }
 
+/* ==================== AI MODELS + CANDIDATES ==================== */
+.ai-model-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card-solid);
+  -webkit-overflow-scrolling: touch;
+}
+.ai-model-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: calc(11.5px * var(--font-scale, 1));
+}
+.ai-model-row:last-child { border-bottom: none; }
+.ai-model-row.is-master { color: var(--success); }
+.ai-model-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ai-model-row .meta {
+  color: var(--text-muted);
+  font-size: calc(10px * var(--font-scale, 1));
+  white-space: nowrap;
+}
+.ai-model-row.clickable { cursor: pointer; }
+.ai-model-row.clickable:hover { background: var(--card-hover); }
+.ai-model-empty { padding: 10px; color: var(--text-muted); font-size: calc(11px * var(--font-scale, 1)); }
+.ai-cand-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-size: calc(11px * var(--font-scale, 1));
+  color: var(--text-dim);
+}
+.ai-cand-toolbar + .ai-model-list { border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+.ai-cand-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  margin-bottom: 8px;
+  background: var(--card-solid);
+}
+.ai-cand-card.is-master { border-color: var(--warning); }
+.ai-compare-text {
+  color: var(--text-dim);
+  font-size: calc(10.5px * var(--font-scale, 1));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+}
+
 /* ==================== CATALOG RESPONSIVE PRODUCTS ==================== */
 .products-cards-list {
   display: flex;
@@ -3906,6 +4213,8 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
 
       <div class="sub-tabs">
         <button class="sub-tab-btn active" onclick="switchAiSub('providers')">🧠 ارائه‌دهنده‌ها</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('models')">📋 مدل‌ها</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('candidates')">🏆 کاندید و مستر</button>
         <button class="sub-tab-btn" onclick="switchAiSub('net')">🌐 اتصال</button>
         <button class="sub-tab-btn" onclick="switchAiSub('test')">🧪 تست مدل</button>
         <button class="sub-tab-btn" onclick="switchAiSub('prompts')">📝 پرامپت‌ها</button>
@@ -3954,6 +4263,61 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
           <textarea class="form-control" id="aiSystemPrompt" rows="3"></textarea>
         </div>
         <div style="margin-top:6px; font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);" id="aiEndpointHint"></div>
+      </div>
+
+      <!-- AI SUB: models -->
+      <div id="ai-sub-models" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          فهرست مدل‌های ارائه‌دهندهٔ انتخاب‌شده. روی هر مدل بزنید تا همان به‌عنوان مدل فعال تنظیم شود.
+        </p>
+        <div class="form-group">
+          <label class="form-label">ارائه‌دهنده:</label>
+          <select class="form-control" id="aiModelsProvSel" onchange="aiRenderModels()"></select>
+        </div>
+        <div id="aiModelsList" class="ai-model-list"></div>
+        <div id="aiUseInfo" style="font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; padding:8px 10px; background:var(--card-solid); border:1px solid var(--border); border-radius:var(--radius-sm); margin-top:8px;"></div>
+      </div>
+
+      <!-- AI SUB: candidates -->
+      <div id="ai-sub-candidates" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          چند مدل کاندید برای <b>دسته‌بندی</b> و <b>پاسخ خودکار</b> انتخاب کنید؛ در مقایسه‌ها پاسخِ همهٔ کاندیدها
+          کنار هم می‌آید تا بهترین را برگزینید. هر انتخاب یک «رأی» ثبت می‌کند و مدلی که از نظر آماری بهترین است
+          به‌عنوان <b>مدل مستر</b> (مرجعِ قضاوت بقیه) به‌صورت خودکار انتخاب می‌شود.
+        </p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">ارائه‌دهنده:</label>
+            <select class="form-control" id="aiCandProvSel" onchange="aiCandFillModels()"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">مدل کاندید:</label>
+            <select class="form-control" id="aiCandModelSel"></select>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          <button class="btn btn-success btn-sm" onclick="aiCandAddSel()">➕ افزودن انتخاب‌شده</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiCandAddAvailable()">➕ افزودن همهٔ مدل‌های ارائه‌دهنده</button>
+        </div>
+        <div class="ai-cand-toolbar">
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer; flex:1;">
+            <input type="checkbox" id="aiCandSelAll" onchange="aiCandToggleSelAll(this.checked)"> انتخاب همه
+          </label>
+          <span id="aiCandSelCount" style="color:var(--primary);">۰ انتخاب</span>
+          <button class="btn btn-danger btn-sm" onclick="aiCandRemoveSelected()">🗑 حذف انتخاب‌شده‌ها</button>
+        </div>
+        <div id="aiCandList" class="ai-model-list"></div>
+        <div class="form-group" style="margin-top:10px;">
+          <label class="form-label">مدل مستر:</label>
+          <select class="form-control" id="aiMasterPin" onchange="aiCandSetPin()"></select>
+        </div>
+        <div id="aiMasterInfo" style="font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;"></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="aiCandCategoryTest()">🏷️ مقایسهٔ دسته‌بندی کاندیدها</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiCandReplyTest()">💬 مقایسهٔ پاسخ کاندیدها</button>
+          <button class="btn btn-secondary btn-sm" onclick="aiCandLeaderboard()">📊 جدول امتیازات</button>
+        </div>
+        <div id="aiCandR" style="margin-top:10px;"></div>
       </div>
 
       <!-- AI SUB: net -->
@@ -5155,6 +5519,318 @@ function switchAiSub(sub) {
   });
 }
 
+function escHtml(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* ---------- Models tab ---------- */
+let aiCatalog = null;
+
+async function aiLoadCatalog() {
+  if (aiCatalog) return aiCatalog;
+  const res = await fetch('/api/ai/catalog');
+  const d = await res.json();
+  if (!d.ok) throw new Error(d.error || 'خطا در دریافت کاتالوگ');
+  aiCatalog = d;
+  return d;
+}
+
+function aiFillProvSelect(selEl, selected) {
+  if (!selEl || !aiCatalog) return;
+  selEl.innerHTML = aiCatalog.providers.map(p =>
+    `<option value="${escHtml(p.id)}"${p.id === selected ? ' selected' : ''}>${escHtml(p.label || p.id)}</option>`
+  ).join('');
+}
+
+async function aiInitStudio() {
+  try {
+    await aiLoadCatalog();
+  } catch (e) {
+    const box = document.getElementById('aiModelsList');
+    if (box) box.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(e.message)}</div>`;
+    return;
+  }
+  const sel = document.getElementById('aiModelsProvSel');
+  aiFillProvSelect(sel, (document.getElementById('aiProvider') || {}).value || '');
+  aiRenderModels();
+  await aiCandRender();
+}
+
+function aiRenderModels() {
+  const box = document.getElementById('aiModelsList');
+  if (!box || !aiCatalog) return;
+  const prov = document.getElementById('aiModelsProvSel').value;
+  const active = document.getElementById('aiProvider').value;
+  const activeModel = document.getElementById('aiModel').value;
+  const models = (aiCatalog.model_catalog || {})[prov] || [];
+  const entry = (aiCatalog.providers || []).find(p => p.id === prov);
+  if (!models.length) {
+    box.innerHTML = '<div class="ai-model-empty">مدلی برای این ارائه‌دهنده فهرست نشده است.</div>';
+  } else {
+    box.innerHTML = models.map(m => {
+      const on = (prov === active && m === activeModel);
+      return `<div class="ai-model-row clickable${on ? ' is-master' : ''}" onclick="aiPickModel('${escHtml(prov)}','${escHtml(m)}')">
+        <span class="grow">${escHtml(m)}${on ? ' <span style="font-size:calc(9.5px * var(--font-scale, 1));">✓ فعال</span>' : ''}</span>
+      </div>`;
+    }).join('');
+  }
+  const info = document.getElementById('aiUseInfo');
+  if (info) {
+    info.innerHTML = `نقطهٔ پایانهٔ <b>${escHtml(prov)}</b>: <span dir="ltr">${escHtml(entry ? entry.endpoint : '')}</span><br>`
+      + `مدل پیش‌فرض: <span dir="ltr">${escHtml(entry ? entry.default_model : '')}</span><br>`
+      + `مدل فعال فعلی: <span dir="ltr">${escHtml(active)}/${escHtml(activeModel)}</span>`;
+  }
+}
+
+async function aiPickModel(provider, model) {
+  const provEl = document.getElementById('aiProvider');
+  const modelEl = document.getElementById('aiModel');
+  if (!provEl || !modelEl) return;
+  provEl.value = provider;
+  aiProviderChanged();
+  const opt = [...modelEl.options].find(o => o.value === model);
+  if (!opt) modelEl.add(new Option(model, model));
+  modelEl.value = model;
+  modelEl.dispatchEvent(new Event('input', { bubbles: true }));
+  aiUpdateChip();
+  aiRenderModels();
+  showToast(`مدل فعال: ${model}`, 'success');
+}
+
+/* ---------- Candidates + master tab ---------- */
+let aiCandSelected = new Set();
+let aiCandCtx = { items: [], keys: [], input: '' };
+
+function aiCandFillSel() {
+  const cur = document.getElementById('aiCandProvSel').value
+    || (document.getElementById('aiProvider') || {}).value || '';
+  aiFillProvSelect(document.getElementById('aiCandProvSel'), cur);
+  aiCandFillModels();
+}
+
+function aiCandFillModels() {
+  const sel = document.getElementById('aiCandModelSel');
+  if (!sel || !aiCatalog) return;
+  const prov = document.getElementById('aiCandProvSel').value;
+  const models = (aiCatalog.model_catalog || {})[prov] || [];
+  sel.innerHTML = models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('')
+    || '<option value="">— مدلی نیست —</option>';
+}
+
+async function aiCandLoad() {
+  const res = await fetch('/api/ai/candidates');
+  const d = await res.json();
+  return d.ok ? d : { candidates: [], master: '', pin: '' };
+}
+
+async function aiCandRender() {
+  if (!aiCatalog) { try { await aiLoadCatalog(); } catch (e) { return; } }
+  aiCandFillSel();
+  const d = await aiCandLoad();
+  const box = document.getElementById('aiCandList');
+  if (!box) return;
+  aiCandSelected.clear();
+  const cands = d.candidates || [];
+  if (!cands.length) {
+    box.innerHTML = '<div class="ai-model-empty">کاندیدی نیست — ارائه‌دهنده و مدل را انتخاب و «➕ افزودن» را بزنید.</div>';
+  } else {
+    box.innerHTML = cands.map(x => {
+      const isM = (x.key === d.master);
+      return `<div class="ai-model-row${isM ? ' is-master' : ''}" data-key="${escHtml(x.key)}">
+        <input type="checkbox" class="aiCandCb" style="width:15px;height:15px;flex:0 0 auto"
+               onchange="aiCandRowCheck(this,'${escHtml(x.key)}')">
+        <span class="grow">${escHtml(x.providerName)} · <span dir="ltr">${escHtml(x.model)}</span>
+          ${isM ? '<span style="color:var(--warning); font-size:calc(9.5px * var(--font-scale, 1));">⭐ مستر</span>' : ''}
+          <span class="meta"> | ${x.votes ? '🏅 ' + toFa(x.wins) + '/' + toFa(x.votes) + ' (' + Math.round(x.score * 100) + '٪)' : 'بدون رأی'}</span>
+        </span>
+        <button class="btn btn-danger btn-sm" onclick="aiCandRemove('${escHtml(x.key)}')">🗑</button>
+      </div>`;
+    }).join('');
+  }
+  const all = document.getElementById('aiCandSelAll');
+  if (all) all.checked = false;
+  aiCandUpdateSelUI();
+  const pin = document.getElementById('aiMasterPin');
+  if (pin) {
+    pin.innerHTML = '<option value="">خودکار (بهترین آمار)</option>' + cands.map(x =>
+      `<option value="${escHtml(x.key)}"${d.pin === x.key ? ' selected' : ''}>${escHtml(x.providerName)} / ${escHtml(x.model)}</option>`
+    ).join('');
+  }
+  const mi = document.getElementById('aiMasterInfo');
+  if (mi) {
+    if (d.master) {
+      const m = cands.find(x => x.key === d.master);
+      mi.innerHTML = `⭐ مدل مستر: <b>${escHtml(m ? m.providerName + ' / ' + m.model : d.master)}</b>`
+        + (d.pin ? ' (سنجاق دستی)' : ' — خودکار از بهترین آمار')
+        + ' — در مقایسه‌ها پاسخِ مستر به‌عنوان مرجع نشان داده می‌شود.';
+    } else {
+      mi.innerHTML = 'هنوز مستری نیست — با مقایسه‌ها به‌صورت خودکار مشخص می‌شود.';
+    }
+  }
+}
+
+async function aiCandSaveKeys(keys) {
+  const list = keys.map(k => {
+    const i = k.indexOf('::');
+    return { provider: k.slice(0, i), model: k.slice(i + 2) };
+  });
+  const res = await fetch('/api/ai/candidates', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candidates: list })
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'خطا در ذخیرهٔ کاندیدها', 'error'); return false; }
+  return true;
+}
+
+async function aiCandAddKeys(addKeys) {
+  const d = await aiCandLoad();
+  const have = new Set((d.candidates || []).map(x => x.key));
+  const keys = (d.candidates || []).map(x => x.key);
+  let added = 0;
+  addKeys.forEach(k => { if (!have.has(k)) { keys.push(k); added++; } });
+  if (!added) { showToast('این مدل‌ها از قبل کاندید هستند', 'info'); return; }
+  if (await aiCandSaveKeys(keys)) { showToast(`${toFa(added)} مدل به کاندیدها اضافه شد`, 'success'); aiCandRender(); }
+}
+
+function aiCandAddSel() {
+  const p = document.getElementById('aiCandProvSel').value;
+  const m = document.getElementById('aiCandModelSel').value;
+  if (!p || !m) { showToast('ارائه‌دهنده و مدل کاندید را انتخاب کنید', 'error'); return; }
+  aiCandAddKeys([p + '::' + m]);
+}
+
+function aiCandAddAvailable() {
+  const p = document.getElementById('aiCandProvSel').value;
+  const models = ((aiCatalog || {}).model_catalog || {})[p] || [];
+  if (!models.length) { showToast('مدلی برای این ارائه‌دهنده نیست', 'error'); return; }
+  aiCandAddKeys(models.map(m => p + '::' + m));
+}
+
+async function aiCandRemove(key) {
+  if (!confirm('این مدل از کاندیدها حذف شود؟')) return;
+  const d = await aiCandLoad();
+  const keys = (d.candidates || []).map(x => x.key).filter(k => k !== key);
+  if (await aiCandSaveKeys(keys)) { showToast('حذف شد', 'success'); aiCandRender(); }
+}
+
+function aiCandRowCheck(cb, key) {
+  if (cb.checked) aiCandSelected.add(key); else aiCandSelected.delete(key);
+  const rows = document.querySelectorAll('.ai-model-row[data-key]');
+  const all = document.getElementById('aiCandSelAll');
+  if (all) all.checked = aiCandSelected.size > 0 && aiCandSelected.size === rows.length;
+  aiCandUpdateSelUI();
+}
+
+function aiCandToggleSelAll(checked) {
+  aiCandSelected.clear();
+  document.querySelectorAll('.ai-model-row[data-key]').forEach(r => {
+    const cb = r.querySelector('.aiCandCb');
+    const key = r.getAttribute('data-key');
+    if (cb) cb.checked = checked;
+    if (checked) aiCandSelected.add(key);
+  });
+  aiCandUpdateSelUI();
+}
+
+function aiCandUpdateSelUI() {
+  const cnt = document.getElementById('aiCandSelCount');
+  if (cnt) cnt.textContent = toFa(aiCandSelected.size) + ' انتخاب';
+}
+
+async function aiCandRemoveSelected() {
+  if (!aiCandSelected.size) { showToast('هیچ کاندیدی انتخاب نشده', 'error'); return; }
+  if (!confirm(toFa(aiCandSelected.size) + ' کاندید انتخاب‌شده حذف شود؟')) return;
+  const rm = new Set(aiCandSelected);
+  const d = await aiCandLoad();
+  const keys = (d.candidates || []).map(x => x.key).filter(k => !rm.has(k));
+  if (await aiCandSaveKeys(keys)) { showToast('حذف شد', 'success'); aiCandRender(); }
+}
+
+async function aiCandSetPin() {
+  const pin = document.getElementById('aiMasterPin').value || '';
+  const d = await aiCandLoad();
+  const list = (d.candidates || []).map(x => ({ provider: x.provider, model: x.model }));
+  const res = await fetch('/api/ai/candidates', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candidates: list, pin })
+  });
+  const r = await res.json();
+  if (r.ok) { showToast(pin ? '✓ مدل مستر ثبت شد' : '✓ انتخاب خودکار فعال شد', 'success'); aiCandRender(); }
+  else showToast(r.error || 'خطا', 'error');
+}
+
+async function aiCandCompare(task, label, placeholder) {
+  const box = document.getElementById('aiCandR');
+  if (!box) return;
+  const input = prompt(label, '');
+  if (!input || !input.trim()) return;
+  box.innerHTML = `<div class="ai-model-empty">🔄 در حال مقایسه با همهٔ کاندیدها…</div>`;
+  try {
+    const res = await fetch('/api/ai/candidates/compare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, input: input.trim() })
+    });
+    const d = await res.json();
+    if (!d.ok) { box.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(d.error || 'خطا')}</div>`; return; }
+    aiCandCtx = { items: d.items || [], keys: (d.items || []).map(x => x.key), input: input.trim() };
+    box.innerHTML = `<div style="font-weight:800; font-size:calc(12px * var(--font-scale, 1)); margin-bottom:8px;">${label} — ${escHtml(d.title)}</div>`
+      + aiCandCtx.items.map((it, idx) => {
+        const isM = (it.key === d.master);
+        return `<div class="ai-cand-card${isM ? ' is-master' : ''}">
+          <div style="display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap; align-items:center;">
+            <span style="font-weight:700;">${idx + 1}. ${escHtml(it.providerName)}${isM ? ' <span style="color:var(--warning); font-size:calc(9.5px * var(--font-scale, 1));">⭐ مستر</span>' : ''}</span>
+            <span class="meta" dir="ltr">${escHtml(it.model)} · ${toFa(it.latency || 0)}ms</span>
+          </div>
+          ${it.ok
+            ? `<div class="ai-compare-text">${escHtml(it.text)}</div>`
+            : `<div class="ai-compare-text" style="color:var(--danger);">✗ ${escHtml(it.error || 'پاسخ نامعتبر')}</div>`}
+          ${it.ok ? `<button class="btn btn-success btn-sm" style="margin-top:6px;" onclick="aiCandVote('${task}',${idx})">✓ برگزیدن این پاسخ</button>` : ''}
+        </div>`;
+      }).join('')
+      + `<div style="color:var(--text-muted); font-size:calc(10px * var(--font-scale, 1)); margin-top:6px;">⭐ = مدل مستر. برگزیدن هر پاسخ، رأیِ مستر را به‌روز می‌کند.</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="ai-model-empty">✗ خطای شبکه: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function aiCandCategoryTest() {
+  aiCandCompare('category', '🏷️ مقایسهٔ دسته‌بندی', '');
+}
+function aiCandReplyTest() {
+  aiCandCompare('reply', '💬 مقایسهٔ پاسخ', '');
+}
+
+async function aiCandVote(task, idx) {
+  const it = (aiCandCtx.items || [])[idx];
+  if (!it) { showToast('نتیجهٔ کاندید یافت نشد', 'error'); return; }
+  const res = await fetch('/api/ai/vote', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task, input: aiCandCtx.input || '', winner: it.key, candidates: aiCandCtx.keys || [] })
+  });
+  const d = await res.json();
+  if (d.ok) {
+    showToast('✓ رأی ثبت شد — مستر: ' + ((d.master || '').split('::')[1] || d.master || '?'), 'success');
+    aiCandRender();
+  } else showToast(d.error || 'خطا در ثبت رأی', 'error');
+}
+
+async function aiCandLeaderboard() {
+  const box = document.getElementById('aiCandR');
+  if (!box) return;
+  const d = await aiCandLoad();
+  const cands = (d.candidates || []).slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (!cands.length) { box.innerHTML = '<div class="ai-model-empty">کاندیدی ثبت نشده است.</div>'; return; }
+  box.innerHTML = '<div style="font-weight:800; margin-bottom:8px;">📊 جدول امتیازات</div>'
+    + cands.map((x, i) => `<div class="ai-model-row${x.key === d.master ? ' is-master' : ''}">
+        <span class="grow">${toFa(i + 1)}. ${escHtml(x.providerName)} · <span dir="ltr">${escHtml(x.model)}</span>
+          ${x.key === d.master ? '⭐' : ''}
+          <span class="meta"> | برد ${toFa(x.wins)} از ${toFa(x.votes)} (${Math.round((x.score || 0) * 100)}٪)</span></span>
+      </div>`).join('');
+}
+
 function aiProviderChanged() {
   const p = document.getElementById('aiProvider').value;
   const modelEl = document.getElementById('aiModel');
@@ -5560,6 +6236,7 @@ window.addEventListener('DOMContentLoaded', () => {
   aiRenderPrompts();
   aiNetToggle();
   aiUpdateChip();
+  aiInitStudio();
   loadConfig();
   loadTasks();
   pollTasks();

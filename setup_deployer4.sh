@@ -3,7 +3,7 @@
 #
 # اجرا داخل Bash Console حساب PythonAnywhere (پلن رایگان کافی است):
 #   cd ~/scraper4
-#   curl -fsSL https://raw.githubusercontent.com/Fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
+#   curl -fsSL https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
 #   bash setup_deployer4.sh
 #
 # این اسکریپت چه می‌کند:
@@ -30,7 +30,7 @@ APP_FILE="$APP_DIR/deployer4.py"
 TARGET_FILE="$APP_DIR/scraper4.py"
 TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
 VENV_DIR="$APP_DIR/venv"
-REPO="Fazilatma/amphp"
+REPO="fazilatma/amphp"
 DEFAULT_BRANCHES="arena/01a06ac3-amphp arena/01a0640f-amphp"
 if [ -n "${BRANCHES:-}" ]; then
   CANDIDATE_BRANCHES="$BRANCHES"
@@ -169,7 +169,7 @@ lines = [
     "# Serves the main site at / and the independent deployer at /deployer.",
     "import os as _os_deployer4",
     "_os_deployer4.environ.setdefault('DEPLOYER_PASSWORD', " + repr(password) + ")",
-    "_os_deployer4.environ.setdefault('DEPLOYER_REPO', 'Fazilatma/amphp')",
+    "_os_deployer4.environ.setdefault('DEPLOYER_REPO', 'fazilatma/amphp')",
     "_os_deployer4.environ.setdefault('DEPLOYER_BRANCHES', " + repr(branches) + ")",
     "_os_deployer4.environ.setdefault('DEPLOYER_PATH', 'scraper4.py')",
     "_os_deployer4.environ.setdefault('DEPLOYER_TARGET', " + repr(app_dir + "/scraper4.py") + ")",

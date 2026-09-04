@@ -9,7 +9,7 @@ Deployer4 — فایل مستقل نصب/به‌روزرسانی چندبرنچ�
 
 نصب روی PythonAnywhere (داخل Bash Console):
     cd ~/scraper4
-    curl -fsSL https://raw.githubusercontent.com/Fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
+    curl -fsSL https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
     bash setup_deployer4.sh
 
 بعد از نصب، در نوار آدرس مرورگر بزنید (اسلش آخر مهم نیست، خودکار اضافه می‌شود):
@@ -68,7 +68,7 @@ DATA_FILE = os.environ.get(
 )
 PASSWORD = os.environ.get("DEPLOYER_PASSWORD", "")
 
-DEFAULT_REPO = "Fazilatma/amphp"
+DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a06ac3-amphp", "arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
 MAX_BRANCHES = 8

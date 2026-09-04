@@ -13,7 +13,7 @@ DATA_FILE="$APP_DIR/scraper4_data.json"
 PASSWORD_FILE="$APP_DIR/admin_password.txt"
 TOKEN_FILE="$HOME_DIR/.pythonanywhere_api_token"
 VENV_DIR="$APP_DIR/venv"
-REPO="Fazilatma/amphp"
+REPO="fazilatma/amphp"
 # Candidate branches for the installer. The branch carrying the newest
 # APP_VERSION wins, so adding a branch here can never downgrade an install.
 # Override with:  BRANCHES="branch-a branch-b"  ./install_pythonanywhere.sh
@@ -193,7 +193,7 @@ for _b in ([best]+raw_branches+[str(old.get("branch",""))]+(list(old.get("branch
   _branches.append(_b)
  if len(_branches)>=8: break
 if not _branches: _branches=[best]
-data["deploy"]={"repo":"Fazilatma/amphp","branch":_branches[0],"branches":_branches,"path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi),"check_on_load":bool(old.get("check_on_load",False))}
+data["deploy"]={"repo":"fazilatma/amphp","branch":_branches[0],"branches":_branches,"path":"scraper4.py","github_token":old.get("github_token",""),"reload_file":str(wsgi),"check_on_load":bool(old.get("check_on_load",False))}
 tmp=datafile.with_suffix(".json.tmp"); tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8"); tmp.replace(datafile)
 PY
 unset APP_DIR_E DATA_FILE_E WSGI_FILE_E PASSWORD_E SITE_E BROWSER_PATH_E S4_BEST_BRANCH S4_BRANCHES; chmod 600 "$DATA_FILE"

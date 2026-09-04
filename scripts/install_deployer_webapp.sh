@@ -20,6 +20,7 @@
 #     BRANCHES         comma separated branch names             (default: arena/01a0640f-amphp)
 #
 # Optional env vars:
+#   DEPLOYER_SOURCE_BRANCH  branch to fetch deployer.py from GitHub (default arena/01a06abd-amphp)
 #   DEPLOYER_BRANCHES       same as BRANCHES argument
 #   DEPLOYER_REPO           GitHub repository owner/name (default fazilatma/amphp)
 #   DEPLOYER_GITHUB_TOKEN   token for private repositories
@@ -35,14 +36,37 @@ set -euo pipefail
 PA_USER="$(whoami)"
 HOME_DIR="$HOME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_SRC="${1:-$(dirname "$SCRIPT_DIR")}"          # repo root = script's ../..
+# Repo root: explicit argument, else the folder containing this script.
+REPO_SRC="${1:-$(dirname "$SCRIPT_DIR")}"
+SOURCE_BRANCH="${DEPLOYER_SOURCE_BRANCH:-arena/01a06abd-amphp}"
+RAW_BASE="https://raw.githubusercontent.com/${DEPLOYER_REPO:-fazilatma/amphp}/$SOURCE_BRANCH"
+
+# --- locate deployer.py -------------------------------------------------------
+# If we were not run from the repo (e.g. copied to ~), try the common places.
+if [ ! -f "$REPO_SRC/deployer.py" ]; then
+    for cand in "$HOME_DIR/amphp/deployer.py" "$HOME_DIR/deployer.py"; do
+        if [ -f "$cand" ]; then REPO_SRC="$(dirname "$cand")"; break; fi
+    done
+fi
+if [ ! -f "$REPO_SRC/deployer.py" ]; then
+    echo "==> deployer.py محلی پیدا نشد؛ تلاش برای دانلود از GitHub…"
+    mkdir -p "$HOME_DIR/.deployer"
+    curl -fsSL "$RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py" \
+        || { echo "خطا: deployer.py پیدا یا دانلود نشد. ابتدا وارد پوشه ریپو شوید (cd ~/amphp) و شاخه درست را بگیرید" >&2; exit 1; }
+    REPO_SRC="$HOME_DIR/.deployer"
+fi
 
 # --- target scraper4.py (auto-detect when not given) -------------------------
 TARGET="${2:-}"
 if [ -z "$TARGET" ]; then
-    for candidate in "$HOME_DIR/amphp/scraper4.py" "$HOME_DIR/scraper4.py" "$REPO_SRC/scraper4.py"; do
+    for candidate in "$HOME_DIR/amphp/scraper4.py" "$HOME_DIR/scraper4.py" \
+                     "$HOME_DIR/mysite/scraper4.py" "$REPO_SRC/scraper4.py"; do
         if [ -f "$candidate" ]; then TARGET="$candidate"; break; fi
     done
+fi
+if [ -z "$TARGET" ]; then
+    TARGET="$(find "$HOME_DIR" -maxdepth 4 -name 'scraper4.py' \
+        -not -path '*/.deployer/*' -not -path '*/venv/*' -not -path '*/.cache/*' 2>/dev/null | head -1)"
 fi
 
 BRANCHES="${3:-${DEPLOYER_BRANCHES:-arena/01a0640f-amphp}}"

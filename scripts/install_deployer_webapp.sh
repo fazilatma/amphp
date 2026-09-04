@@ -22,6 +22,8 @@
 # Optional env vars:
 #   DEPLOYER_SOURCE_BRANCH  branch to fetch deployer.py from GitHub (default arena/01a06abd-amphp)
 #   DEPLOYER_SOURCE_RAW_BASE  override the raw download base (tests/offline mirrors)
+#   DEPLOYER_GITHUB_API     GitHub API base for downloads (default https://api.github.com)
+#   DEPLOYER_JSDELIVR       jsDelivr CDN base for downloads (default https://cdn.jsdelivr.net)
 #   DEPLOYER_OFFLINE        "1" keeps the existing ~/.deployer/deployer.py (no download)
 #   DEPLOYER_BRANCHES       same as BRANCHES argument
 #   DEPLOYER_REPO           GitHub repository owner/name (default fazilatma/amphp)
@@ -44,9 +46,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repo root: explicit argument, else the folder containing this script.
 REPO_SRC="${1:-$(dirname "$SCRIPT_DIR")}"
 SOURCE_BRANCH="${DEPLOYER_SOURCE_BRANCH:-arena/01a06abd-amphp}"
-RAW_BASE="https://raw.githubusercontent.com/${DEPLOYER_REPO:-fazilatma/amphp}/$SOURCE_BRANCH"
+REPO="${DEPLOYER_REPO:-fazilatma/amphp}"
+GITHUB_API="${DEPLOYER_GITHUB_API:-https://api.github.com}"
+JSDELIVR="${DEPLOYER_JSDELIVR:-https://cdn.jsdelivr.net}"
+RAW_BASE="https://raw.githubusercontent.com/$REPO/$SOURCE_BRANCH"
+SOURCE_RAW_BASE="${DEPLOYER_SOURCE_RAW_BASE:-$RAW_BASE}"
 
-SOURCE_RAW_BASE="${DEPLOYER_SOURCE_RAW_BASE:-https://raw.githubusercontent.com/${DEPLOYER_REPO:-fazilatma/amphp}/$SOURCE_BRANCH}"
+# --- robust GitHub download --------------------------------------------------
+# raw.githubusercontent.com is sometimes unreachable/NAT-flaky from PAs
+# (curl: (35) SSL_ERROR_SYSCALL). The GitHub contents API with the raw media
+# type is the reliable primary source; raw CDN and jsDelivr are fallbacks.
+download_github_file() {
+    local dest="$1" rel="$2"
+    if curl -fsSL --retry 3 --connect-timeout 20 --max-time 90 \
+         -H 'Accept: application/vnd.github.raw' \
+         -o "$dest" "$GITHUB_API/repos/$REPO/contents/$rel?ref=$SOURCE_BRANCH" 2>/dev/null \
+       && [ -s "$dest" ]; then
+        echo "==> دانلود از GitHub API: $rel"
+        return 0
+    fi
+    if curl -fsSL --retry 3 --connect-timeout 20 --max-time 90 \
+         -o "$dest" "$SOURCE_RAW_BASE/$rel" 2>/dev/null && [ -s "$dest" ]; then
+        echo "==> دانلود از raw.githubusercontent: $rel"
+        return 0
+    fi
+    if curl -fsSL --retry 3 --connect-timeout 20 --max-time 90 \
+         -o "$dest" "$JSDELIVR/gh/$REPO@$SOURCE_BRANCH/$rel" 2>/dev/null && [ -s "$dest" ]; then
+        echo "==> دانلود از jsDelivr CDN: $rel"
+        return 0
+    fi
+    return 1
+}
 
 # --- locate deployer.py -------------------------------------------------------
 # If we were not run from the repo (e.g. copied to ~), try the common places.
@@ -63,9 +93,8 @@ fi
 # Set DEPLOYER_OFFLINE=1 to keep the existing copy.
 if [ "$IS_GIT_REPO" != 1 ] && [ "${DEPLOYER_OFFLINE:-0}" != 1 ]; then
     mkdir -p "$HOME_DIR/.deployer"
-    if curl -fsSL "$SOURCE_RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py.new" 2>/dev/null; then
-        mv -f "$HOME_DIR/.deployer/deployer.py.new" "$HOME_DIR/.deployer/deployer.py"
-        echo "==> deployer.py از GitHub به‌روزرسانی شد → ~/.deployer/deployer.py"
+    if download_github_file "$HOME_DIR/.deployer/deployer.py" "deployer.py"; then
+        echo "==> deployer.py به‌روزرسانی شد → ~/.deployer/deployer.py"
         REPO_SRC="$HOME_DIR/.deployer"
         IS_GIT_REPO=0
     else
@@ -79,8 +108,10 @@ fi
 if [ ! -f "$REPO_SRC/deployer.py" ]; then
     echo "==> deployer.py محلی پیدا نشد؛ تلاش برای دانلود از GitHub…"
     mkdir -p "$HOME_DIR/.deployer"
-    curl -fsSL "$SOURCE_RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py" \
-        || { echo "خطا: deployer.py پیدا یا دانلود نشد. ابتدا وارد پوشه ریپو شوید (cd ~/amphp) و شاخه درست را بگیرید" >&2; exit 1; }
+    if ! download_github_file "$HOME_DIR/.deployer/deployer.py" "deployer.py"; then
+        echo "خطا: deployer.py از هیچ منبعی دانلود نشد (API/raw/jsDelivr). اینترنت یا GitHub را بررسی کنید؛ یا deployer.py را دستی در ~/.deployer بگذارید" >&2
+        exit 1
+    fi
     REPO_SRC="$HOME_DIR/.deployer"
 fi
 DEPLOYER_LOCAL_VERSION="$(grep -oE 'DEPLOYER_VERSION = "[0-9.]+"' "$REPO_SRC/deployer.py" | head -n1 | grep -oE '[0-9.]+' || echo '?')"
@@ -101,7 +132,6 @@ if [ -z "$TARGET" ]; then
 fi
 
 BRANCHES="${3:-${DEPLOYER_BRANCHES:-}}"
-REPO="${DEPLOYER_REPO:-fazilatma/amphp}"
 GH_TOKEN="${DEPLOYER_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 WEB_TOKEN="${DEPLOYER_WEB_TOKEN:-}"
 USER_LOWER="$(printf '%s' "$PA_USER" | tr '[:upper:]' '[:lower:]')"
@@ -271,8 +301,19 @@ else
     echo "!! نسخه deployer.py: ${DEPLOYER_INSTALLED_VERSION:-?} — اگر صفحه در 'بررسی' گیر می‌کند، باید 1.6.0+ باشد"
 fi
 
+# self-test: deployer must import cleanly BEFORE anything is reloaded
+echo "==> تست import deployer.py…"
+IMPORT_ERR="$HOME_DIR/.deployer/import-err.$$"
+if ! "${SYSTEM_PY:-python3}" -c 'import sys; sys.path.insert(0, sys.argv[1]); import deployer; print("OK deployer v" + str(deployer.DEPLOYER_VERSION))' "$HOME_DIR/.deployer" 2>"$IMPORT_ERR"; then
+    echo "خطا: deployer.py import نشد. خروجی خطا:" >&2
+    cat "$IMPORT_ERR" >&2
+    rm -f "$IMPORT_ERR"
+    exit 1
+fi
+rm -f "$IMPORT_ERR"
+
 # --- 2. write WSGI wrapper (env values escaped by Python) ---------------------
-python3 - "$HOME_DIR/.deployer/deployer_wsgi.py" "$REPO" "$BRANCHES" "$TARGET" "$GH_TOKEN" "$WEB_TOKEN" <<'PY'
+"${SYSTEM_PY:-python3}" - "$HOME_DIR/.deployer/deployer_wsgi.py" "$REPO" "$BRANCHES" "$TARGET" "$GH_TOKEN" "$WEB_TOKEN" <<'PY'
 import json, os, sys
 path, repo, branches, target, gh_token, web_token = sys.argv[1:7]
 env = {
@@ -319,10 +360,13 @@ import sys as _sys
 _d = _os.path.expanduser('~/.deployer')
 if _d not in _sys.path:
     _sys.path.insert(0, _d)
-from deployer_wsgi import application as _deployer_app
+try:
+    from deployer_wsgi import application as _deployer_app
+except Exception:
+    _deployer_app = None
 _original_application = $ORIG_NAME
 def application(environ, start_response):
-    if environ.get('PATH_INFO', '').startswith('/deployer'):
+    if _deployer_app is not None and environ.get('PATH_INFO', '').startswith('/deployer'):
         return _deployer_app(environ, start_response)
     return _original_application(environ, start_response)
 EOF
@@ -340,11 +384,14 @@ import sys as _sys
 _d = _os.path.expanduser('~/.deployer')
 if _d not in _sys.path:
     _sys.path.insert(0, _d)
-from deployer_wsgi import application as _deployer_app
+try:
+    from deployer_wsgi import application as _deployer_app
+except Exception:
+    _deployer_app = None
 
 def application(environ, start_response):
     path = environ.get('PATH_INFO', '')
-    if path.startswith('/deployer'):
+    if _deployer_app is not None and path.startswith('/deployer'):
         return _deployer_app(environ, start_response)
     body = ('Scraper4 main site is not configured yet. Install it first '
             '(run install_pythonanywhere.sh), then re-run '

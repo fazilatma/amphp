@@ -12,7 +12,8 @@
 #   DEPLOYER_TARGET      explicit scraper4.py path (auto-detected otherwise)
 #   FORCE=1              install even when the local version is already
 #                        equal to or newer than the branch version
-#   DEPLOYER_SOURCE_RAW  override the download URL (tests/mirrors)
+#   DEPLOYER_SOURCE_RAW  override the raw download URL (tests/mirrors)
+#   DEPLOYER_GITHUB_API  GitHub API base for the primary download (default https://api.github.com)
 #   DEPLOYER_REPO        repository owner/name  (default fazilatma/amphp)
 #
 # Existing file is always backed up: scraper4.py.bak.<timestamp> plus
@@ -24,6 +25,7 @@ SRC_BRANCH="${SRC_BRANCH:-arena/01a06abd-amphp}"
 REPO="${DEPLOYER_REPO:-fazilatma/amphp}"
 USER_NAME="$(id -un)"
 HOME_DIR="$HOME"
+GITHUB_API="${DEPLOYER_GITHUB_API:-https://api.github.com}"
 RAW_URL="${DEPLOYER_SOURCE_RAW:-https://raw.githubusercontent.com/$REPO/$SRC_BRANCH/scraper4.py}"
 
 # --- locate the target --------------------------------------------------------
@@ -45,8 +47,16 @@ echo "==> برنچ مبدأ:  $SRC_BRANCH"
 # --- download ------------------------------------------------------------------
 TMP="$(mktemp "$HOME_DIR/.scraper4-dl.XXXXXX.py" 2>/dev/null || mktemp /tmp/scraper4-dl.XXXXXX.py)"
 trap 'if [ -n "${TMP:-}" ]; then rm -f -- "$TMP"; fi' EXIT
-echo "==> دانلود از: $RAW_URL"
-curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 "$RAW_URL" -o "$TMP"
+# GitHub contents API (raw media) first — raw.githubusercontent.com is often
+# unreachable from PythonAnywhere (curl: (35) SSL_ERROR_SYSCALL).
+echo "==> دانلود از GitHub API: $REPO@$SRC_BRANCH/scraper4.py"
+if ! curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 \
+     -H 'Accept: application/vnd.github.raw' \
+     -o "$TMP" "$GITHUB_API/repos/$REPO/contents/scraper4.py?ref=$SRC_BRANCH" 2>/dev/null \
+   || [ ! -s "$TMP" ]; then
+    echo "==> تلاش مجدد از raw.githubusercontent → $RAW_URL"
+    curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 "$RAW_URL" -o "$TMP"
+fi
 
 # --- validate + read new version ------------------------------------------------
 NEW_VERSION="$("$PY" - "$TMP" <<'PY'

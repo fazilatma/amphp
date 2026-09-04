@@ -11,3 +11,15 @@ storefront-react/dist/
 .arena-preview/package-lock.json
 .arena-preview/package.json
 deploy/*.zip
+
+# Python runtime artifacts
+__pycache__/
+*.pyc
+*.py[cod]
+
+# Scraper4 runtime state (written by the app, never committed)
+scraper4_data.json
+scraper4.py.*.bak
+chat_threads.json.tmp
+*.tmp
+

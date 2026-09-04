@@ -1314,7 +1314,7 @@ INDEX_HTML = r"""<!doctype html>
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#07111f">
 <title>اسکریپر ۴ پایتون | Scraper4 Python Pro</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
@@ -1482,7 +1482,7 @@ body {
   background: linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(129, 140, 248, 0.15));
   border: 1px solid var(--border);
   color: var(--primary);
-  font-size: 20px;
+  font-size: calc(20px * var(--font-scale, 1));
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1507,7 +1507,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale, 1));
   color: #fff;
   box-shadow: 0 0 12px var(--primary-glow);
   flex-shrink: 0;
@@ -1521,7 +1521,7 @@ body {
 }
 
 .brand-text h1 {
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale, 1));
   font-weight: 800;
   color: var(--text);
   white-space: nowrap;
@@ -1530,7 +1530,7 @@ body {
 }
 
 .brand-text .version-badge {
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--font-scale, 1));
   font-weight: 600;
   color: var(--primary);
   white-space: nowrap;
@@ -1551,7 +1551,7 @@ body {
   background: rgba(56, 189, 248, 0.12);
   border: 1px solid rgba(56, 189, 248, 0.3);
   border-radius: 16px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   font-weight: 700;
   color: var(--primary);
   cursor: pointer;
@@ -1581,7 +1581,7 @@ body {
   background: var(--card-solid);
   border: 1px solid var(--border);
   color: var(--text);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale, 1));
   cursor: pointer;
   transition: all 0.2s;
   flex-shrink: 0;
@@ -1637,7 +1637,7 @@ body {
   background: var(--card);
 }
 .drawer-title {
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale, 1));
   font-weight: 800;
   color: var(--text);
   display: flex;
@@ -1664,7 +1664,7 @@ body {
   border: 1px solid var(--border);
   color: var(--text);
   cursor: pointer;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   font-weight: 700;
   transition: all 0.2s;
   text-decoration: none;
@@ -1675,7 +1675,7 @@ body {
   transform: translateX(-3px);
 }
 .drawer-menu-item .d-icon {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale, 1));
   margin-left: 10px;
 }
 
@@ -1700,11 +1700,11 @@ body {
   box-shadow: 0 10px 24px rgba(56, 189, 248, 0.4);
 }
 .drawer-cta:disabled { opacity: 0.55; cursor: progress; transform: none; }
-.drawer-cta .cta-icon { font-size: 20px; flex: 0 0 auto; }
+.drawer-cta .cta-icon { font-size: calc(20px * var(--font-scale, 1)); flex: 0 0 auto; }
 .drawer-cta .cta-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.drawer-cta .cta-text strong { font-size: 13.5px; font-weight: 800; }
-.drawer-cta .cta-text small { font-size: 10.5px; opacity: 0.88; line-height: 1.4; }
-.drawer-cta .cta-state { font-size: 15px; flex: 0 0 auto; }
+.drawer-cta .cta-text strong { font-size: calc(13.5px * var(--font-scale, 1)); font-weight: 800; }
+.drawer-cta .cta-text small { font-size: calc(10.5px * var(--font-scale, 1)); opacity: 0.88; line-height: 1.4; }
+.drawer-cta .cta-state { font-size: calc(15px * var(--font-scale, 1)); flex: 0 0 auto; }
 
 /* ==================== BOTTOM TAB BAR ==================== */
 .bottom-nav {
@@ -1742,13 +1742,13 @@ body {
 }
 
 .nav-item .nav-icon {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale, 1));
   line-height: 1;
   transition: transform 0.2s;
 }
 
 .nav-item .nav-label {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   font-weight: 700;
   white-space: nowrap;
 }
@@ -1768,7 +1768,7 @@ body {
   right: calc(50% - 18px);
   background: var(--danger);
   color: #fff;
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale, 1));
   font-weight: 800;
   padding: 1px 4px;
   border-radius: 8px;
@@ -1802,7 +1802,7 @@ body {
 }
 
 .card-title {
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--font-scale, 1));
   font-weight: 800;
   color: var(--text);
   display: flex;
@@ -1811,7 +1811,7 @@ body {
 }
 
 .card-title-icon {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale, 1));
 }
 
 /* ==================== FORMS & CONTROLS ==================== */
@@ -1835,7 +1835,7 @@ body {
 }
 
 .form-label {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale, 1));
   font-weight: 700;
   color: var(--text-dim);
 }
@@ -1849,7 +1849,7 @@ body {
   border-radius: var(--radius-md);
   color: var(--text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale, 1));
   outline: none;
   transition: all 0.2s;
 }
@@ -1875,7 +1875,7 @@ textarea.form-control {
   padding: 10px 16px;
   border-radius: var(--radius-md);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale, 1));
   font-weight: 700;
   cursor: pointer;
   border: none;
@@ -1917,7 +1917,7 @@ textarea.form-control {
 
 .btn-sm {
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   min-height: 32px;
   border-radius: var(--radius-sm);
 }
@@ -1955,14 +1955,14 @@ textarea.form-control {
 }
 
 .stat-card .stat-val {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale, 1));
   font-weight: 800;
   color: var(--primary);
   margin-bottom: 2px;
 }
 
 .stat-card .stat-lbl {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
   font-weight: 700;
   color: var(--text-dim);
 }
@@ -1983,7 +1983,7 @@ textarea.form-control {
 .sub-tab-btn {
   padding: 7px 12px;
   border-radius: var(--radius-sm);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale, 1));
   font-weight: 700;
   color: var(--text-dim);
   background: var(--card-solid);
@@ -2041,7 +2041,7 @@ textarea.form-control {
 }
 
 .p-card-title {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale, 1));
   font-weight: 700;
   color: var(--text);
   line-height: 1.35;
@@ -2078,7 +2078,7 @@ table.data-table {
   width: 100%;
   border-collapse: collapse;
   text-align: right;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   white-space: nowrap;
 }
 table.data-table th {
@@ -2103,7 +2103,7 @@ table.data-table tr:hover { background: var(--card-hover); }
   gap: 3px;
   padding: 2px 7px;
   border-radius: 6px;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale, 1));
   font-weight: 700;
 }
 .chip-primary { background: rgba(56, 189, 248, 0.15); color: var(--primary); }
@@ -2205,7 +2205,7 @@ table.data-table tr:hover { background: var(--card-hover); }
   border: 1px solid var(--border);
   box-shadow: var(--shadow-md);
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -2221,6 +2221,67 @@ table.data-table tr:hover { background: var(--card-hover); }
 .view-panel { display: none; }
 .view-panel.active { display: block; animation: fadeIn 0.2s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ==================== MOBILE-FIRST HARDENING ==================== */
+/* Dynamic viewport height: mobile browser toolbars must not crop content. */
+html, body { min-height: 100dvh; }
+
+/* Nothing may force the page itself to scroll sideways on a phone. */
+img, video, canvas, svg, pre, table, iframe { max-width: 100%; }
+pre { overflow-x: auto; }
+
+/* Long URLs / SKUs / hashes wrap instead of blowing out the layout. */
+body { overflow-wrap: anywhere; word-break: break-word; }
+
+/* Flex children may shrink rather than overflow their container. */
+.top-bar > *, .brand-group, .card-title, .drawer-menu-item > div,
+.form-group, .drawer-cta .cta-text { min-width: 0; }
+
+/* Notch / status-bar safe area on the fixed header. */
+.top-bar {
+  height: calc(56px + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+}
+body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
+
+/* Tables scroll inside their own box, never the whole page. */
+.data-table {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  /* iOS Safari force-zooms the page on focus when an input's font-size is
+     below 16px, so clamp inputs to >=16px while still honouring the scale. */
+  .form-control, input, select, textarea {
+    font-size: max(16px, calc(13px * var(--font-scale, 1)));
+    height: 46px;
+  }
+  textarea.form-control { height: auto; min-height: 96px; }
+
+  /* 44px minimum touch targets (Apple HIG / WCAG 2.5.5). */
+  .icon-btn { width: 42px; height: 42px; font-size: calc(16px * var(--font-scale, 1)); }
+  .btn { min-height: 44px; padding: 11px 14px; }
+  .btn-sm { min-height: 40px; padding: 9px 12px; }
+  .nav-item { min-height: 52px; flex: 1 1 0; }
+  .drawer-menu-item { min-height: 48px; padding: 13px 14px; }
+  .drawer-cta { min-height: 56px; }
+
+  .app-shell { padding: 8px 10px; }
+  .glass-card { padding: 12px; border-radius: var(--radius-md); }
+  .card-header { flex-wrap: wrap; gap: 8px; }
+  .form-grid { grid-template-columns: 1fr !important; gap: 10px; }
+
+  .modal-box { height: 92dvh; max-height: 92dvh; border-radius: 18px 18px 0 0; }
+  .drawer-panel { width: min(340px, 88vw); }
+
+  .bottom-nav { height: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  body { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+
+  .toast { max-width: calc(100vw - 24px); }
+}
 </style>
 </head>
 <body class="theme-navy">
@@ -2241,7 +2302,7 @@ table.data-table tr:hover { background: var(--card-hover); }
 
   <div class="top-actions">
     <!-- Active Profile Selector -->
-    <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" style="width:85px; height:32px; font-size:11px; padding:2px 6px;">
+    <select class="form-control" id="topProfileSelect" onchange="onProfileChange(this.value)" style="width:85px; height:32px; font-size: calc(11px * var(--font-scale, 1)); padding:2px 6px;">
       <option value="">پیش‌فرض</option>
     </select>
 
@@ -2582,7 +2643,7 @@ table.data-table tr:hover { background: var(--card-hover); }
           <button class="btn btn-accent btn-sm" onclick="runDeployInstall()">🚀 دانلود و نصب</button>
           <button class="btn btn-secondary btn-sm" onclick="reloadApp()">⚡ ری‌استارت WSGI</button>
         </div>
-        <div id="deployStatusBox" style="margin-top:12px; font-size:11.5px; color:var(--text-dim); white-space:pre-wrap;"></div>
+        <div id="deployStatusBox" style="margin-top:12px; font-size: calc(11.5px * var(--font-scale, 1)); color:var(--text-dim); white-space:pre-wrap;"></div>
       </div>
     </div>
   </main>
@@ -2714,14 +2775,14 @@ table.data-table tr:hover { background: var(--card-hover); }
 
       <div class="form-grid" style="margin-bottom:16px;">
         <div class="stat-card" style="text-align:right;">
-          <h3 style="font-size:13.5px; font-weight:800; margin-bottom:6px;">🛒 ووکامرس</h3>
-          <p style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">ارسال محصولات به وردپرس با گالری و تنوع</p>
+          <h3 style="font-size: calc(13.5px * var(--font-scale, 1)); font-weight:800; margin-bottom:6px;">🛒 ووکامرس</h3>
+          <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); margin-bottom:10px;">ارسال محصولات به وردپرس با گالری و تنوع</p>
           <button class="btn btn-primary btn-sm" style="width:100%;" onclick="sendToWoo()">🚀 ارسال به ووکامرس</button>
         </div>
 
         <div class="stat-card" style="text-align:right;">
-          <h3 style="font-size:13.5px; font-weight:800; margin-bottom:6px;">🏪 باسلام</h3>
-          <p style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">ثبت محصولات در غرفه باسلام</p>
+          <h3 style="font-size: calc(13.5px * var(--font-scale, 1)); font-weight:800; margin-bottom:6px;">🏪 باسلام</h3>
+          <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); margin-bottom:10px;">ثبت محصولات در غرفه باسلام</p>
           <button class="btn btn-success btn-sm" style="width:100%;" onclick="sendToBasalam()">🚀 ارسال به باسلام</button>
         </div>
       </div>
@@ -2769,7 +2830,7 @@ table.data-table tr:hover { background: var(--card-hover); }
         <input type="text" class="form-control" id="aiTestPrompt" placeholder="یک متن تبلیغاتی برای ساعت هوشمند بنویس">
       </div>
       <button class="btn btn-accent btn-sm" onclick="runAiTest()">🧪 اجرای آزمون هوش مصنوعی</button>
-      <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size:12.5px; line-height:1.6;"></div>
+      <div id="aiTestResult" style="margin-top:12px; padding:12px; background:var(--card-solid); border-radius:var(--radius-md); border:1px solid var(--border); display:none; font-size: calc(12.5px * var(--font-scale, 1)); line-height:1.6;"></div>
     </div>
   </main>
 </div>
@@ -2807,7 +2868,7 @@ table.data-table tr:hover { background: var(--card-hover); }
 <div class="modal-overlay" id="tasksModal">
   <div class="modal-box">
     <div class="modal-header">
-      <h3 style="font-size:14.5px; font-weight:800;">🗂 مدیریت کارهای پس‌زمینه (Task Manager)</h3>
+      <h3 style="font-size: calc(14.5px * var(--font-scale, 1)); font-weight:800;">🗂 مدیریت کارهای پس‌زمینه (Task Manager)</h3>
       <button class="icon-btn" onclick="closeModal('tasksModal')">✕</button>
     </div>
     <div class="modal-body" id="tasksListBody">
@@ -2824,7 +2885,7 @@ table.data-table tr:hover { background: var(--card-hover); }
 <div class="modal-overlay" id="pickerModal">
   <div class="modal-box" style="height:92vh; max-height:92vh;">
     <div class="modal-header">
-      <h3 style="font-size:14.5px; font-weight:800;">👆 انتخابگر بصری سلکتورها (DOM Inspector)</h3>
+      <h3 style="font-size: calc(14.5px * var(--font-scale, 1)); font-weight:800;">👆 انتخابگر بصری سلکتورها (DOM Inspector)</h3>
       <button class="icon-btn" onclick="closeModal('pickerModal')">✕</button>
     </div>
     <div class="modal-body" style="padding:10px; display:flex; flex-direction:column; gap:8px;">
@@ -2841,7 +2902,7 @@ table.data-table tr:hover { background: var(--card-hover); }
 <div class="modal-overlay" id="chatDeskModal">
   <div class="modal-box" style="height:92vh; max-height:92vh;">
     <div class="modal-header">
-      <h3 style="font-size:14.5px; font-weight:800;">💬 میز گفت‌وگو و پشتیبانی آنلاین</h3>
+      <h3 style="font-size: calc(14.5px * var(--font-scale, 1)); font-weight:800;">💬 میز گفت‌وگو و پشتیبانی آنلاین</h3>
       <button class="icon-btn" onclick="closeModal('chatDeskModal')">✕</button>
     </div>
     <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; padding:10px;">
@@ -2860,7 +2921,7 @@ table.data-table tr:hover { background: var(--card-hover); }
 <div class="modal-overlay" id="fontModal">
   <div class="modal-box" style="max-width:440px; height:auto;">
     <div class="modal-header">
-      <h3 style="font-size:14.5px; font-weight:800;">🔤 تنظیمات قلم و تایپوگرافی</h3>
+      <h3 style="font-size: calc(14.5px * var(--font-scale, 1)); font-weight:800;">🔤 تنظیمات قلم و تایپوگرافی</h3>
       <button class="icon-btn" onclick="closeModal('fontModal')">✕</button>
     </div>
     <div class="modal-body">
@@ -2876,7 +2937,7 @@ table.data-table tr:hover { background: var(--card-hover); }
         <label class="form-label">بزرگ‌نمایی قلم:</label>
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
           <button class="btn btn-secondary btn-sm" onclick="adjustFontSize(-0.05)">A- کوچک‌تر</button>
-          <span id="fontSizeDisplay" style="font-weight:800; font-size:14px;">100%</span>
+          <span id="fontSizeDisplay" style="font-weight:800; font-size: calc(14px * var(--font-scale, 1));">100%</span>
           <button class="btn btn-secondary btn-sm" onclick="adjustFontSize(0.05)">A+ بزرگ‌تر</button>
         </div>
       </div>
@@ -2971,6 +3032,8 @@ async function loadConfig() {
     if (json.ok) {
       appConfig = json.data;
       applyConfigToUi(appConfig);
+      // Re-apply after config arrives so the server-side font_scale is honoured.
+      restoreFontScale();
     }
   } catch(e) {
     console.error(e);
@@ -3176,13 +3239,13 @@ function renderTasksList(tasks) {
   container.innerHTML = tasks.map(t => `
     <div style="background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-bottom:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-        <span style="font-weight:800; font-size:12.5px;">${t.title}</span>
+        <span style="font-weight:800; font-size: calc(12.5px * var(--font-scale, 1));">${t.title}</span>
         <span class="chip ${t.status === 'completed' ? 'chip-success' : (t.status === 'running' ? 'chip-primary' : 'chip-danger')}">${t.status}</span>
       </div>
       <div style="height:5px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; margin-bottom:6px;">
         <div style="height:100%; width:${t.progress}%; background:var(--primary); transition:width 0.3s;"></div>
       </div>
-      <div style="display:flex; justify-content:space-between; font-size:10.5px; color:var(--text-dim);">
+      <div style="display:flex; justify-content:space-between; font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);">
         <span>${t.step || ''}</span>
         <span>${toFa(t.progress)}٪</span>
       </div>
@@ -3359,10 +3422,35 @@ window.addEventListener('message', (e) => {
 });
 
 let currentFontScale = 1;
+
+function applyFontScale(scale, persist = true) {
+  currentFontScale = Math.max(0.85, Math.min(1.35, Number(scale) || 1));
+  // setProperty needs a string; a bare number silently fails in some engines.
+  document.documentElement.style.setProperty('--font-scale', String(currentFontScale));
+  const el = document.getElementById('fontSizeDisplay');
+  if (el) el.innerText = `${Math.round(currentFontScale * 100)}%`;
+  if (persist) {
+    try { localStorage.setItem('scraper4_font_scale', String(currentFontScale)); } catch (e) {}
+    fetch('/api/ui/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ font_scale: currentFontScale })
+    }).catch(() => {});
+  }
+}
+
 function adjustFontSize(delta) {
-  currentFontScale = Math.max(0.85, Math.min(1.35, currentFontScale + delta));
-  document.documentElement.style.setProperty('--font-scale', currentFontScale);
-  document.getElementById('fontSizeDisplay').innerText = `${Math.round(currentFontScale * 100)}%`;
+  applyFontScale(currentFontScale + delta);
+  showToast(`اندازه فونت: ${Math.round(currentFontScale * 100)}%`, 'info');
+}
+
+function restoreFontScale() {
+  try {
+    const saved = localStorage.getItem('scraper4_font_scale');
+    if (saved) { applyFontScale(saved, false); return; }
+  } catch (e) {}
+  const preset = (appConfig && appConfig.ui_preferences && appConfig.ui_preferences.font_scale);
+  if (preset) applyFontScale(preset, false);
 }
 
 function applyFont(font) {
@@ -3390,6 +3478,7 @@ async function pasteClipboardUrl() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  restoreFontScale();
   loadConfig();
   loadTasks();
   pollTasks();

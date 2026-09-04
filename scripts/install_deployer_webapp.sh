@@ -236,11 +236,13 @@ echo "==> ~/.deployer/deployer_wsgi.py نوشته شد"
 
 # --- 3. patch main WSGI (idempotent, with backup) ------------------------------
 MARKER="# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---"
+PLACEHOLDER=0
 if grep -qF "$MARKER" "$WSGI_FILE"; then
     echo "==> پچ /deployer از قبل اعمال شده است (تغییری ندادیم)"
-elif grep -qE "^application[[:space:]]*=" "$WSGI_FILE"; then
+elif grep -qE '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE"; then
+    ORIG_NAME="$(grep -E '^[[:space:]]*(application|app)[[:space:]]*=' "$WSGI_FILE" | head -n 1 | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*//')"
     cp -f "$WSGI_FILE" "$WSGI_FILE.bak.$(date +%Y%m%d%H%M%S)"
-    cat >> "$WSGI_FILE" <<'EOF'
+    cat >> "$WSGI_FILE" <<EOF
 
 # --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---
 import os as _os
@@ -249,7 +251,7 @@ _d = _os.path.expanduser('~/.deployer')
 if _d not in _sys.path:
     _sys.path.insert(0, _d)
 from deployer_wsgi import application as _deployer_app
-_original_application = application
+_original_application = $ORIG_NAME
 def application(environ, start_response):
     if environ.get('PATH_INFO', '').startswith('/deployer'):
         return _deployer_app(environ, start_response)
@@ -257,8 +259,34 @@ def application(environ, start_response):
 EOF
     echo "==> فایل WSGI پچ شد (پشتیبان: $(basename "$(ls -t "$WSGI_FILE".bak.* | head -1)"))"
 else
-    echo "خطا: در فایل WSGI متغیر application پیدا نشد؛ آن را دستی بررسی کنید" >&2
-    exit 1
+    # No application/app variable at all (plain/blank template). Install a safe
+    # guarded WSGI so the /deployer/ page works; the main site can be configured
+    # afterwards without losing the deployer mount. Backup is always kept.
+    BACKUP="$WSGI_FILE.bak.$(date +%Y%m%d%H%M%S)"
+    cp -f "$WSGI_FILE" "$BACKUP"
+    cat > "$WSGI_FILE.tmp.$$" <<'EOF'
+# --- scraper4 deployer mount (managed by install_deployer_webapp.sh) ---
+import os as _os
+import sys as _sys
+_d = _os.path.expanduser('~/.deployer')
+if _d not in _sys.path:
+    _sys.path.insert(0, _d)
+from deployer_wsgi import application as _deployer_app
+
+def application(environ, start_response):
+    path = environ.get('PATH_INFO', '')
+    if path.startswith('/deployer'):
+        return _deployer_app(environ, start_response)
+    body = ('Scraper4 main site is not configured yet. Install it first '
+            '(run install_pythonanywhere.sh), then re-run '
+            'install_deployer_webapp.sh so both are mounted.').encode('utf-8')
+    start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8'),
+                              ('Content-Length', str(len(body)))])
+    return [body]
+EOF
+    mv -f "$WSGI_FILE.tmp.$$" "$WSGI_FILE"
+    PLACEHOLDER=1
+    echo "==> فایل WSGI متغیر application/app نداشت؛ mount امن جایگزین شد (پشتیبان: $(basename "$BACKUP"))"
 fi
 
 # --- 4. reload ------------------------------------------------------------------
@@ -301,6 +329,22 @@ cat <<EOF
 اگر DEPLOYER_WEB_TOKEN تنظیم کرده‌اید، دکمه‌های
 «نصب» و «بازگشت» با همان رمز فعال می‌شوند؛ بدون آن،
 صفحه فقط وضعیت را نمایش می‌دهد (حالت امن).
+EOF
+if [ "$PLACEHOLDER" = 1 ]; then
+cat <<'EOF'
+
+⚠️  توجه: فایل WSGI قبلی هیچ متغیر application نداشت (وب‌اپ خالی بود).
+    اسکریپت یک mount امن جایگزین کرد تا صفحه دیپلوی‌ر کار کند.
+    برای راه‌اندازی سایت اصلی (scraper4) هم بعداً این را اجرا کنید:
+
+        cd ~/amphp 2>/dev/null || cd ~
+        bash install_pythonanywhere.sh        # سپس دوباره:
+        bash install_deployer_webapp.sh       # تا هر دو mount شوند
+
+    (نسخه قبلی WSGI در پشتیبان .bak.* نگهداری شد.)
+EOF
+fi
+cat <<'EOF'
 
 نکته: اگر سایت اصلی هنوز اجرا نشده، اسکریپت اصلی پروژه
 (install_pythonanywhere.sh در ریپو) را هم اجرا کنید تا

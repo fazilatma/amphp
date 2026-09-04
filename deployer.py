@@ -52,7 +52,7 @@ except ImportError:
 REPO = os.environ.get("DEPLOYER_REPO") or os.environ.get("SCRAPER_REPO") or "fazilatma/amphp"
 DEFAULT_BRANCH = os.environ.get("SCRAPER_BRANCH", "arena/01a06927-amphp")
 DEFAULT_FILE = os.environ.get("DEPLOYER_FILE") or os.environ.get("DEPLOYER_TARGET_FILE") or "scraper4.py"
-DEPLOYER_VERSION = "1.1.1"
+DEPLOYER_VERSION = "1.1.2"
 DEFAULT_TARGET = os.environ.get("DEPLOYER_TARGET") or os.path.join(os.path.expanduser("~"), "amphp", "scraper4.py")
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -507,6 +507,7 @@ function onBranchChange(){
   gh.href=`https://github.com/${repo}/tree/${encodeURIComponent(br)}`; gh.style.display='';
   syncUrl();
 }
+function apiBase(){ return location.pathname.startsWith('/deployer') ? '/deployer' : ''; }
 function pick(br){ $('branchSelect').value=br; onBranchChange(); $('branchSelect').scrollIntoView({behavior:'smooth',block:'center'}); }
 async function scan(){
   const repo=$('repo').value.trim()||'fazilatma/amphp', filter=$('filter').value.trim(), file=$('targetFile').value.trim()||'scraper4.py';
@@ -514,7 +515,7 @@ async function scan(){
   btn.disabled=true; status.textContent='⏳ در حال اسکن...'; table.innerHTML='<span class="chip">بارگذاری...</span>'; sel.innerHTML='<option>— در حال اسکن... —</option>';
   syncUrl();
   try{
-    const res=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, filter, file})});
+    const res=await fetch(apiBase()+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, filter, file})});
     const j=await res.json();
     if(!j.ok){status.textContent='❌ '+j.error; table.innerHTML=`<span class="chip" style="background:rgba(251,113,133,.2)">${esc(j.error)}</span>`; sel.innerHTML='<option>— خطا —</option>'; return;}
     last=j; newest=j.newest;
@@ -565,7 +566,7 @@ async function doInstall(branch, force){
   const repo=$('repo').value.trim()||'fazilatma/amphp', file=$('targetFile').value.trim()||'scraper4.py', target=$('installPath').value.trim(), status=$('status');
   status.textContent=`⏳ نصب ${branch} (${file})...`; logLine(`نصب ${branch} file=${file} force=${!!force} target=${target||'default'}`);
   try{
-    const res=await fetch('/api/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, branch, file, target, force:!!force})});
+    const res=await fetch(apiBase()+'/api/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, branch, file, target, force:!!force})});
     const j=await res.json();
     if(j.ok && j.changed){ status.innerHTML=`✅ ${esc(j.message)}<br>→ ${esc(j.target||'')}<br>محلی v${esc(j.local_version)} → v${esc(j.remote_version)} (${esc(j.branch)})`; logLine(j.message); }
     else if(j.ok){ status.textContent=j.message; logLine(j.message); }
@@ -582,7 +583,7 @@ async function autoInstall(){
   if(!confirm(`نصب خودکار جدیدترین ${file} با فیلتر فعلی؟`)) return;
   status.textContent='⏳ نصب خودکار...';
   try{
-    const res=await fetch('/api/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, filter, file, target})});
+    const res=await fetch(apiBase()+'/api/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo, filter, file, target})});
     const j=await res.json();
     if(j.ok&&j.changed){ status.innerHTML=`✅ ${esc(j.message)}<br>→ ${esc(j.target||'')}`; logLine(j.message); }
     else { status.textContent=j.message||j.error; logLine(j.message||j.error); }

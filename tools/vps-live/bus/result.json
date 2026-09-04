@@ -1,7 +1,7 @@
 {
-  "id": "hello",
   "code": 0,
-  "ts": 1788565337,
-  "stdout": "hostname=ubuntu---1-vcpu---1-gb-ram\nuid=0(root) gid=0(root) groups=0(root)\nLinux ubuntu---1-vcpu---1-gb-ram 6.8.0-138-generic #138-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31 22:41:49 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux\n",
-  "stderr": ""
+  "stdout": "ubuntu---1-vcpu---1-gb-ram\nroot\n 23:44:50 up 36 min,  1 user,  load average: 0.00, 0.00, 0.00\nFri Sep  4 23:44:50 UTC 2026\nPython 3.12.3\n/usr/bin/php\nState  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                                                                                                                                       \nLISTEN 0      4096      127.0.0.54:53        0.0.0.0:*    users:((\"systemd-resolve\",pid=521,fd=17))                                                                                                                    \nLISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*    users:((\"systemd-resolve\",pid=521,fd=15))                                                                                                                    \nLISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:((\"sshd\",pid=807,fd=3),(\"systemd\",pid=1,fd=93))                                                                                                        \nLISTEN 0      511                *:80              *:*    users:((\"apache2\",pid=948,fd=4),(\"apache2\",pid=942,fd=4),(\"apache2\",pid=938,fd=4),(\"apache2\",pid=935,fd=4),(\"apache2\",pid=930,fd=4),(\"apache2\",pid=820,fd=4))\nLISTEN 0      4096            [::]:22           [::]:*    users:((\"sshd\",pid=807,fd=4),(\"systemd\",pid=1,fd=94))                                                                                                        \n",
+  "stderr": "",
+  "id": "9ae762f109",
+  "ts": 1788565490
 }

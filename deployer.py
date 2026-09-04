@@ -12,6 +12,14 @@ Usage console:
   python3 deployer.py --scan --filter arena --file scraper4.py
   python3 deployer.py --auto --filter-zip --file scraper4.py --repo fazilatma/amphp
   python3 deployer.py --install --branch arena/01a06927-amphp --file scraper4.py --target ~/amphp/scraper4.py --force
+  python3 deployer.py --scan --json  # JSON output, ignores SSL verify if needed
+
+PythonAnywhere Bash console (copy-paste to install/update standalone deployer):
+  curl -sSLk https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06927-amphp/deployer.py -o ~/deployer.py && chmod +x ~/deployer.py && python3 ~/deployer.py --scan --filter arena --file scraper4.py --json
+  # install newest:  python3 ~/deployer.py --auto --filter arena --file scraper4.py
+  # install specific: python3 ~/deployer.py --install --branch arena/01a06927-amphp --file scraper4.py --target ~/amphp/scraper4.py --force
+  # WSGI reload: touch /var/www/<your>_wsgi.py   # or via PA API:
+  # curl -sk -X POST https://www.pythonanywhere.com/api/v0/user/<USER>/webapps/<DOMAIN>/reload/ -H "Authorization: Token <API_TOKEN>"
 
 Web UI (standalone address, multi-branch simultaneous):
   python3 deployer.py --serve --port 8055 --repo fazilatma/amphp
@@ -44,7 +52,7 @@ except ImportError:
 REPO = os.environ.get("DEPLOYER_REPO") or os.environ.get("SCRAPER_REPO") or "fazilatma/amphp"
 DEFAULT_BRANCH = os.environ.get("SCRAPER_BRANCH", "arena/01a06927-amphp")
 DEFAULT_FILE = os.environ.get("DEPLOYER_FILE") or os.environ.get("DEPLOYER_TARGET_FILE") or "scraper4.py"
-DEPLOYER_VERSION = "1.1.0"
+DEPLOYER_VERSION = "1.1.1"
 DEFAULT_TARGET = os.environ.get("DEPLOYER_TARGET") or os.path.join(os.path.expanduser("~"), "amphp", "scraper4.py")
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -77,6 +85,24 @@ def github_headers() -> Dict[str, str]:
         h["Authorization"] = f"token {token}"
     return h
 
+def _safe_get(url: str, headers: Dict[str, str], timeout: int = 20):
+    """GET with SSL fallback: try verify=True then verify=False for PA/self-signed envs."""
+    last_exc = None
+    for verify in (True, False):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout, verify=verify)
+        except requests.exceptions.SSLError as e:
+            last_exc = e
+            if verify:
+                log(f"SSL verify failed, retrying without verify: {url[:80]}")
+                continue
+            raise
+        except Exception as e:
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("request failed")
+
 def list_branches(repo: str = REPO) -> List[Dict[str, Any]]:
     branches = []
     page = 1
@@ -85,14 +111,20 @@ def list_branches(repo: str = REPO) -> List[Dict[str, Any]]:
         url = f"{GITHUB_API}/repos/{repo}/branches?per_page={per_page}&page={page}"
         log(f"Fetching branches page {page}: {url}")
         try:
-            r = requests.get(url, headers=github_headers(), timeout=20)
+            r = _safe_get(url, headers=github_headers(), timeout=20)
         except Exception as e:
-            fail(f"GitHub API error: {e}")
+            # Raise instead of sys.exit so Flask can return JSON error
+            raise RuntimeError(f"GitHub API error: {e}") from e
         if r.status_code == 403 and "rate limit" in r.text.lower():
-            fail(f"GitHub rate limit hit. Set GITHUB_TOKEN env var. Body: {r.text[:200]}")
+            raise RuntimeError(f"GitHub rate limit hit. Set GITHUB_TOKEN. Body: {r.text[:200]}")
+        if r.status_code == 404:
+            raise RuntimeError(f"Repo not found {repo}: {r.text[:200]}")
         if r.status_code != 200:
-            fail(f"GitHub API {r.status_code}: {r.text[:300]}")
-        data = r.json()
+            raise RuntimeError(f"GitHub API {r.status_code}: {r.text[:300]}")
+        try:
+            data = r.json()
+        except Exception as e:
+            raise RuntimeError(f"Invalid JSON from GitHub: {e}") from e
         if not isinstance(data, list) or not data:
             break
         branches.extend(data)
@@ -104,14 +136,59 @@ def list_branches(repo: str = REPO) -> List[Dict[str, Any]]:
     return branches
 
 def fetch_file_from_branch(repo: str, branch: str, path: str = DEFAULT_FILE) -> Optional[bytes]:
+    # Try raw.githubusercontent.com first (fast), then GitHub API as fallback
+    # Both need SSL verify fallback for PA/sandbox envs
     branch_enc = urllib.parse.quote(branch, safe="/")
-    # path may contain subdirs, keep slashes
     path_enc = urllib.parse.quote(path, safe="/")
-    url = f"{RAW_BASE}/{repo}/{branch_enc}/{path_enc}"
+    raw_url = f"{RAW_BASE}/{repo}/{branch_enc}/{path_enc}"
+    for verify in (True, False):
+        try:
+            r = requests.get(raw_url, timeout=30, headers={"User-Agent": "scraper4-deployer"}, verify=verify)
+            if r.status_code == 200 and r.content:
+                return r.content
+            if r.status_code in (404, 403):
+                # try API before giving up
+                pass
+            else:
+                # other status, try API
+                pass
+        except requests.exceptions.SSLError:
+            if verify:
+                continue
+            # after verify=False still SSL error, try API
+        except Exception:
+            pass
+        # if raw failed, try API
+        break
+    # Fallback: GitHub API contents (works with verify=False where raw fails with SSLZeroReturn)
+    api_url = f"{GITHUB_API}/repos/{repo}/contents/{path_enc}?ref={urllib.parse.quote(branch, safe='')}"
+    # use quote for ref properly: requests will encode, but we already encoded branch for raw, for API ref we need exact branch
+    api_url = f"{GITHUB_API}/repos/{repo}/contents/{path}?ref={branch}"
+    # Need to encode path and branch for API URL
+    # Use requests params instead of manual encoding to avoid double
     try:
-        r = requests.get(url, timeout=30, headers={"User-Agent": "scraper4-deployer"})
-        if r.status_code == 200 and r.content:
-            return r.content
+        for verify in (True, False):
+            try:
+                r = requests.get(f"{GITHUB_API}/repos/{repo}/contents/{path}", params={"ref": branch}, headers=github_headers(), timeout=20, verify=verify)
+                if r.status_code == 200:
+                    try:
+                        j = r.json()
+                        if isinstance(j, dict) and j.get("content"):
+                            import base64
+                            content = base64.b64decode(j["content"])
+                            if content:
+                                return content
+                    except Exception:
+                        pass
+                if r.status_code in (404, 403):
+                    return None
+            except requests.exceptions.SSLError:
+                if verify:
+                    continue
+                return None
+            except Exception:
+                return None
+            break
     except Exception:
         pass
     return None
@@ -131,7 +208,11 @@ def extract_app_version(content: bytes) -> Optional[str]:
     return None
 
 def scan_all_branches(repo: str = REPO, filter_zip: bool = False, filter_keywords: str = "", target_file: str = DEFAULT_FILE) -> List[Dict[str, Any]]:
-    branches_data = list_branches(repo)
+    try:
+        branches_data = list_branches(repo)
+    except Exception as e:
+        # bubble up for CLI (fail) and API (JSON error) to handle
+        raise
     log(f"Found {len(branches_data)} branches in {repo} (target file: {target_file})")
     kw_list: List[str] = []
     if filter_keywords:
@@ -148,13 +229,18 @@ def scan_all_branches(repo: str = REPO, filter_zip: bool = False, filter_keyword
         name = b.get("name") or ""
         if not name:
             continue
-        content = fetch_file_from_branch(repo, name, target_file)
+        try:
+            content = fetch_file_from_branch(repo, name, target_file)
+        except Exception as e:
+            log(f"  {name} -> fetch error: {e}")
+            continue
         if not content:
             continue
-        ver = extract_app_version(content)
-        # if file exists but has no version, still list it with 0.0.0 so user sees it
+        try:
+            ver = extract_app_version(content)
+        except Exception:
+            ver = None
         if not ver:
-            # try to use commit date as pseudo version? keep 0.0.0
             ver = "0.0.0"
             ver_tuple = (0, 0, 0)
         else:
@@ -169,7 +255,8 @@ def scan_all_branches(repo: str = REPO, filter_zip: bool = False, filter_keyword
             "content": content
         })
         log(f"  {name} -> {ver} ({sha}) {len(content)} bytes")
-        time.sleep(0.12)
+        # shorter sleep for API, still be nice
+        time.sleep(0.08)
     results.sort(key=lambda x: (x["version_tuple"], x["branch"]), reverse=True)
     return results
 
@@ -247,7 +334,18 @@ def install_content(content: bytes, target_path: Optional[str] = None, backup: b
                 api_url = f"https://www.pythonanywhere.com/api/v0/user/{user}/webapps/{domain}/reload/"
                 log(f"Reloading webapp {domain} via API...")
                 headers = {"Authorization": f"Token {token}"}
-                r = requests.post(api_url, headers=headers, timeout=20)
+                # try with and without SSL verify
+                r = None
+                for verify in (True, False):
+                    try:
+                        r = requests.post(api_url, headers=headers, timeout=20, verify=verify)
+                        break
+                    except requests.exceptions.SSLError:
+                        if verify:
+                            continue
+                        raise
+                if r is None:
+                    raise RuntimeError("no response")
                 if r.status_code in (200, 201):
                     log(f"Reload OK: {r.status_code}")
                 else:
@@ -358,11 +456,32 @@ input,select{width:100%;padding:9px 10px;border-radius:10px;border:1px solid var
   </div>
 
   <div class="card"><h3>📜 لاگ</h3><div id="log"></div></div>
+  <div class="card" style="font-size:11px;color:var(--dim);line-height:1.8" id="paCard">
+    <b>💻 نصب در PythonAnywhere — کپی و Paste در Bash Console:</b>
+    <p style="margin:6px 0">برای محیط‌هایی که خطای <span class="kbd">SSL CERTIFICATE_VERIFY_FAILED</span> می‌دهند، <span class="kbd">-k</span> اضافه شده است:</p>
+    <pre id="paSnippet" dir="ltr" style="white-space:pre-wrap;background:#020617;border:1px solid var(--border);padding:10px;border-radius:10px;font-size:11px;overflow:auto;user-select:all">curl -sSLk https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06927-amphp/deployer.py -o ~/deployer.py && chmod +x ~/deployer.py
+python3 ~/deployer.py --scan --filter arena --file scraper4.py --json
+# نصب خودکار جدیدترین:
+python3 ~/deployer.py --auto --filter arena --file scraper4.py
+# نصب یک برنچ خاص روی مسیر دلخواه:
+python3 ~/deployer.py --install --branch BRANCH_NAME --file scraper4.py --target ~/amphp/scraper4.py --force
+# ریلود وب‌اپ (اختیاری):
+touch /var/www/USERNAME_pythonanywhere_com_wsgi.py</pre>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn btn-sec" onclick="copyPA()">📋 کپی اسنیپت</button>
+      <button class="btn btn-sec" onclick="fillCurrentBranch()">⬇️ جایگزینی نام برنچ فعلی</button>
+    </div>
+    <small style="display:block;margin-top:6px;color:var(--dim)">اگر توکن خصوصی لازم است: <span class="kbd">GITHUB_TOKEN=xxx python3 ~/deployer.py --scan --filter arena</span></small>
+  </div>
   <div class="card" style="font-size:11px;color:var(--dim);line-height:1.8">
     <b>نکته چندبرنچی:</b> هر تب یک URL جدا دارد. مثلاً تب ۱: <span class="kbd">?filter=arena&file=scraper4.py</span> ، تب ۲: <span class="kbd">?filter=zip&file=app.py</span>.
     دیپلوی به هیچ وجه به scraper4.py لینک نیست — فقط فایل نامی که شما می‌دهید را از برنچ‌ها می‌گیرد.
   </div>
 </div>
+<script>
+function copyPA(){const t=document.getElementById('paSnippet').textContent; navigator.clipboard.writeText(t).then(()=>alert('اسنیپت کپی شد')); }
+function fillCurrentBranch(){const br=document.getElementById('branchSelect').value; if(!br){alert('ابتدا اسکن و یک برنچ انتخاب کنید'); return;} const el=document.getElementById('paSnippet'); el.textContent=el.textContent.replace(/BRANCH_NAME/g, br); }
+</script>
 <script>
 let last=null, newest=null;
 const $=id=>document.getElementById(id);
@@ -506,19 +625,23 @@ try:
         r_token = (body.get("token") or os.environ.get("GITHUB_TOKEN") or "").strip()
         if r_token:
             os.environ["GITHUB_TOKEN"] = r_token
-        results = scan_all_branches(r_repo, filter_keywords=r_filter, target_file=r_file)
-        local_ver, local_tuple = get_local_version()
-        # if target file is not default, try that path
-        if r_file != DEFAULT_FILE:
-            # try to get local version of that specific file
-            try:
-                cand = os.path.join(os.path.dirname(DEFAULT_TARGET) or ".", os.path.basename(r_file))
-                if os.path.isfile(cand):
-                    local_ver, local_tuple = get_local_version(cand)
-                elif os.path.isfile(r_file):
-                    local_ver, local_tuple = get_local_version(r_file)
-            except:
-                pass
+        try:
+            results = scan_all_branches(r_repo, filter_keywords=r_filter, target_file=r_file)
+        except Exception as e:
+            return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 500
+        try:
+            local_ver, local_tuple = get_local_version()
+            if r_file != DEFAULT_FILE:
+                try:
+                    cand = os.path.join(os.path.dirname(DEFAULT_TARGET) or ".", os.path.basename(r_file))
+                    if os.path.isfile(cand):
+                        local_ver, local_tuple = get_local_version(cand)
+                    elif os.path.isfile(r_file):
+                        local_ver, local_tuple = get_local_version(r_file)
+                except:
+                    pass
+        except Exception:
+            local_ver, local_tuple = "0.0.0", (0,0,0)
         newest = results[0] if results else None
         resp = {
             "ok": True,
@@ -622,7 +745,23 @@ def main():
         return
 
     if args.scan or args.auto or (not args.install and not args.branch and not args.serve):
-        results = scan_all_branches(repo, filter_zip=args.filter_zip, filter_keywords=args.filter, target_file=target_file)
+        try:
+            results = scan_all_branches(repo, filter_zip=args.filter_zip, filter_keywords=args.filter, target_file=target_file)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            log(f"Scan failed: {msg}")
+            if args.json:
+                print(json.dumps({"ok": False, "error": msg, "repo": repo, "file": target_file}, ensure_ascii=False))
+            else:
+                print(f"ERROR: {msg}", file=sys.stderr)
+                # hint for SSL / network
+                if "SSL" in msg or "CERTIFICATE" in msg:
+                    print("Hint: try setting GITHUB_TOKEN or check network. Retrying with --filter may reduce load.", file=sys.stderr)
+            # also return JSON-like exit for API callers
+            if not args.scan and not args.json:
+                # for --auto without scan flag, don't exit hard
+                pass
+            return
         if not results:
             log(f"No branches with valid {target_file} found")
             if args.json:
@@ -694,7 +833,10 @@ def main():
                     return
             install_content(content, target_path=target_path)
         else:
-            results = scan_all_branches(repo, filter_zip=args.filter_zip, filter_keywords=args.filter, target_file=target_file)
+            try:
+                results = scan_all_branches(repo, filter_zip=args.filter_zip, filter_keywords=args.filter, target_file=target_file)
+            except Exception as e:
+                fail(f"Scan failed: {type(e).__name__}: {e}")
             if not results:
                 fail("No branches found to install")
             newest = results[0]

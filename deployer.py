@@ -50,12 +50,17 @@ Configuration (CLI flags override env vars, env vars override defaults):
     DEPLOYER_RETRIES       retries after a 403/429/5xx (default 2)
     DEPLOYER_BACKOFF       seconds before first retry (default 3, grows exponentially)
     DEPLOYER_BRANCH_CACHE_TTL  seconds to cache the branch list (default 300)
+    DEPLOYER_TIMEOUT           seconds per HTTP attempt (default 15)
 
 GitHub 403 tolerance: file content is downloaded from raw.githubusercontent.com
 (no API quota), the API is only a fallback with ETag/If-None-Match and a local
 stale cache, and the branch list is cached. Rate-limit 403/429 responses are
 detected, retried with backoff, and the previous results are used when the
 quota is exhausted so the site still updates.
+
+Web UI never blocks on GitHub: /status returns the last finished report
+immediately and the scan runs in a background thread; the page polls until
+it shows "بررسی کامل شد".
 
 In ALL-BRANCHES mode (the default) the deployer lists every branch of the
 repository through the GitHub API, downloads scraper4.py from each of them
@@ -78,19 +83,22 @@ import re
 import signal
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-DEPLOYER_VERSION = "1.4.0"
+DEPLOYER_VERSION = "1.5.0"
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a0640f-amphp"]
 DEFAULT_PATH = "scraper4.py"
 DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 30
 CONNECT_TIMEOUT = 30
+DEFAULT_REQUEST_TIMEOUT = 15   # seconds per HTTP attempt (DEPLOYER_TIMEOUT)
+MAX_SLEEP = 20                 # cap for backoff sleeps so checks stay quick
 MAX_CONTENT_BYTES = 2 * 1024 * 1024
 MAX_BRANCHES = 500
 BRANCH_WORKERS = 8
@@ -234,6 +242,7 @@ def load_config(args: argparse.Namespace) -> dict:
         "retries": max(0, int(env("DEPLOYER_RETRIES", str(DEFAULT_RETRIES)) or DEFAULT_RETRIES)),
         "backoff": max(0.5, float(env("DEPLOYER_BACKOFF", str(DEFAULT_BACKOFF)) or DEFAULT_BACKOFF)),
         "branches_cache_ttl": max(60, int(env("DEPLOYER_BRANCH_CACHE_TTL", str(BRANCH_CACHE_TTL)) or BRANCH_CACHE_TTL)),
+        "timeout": max(5, int(env("DEPLOYER_TIMEOUT", str(DEFAULT_REQUEST_TIMEOUT)) or DEFAULT_REQUEST_TIMEOUT)),
         "disable_raw": env("DEPLOYER_RAW", "1").lower() in {"0", "false", "off", "no"},
     }
     # CLI overrides
@@ -320,7 +329,7 @@ def _rate_limit_info(headers: dict[str, str], body: bytes) -> tuple[bool, int, s
 
 def _sleep(seconds: float) -> None:
     if seconds > 0:
-        time.sleep(min(seconds, 60))
+        time.sleep(min(seconds, MAX_SLEEP))
 
 
 def _github_request(url: str, cfg: dict, not_found_message: str = "برنچ یا فایل در GitHub پیدا نشد (HTTP 404)",
@@ -332,8 +341,9 @@ def _github_request(url: str, cfg: dict, not_found_message: str = "برنچ یا
     """
     headers = _github_headers(cfg, {"If-None-Match": etag} if etag else None)
     last_error = ""
+    timeout = cfg.get("timeout", CONNECT_TIMEOUT)
     for attempt in range(cfg.get("retries", DEFAULT_RETRIES) + 1):
-        status, rheaders, body = _http_get(url, headers)
+        status, rheaders, body = _http_get(url, headers, timeout=timeout)
         if status == 200:
             try:
                 return json.loads(body.decode("utf-8")), rheaders
@@ -396,8 +406,9 @@ def download_raw(cfg: dict, branch: str) -> bytes:
         f"/{urllib.parse.quote(branch, safe='/')}/{urllib.parse.quote(cfg['path'], safe='/')}"
     )
     last = ""
+    timeout = cfg.get("timeout", CONNECT_TIMEOUT)
     for attempt in range(cfg.get("retries", DEFAULT_RETRIES) + 1):
-        status, _rheaders, body = _http_get(url, _github_headers(cfg))
+        status, _rheaders, body = _http_get(url, _github_headers(cfg), timeout=timeout)
         if status == 200:
             if len(body) > MAX_CONTENT_BYTES:
                 raise DeployerError("فایل به‌روزرسانی بزرگ‌تر از ۲ مگابایت است")
@@ -746,7 +757,7 @@ note{display:block;padding:10px 12px;border:1px solid #fbbf2444;background:#4220
 </div>
 <div class="card">
 <div class="stats"><div class="stat"><b id="stCurrent">—</b><span>نسخه نصب‌شده</span></div><div class="stat"><b id="stBest">—</b><span>جدیدترین برنچ</span></div><div class="stat"><b id="stChecked">۰</b><span>برنچ بررسی‌شده</span></div></div>
-<div class="actions"><button onclick="refresh()">↻ بررسی نسخه‌ها</button><button class="green" id="btnInstall" onclick="act('install')">⬇ نصب جدیدترین نسخه</button><button class="gray" id="btnRollback" onclick="act('rollback')">↩ بازگشت به .bak</button><button class="gray" id="btnTok" onclick="openToken()">🔑 رمز مدیریت</button></div>
+<div class="actions"><button onclick="refresh(true)">↻ بررسی نسخه‌ها</button><button class="green" id="btnInstall" onclick="act('install')">⬇ نصب جدیدترین نسخه</button><button class="gray" id="btnRollback" onclick="act('rollback')">↩ بازگشت به .bak</button><button class="gray" id="btnTok" onclick="openToken()">🔑 رمز مدیریت</button></div>
 <div id="status" class="status">در حال بارگذاری…</div>
 <div id="branches"></div>
 </div>
@@ -761,13 +772,16 @@ function saveToken(){const v=$('tokenInput').value.trim();if(!v){alert('محتو
 function clearToken(){sessionStorage.removeItem('deployerTok');T='';$('tokenInput').value='';$('tokenHint').innerHTML='رمز از این مرورگر حذف شد؛ هنگام عملیات بعدی دوباره وارد کنید.';msg('رمز حذف شد.','ok')}
 function openToken(){$('tokenCard').scrollIntoView({behavior:'smooth'});$('tokenInput').focus();$('tokenInput').select()}
 function tokenUI(d){const tf=(d&&d.token_file)||'deployer_token.txt';if(tokenConfigured){$('tokenHint').innerHTML='<span class="ok">✔ رمز روی سرور تنظیم است</span> — از فایل <code>'+esc(tf)+'</code> (پنل Files → پوشه scraper4) کپی و در کادر بالا «ثبت رمز» را بزنید.'+(T?'<br><span class="ok">✅ رمز در همین مرورگر ذخیره شده است.</span>':'')}else{$('tokenHint').innerHTML='<span class="err">✖ رمز روی سرور تنظیم نشده است.</span> اسکریپت نصب را دوباره اجرا کنید؛ رمز را در <code>'+esc(tf)+'</code> می‌سازد و همان را اینجا وارد می‌کنید.'}}
-function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});$('status').textContent=b?'در حال اجرا…':$('status').textContent}
+function setBusy(b){['btnInstall','btnRollback'].forEach(id=>{const el=$(id);el.disabled=b});if(b)$('status').textContent='در حال اجرا…'}
+function humanTime(ts){if(!ts)return '—';try{return new Date(ts*1000).toLocaleString('fa-IR')}catch(e){return '—'}}
 function render(d){const r=d.report||d;$('stCurrent').textContent='v'+esc(r.current_version);const best=r.best||{};$('stBest').textContent=best.branch?esc(best.branch)+' v'+esc(best.version):'—';$('stChecked').textContent=r.total_checked||0;
  const rows=(r.rows||[]).map(x=>{if(x.error)return '<div class="branch err-row"><b>'+esc(x.branch)+'</b><small class="err">خطا: '+esc(x.error)+'</small></div>';const src={'raw':'raw','api':'API','cache':'کش'}[x.source]||'';const warn=x.warning?' <small class="warn">'+esc(x.warning)+'</small>':'';return '<div class="branch '+(x.newest?'best':'')+'"><b>'+esc(x.branch)+'</b><span>v'+esc(x.version)+'</span><code>'+esc(String(x.sha||'').slice(0,8))+'</code>'+(src?'<small>['+src+']</small>':'')+(x.newest?'<b class="tag">جدیدترین</b>':'')+warn+'</div>'}).join('');$('branches').innerHTML=rows||'<div class="note">هیچ برنچی خوانده نشد.</div>';
- $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0);}
-async function refresh(){try{setBusy(true);const d=await api('/deployer/status');if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;render(d);tokenUI(d);msg('بررسی کامل شد.','ok')}catch(e){msg(esc(e.message),'err')}finally{setBusy(false)}}
+ $('cfg').innerHTML='repository: <code>'+esc(r.repo)+'</code> · مسیر: <code>'+esc(r.path)+'</code><br>فایل هدف: <code>'+esc(r.target)+'</code><br>برنچ‌ها: '+(r.all_branches?'<b class="ok">همه برنچ‌های ریپو ('+(r.branches||[]).length+' برنچ — خودکار از GitHub)</b>':esc((r.branches||[]).join('، ')))+'<br>برنچ‌های دارای فایل: '+(r.found_with_file||0)+' از '+(r.total_checked||0)+'<br>آخرین بررسی: '+humanTime(d.checked_at);}
+let pollTimer=null;
+function schedulePoll(ms){clearTimeout(pollTimer);pollTimer=setTimeout(()=>refresh(false),ms)}
+async function refresh(force){setBusy(true);try{const d=await api('/deployer/status'+(force?'?force=1':''));if(!d.ok)throw Error(d.error||'خطا');tokenConfigured=!!d.token_configured;tokenUI(d);if(d.report)render(d);if(d.checking){msg('در حال بررسی نسخه‌ها…');schedulePoll(2000);return}setBusy(false);if(d.report){msg('بررسی کامل شد.','ok')}else{msg(esc(d.error||'هنوز نتیجه‌ای در دسترس نیست'),'err')}}catch(e){setBusy(false);msg(esc(e.message),'err')}}
 async function act(kind){if(kind==='rollback'&&!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{setBusy(true);const d=await api('/deployer/'+kind,{method:'POST',body:'{}'});render(d);msg(esc(d.message||(d.changed?'تغییر اعمال شد.':'تغییری لازم نبود')),d.changed===false?'':'ok')}catch(e){if(/رمز|نادرست|تنظیم نشده/.test(e.message)){openToken();$('tokenHint').innerHTML='<span class="err">'+esc(e.message)+'</span><br>اگر رمز ندارید، از پنل Files فایل <code>deployer_token.txt</code> را باز و کپی کنید.'}else msg(esc(e.message),'err')}finally{setBusy(false)}}
-refresh();
+refresh(true);
 </script></div></body></html>'''
 
 
@@ -776,6 +790,58 @@ def _web_config() -> dict:
     ns = argparse.Namespace(repo=None, branches=None, all_branches=None, path=None, target=None,
                             token=None, reload_file=None, interval=None, log_file=None, github_base=None)
     return load_config(ns)
+
+
+# ---------------------------------------------------------------------------
+# Async web check: /status must never block on GitHub. The first request
+# starts a background scan and returns instantly; the page polls /status
+# (every 2s) until the report is ready. Previous result is kept meanwhile.
+# ---------------------------------------------------------------------------
+WEB_CHECK_INTERVAL = 30.0       # seconds; a report older than this refreshes in background
+WEB_REPORT_MAX_AGE = 300.0      # seconds; actions may reuse a report this fresh
+
+_WEB_STATE = {
+    "lock": threading.Lock(),
+    "report": None,
+    "checked_at": 0.0,
+    "checking": False,
+    "error": "",
+}
+
+
+def _web_start_check() -> bool:
+    """Start a background branch scan once. Returns False if one is already running."""
+    with _WEB_STATE["lock"]:
+        if _WEB_STATE["checking"]:
+            return False
+        _WEB_STATE["checking"] = True
+        _WEB_STATE["error"] = ""
+
+    def worker() -> None:
+        try:
+            report = build_report(_web_config())
+            with _WEB_STATE["lock"]:
+                _WEB_STATE["report"] = report
+                _WEB_STATE["checked_at"] = time.time()
+                _WEB_STATE["error"] = ""
+        except Exception as exc:  # keep the previous report visible
+            log.exception("بررسی وب ناموفق بود")
+            with _WEB_STATE["lock"]:
+                _WEB_STATE["error"] = str(exc)[:300]
+        finally:
+            with _WEB_STATE["lock"]:
+                _WEB_STATE["checking"] = False
+
+    threading.Thread(target=worker, daemon=True, name="deployer-web-check").start()
+    return True
+
+
+def _web_recent_report(max_age: float = WEB_REPORT_MAX_AGE):
+    with _WEB_STATE["lock"]:
+        report, at = _WEB_STATE["report"], _WEB_STATE["checked_at"]
+    if report and time.time() - at <= max_age:
+        return report
+    return None
 
 
 def _report_public(report: dict) -> dict:
@@ -852,15 +918,26 @@ def wsgi_application(environ, start_response) -> list[bytes]:
 
     if method == "GET" and path == "/status":
         try:
+            params = urllib.parse.parse_qs(environ.get("QUERY_STRING", ""))
+            force = (params.get("force") or [""])[0].lower() in ("1", "true", "yes")
+            with _WEB_STATE["lock"]:
+                report = _WEB_STATE["report"]
+                checking = _WEB_STATE["checking"]
+                error = _WEB_STATE["error"]
+                checked_at = _WEB_STATE["checked_at"]
+            stale = (time.time() - checked_at) > WEB_CHECK_INTERVAL
+            if not checking and (force or not report or stale):
+                checking = _web_start_check()
             cfg = _web_config()
-            report = build_report(cfg)
             return _web_json(start_response, {
-                "ok": True, "report": _report_public(report),
+                "ok": True,
+                "report": _report_public(report) if report else None,
+                "checking": checking,
+                "error": error,
+                "checked_at": int(checked_at) if checked_at else 0,
                 "token_configured": bool(_web_token_value()),
                 "token_file": _web_token_file(cfg),
             })
-        except DeployerError as exc:
-            return _web_json(start_response, {"ok": False, "error": str(exc)})
         except Exception as exc:
             log.exception("status failed")
             return _web_json(start_response, {"ok": False, "error": str(exc)[:300]})
@@ -877,23 +954,31 @@ def wsgi_application(environ, start_response) -> list[bytes]:
         try:
             cfg = _web_config()
             if path == "/check":
-                result = run_once(cfg, install=False)
-                payload = {"ok": True, "action": "check", "report": _report_public(result["report"])}
+                report = _web_recent_report() or build_report(cfg)
+                payload = {"ok": True, "action": "check", "report": _report_public(report)}
             elif path == "/install":
-                result = run_once(cfg, install=True)
+                # reuse the last finished background scan when it is fresh
+                # enough; otherwise run one (actions are explicit, so waiting
+                # a little is acceptable, but it must still finish).
+                report = _web_recent_report() or build_report(cfg)
+                best = report.get("best")
+                if not best:
+                    raise DeployerError("هیچ برنچی در دسترس نیست")
+                candidate = next(row["candidate"] for row in report["rows"] if row["newest"])
+                result = apply_update(cfg, candidate)
+                result["report"] = report
                 payload = {"ok": True, "action": "install", "changed": result["changed"],
-                           "message": result["message"] if "message" in result else (
-                               "نسخه " + result["version"] + " از برنچ " + result["branch"] + " نصب شد"
-                               if result["changed"] else "تغییری لازم نیست"),
+                           "message": "نسخه " + result["version"] + " از برنچ " + result["branch"] + " نصب شد"
+                           if result["changed"] else "تغییری لازم نیست",
                            "version": result["version"], "branch": result["branch"],
                            "report": _report_public(result["report"])}
             else:
                 result = rollback(cfg)
-                cfg = _web_config()
+                report = _web_recent_report() or build_report(cfg)
                 payload = {"ok": True, "action": "rollback", "changed": True,
                            "message": "نسخه " + result["version"] + " از .bak بازیابی شد",
                            "version": result["version"],
-                           "report": _report_public(build_report(cfg))}
+                           "report": _report_public(report)}
             return _web_json(start_response, payload)
         except DeployerError as exc:
             return _web_json(start_response, {"ok": False, "error": str(exc)})

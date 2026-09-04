@@ -21,6 +21,8 @@
 #
 # Optional env vars:
 #   DEPLOYER_SOURCE_BRANCH  branch to fetch deployer.py from GitHub (default arena/01a06abd-amphp)
+#   DEPLOYER_SOURCE_RAW_BASE  override the raw download base (tests/offline mirrors)
+#   DEPLOYER_OFFLINE        "1" keeps the existing ~/.deployer/deployer.py (no download)
 #   DEPLOYER_BRANCHES       same as BRANCHES argument
 #   DEPLOYER_REPO           GitHub repository owner/name (default fazilatma/amphp)
 #   DEPLOYER_GITHUB_TOKEN   token for private repositories
@@ -44,20 +46,45 @@ REPO_SRC="${1:-$(dirname "$SCRIPT_DIR")}"
 SOURCE_BRANCH="${DEPLOYER_SOURCE_BRANCH:-arena/01a06abd-amphp}"
 RAW_BASE="https://raw.githubusercontent.com/${DEPLOYER_REPO:-fazilatma/amphp}/$SOURCE_BRANCH"
 
+SOURCE_RAW_BASE="${DEPLOYER_SOURCE_RAW_BASE:-https://raw.githubusercontent.com/${DEPLOYER_REPO:-fazilatma/amphp}/$SOURCE_BRANCH}"
+
 # --- locate deployer.py -------------------------------------------------------
 # If we were not run from the repo (e.g. copied to ~), try the common places.
+IS_GIT_REPO=0
+[ -d "$REPO_SRC/.git" ] && IS_GIT_REPO=1
 if [ ! -f "$REPO_SRC/deployer.py" ]; then
     for cand in "$HOME_DIR/amphp/deployer.py" "$HOME_DIR/deployer.py"; do
-        if [ -f "$cand" ]; then REPO_SRC="$(dirname "$cand")"; break; fi
+        if [ -f "$cand" ]; then REPO_SRC="$(dirname "$cand")"; IS_GIT_REPO=0; break; fi
     done
+fi
+# When NOT running from the repo itself (i.e. the script was downloaded to ~),
+# always refresh ~/.deployer/deployer.py from GitHub so the page gets the
+# newest deployer — this is what fixes a stale/old deployer that hangs.
+# Set DEPLOYER_OFFLINE=1 to keep the existing copy.
+if [ "$IS_GIT_REPO" != 1 ] && [ "${DEPLOYER_OFFLINE:-0}" != 1 ]; then
+    mkdir -p "$HOME_DIR/.deployer"
+    if curl -fsSL "$SOURCE_RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py.new" 2>/dev/null; then
+        mv -f "$HOME_DIR/.deployer/deployer.py.new" "$HOME_DIR/.deployer/deployer.py"
+        echo "==> deployer.py از GitHub به‌روزرسانی شد → ~/.deployer/deployer.py"
+        REPO_SRC="$HOME_DIR/.deployer"
+        IS_GIT_REPO=0
+    else
+        rm -f "$HOME_DIR/.deployer/deployer.py.new"
+        if [ -f "$HOME_DIR/.deployer/deployer.py" ]; then
+            echo "==> دانلود deployer.py ناموفق بود؛ نسخه موجود (~/.deployer) استفاده می‌شود"
+            REPO_SRC="$HOME_DIR/.deployer"
+        fi
+    fi
 fi
 if [ ! -f "$REPO_SRC/deployer.py" ]; then
     echo "==> deployer.py محلی پیدا نشد؛ تلاش برای دانلود از GitHub…"
     mkdir -p "$HOME_DIR/.deployer"
-    curl -fsSL "$RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py" \
+    curl -fsSL "$SOURCE_RAW_BASE/deployer.py" -o "$HOME_DIR/.deployer/deployer.py" \
         || { echo "خطا: deployer.py پیدا یا دانلود نشد. ابتدا وارد پوشه ریپو شوید (cd ~/amphp) و شاخه درست را بگیرید" >&2; exit 1; }
     REPO_SRC="$HOME_DIR/.deployer"
 fi
+DEPLOYER_LOCAL_VERSION="$(grep -oE 'DEPLOYER_VERSION = "[0-9.]+"' "$REPO_SRC/deployer.py" | head -n1 | grep -oE '[0-9.]+' || echo '?')"
+echo "==> نسخه deployer.py: ${DEPLOYER_LOCAL_VERSION:-?}"
 
 # --- target scraper4.py (auto-detect when not given) -------------------------
 TARGET="${2:-}"

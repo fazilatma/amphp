@@ -159,6 +159,11 @@ def get_default_config() -> Dict[str, Any]:
             "keep_backups": 5,
             "min_interval_sec": 60
         },
+        "autopilot": {
+            "enabled": False,
+            "interval_sec": 60,
+            "jobs": []
+        },
         "selectors": {
             "container": "",
             "title": "",
@@ -1978,6 +1983,327 @@ def api_agent_tools():
     return jsonify(ok=True, tools=agent_tool_specs(), max_steps=AGENT_MAX_STEPS,
                    max_calls=AGENT_MAX_CALLS, modes=AGENT_MODES,
                    mode_labels={m: agent_mode_label(m) for m in AGENT_MODES})
+
+
+# ==================== AUTOPILOT (scheduled agent jobs) ====================
+# Mirrors scraper4.php's autopilot panel: saved Persian instructions run on a
+# period, each through the agent loop, with per-job logs and counters.
+# The scheduler rides on this process, exactly as PHP's cron does.
+
+AUTOPILOT_LOCK = threading.Lock()
+AUTOPILOT_STATE: Dict[str, Any] = {"enabled": False, "running": False, "ticks": 0,
+                                   "last_tick": 0, "next_eta": 0, "last_error": ""}
+_autopilot_thread: Optional[threading.Thread] = None
+
+AUTOPILOT_EVERY = [
+    ("5m", 300, "هر ۵ دقیقه"), ("15m", 900, "هر ۱۵ دقیقه"),
+    ("30m", 1800, "هر ۳۰ دقیقه"), ("1h", 3600, "هر ساعت"),
+    ("6h", 21600, "هر ۶ ساعت"), ("12h", 43200, "هر ۱۲ ساعت"),
+    ("1d", 86400, "روزانه"), ("7d", 604800, "هفتگی"),
+]
+AUTOPILOT_PRESETS = [
+    {"title": "هم‌ترازی روزانهٔ قیمت",
+     "prompt": "قیمت همهٔ محصولات را با اسنپ‌شاپ مقایسه کن و اختلاف‌های بیشتر از ۵ درصد را اصلاح کن"},
+    {"title": "صفر کردن موجودیِ ناموجودها",
+     "prompt": "محصول‌هایی که در اسنپ‌شاپ ناموجود هستند را پیدا کن و موجودی‌شان را صفر کن"},
+    {"title": "بررسی گزارشِ دسته‌بندی",
+     "prompt": "فهرست محصولات را بگیر و محصول‌هایی که دسته‌بندی ندارند را گزارش کن"},
+]
+
+
+def autopilot_prefs() -> Dict[str, Any]:
+    cfg = load_data().get("autopilot", {}) or {}
+    return {"enabled": bool(cfg.get("enabled", False)),
+            "interval_sec": max(15, int(cfg.get("interval_sec", 60) or 60)),
+            "jobs": cfg.get("jobs") if isinstance(cfg.get("jobs"), list) else []}
+
+
+def autopilot_save_prefs(partial: Dict[str, Any]) -> Dict[str, Any]:
+    data = load_data()
+    cur = data.get("autopilot", {}) or {}
+    if not isinstance(cur, dict):
+        cur = {}
+    cur.update({k: v for k, v in partial.items() if k in ("enabled", "interval_sec", "jobs")})
+    cur.setdefault("enabled", False)
+    cur.setdefault("interval_sec", 60)
+    cur.setdefault("jobs", [])
+    cur["interval_sec"] = max(15, int(cur["interval_sec"] or 60))
+    data["autopilot"] = cur
+    save_data(data)
+    return cur
+
+
+def autopilot_new_job(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
+    title = str(payload.get("title") or "").strip()
+    prompt = str(payload.get("prompt") or "").strip()
+    if not title:
+        return None, "عنوان کار خالی است"
+    if not prompt:
+        return None, "دستور کار خالی است"
+    every = str(payload.get("every") or "1d")
+    every_sec = dict((k, v) for k, v, _ in AUTOPILOT_EVERY).get(every, 86400)
+    mode = payload.get("mode") if payload.get("mode") in AGENT_MODES else "dry"
+    job = {"id": f"ap_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}",
+           "title": title, "prompt": prompt, "every": every, "every_sec": every_sec,
+           "provider": str(payload.get("provider") or "").strip(),
+           "model": str(payload.get("model") or "").strip(),
+           "mode": mode, "enabled": bool(payload.get("enabled", True)),
+           "created_at": int(time.time()), "last_run": 0, "last_task_id": "",
+           "last_status": "", "last_error": "", "runs": 0, "changes": 0,
+           "fails": 0, "log": []}
+    return job, ""
+
+
+def autopilot_job_log(job: Dict[str, Any], line: str) -> None:
+    job.setdefault("log", []).append(f"[{datetime.now().strftime('%m-%d %H:%M')}] {line}")
+    if len(job["log"]) > 40:
+        job["log"] = job["log"][-40:]
+
+
+def autopilot_run_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one job through the agent loop and fold the result into the job."""
+    model = job.get("model") or ""
+    if model and job.get("provider") and "/" not in model:
+        model = f"{job['provider']}/{model}"
+    task_id = register_task("autopilot", f"اتوماسیون: {job['title'][:40]}", AGENT_MAX_STEPS)
+    with TASKS_LOCK:
+        TASKS[task_id]["result"] = {"convo": [], "steps": 0, "calls": 0, "changes": []}
+    run_agent_worker(task_id, job["prompt"], job.get("mode", "dry"), model)
+    with TASKS_LOCK:
+        t = TASKS.get(task_id, {})
+        res = t.get("result") if isinstance(t.get("result"), dict) else {}
+        status, error = t.get("status", ""), t.get("error") or ""
+        n_changes = len(res.get("changes") or [])
+
+    job["last_run"] = int(time.time())
+    job["last_task_id"] = task_id
+    job["last_status"] = status
+    job["last_error"] = error
+    job["runs"] = int(job.get("runs") or 0) + 1
+    job["changes"] = int(job.get("changes") or 0) + n_changes
+    if status != "completed":
+        job["fails"] = int(job.get("fails") or 0) + 1
+        autopilot_job_log(job, f"✗ {error[:140] or status}")
+    else:
+        autopilot_job_log(job, f"✓ {to_fa(n_changes)} تغییر · {to_fa(res.get('calls', 0))} فراخوانی ابزار")
+    return {"status": status, "error": error, "changes": n_changes, "task_id": task_id}
+
+
+def autopilot_tick(force: bool = False) -> Dict[str, Any]:
+    prefs = autopilot_prefs()
+    jobs = prefs["jobs"]
+    now = time.time()
+    ran, skipped = [], 0
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["ticks"] = int(AUTOPILOT_STATE.get("ticks", 0)) + 1
+        AUTOPILOT_STATE["last_tick"] = now
+
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            skipped += 1
+            continue
+        every = int(job.get("every_sec") or 86400)
+        if not force and job.get("last_run") and (now - int(job["last_run"])) < every:
+            skipped += 1
+            continue
+        try:
+            r = autopilot_run_job(job)
+            ran.append({"id": job.get("id"), "title": job.get("title"), **r})
+        except Exception as e:
+            job["fails"] = int(job.get("fails") or 0) + 1
+            job["last_status"] = "failed"
+            job["last_error"] = str(e)[:200]
+            autopilot_job_log(job, f"✗ خطای غیرمنتظره: {str(e)[:140]}")
+            ran.append({"id": job.get("id"), "title": job.get("title"),
+                        "status": "failed", "error": str(e)[:200], "changes": 0})
+
+    autopilot_save_prefs({"jobs": jobs})
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["last_error"] = ""
+    return {"ok": True, "ran": ran, "skipped": skipped, "total": len(jobs),
+            "ticks": AUTOPILOT_STATE["ticks"]}
+
+
+def run_autopilot_worker() -> None:
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["running"] = True
+    while True:
+        with AUTOPILOT_LOCK:
+            if not AUTOPILOT_STATE.get("enabled"):
+                AUTOPILOT_STATE["running"] = False
+                return
+        prefs = autopilot_prefs()
+        try:
+            if prefs["enabled"] and prefs["jobs"]:
+                autopilot_tick()
+        except Exception as e:
+            with AUTOPILOT_LOCK:
+                AUTOPILOT_STATE["last_error"] = str(e)[:200]
+        interval = autopilot_prefs()["interval_sec"]
+        with AUTOPILOT_LOCK:
+            AUTOPILOT_STATE["next_eta"] = time.time() + interval
+        slept = 0.0
+        while slept < interval:
+            time.sleep(min(5.0, interval - slept))
+            slept += 5.0
+            with AUTOPILOT_LOCK:
+                if not AUTOPILOT_STATE.get("enabled"):
+                    break
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["running"] = False
+
+
+def start_autopilot_thread(force: bool = False) -> bool:
+    global _autopilot_thread
+    prefs = autopilot_prefs()
+    if not force and not prefs["enabled"]:
+        return False
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["enabled"] = True
+        if _autopilot_thread and _autopilot_thread.is_alive():
+            return True
+        _autopilot_thread = threading.Thread(target=run_autopilot_worker, daemon=True,
+                                             name="autopilot")
+        _autopilot_thread.start()
+    return True
+
+
+def stop_autopilot_thread() -> None:
+    with AUTOPILOT_LOCK:
+        AUTOPILOT_STATE["enabled"] = False
+
+
+def autopilot_stats() -> Dict[str, Any]:
+    prefs = autopilot_prefs()
+    jobs = prefs["jobs"]
+    return {"jobs": len(jobs), "on": len([j for j in jobs if isinstance(j, dict) and j.get("enabled")]),
+            "runs": sum(int(j.get("runs") or 0) for j in jobs if isinstance(j, dict)),
+            "changes": sum(int(j.get("changes") or 0) for j in jobs if isinstance(j, dict)),
+            "fails": sum(int(j.get("fails") or 0) for j in jobs if isinstance(j, dict))}
+
+
+@app.get("/api/autopilot/status")
+def api_autopilot_status():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    prefs = autopilot_prefs()
+    with AUTOPILOT_LOCK:
+        st = dict(AUTOPILOT_STATE)
+    return jsonify(ok=True, enabled=prefs["enabled"], interval_sec=prefs["interval_sec"],
+                   stats=autopilot_stats(), running=st.get("running", False),
+                   ticks=st.get("ticks", 0), last_tick=st.get("last_tick", 0),
+                   next_eta=st.get("next_eta", 0), last_error=st.get("last_error", ""),
+                   every=[{"id": k, "sec": v, "label": lbl} for k, v, lbl in AUTOPILOT_EVERY],
+                   presets=AUTOPILOT_PRESETS, modes=AGENT_MODES)
+
+
+@app.get("/api/autopilot/jobs")
+def api_autopilot_jobs_get():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    return jsonify(ok=True, jobs=autopilot_prefs()["jobs"], stats=autopilot_stats())
+
+
+@app.post("/api/autopilot/jobs")
+def api_autopilot_jobs_post():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    job, err = autopilot_new_job(body)
+    if not job:
+        return jsonify(ok=False, error=err), 400
+    jobs = autopilot_prefs()["jobs"]
+    jobs = [j for j in jobs if isinstance(j, dict)]
+    jobs.append(job)
+    autopilot_save_prefs({"jobs": jobs})
+    if job["enabled"] and autopilot_prefs()["enabled"]:
+        start_autopilot_thread()
+    return jsonify(ok=True, job=job, count=len(jobs))
+
+
+@app.put("/api/autopilot/jobs/<job_id>")
+def api_autopilot_job_put(job_id: str):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    jobs = [j for j in autopilot_prefs()["jobs"] if isinstance(j, dict)]
+    target = next((j for j in jobs if j.get("id") == job_id), None)
+    if not target:
+        return jsonify(ok=False, error="کار یافت نشد"), 404
+    for k in ("title", "prompt", "provider", "model", "mode"):
+        if k in body:
+            v = str(body[k] or "").strip()
+            if k == "mode":
+                target[k] = v if v in AGENT_MODES else "dry"
+            elif k in ("title", "prompt") and not v:
+                return jsonify(ok=False, error="عنوان و دستور کار نمی‌توانند خالی باشند"), 400
+            else:
+                target[k] = v
+    if "every" in body:
+        target["every"] = str(body["every"] or "1d")
+        target["every_sec"] = dict((k, v) for k, v, _ in AUTOPILOT_EVERY).get(target["every"], 86400)
+    if "enabled" in body:
+        target["enabled"] = bool(body["enabled"])
+    autopilot_save_prefs({"jobs": jobs})
+    return jsonify(ok=True, job=target)
+
+
+@app.delete("/api/autopilot/jobs/<job_id>")
+def api_autopilot_job_delete(job_id: str):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    jobs = [j for j in autopilot_prefs()["jobs"] if isinstance(j, dict)]
+    keep = [j for j in jobs if j.get("id") != job_id]
+    if len(keep) == len(jobs):
+        return jsonify(ok=False, error="کار یافت نشد"), 404
+    autopilot_save_prefs({"jobs": keep})
+    return jsonify(ok=True, count=len(keep))
+
+
+@app.post("/api/autopilot/jobs/<job_id>/run")
+def api_autopilot_job_run(job_id: str):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    jobs = [j for j in autopilot_prefs()["jobs"] if isinstance(j, dict)]
+    target = next((j for j in jobs if j.get("id") == job_id), None)
+    if not target:
+        return jsonify(ok=False, error="کار یافت نشد"), 404
+    r = autopilot_run_job(target)
+    autopilot_save_prefs({"jobs": jobs})
+    return jsonify(ok=True, **r)
+
+
+@app.post("/api/autopilot/tick")
+def api_autopilot_tick():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    return jsonify(autopilot_tick(force=bool((request.get_json(silent=True) or {}).get("force"))))
+
+
+@app.post("/api/autopilot/enabled")
+def api_autopilot_enabled():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    on = bool(body.get("enabled"))
+    interval = int(body.get("interval_sec") or 0)
+    partial = {"enabled": on}
+    if interval:
+        partial["interval_sec"] = max(15, interval)
+    saved = autopilot_save_prefs(partial)
+    started = start_autopilot_thread(force=True) if on else False
+    if not on:
+        stop_autopilot_thread()
+    return jsonify(ok=True, enabled=saved["enabled"], interval_sec=saved["interval_sec"],
+                   scheduler_running=started)
 
 
 @app.post("/api/aicontent/start")
@@ -3836,6 +4162,46 @@ textarea.form-control {
   overflow-wrap: anywhere;
 }
 .ai-convo-role { font-weight: 800; color: var(--primary); margin-inline-end: 6px; }
+.ai-ap-form {
+  background: var(--card-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  margin-top: 10px;
+}
+.ai-ap-job {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: calc(11px * var(--font-scale, 1));
+}
+.ai-ap-job:last-child { border-bottom: none; }
+.ai-ap-job .row1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ai-ap-job .ttl { flex: 1; min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.ai-ap-job.is-off .ttl { color: var(--text-muted); }
+.ai-ap-job .prompt {
+  color: var(--text-dim);
+  font-size: calc(10px * var(--font-scale, 1));
+  line-height: 1.8;
+  margin: 3px 0;
+  overflow-wrap: anywhere;
+}
+.ai-ap-job .acts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.ai-ap-log {
+  color: var(--text-muted);
+  font-size: calc(10px * var(--font-scale, 1));
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.ai-preset-btn {
+  padding: 4px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-dim);
+  font-size: calc(10px * var(--font-scale, 1));
+  cursor: pointer;
+}
+.ai-preset-btn:hover { border-color: var(--border-focus); color: var(--text); }
 
 /* ==================== CATALOG RESPONSIVE PRODUCTS ==================== */
 .products-cards-list {
@@ -4737,6 +5103,7 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
         <button class="sub-tab-btn" onclick="switchAiSub('net')">🌐 اتصال</button>
         <button class="sub-tab-btn" onclick="switchAiSub('test')">🧪 تست مدل</button>
         <button class="sub-tab-btn" onclick="switchAiSub('agent')">🤖 ایجنت</button>
+        <button class="sub-tab-btn" onclick="switchAiSub('autopilot')">🗓 اتوماسیون</button>
         <button class="sub-tab-btn" onclick="switchAiSub('prompts')">📝 پرامپت‌ها</button>
       </div>
 
@@ -4882,6 +5249,92 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
           <div id="agConvoBody"></div>
         </details>
         <div id="agReport" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- AI SUB: autopilot -->
+      <div id="ai-sub-autopilot" class="settings-sub-panel" style="display:none;">
+        <p style="font-size: calc(11px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:10px;">
+          کارهای آماده تعریف کنید تا <b>خودشان در دوره‌های معین</b> اجرا شوند. هر کار یک دستور فارسی است
+          که ایجنت با ابزارهایش انجام می‌دهد. ⚠️ زمان‌بند روی همان فرآیند برنامه سوار است؛
+          اگر برنامه خاموش باشد کاری اجرا نمی‌شود.
+        </p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">زمان‌بند خودکار:</label>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="checkbox" id="apEnabled" onchange="apSetEnabled()"> فعال
+              </label>
+              <input type="number" class="form-control" id="apInterval" min="15" step="15" value="60"
+                     style="max-width:110px;" title="فاصلهٔ بررسی به ثانیه">
+              <span style="font-size:calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);">ثانیه</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">وضعیت کران:</label>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span id="apCronState" style="flex:1; font-size:calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);">در حال بررسی…</span>
+              <button class="btn btn-secondary btn-sm" onclick="apTick()">⚡ تیک دستی</button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-agent-sum" id="apSum">
+          <div><b id="apStatJobs" style="color:var(--success);">۰</b><span>کار</span></div>
+          <div><b id="apStatOn" style="color:var(--accent);">۰</b><span>فعال</span></div>
+          <div><b id="apStatRuns" style="color:var(--primary);">۰</b><span>اجرا</span></div>
+          <div><b id="apStatChanges" style="color:var(--warning);">۰</b><span>تغییر</span></div>
+          <div><b id="apStatFails" style="color:var(--danger);">۰</b><span>خطا</span></div>
+        </div>
+
+        <div class="ai-ap-form">
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+            <span id="apFormTitle" style="flex:1; font-weight:800; color:var(--success); font-size:calc(11.5px * var(--font-scale, 1));">➕ کار تازه</span>
+            <button class="btn btn-secondary btn-sm" id="apCancelBtn" onclick="apResetForm()" style="display:none;">✖ انصراف</button>
+          </div>
+          <input type="hidden" id="apJobId" value="">
+          <div style="font-size:calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); margin-bottom:5px;">آمادهٔ استفاده:</div>
+          <div id="apPresets" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px;"></div>
+          <div class="form-group">
+            <label class="form-label">عنوان:</label>
+            <input type="text" class="form-control" id="apTitle" placeholder="مثال: هم‌ترازی روزانهٔ قیمت">
+          </div>
+          <div class="form-group">
+            <label class="form-label">دستور کار (فارسی):</label>
+            <textarea class="form-control" id="apPrompt" rows="3" placeholder="مثال: قیمت محصولات را با اسنپ‌شاپ مقایسه کن و اختلاف‌های بیشتر از ۵ درصد را اصلاح کن"></textarea>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">هر چند وقت:</label>
+              <select class="form-control" id="apEvery"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">حالت اجرا:</label>
+              <select class="form-control" id="apMode">
+                <option value="sim">🧪 شبیه‌سازی</option>
+                <option value="dry" selected>🔍 آزمایشی</option>
+                <option value="live">🔥 اجرای واقعی</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">مدل (اختیاری):</label>
+            <input type="text" class="form-control" id="apModel" placeholder="خالی = مدل پیش‌فرض" dir="ltr">
+          </div>
+          <label style="display:flex; align-items:center; gap:7px; cursor:pointer; font-size:calc(11px * var(--font-scale, 1));">
+            <input type="checkbox" id="apJobEnabled" checked> از همان ابتدا فعال
+          </label>
+          <button class="btn btn-success btn-sm" id="apSaveBtn" onclick="apSaveJob()" style="margin-top:10px;">💾 ذخیرهٔ کار</button>
+        </div>
+
+        <div style="margin-top:12px;">
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:7px;">
+            <span style="flex:1; font-weight:800; font-size:calc(11.5px * var(--font-scale, 1));">📋 کارهای تعریف‌شده <span id="apJobCount" style="color:var(--text-muted); font-weight:400;"></span></span>
+            <button class="btn btn-secondary btn-sm" onclick="apLoadJobs()">🔄 تازه‌سازی</button>
+          </div>
+          <input type="text" class="form-control" id="apJobSearch" oninput="apRenderJobs()"
+                 placeholder="🔎 جست‌وجو در عنوان و دستور…" style="margin-bottom:8px;">
+          <div id="apJobList" class="ai-model-list"></div>
+        </div>
       </div>
 
       <!-- AI SUB: net -->
@@ -6083,6 +6536,225 @@ function switchAiSub(sub) {
   });
 }
 
+/* ---------- Autopilot tab ---------- */
+let apJobs = [];
+let apEvery = [];
+let apPresets = [];
+
+async function apLoadStatus() {
+  const res = await fetch('/api/autopilot/status');
+  const d = await res.json();
+  if (!d.ok) return null;
+  apEvery = d.every || [];
+  apPresets = d.presets || [];
+  const en = document.getElementById('apEnabled');
+  const iv = document.getElementById('apInterval');
+  if (en) en.checked = !!d.enabled;
+  if (iv) iv.value = d.interval_sec;
+  const st = document.getElementById('apCronState');
+  if (st) {
+    st.textContent = d.enabled
+      ? (d.running ? '⏱ در حال اجرا · تیک‌ها: ' + toFa(d.ticks || 0) : 'فعال ولی کران متوقف است')
+      : 'غیرفعال — کارها فقط با «تیک دستی» اجرا می‌شوند';
+  }
+  apApplyStats(d.stats);
+  apFillEvery();
+  apRenderPresets();
+  return d;
+}
+
+function apApplyStats(st) {
+  st = st || {};
+  const map = { apStatJobs: 'jobs', apStatOn: 'on', apStatRuns: 'runs',
+                apStatChanges: 'changes', apStatFails: 'fails' };
+  Object.keys(map).forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = toFa(st[map[id]] || 0);
+  });
+}
+
+function apFillEvery() {
+  const sel = document.getElementById('apEvery');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = apEvery.map(e =>
+    `<option value="${escHtml(e.id)}">${escHtml(e.label)}</option>`).join('');
+  if (cur && apEvery.some(e => e.id === cur)) sel.value = cur;
+}
+
+function apRenderPresets() {
+  const box = document.getElementById('apPresets');
+  if (!box) return;
+  box.innerHTML = apPresets.map((p, i) =>
+    `<button type="button" class="ai-preset-btn" onclick="apUsePreset(${i})">${escHtml(p.title)}</button>`
+  ).join('');
+}
+
+function apUsePreset(i) {
+  const p = apPresets[i];
+  if (!p) return;
+  document.getElementById('apTitle').value = p.title;
+  document.getElementById('apPrompt').value = p.prompt;
+  document.getElementById('apTitle').focus();
+}
+
+function apResetForm() {
+  document.getElementById('apJobId').value = '';
+  document.getElementById('apTitle').value = '';
+  document.getElementById('apPrompt').value = '';
+  document.getElementById('apMode').value = 'dry';
+  document.getElementById('apJobEnabled').checked = true;
+  document.getElementById('apFormTitle').textContent = '➕ کار تازه';
+  document.getElementById('apCancelBtn').style.display = 'none';
+}
+
+function apEditJob(id) {
+  const j = apJobs.find(x => x.id === id);
+  if (!j) return;
+  document.getElementById('apJobId').value = j.id;
+  document.getElementById('apTitle').value = j.title || '';
+  document.getElementById('apPrompt').value = j.prompt || '';
+  document.getElementById('apMode').value = j.mode || 'dry';
+  document.getElementById('apModel').value = j.model || '';
+  document.getElementById('apJobEnabled').checked = !!j.enabled;
+  const ev = document.getElementById('apEvery');
+  if (ev && apEvery.some(e => e.id === j.every)) ev.value = j.every;
+  document.getElementById('apFormTitle').textContent = '✏️ ویرایش کار';
+  document.getElementById('apCancelBtn').style.display = '';
+  document.getElementById('apTitle').focus();
+}
+
+async function apSaveJob() {
+  const id = document.getElementById('apJobId').value;
+  const payload = {
+    title: document.getElementById('apTitle').value.trim(),
+    prompt: document.getElementById('apPrompt').value.trim(),
+    every: document.getElementById('apEvery').value,
+    mode: document.getElementById('apMode').value,
+    model: document.getElementById('apModel').value.trim(),
+    enabled: document.getElementById('apJobEnabled').checked
+  };
+  if (!payload.title || !payload.prompt) { showToast('عنوان و دستور کار را بنویسید', 'error'); return; }
+  const url = id ? '/api/autopilot/jobs/' + encodeURIComponent(id) : '/api/autopilot/jobs';
+  const res = await fetch(url, {
+    method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'ذخیره نشد', 'error'); return; }
+  showToast(id ? '✓ کار به‌روزرسانی شد' : '✓ کار ساخته شد', 'success');
+  apResetForm();
+  await apLoadJobs();
+}
+
+async function apLoadJobs() {
+  const res = await fetch('/api/autopilot/jobs');
+  const d = await res.json();
+  if (!d.ok) return;
+  apJobs = d.jobs || [];
+  apApplyStats(d.stats);
+  const cnt = document.getElementById('apJobCount');
+  if (cnt) cnt.textContent = '(' + toFa(apJobs.length) + ')';
+  apRenderJobs();
+}
+
+function apRenderJobs() {
+  const box = document.getElementById('apJobList');
+  if (!box) return;
+  const q = (document.getElementById('apJobSearch').value || '').trim().toLowerCase();
+  const list = apJobs.filter(j => !q
+    || (j.title || '').toLowerCase().includes(q) || (j.prompt || '').toLowerCase().includes(q));
+  if (!list.length) {
+    box.innerHTML = `<div class="ai-model-empty">${apJobs.length ? 'نتیجه‌ای برای این جست‌وجو نیست.' : 'کاری تعریف نشده — از فرم بالا یکی بسازید.'}</div>`;
+    return;
+  }
+  box.innerHTML = list.map(j => {
+    const evl = (apEvery.find(e => e.id === j.every) || {}).label || j.every;
+    const badge = j.last_status === 'completed' ? '✓' : (j.last_status === 'failed' ? '✗' : '·');
+    return `<div class="ai-ap-job${j.enabled ? '' : ' is-off'}">
+      <div class="row1">
+        <span class="ttl">${escHtml(j.title)} ${j.enabled ? '' : '<span style="color:var(--text-muted);">(غیرفعال)</span>'}</span>
+        <span class="meta">${escHtml(evl)} · ${escHtml(agentModeShort(j.mode))}</span>
+      </div>
+      <div class="prompt">${escHtml(j.prompt)}</div>
+      <div class="meta">${badge} اجرا ${toFa(j.runs || 0)} · تغییر ${toFa(j.changes || 0)} · خطا ${toFa(j.fails || 0)}</div>
+      ${(j.log || []).length ? `<details style="margin-top:4px;"><summary style="cursor:pointer; font-size:calc(10px * var(--font-scale, 1)); color:var(--text-muted);">📜 لاگ (${toFa(j.log.length)})</summary>
+        <div class="ai-ap-log">${j.log.slice().reverse().map(escHtml).join('<br>')}</div></details>` : ''}
+      <div class="acts">
+        <button class="btn btn-primary btn-sm" onclick="apRunJob('${escHtml(j.id)}')">▶ اجرای الآن</button>
+        <button class="btn btn-secondary btn-sm" onclick="apEditJob('${escHtml(j.id)}')">✏️ ویرایش</button>
+        <button class="btn btn-secondary btn-sm" onclick="apToggleJob('${escHtml(j.id)}',${j.enabled ? 'false' : 'true'})">${j.enabled ? '⏸ غیرفعال' : '▶ فعال'}</button>
+        <button class="btn btn-danger btn-sm" onclick="apDeleteJob('${escHtml(j.id)}')">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function agentModeShort(m) {
+  return { sim: 'شبیه‌سازی', dry: 'آزمایشی', live: 'واقعی' }[m] || m;
+}
+
+async function apRunJob(id) {
+  showToast('در حال اجرای کار…', 'info');
+  const res = await fetch('/api/autopilot/jobs/' + encodeURIComponent(id) + '/run', { method: 'POST' });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'اجرا نشد', 'error'); return; }
+  if (d.status === 'completed') showToast(`✓ انجام شد — ${toFa(d.changes || 0)} تغییر`, 'success');
+  else showToast('✗ ' + (d.error || d.status), 'error');
+  await apLoadJobs();
+}
+
+async function apToggleJob(id, on) {
+  const res = await fetch('/api/autopilot/jobs/' + encodeURIComponent(id), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: on })
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'خطا', 'error'); return; }
+  await apLoadJobs();
+}
+
+async function apDeleteJob(id) {
+  const j = apJobs.find(x => x.id === id);
+  if (!confirm(`کار «${(j && j.title) || ''}» حذف شود؟`)) return;
+  const res = await fetch('/api/autopilot/jobs/' + encodeURIComponent(id), { method: 'DELETE' });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'حذف نشد', 'error'); return; }
+  showToast('حذف شد', 'success');
+  await apLoadJobs();
+}
+
+async function apSetEnabled() {
+  const on = document.getElementById('apEnabled').checked;
+  const iv = parseInt(document.getElementById('apInterval').value, 10) || 60;
+  const res = await fetch('/api/autopilot/enabled', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: on, interval_sec: iv })
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'خطا', 'error'); return; }
+  document.getElementById('apInterval').value = d.interval_sec;
+  showToast(on ? '✓ زمان‌بند فعال شد' : 'زمان‌بند غیرفعال شد', 'success');
+  await apLoadStatus();
+}
+
+async function apTick() {
+  showToast('در حال اجرای تیک…', 'info');
+  const res = await fetch('/api/autopilot/tick', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true })
+  });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'خطا', 'error'); return; }
+  showToast(`${toFa((d.ran || []).length)} کار اجرا شد`, 'success');
+  await apLoadStatus();
+  await apLoadJobs();
+}
+
+async function apInit() {
+  await apLoadStatus();
+  await apLoadJobs();
+}
+
 /* ---------- Agent tab ---------- */
 let agTaskId = null;
 let agBusy = false;
@@ -6270,6 +6942,7 @@ async function aiInitStudio() {
   aiFillProvSelect(sel, (document.getElementById('aiProvider') || {}).value || '');
   aiRenderModels();
   await aiCandRender();
+  await apInit();
 }
 
 function aiRenderModels() {

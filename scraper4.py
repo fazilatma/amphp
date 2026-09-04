@@ -615,51 +615,228 @@ def run_basalam_catfix_worker(task_id: str):
 # parameter makes the worker fetch its own origin, so the upstream never sees
 # the Authorization header and answers 401 Unauthorized.
 
-AI_ENDPOINTS = {
-    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
-    "openai": "https://api.openai.com/v1/chat/completions",
-    "groq": "https://api.groq.com/openai/v1/chat/completions",
-    "deepseek": "https://api.deepseek.com/chat/completions",
-    "mistral": "https://api.mistral.ai/v1/chat/completions",
-    "cerebras": "https://api.cerebras.ai/v1/chat/completions",
-    "together": "https://api.together.xyz/v1/chat/completions",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    "ollama": "http://localhost:11434/v1/chat/completions",
+# The provider catalogue is DATA, not code: it ships as DEFAULT_AI_PROVIDERS
+# (the same shape scraper4.php keeps in ai_providers.json) and can be replaced
+# or extended at runtime through /api/ai/providers, which accepts that exact
+# export format. Nothing below is hardcoded into the request path any more.
+DEFAULT_AI_PROVIDERS: Dict[str, Any] = {
+    "openrouter": {
+        "id": "openrouter", "name": "OpenRouter",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B (رایگان)", "free": True},
+            {"id": "qwen/qwen-2.5-72b-instruct", "name": "Qwen 2.5 72B", "free": False},
+            {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (رایگان)", "free": True},
+            {"id": "deepseek/deepseek-chat", "name": "DeepSeek V3", "free": False},
+            {"id": "mistralai/mistral-large", "name": "Mistral Large", "free": False},
+            {"id": "anthropic/claude-3.5-haiku", "name": "Claude 3.5 Haiku", "free": False},
+        ]},
+    "groq": {
+        "id": "groq", "name": "Groq Cloud",
+        "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B Versatile", "free": True},
+            {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B Instant", "free": True},
+            {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "free": True},
+        ]},
+    "openai": {
+        "id": "openai", "name": "OpenAI (ChatGPT)",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "free": False},
+            {"id": "gpt-4o", "name": "GPT-4o", "free": False},
+            {"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "free": False},
+        ]},
+    "deepseek": {
+        "id": "deepseek", "name": "DeepSeek API",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "deepseek-chat", "name": "DeepSeek Chat (V3)", "free": False},
+            {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner", "free": False},
+        ]},
+    "mistral": {
+        "id": "mistral", "name": "Mistral AI",
+        "endpoint": "https://api.mistral.ai/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "mistral-large-latest", "name": "Mistral Large", "free": False},
+            {"id": "mistral-small-latest", "name": "Mistral Small", "free": False},
+            {"id": "open-mistral-nemo", "name": "Mistral Nemo", "free": True},
+        ]},
+    "cerebras": {
+        "id": "cerebras", "name": "Cerebras",
+        "endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "llama3.1-70b", "name": "Llama 3.1 70B", "free": True},
+            {"id": "llama3.1-8b", "name": "Llama 3.1 8B", "free": True},
+        ]},
+    "together": {
+        "id": "together", "name": "Together AI",
+        "endpoint": "https://api.together.xyz/v1/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "meta-llama/Llama-3.3-70B-Instruct-Turbo", "name": "Llama 3.3 70B Turbo", "free": False},
+            {"id": "mistralai/Mixtral-8x7B-Instruct-v0.1", "name": "Mixtral 8x7B", "free": False},
+        ]},
+    "gemini": {
+        "id": "gemini", "name": "Google Gemini",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "apiKey": "", "enabled": True,
+        "models": [
+            {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "free": True},
+            {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro", "free": False},
+            {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash", "free": True},
+        ]},
+    "ollama": {
+        "id": "ollama", "name": "Ollama Local (لوکال بدون نیاز به اینترنت)",
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+        "apiKey": "ollama", "enabled": False,
+        "models": [
+            {"id": "llama3", "name": "Llama 3 Local", "free": True},
+            {"id": "mistral", "name": "Mistral Local", "free": True},
+            {"id": "qwen2.5", "name": "Qwen 2.5 Local", "free": True},
+        ]},
 }
-AI_DEFAULT_MODELS = {
-    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
-    "openai": "gpt-4o-mini",
-    "groq": "llama-3.3-70b-versatile",
-    "deepseek": "deepseek-chat",
-    "mistral": "mistral-large-latest",
-    "cerebras": "llama3.1-70b",
-    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "gemini": "gemini-2.0-flash",
-    "ollama": "llama3",
-}
+
 # Order used by the auto-fallback chain and the diagnostics probe.
 AI_NET_MODES = ["direct", "worker", "gateway", "doh", "dns", "proxy"]
 
-# Human-readable provider labels, mirrored from scraper4.php's aiProvidersLoad().
-AI_PROVIDER_LABELS = {
-    "openrouter": "OpenRouter", "openai": "OpenAI", "groq": "Groq",
-    "deepseek": "DeepSeek", "mistral": "Mistral AI", "cerebras": "Cerebras",
-    "together": "Together AI", "gemini": "Google Gemini", "ollama": "Ollama",
-}
-# Selectable models per provider, for the candidates / models tabs.
-AI_MODEL_CATALOG = {
-    "openrouter": ["meta-llama/llama-3.3-70b-instruct:free", "qwen/qwen-2.5-72b-instruct",
-                   "google/gemini-2.0-flash-exp:free", "deepseek/deepseek-chat",
-                   "mistralai/mistral-large", "anthropic/claude-3.5-haiku"],
-    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
-    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
-    "cerebras": ["llama3.1-70b", "llama3.1-8b"],
-    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"],
-    "gemini": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-    "ollama": ["llama3", "mistral", "qwen2.5"],
-}
+
+def ai_providers_path() -> str:
+    """The user catalogue lives beside the data file, like ai_votes.json."""
+    return os.path.join(os.path.dirname(os.path.abspath(get_data_filepath())) or ".",
+                        "ai_providers.json")
+
+
+def ai_providers_source() -> str:
+    """Where the live catalogue actually came from.
+
+    Reports "user" only when the file was really parsed; a corrupt or empty
+    file falls back to the built-ins and must say so, otherwise the UI claims
+    an import is in effect when it is not.
+    """
+    path = ai_providers_path()
+    if not os.path.isfile(path):
+        return "builtin"
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return "builtin (فایل کاربر خوانده نشد)"
+    if isinstance(d, dict) and any(
+            isinstance(v, dict) and (v.get("endpoint") or v.get("url")) for v in d.values()):
+        return "user"
+    return "builtin (فایل کاربر معتبر نبود)"
+
+
+def ai_providers_load() -> Dict[str, Any]:
+    """The user catalogue if present and valid, else the shipped default.
+
+    The file is authoritative: importing already merges into the full current
+    catalogue before writing (see api_ai_providers_post), so the saved file is
+    always complete. Treating the file as the source of truth is what makes
+    replace=true possible -- always merging here would make it impossible to
+    ever remove a provider.
+
+    A missing, corrupt or unusable file falls back to the shipped default
+    rather than to an empty catalogue, so the app can never end up with no
+    providers at all.
+    """
+    merged = json.loads(json.dumps(DEFAULT_AI_PROVIDERS))
+    path = ai_providers_path()
+    if not os.path.isfile(path):
+        return merged
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return merged
+    if not isinstance(d, dict) or not d:
+        return merged
+    clean = {str(k): v for k, v in d.items()
+             if isinstance(v, dict) and (v.get("endpoint") or v.get("url"))}
+    return clean or merged
+
+
+def ai_providers_save(providers: Dict[str, Any]) -> bool:
+    path = ai_providers_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(providers, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return False
+
+
+def ai_provider(p: str, providers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    p = (p or "").strip().lower()
+    cat = providers if providers is not None else ai_providers_load()
+    return cat.get(p) or {}
+
+
+def ai_endpoint_of(p: str, providers: Optional[Dict[str, Any]] = None) -> str:
+    prov = ai_provider(p, providers)
+    return str(prov.get("endpoint") or prov.get("url") or "").strip()
+
+
+def ai_model_ids(p: str, providers: Optional[Dict[str, Any]] = None) -> List[str]:
+    prov = ai_provider(p, providers)
+    out = []
+    for m in prov.get("models") or []:
+        if isinstance(m, dict) and m.get("id"):
+            out.append(str(m["id"]))
+        elif isinstance(m, str) and m.strip():
+            out.append(m.strip())
+    return out
+
+
+def ai_provider_key(p: str, providers: Optional[Dict[str, Any]] = None) -> str:
+    return str(ai_provider(p, providers).get("apiKey") or "").strip()
+
+
+def ai_endpoints(providers: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    cat = providers if providers is not None else ai_providers_load()
+    return {k: ai_endpoint_of(k, cat) for k in cat if ai_endpoint_of(k, cat)}
+
+
+def ai_model_catalog(providers: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
+    cat = providers if providers is not None else ai_providers_load()
+    return {k: ai_model_ids(k, cat) for k in cat}
+
+
+def ai_default_models(providers: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    cat = providers if providers is not None else ai_providers_load()
+    out = {}
+    for k in cat:
+        ids = ai_model_ids(k, cat)
+        if ids:
+            out[k] = ids[0]
+    return out
+
+
+def ai_provider_labels(providers: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    cat = providers if providers is not None else ai_providers_load()
+    return {k: str(cat[k].get("name") or k) for k in cat}
+
+
+# Backwards-compatible module-level views. These are snapshots of the shipped
+# default; anything that must see an imported catalogue calls the functions.
+AI_ENDPOINTS = ai_endpoints(DEFAULT_AI_PROVIDERS)
+AI_DEFAULT_MODELS = ai_default_models(DEFAULT_AI_PROVIDERS)
+AI_PROVIDER_LABELS = ai_provider_labels(DEFAULT_AI_PROVIDERS)
+AI_MODEL_CATALOG = ai_model_catalog(DEFAULT_AI_PROVIDERS)
 
 
 class AiHttpError(Exception):
@@ -678,7 +855,8 @@ def ai_resolve_endpoint(ai_cfg: Dict[str, Any]) -> str:
         if base.endswith("/chat/completions"):
             return base
         return f"{base}/chat/completions"
-    return AI_ENDPOINTS.get(provider, AI_ENDPOINTS["openrouter"])
+    endpoints = ai_endpoints()
+    return endpoints.get(provider) or endpoints.get("openrouter") or ""
 
 
 def ai_build_request(endpoint: str, mode: str, ai_cfg: Dict[str, Any]) -> Tuple[str, Dict[str, str], Optional[Dict[str, str]]]:
@@ -818,7 +996,7 @@ def call_ai_completion(prompt: str, system_prompt: str = "", ai_cfg: Optional[Di
 
     provider = (merged.get("provider") or "openrouter").strip().lower()
     api_key = (merged.get("api_key") or "").strip()
-    model = (merged.get("model") or "").strip() or AI_DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+    model = (merged.get("model") or "").strip() or ai_default_models().get(provider, "gpt-4o-mini")
     if not api_key and provider != "ollama":
         raise AiHttpError("کلید API وارد نشده است؛ آن را در بخش هوش مصنوعی ذخیره کنید")
 
@@ -854,7 +1032,7 @@ def call_ai_tools(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
     net_cfg = load_data().get("network", {})
     provider = (merged.get("provider") or "openrouter").strip().lower()
     api_key = (merged.get("api_key") or "").strip()
-    model = (merged.get("model") or "").strip() or AI_DEFAULT_MODELS.get(provider, "gpt-4o-mini")
+    model = (merged.get("model") or "").strip() or ai_default_models().get(provider, "gpt-4o-mini")
     if not api_key and provider != "ollama":
         raise AiHttpError("کلید API وارد نشده است؛ آن را در بخش هوش مصنوعی ذخیره کنید")
 
@@ -1224,12 +1402,112 @@ def api_ai_catalog():
     auth_err = check_auth()
     if auth_err:
         return auth_err
-    providers = [{"id": p, "label": AI_PROVIDER_LABELS.get(p, p),
-                  "endpoint": u, "default_model": AI_DEFAULT_MODELS.get(p, ""),
-                  "models": AI_MODEL_CATALOG.get(p, [])}
-                 for p, u in AI_ENDPOINTS.items()]
+    cat = ai_providers_load()
+    providers = [{"id": k, "label": str(cat[k].get("name") or k),
+                  "endpoint": ai_endpoint_of(k, cat),
+                  "default_model": (ai_model_ids(k, cat) or [""])[0],
+                  "models": ai_model_ids(k, cat),
+                  "enabled": bool(cat[k].get("enabled", True)),
+                  "has_key": bool(ai_provider_key(k, cat)),
+                  "model_details": [m for m in (cat[k].get("models") or []) if isinstance(m, dict)]}
+                 for k in cat]
     return jsonify(ok=True, providers=providers, net_modes=AI_NET_MODES,
-                   model_catalog=AI_MODEL_CATALOG, labels=AI_PROVIDER_LABELS)
+                   model_catalog=ai_model_catalog(cat), labels=ai_provider_labels(cat),
+                   default_models=ai_default_models(cat),
+                   source=ai_providers_source())
+
+
+def ai_clean_imported_provider(pid: str, raw: Any) -> Optional[Dict[str, Any]]:
+    """Validate one entry of an imported ai_providers.json."""
+    if not isinstance(raw, dict):
+        return None
+    endpoint = str(raw.get("endpoint") or raw.get("url") or "").strip()
+    if not endpoint:
+        return None
+    models = []
+    seen = set()
+    for m in (raw.get("models") or []):
+        if isinstance(m, dict):
+            mid = str(m.get("id") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            models.append({"id": mid, "name": str(m.get("name") or mid).strip(),
+                           "free": bool(m.get("free", False))})
+        elif isinstance(m, str) and m.strip() and m.strip() not in seen:
+            seen.add(m.strip())
+            models.append({"id": m.strip(), "name": m.strip(), "free": False})
+    key = str(raw.get("apiKey") or raw.get("api_key") or "").strip()
+    return {"id": str(raw.get("id") or pid).strip() or pid,
+            "name": str(raw.get("name") or raw.get("label") or pid).strip() or pid,
+            "endpoint": endpoint, "apiKey": key,
+            "enabled": bool(raw.get("enabled", True)), "models": models}
+
+
+@app.get("/api/ai/providers")
+def api_ai_providers_get():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    cat = ai_providers_load()
+    # Never echo API keys back to the browser.
+    safe = {k: {**v, "apiKey": "", "has_key": bool(str(v.get("apiKey") or "").strip())}
+            for k, v in cat.items()}
+    return jsonify(ok=True, providers=safe, count=len(safe),
+                   source=ai_providers_source())
+
+
+@app.post("/api/ai/providers")
+def api_ai_providers_post():
+    """Import an ai_providers.json export (the scraper4.php format).
+
+    Accepts either {"provider_id": {...}} or {"providers": {...}}. By default
+    the import MERGES over the shipped catalogue so no working provider is
+    lost; pass replace=true to make the import the whole catalogue.
+    """
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    raw = body.get("providers") if isinstance(body.get("providers"), dict) else body
+    replace = bool(body.get("replace", False))
+    if not isinstance(raw, dict) or not raw:
+        return jsonify(ok=False, error="فایل کاتالوگ خالی یا نامعتبر است"), 400
+
+    clean, skipped = {}, []
+    for pid, entry in raw.items():
+        if pid in ("providers", "replace"):
+            continue
+        c = ai_clean_imported_provider(str(pid), entry)
+        if c:
+            clean[str(pid).strip().lower()] = c
+        else:
+            skipped.append(str(pid))
+    if not clean:
+        return jsonify(ok=False,
+                       error="هیچ ارائه‌دهندهٔ معتبری در فایل نبود (هرکدام باید endpoint داشته باشد)"), 400
+
+    base = {} if replace else ai_providers_load()
+    base.update(clean)
+    if not ai_providers_save(base):
+        return jsonify(ok=False, error="ذخیرهٔ کاتالوگ ناموفق بود"), 500
+    return jsonify(ok=True, imported=len(clean), skipped=skipped,
+                   total=len(base), replace=replace,
+                   models=sum(len(v["models"]) for v in clean.values()))
+
+
+@app.post("/api/ai/providers/reset")
+def api_ai_providers_reset():
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
+    path = ai_providers_path()
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError as e:
+        return jsonify(ok=False, error=str(e)), 500
+    return jsonify(ok=True, count=len(DEFAULT_AI_PROVIDERS), source="builtin")
 
 
 @app.post("/api/ai/test")
@@ -1278,7 +1556,7 @@ def api_ai_probe():
             if proxies:
                 entry["proxy"] = proxies.get("https")
             # A lightweight probe: POST a 1-token request.
-            payload = {"model": ai_cfg.get("model") or AI_DEFAULT_MODELS.get(provider, ""),
+            payload = {"model": ai_cfg.get("model") or ai_default_models().get(provider, ""),
                        "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
             api_key = (ai_cfg.get("api_key") or "").strip()
             text = ai_post_once(endpoint, payload, api_key, mode, ai_cfg, 15)
@@ -1396,7 +1674,7 @@ def ai_candidates_save(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             continue
         p = str(c.get("provider") or "").strip()
         m = str(c.get("model") or "").strip()
-        if not p or not m or p not in AI_ENDPOINTS:
+        if not p or not m or p not in ai_endpoints():
             continue
         key = ai_cand_key(p, m)
         if key in seen:
@@ -1500,7 +1778,7 @@ def api_ai_candidates_get():
     for c in ai_candidates_load():
         s = v["scores"].get(c["key"], {})
         cands.append({**c,
-                      "providerName": AI_PROVIDER_LABELS.get(c["provider"], c["provider"]),
+                      "providerName": ai_provider_labels().get(c["provider"], c["provider"]),
                       "modelName": c["model"],
                       "wins": int(s.get("wins") or 0), "votes": int(s.get("votes") or 0),
                       "losses": int(s.get("losses") or 0), "score": ai_score_of(s)})
@@ -1578,7 +1856,7 @@ def api_ai_candidates_compare():
     for c in cands:
         started = time.time()
         item = {"key": c["key"], "provider": c["provider"], "model": c["model"],
-                "providerName": AI_PROVIDER_LABELS.get(c["provider"], c["provider"])}
+                "providerName": ai_provider_labels().get(c["provider"], c["provider"])}
         try:
             text = call_ai_completion(prompt, system_prompt=system,
                                       ai_cfg=_ai_cfg_for(c["provider"], c["model"]))
@@ -1617,7 +1895,7 @@ def ai_model_caps(model_id: str) -> Dict[str, bool]:
 
 def ai_catalog_models(skip_non_chat: bool = True, per_provider: int = 50) -> List[Dict[str, str]]:
     out = []
-    for provider, models in AI_MODEL_CATALOG.items():
+    for provider, models in ai_model_catalog().items():
         taken = 0
         for m in models:
             caps = ai_model_caps(m)
@@ -5435,6 +5713,32 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
           <textarea class="form-control" id="aiSystemPrompt" rows="3"></textarea>
         </div>
         <div style="margin-top:6px; font-size: calc(10.5px * var(--font-scale, 1)); color:var(--text-dim);" id="aiEndpointHint"></div>
+
+        <div class="ai-ap-form" style="margin-top:12px;">
+          <div style="font-weight:800; font-size:calc(11.5px * var(--font-scale, 1)); margin-bottom:6px;">
+            📥 کاتالوگ ارائه‌دهنده‌ها
+            <span id="aiProvSource" class="meta" style="font-weight:400;"></span>
+          </div>
+          <p style="font-size:calc(10.5px * var(--font-scale, 1)); color:var(--text-dim); line-height:1.9; margin-bottom:8px;">
+            همان فایل <span dir="ltr">ai_providers.json</span> که نسخهٔ PHP صادر می‌کند.
+            به‌صورت پیش‌فرض <b>ادغام</b> می‌شود (ارائه‌دهندهٔ موجود جایگزین، بقیه حفظ می‌شوند)؛
+            اگر می‌خواهید کاتالوگ دقیقاً همان فایل شود، «جایگزینی کامل» را بزنید.
+            کلیدهای API ذخیره می‌شوند ولی هرگز به مرورگر برنمی‌گردند.
+          </p>
+          <div class="form-group">
+            <label class="form-label">فایل کاتالوگ:</label>
+            <input type="file" class="form-control" id="aiProvFile" accept=".json,application/json">
+          </div>
+          <label style="display:flex; align-items:center; gap:7px; cursor:pointer; font-size:calc(11px * var(--font-scale, 1));">
+            <input type="checkbox" id="aiProvReplace"> جایگزینی کامل (همهٔ ارائه‌دهنده‌های فعلی حذف شوند)
+          </label>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:9px;">
+            <button class="btn btn-success btn-sm" onclick="aiImportProviders()">📥 اعمال کاتالوگ</button>
+            <button class="btn btn-secondary btn-sm" onclick="aiListProviders()">📋 فهرست فعلی</button>
+            <button class="btn btn-danger btn-sm" onclick="aiResetProviders()">↺ بازگشت به پیش‌فرض</button>
+          </div>
+          <div id="aiProvResult" style="margin-top:9px;"></div>
+        </div>
       </div>
 
       <!-- AI SUB: models -->
@@ -6844,17 +7148,9 @@ async function fixPricesServer() {
 }
 
 /* ==================== AI STUDIO ==================== */
-const AI_DEFAULT_MODELS = {
-  openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
-  openai: 'gpt-4o-mini',
-  groq: 'llama-3.3-70b-versatile',
-  deepseek: 'deepseek-chat',
-  mistral: 'mistral-large-latest',
-  cerebras: 'llama3.1-70b',
-  together: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-  gemini: 'gemini-2.0-flash',
-  ollama: 'llama3'
-};
+// Filled from /api/ai/catalog by aiLoadCatalog(), so an imported provider
+// catalogue drives the UI instead of a list hardcoded in the page.
+let AI_DEFAULT_MODELS = {};
 const AI_PROMPT_PRESETS = [
   { name: 'معرفی محصول (کاتالوگ)', tpl: 'یک معرفی جذاب و فروشنده برای محصول {title} با ویژگی‌های {specs} بنویس. قیمت: {price} تومان.' },
   { name: 'توضیحات سئو محور', tpl: 'برای محصول {title} یک توضیح ۱۵۰ کلمه‌ای سئو محور با لحن دوستانه بنویس. ویژگی‌ها: {specs}' },
@@ -7251,13 +7547,111 @@ function escHtml(s) {
 /* ---------- Models tab ---------- */
 let aiCatalog = null;
 
-async function aiLoadCatalog() {
-  if (aiCatalog) return aiCatalog;
+/* ---------- Provider catalogue import ---------- */
+async function aiImportProviders() {
+  const inp = document.getElementById('aiProvFile');
+  const box = document.getElementById('aiProvResult');
+  if (!inp || !inp.files || !inp.files.length) {
+    showToast('اول یک فایل JSON انتخاب کنید', 'error');
+    return;
+  }
+  const replace = document.getElementById('aiProvReplace').checked;
+  if (replace && !confirm('جایگزینی کامل: همهٔ ارائه‌دهنده‌های فعلی حذف و فقط محتوای این فایل می‌ماند.\n\nادامه می‌دهید؟')) return;
+
+  let payload;
+  try {
+    payload = JSON.parse(await inp.files[0].text());
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="ai-model-empty">✗ فایل JSON معتبر نیست: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  try {
+    const res = await fetch('/api/ai/providers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providers: payload.providers || payload, replace })
+    });
+    const d = await res.json();
+    if (!d.ok) {
+      if (box) box.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(d.error || 'خطا')}</div>`;
+      showToast(d.error || 'اعمال نشد', 'error');
+      return;
+    }
+    if (box) {
+      box.innerHTML = `<div class="ai-cand-card">
+        <div style="font-weight:800;">✓ کاتالوگ اعمال شد</div>
+        <div class="meta">${toFa(d.imported)} ارائه‌دهنده وارد · ${toFa(d.models)} مدل ·
+          مجموع ${toFa(d.total)} · ${d.replace ? 'جایگزینی کامل' : 'ادغام'}</div>
+        ${(d.skipped || []).length
+          ? `<div class="ai-compare-text" style="color:var(--warning);">رد شده (endpoint نداشت): ${d.skipped.map(escHtml).join('، ')}</div>` : ''}
+      </div>`;
+    }
+    showToast(`✓ ${toFa(d.imported)} ارائه‌دهنده اعمال شد`, 'success');
+    inp.value = '';
+    await aiLoadCatalog(true);
+    aiRenderModels();
+    await aiCandRender();
+    aiProviderChanged();
+    aiUpdateChip();
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="ai-model-empty">✗ خطای شبکه: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function aiListProviders() {
+  const box = document.getElementById('aiProvResult');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/ai/providers');
+    const d = await res.json();
+    if (!d.ok) { box.innerHTML = `<div class="ai-model-empty">✗ ${escHtml(d.error || 'خطا')}</div>`; return; }
+    const rows = Object.values(d.providers);
+    box.innerHTML = `<div class="ai-cand-card">
+      <div style="font-weight:800; margin-bottom:5px;">📋 ${toFa(d.count)} ارائه‌دهنده · منبع: ${escHtml(d.source)}</div>
+      ${rows.map(p => `<div class="ai-compare-text">${p.enabled ? '🟢' : '⚪'} <b>${escHtml(p.name)}</b>
+        <span dir="ltr">(${escHtml(p.id)})</span> · ${toFa((p.models || []).length)} مدل
+        ${p.has_key ? '· 🔑 کلید دارد' : ''}
+        <div dir="ltr" style="color:var(--text-muted);">${escHtml(p.endpoint)}</div></div>`).join('')}
+    </div>`;
+  } catch (e) { box.innerHTML = `<div class="ai-model-empty">✗ خطای شبکه: ${escHtml(e.message)}</div>`; }
+}
+
+async function aiResetProviders() {
+  if (!confirm('کاتالوگ واردشده حذف و ارائه‌دهنده‌های پیش‌فرض برگردانده شود؟')) return;
+  const res = await fetch('/api/ai/providers/reset', { method: 'POST' });
+  const d = await res.json();
+  if (!d.ok) { showToast(d.error || 'خطا', 'error'); return; }
+  showToast('✓ به پیش‌فرض برگشت', 'success');
+  document.getElementById('aiProvResult').innerHTML = '';
+  await aiLoadCatalog(true);
+  aiRenderModels();
+  await aiCandRender();
+  aiProviderChanged();
+  aiUpdateChip();
+}
+
+async function aiLoadCatalog(force) {
+  if (aiCatalog && !force) return aiCatalog;
   const res = await fetch('/api/ai/catalog');
   const d = await res.json();
   if (!d.ok) throw new Error(d.error || 'خطا در دریافت کاتالوگ');
   aiCatalog = d;
+  AI_DEFAULT_MODELS = d.default_models || {};
+  aiFillProviderOptions();
+  const src = document.getElementById('aiProvSource');
+  if (src) src.textContent = d.source === 'user' ? '· از فایل کاربر' : '· پیش‌فرض برنامه';
   return d;
+}
+
+/* Rebuild the main provider dropdown from the live catalogue so imported
+   providers appear without a page edit. */
+function aiFillProviderOptions() {
+  const sel = document.getElementById('aiProvider');
+  if (!sel || !aiCatalog) return;
+  const cur = sel.value;
+  sel.innerHTML = aiCatalog.providers.map(p =>
+    `<option value="${escHtml(p.id)}">${escHtml(p.label || p.id)}${p.has_key ? ' 🔑' : ''}</option>`
+  ).join('');
+  if (cur && aiCatalog.providers.some(p => p.id === cur)) sel.value = cur;
 }
 
 function aiFillProvSelect(selEl, selected) {

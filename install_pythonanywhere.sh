@@ -139,13 +139,23 @@ for name in ("playwright", "cloudscraper", "curl_cffi", "basalam_sdk"):
     print(("+ " if ok else "- ") + name + ("  available" if ok else "  missing (optional)"))
 PY
     export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_PATH"
-    if "$VENV_PY" -c 'import playwright' 2>/dev/null \
-       && [ "${DEPLOYER_PLAYWRIGHT:-1}" != 0 ] && [ ! -d "$BROWSER_PATH" ]; then
-        echo "Installing the smaller Chromium Headless Shell for Playwright..."
+    # Chromium is ~150MB and the whole /tmp+home share the free-plan 512MB
+    # quota on PythonAnywhere, so it is OPT-IN (DEPLOYER_PLAYWRIGHT=1).
+    # The site works without it; the Playwright engine only fails cleanly
+    # when actually selected.
+    if "$VENV_PY" -c 'import playwright' 2>/dev/null && [ "${DEPLOYER_PLAYWRIGHT:-0}" = 1 ]; then
+        rm -rf "$BROWSER_PATH"
+        echo "Installing the smaller Chromium Headless Shell for Playwright (DEPLOYER_PLAYWRIGHT=1)..."
         if ! "$VENV_PY" -m playwright install chromium-headless-shell >>"$INSTALL_LOG" 2>&1; then
-            echo "WARNING: Chromium download skipped (quota/network; see $INSTALL_LOG)."
-            echo "         Install later from the console:"
-            echo "         cd ~/scraper4 && ./venv/bin/python -m playwright install chromium-headless-shell"
+            rm -rf "$BROWSER_PATH"   # never leave a partial download eating quota
+            echo "WARNING: Chromium download failed and was cleaned up (partial files removed)."
+            echo "         The site keeps working; the Playwright engine is unavailable until this succeeds."
+            echo "         When you have space (or a bigger plan):"
+            echo "         cd ~/scraper4 && DEPLOYER_PLAYWRIGHT=1 bash install_pythonanywhere.sh"
+        fi
+    else
+        if "$VENV_PY" -c 'import playwright' 2>/dev/null; then
+            echo "Chromium headless shell NOT installed (opt-in, free-plan quota). Playwright engine will report a clear error only when selected."
         fi
     fi
 fi

@@ -45,6 +45,18 @@ app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB
 
+
+@app.errorhandler(Exception)
+def handle_unexpected(err):
+    """Never hand the JS client an HTML error page: it parses every response
+    as JSON, so an HTML 500 shows up as an opaque 'Expecting value' failure."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(err, HTTPException):
+        return jsonify(ok=False, error=err.name, status=err.code), err.code
+    import traceback
+    traceback.print_exc()
+    return jsonify(ok=False, error=f"{type(err).__name__}: {err}"), 500
+
 # Thread-safe global background task registry
 TASKS_LOCK = threading.Lock()
 TASKS: Dict[str, Dict[str, Any]] = {}
@@ -151,6 +163,13 @@ def get_default_config() -> Dict[str, Any]:
             "specs": "",
             "gallery": "",
             "variations": ""
+        },
+        "scrape": {
+            "url": "",
+            "pages": 1,
+            "pag_type": "query",
+            "pag_val": "page",
+            "engine": "requests"
         },
         "ui_preferences": {
             "theme": "navy",
@@ -776,12 +795,18 @@ def api_save_profile():
         return jsonify({"ok": False, "error": "نام پروفایل الزامی است"}), 400
     data = load_data()
     profiles = data.setdefault("profiles", {})
-    profiles[name] = {k: data.get(k, {}) for k in PROFILE_SECTIONS}
+    snap = {k: data.get(k, {}) for k in PROFILE_SECTIONS}
+    # A profile is a site: it owns its source URL, its settings AND the
+    # products already extracted for it (mirrors PHP applyProfile's p.products).
+    snap["products"] = data.get("last_result", []) or []
+    snap["saved_at"] = datetime.now().isoformat()
+    profiles[name] = snap
     data["active_profile"] = name
     save_data(data)
-    return jsonify({"ok": True, "message": f"پروفایل '{name}' ذخیره شد"})
+    return jsonify({"ok": True, "message": f"پروفایل '{name}' ذخیره شد ({len(snap['products'])} محصول)",
+                    "product_count": len(snap["products"])})
 
-PROFILE_SECTIONS = ["woocommerce", "basalam", "ai", "network", "messengers", "selectors"]
+PROFILE_SECTIONS = ["woocommerce", "basalam", "ai", "network", "messengers", "selectors", "scrape"]
 
 @app.post("/api/profile/active")
 def api_set_active_profile():
@@ -796,9 +821,19 @@ def api_set_active_profile():
         for k in PROFILE_SECTIONS:
             if k in prof:
                 data[k] = prof[k]
+        # Restore this profile's own products into the results tab.
+        products = prof.get("products")
+        if isinstance(products, list):
+            data["last_result"] = products
         data["active_profile"] = name
         save_data(data)
-        return jsonify({"ok": True, "message": f"پروفایل '{name}' فعال شد", "data": data})
+        prods = data.get("last_result", []) or []
+        src = (data.get("scrape", {}) or {}).get("url", "")
+        return jsonify({"ok": True,
+                        "message": f"پروفایل '{name}' بارگذاری شد — {len(prods)} محصول",
+                        "product_count": len(prods),
+                        "source_url": src,
+                        "data": data})
     elif not name:
         # Returning to the default must hand back the full config too, so the
         # UI can refresh instead of keeping the previous profile's values.
@@ -1130,8 +1165,20 @@ def parse_import_text(text: str) -> Dict[str, Any]:
 
     delim = sniff_delimiter(text)
     reader = csv.DictReader(io.StringIO(text), delimiter=delim)
-    columns = list(reader.fieldnames or [])
-    rows = [dict(r) for r in reader]
+    columns = [c for c in (reader.fieldnames or []) if c is not None]
+    rows = []
+    for raw in reader:
+        # DictReader files overflow values under a None key when a row has more
+        # fields than the header (e.g. mixed delimiters). A None object key
+        # cannot be serialised to JSON, so fold those into a string column.
+        clean = {}
+        for k, v in raw.items():
+            if k is None:
+                if isinstance(v, (list, tuple)):
+                    clean["_extra"] = delim.join(str(x) for x in v)
+                continue
+            clean[k] = v
+        rows.append(clean)
     return {"format": "delimited", "delimiter": delim, "columns": columns, "rows": rows}
 
 
@@ -1179,6 +1226,10 @@ def api_import_apply():
     pct = float(body.get("price_pct", 0) or 0)
     fixed = float(body.get("price_fixed", 0) or 0)
     round_to = int(body.get("round_to", 0) or 0)
+    # Parity with PHP applyProfile: minPrice filter and titleSuffix transform.
+    min_price = float(body.get("min_price", 0) or 0)
+    title_suffix = str(body.get("title_suffix", "") or "").strip()
+    title_prefix = str(body.get("title_prefix", "") or "").strip()
 
     if not text.strip():
         return jsonify(ok=False, error="داده‌ای برای درون‌ریزی وجود ندارد"), 400
@@ -1189,6 +1240,7 @@ def api_import_apply():
 
     title_col = mapping.get("title")
     imported: List[Dict[str, Any]] = []
+    skipped_min = 0
     for row in parsed["rows"]:
         def pick(field: str) -> str:
             col = mapping.get(field)
@@ -1203,6 +1255,14 @@ def api_import_apply():
         price = extract_price_numbers(pick("price"))
         if price > 0 and (pct or fixed or round_to > 1):
             price = apply_pricing_rules(price, pct, fixed, round_to)
+        # Drop rows below the minimum price, like PHP's minPrice guard.
+        if min_price > 0 and price < min_price:
+            skipped_min += 1
+            continue
+        if title_prefix:
+            title = f"{title_prefix} {title}".strip()
+        if title_suffix:
+            title = f"{title} {title_suffix}".strip()
         imported.append({
             "title": title,
             "price": price,
@@ -1221,6 +1281,8 @@ def api_import_apply():
         })
 
     if not imported:
+        if skipped_min:
+            return jsonify(ok=False, error=f"همهٔ {skipped_min} ردیف زیر حداقل قیمت {int(min_price)} تومان بودند"), 400
         return jsonify(ok=False, error="هیچ ردیف معتبری پیدا نشد؛ نگاشت ستون «عنوان» را بررسی کنید"), 400
 
     data = load_data()
@@ -1230,7 +1292,11 @@ def api_import_apply():
     else:
         data["last_result"] = existing + imported
     save_data(data)
-    return jsonify(ok=True, imported=len(imported), total=len(data["last_result"]), mode=mode)
+    return jsonify(ok=True, imported=len(imported), total=len(data["last_result"]),
+                   mode=mode, skipped_min_price=skipped_min)
+
+
+# Messenger Hub & Customer Chat Desk
 @app.get("/api/chat/threads")
 def api_chat_threads():
     auth_err = check_auth()
@@ -3600,6 +3666,18 @@ body { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
               <option value="replace">جایگزینی کامل نتایج</option>
             </select>
           </div>
+          <div class="form-group">
+            <label class="form-label">حداقل قیمت (رد شدن ارزان‌ترها):</label>
+            <input type="number" class="form-control" id="importMinPrice" value="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">پسوند عنوان:</label>
+            <input type="text" class="form-control" id="importTitleSuffix" placeholder="— ارسال رایگان">
+          </div>
+          <div class="form-group">
+            <label class="form-label">پیشوند عنوان:</label>
+            <input type="text" class="form-control" id="importTitlePrefix" placeholder="تخفیف ویژه —">
+          </div>
         </div>
 
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
@@ -3844,6 +3922,10 @@ const SETTINGS_FIELDS = {
     bale_token: 'baleToken', bale_chat_id: 'baleChatId'
   },
   deploy: { repo: 'deployRepo', branch: 'deployBranch' },
+  scrape: {
+    url: 'sourceUrl', pages: 'scrapePages', pag_type: 'pagType',
+    pag_val: 'pagVal', engine: 'fetchEngine'
+  },
   selectors: {
     container: 'selContainer', title: 'selTitle', price: 'selPrice',
     image: 'selImage', url: 'selUrl', sku: 'selSku',
@@ -3924,7 +4006,12 @@ function renderProfileOptions(cfg) {
   for (const pName in profiles) {
     const opt = document.createElement('option');
     opt.value = pName;
-    opt.innerText = pName;
+    const prods = (profiles[pName] && profiles[pName].products) || [];
+    const src = (profiles[pName] && profiles[pName].scrape && profiles[pName].scrape.url) || '';
+    let host = '';
+    try { host = src ? new URL(src).hostname.replace(/^www\./, '') : ''; } catch (e) {}
+    opt.innerText = host ? `${pName} · ${host} (${prods.length})` : `${pName} (${prods.length})`;
+    opt.title = src || pName;
     if (active === pName) opt.selected = true;
     profSelect.appendChild(opt);
   }
@@ -4022,11 +4109,18 @@ async function onProfileChange(name) {
     const json = await res.json();
     if (json.ok) {
       appConfig = json.data || appConfig;
-      applyConfigToUi(appConfig);
+      applyConfigToUi(appConfig);      // settings + source URL + products
+      selectedIndices.clear();
       restoreFontScale();
       auRefresh(true);
       if (sel) sel.value = name || '';
-      showToast(json.message || 'پروفایل بارگذاری شد', 'success');
+      // Mirror PHP applyProfile: an explicit profile switch shows the loaded
+      // products. A silent restore (page load) must NOT move the user's tab.
+      switchNavTab('results');
+      const n = (json.product_count != null) ? json.product_count : (currentProducts || []).length;
+      showToast(name
+        ? `پروفایل «${name}» بارگذاری شد — ${toFa(n)} محصول در نتایج`
+        : 'بازگشت به پروفایل پیش‌فرض', 'success');
     } else {
       showToast(json.error || 'خطا در بارگذاری پروفایل', 'error');
       await loadConfig();   // roll the dropdown back to the real state
@@ -4488,13 +4582,17 @@ async function importApply() {
         mode: document.getElementById('importMode').value,
         price_pct: parseFloat(document.getElementById('importPct').value || '0'),
         price_fixed: parseFloat(document.getElementById('importFixed').value || '0'),
-        round_to: parseInt(document.getElementById('importRound').value || '0', 10)
+        round_to: parseInt(document.getElementById('importRound').value || '0', 10),
+        min_price: parseFloat(document.getElementById('importMinPrice').value || '0'),
+        title_suffix: document.getElementById('importTitleSuffix').value || '',
+        title_prefix: document.getElementById('importTitlePrefix').value || ''
       })
     });
     const json = await res.json();
     if (json.ok) {
       showToast(`${json.imported} محصول درون‌ریزی شد (مجموع ${json.total})`, 'success');
-      if (st) st.innerText = `${json.imported} محصول درون‌ریزی شد.\nمجموع محصولات فعلی: ${json.total}\nحالت: ${json.mode === 'replace' ? 'جایگزینی' : 'افزودن'}`;
+      if (st) st.innerText = `${json.imported} محصول درون‌ریزی شد.\nمجموع محصولات فعلی: ${json.total}\nحالت: ${json.mode === 'replace' ? 'جایگزینی' : 'افزودن'}` +
+        (json.skipped_min_price ? `\nرد شده به‌دلیل حداقل قیمت: ${json.skipped_min_price}` : '');
       await loadConfig();
     } else {
       showToast(json.error || 'درون‌ریزی ناموفق بود', 'error');

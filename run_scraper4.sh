@@ -22,8 +22,22 @@ is_vps() {
 }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
+is_shared_fs() {
+  case "$1" in
+    /sdcard/*|/storage/*|/mnt/*|*/storage/shared/*|*/storage/emulated/*) return 0 ;;
+  esac
+  return 1
+}
+
 if is_termux; then
-  ROLE="termux"; SRC="${HOME}/amphp"; RUN="${HOME}/scraper4"
+  ROLE="termux"
+  if [ -d /data/data/com.termux/files/home ]; then
+    HOME_REAL="/data/data/com.termux/files/home"
+  else
+    HOME_REAL="${HOME}"
+  fi
+  SRC="${HOME_REAL}/amphp"
+  RUN="${HOME_REAL}/scraper4"
 elif is_vps; then
   ROLE="vps"; SRC="/opt/amphp"; RUN="/opt/scraper4"
 else
@@ -32,17 +46,65 @@ fi
 VENV="${RUN}/venv"
 PY="${VENV}/bin/python"
 
+require_writable() {
+  mkdir -p "$1" || fail "cannot create $1"
+  if ! touch "$1/.s4-write" 2>/dev/null; then
+    fail "read-only path: $1  (on Termux use $HOME not /sdcard)"
+  fi
+  rm -f "$1/.s4-write"
+  chmod -R u+w "$1" 2>/dev/null || true
+}
+
+termux_prepare() {
+  [ "$ROLE" = "termux" ] || return 0
+  if is_shared_fs "${PWD:-}" || is_shared_fs "$(readlink -f "$0" 2>/dev/null || echo "$0")"; then
+    echo "NOTE: started from shared storage. Git and backups go in ${HOME_REAL} (internal)."
+  fi
+  if [ -L "$SRC" ]; then
+    echo "Removing symlink $SRC (sdcard is read-only for git/backup)"
+    rm -f "$SRC"
+  fi
+  if [ -L "$RUN" ]; then
+    rm -f "$RUN"
+  fi
+  require_writable "$HOME_REAL"
+  require_writable "$SRC"
+  require_writable "$RUN"
+  export SCRAPER_DATA_FILE="${RUN}/scraper4_data.json"
+  export DEPLOYER_DATA_FILE="${RUN}/deployer4_data.json"
+  export SCRAPER_ERROR_LOG="${RUN}/scraper4-errors.jsonl"
+  for old in \
+      "${HOME}/storage/shared/scraper4/scraper4_data.json" \
+      "/sdcard/scraper4/scraper4_data.json" \
+      "/storage/emulated/0/scraper4/scraper4_data.json"
+  do
+    if [ -f "$old" ] && [ ! -f "${RUN}/scraper4_data.json" ]; then
+      echo "Copying backup data from $old"
+      cp -f "$old" "${RUN}/scraper4_data.json" || true
+    fi
+  done
+}
+
 fetch_latest() {
   command -v git >/dev/null 2>&1 || fail "git is missing"
-  mkdir -p "$(dirname "$SRC")"
+  require_writable "$(dirname "$SRC")"
+  require_writable "$SRC"
+  if is_shared_fs "$SRC"; then
+    fail "repo is on shared storage ($SRC). Use Termux home: $HOME/amphp"
+  fi
   if [ ! -d "${SRC}/.git" ]; then
     echo "Install: clone ${BRANCH} -> ${SRC}"
-    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC" || fail "git clone failed (need network)"
+    rm -rf "${SRC}.tmp"
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "${SRC}.tmp" || fail "git clone failed (need network)"
+    rm -rf "$SRC"
+    mv "${SRC}.tmp" "$SRC"
     return 0
   fi
   echo "Update: fetch origin ${BRANCH}"
+  chmod -R u+w "$SRC" 2>/dev/null || true
+  git -C "$SRC" config core.fileMode false 2>/dev/null || true
   if git -C "$SRC" fetch --depth 1 origin "$BRANCH"; then
-    git -C "$SRC" reset --hard FETCH_HEAD
+    git -C "$SRC" reset --hard FETCH_HEAD || fail "git reset failed (path not writable: $SRC)"
     echo "Git now: $(git -C "$SRC" log -1 --oneline)"
   else
     echo "WARNING: fetch failed — using files already in ${SRC} (offline)."
@@ -103,6 +165,9 @@ start_local() {
   export DEPLOYER_AUTO_START=0
   export DEPLOYER_TARGET="${RUN}/scraper4.py"
   export DEPLOYER_GIT_DIR="$SRC"
+  export SCRAPER_DATA_FILE="${RUN}/scraper4_data.json"
+  export DEPLOYER_DATA_FILE="${RUN}/deployer4_data.json"
+  export SCRAPER_ERROR_LOG="${RUN}/scraper4-errors.jsonl"
   cd "$RUN" || fail "cd ${RUN}"
   nohup "$PY" -m gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 4 --timeout 0 --graceful-timeout 30 scraper4:application \
     >"${RUN}/scraper4.log" 2>&1 &

@@ -5,6 +5,7 @@
 # Termux:  bash ~/amphp/run_scraper4.sh
 # VPS:     bash /opt/amphp/run_scraper4.sh
 #
+# Phone files: ~/storage/shared/codes/scraper4
 # Phone:   http://127.0.0.1:8000/   and  http://127.0.0.1:8001/
 # VPS:     http://37.32.5.36/put/   and  http://37.32.5.36/deploy/
 set -u

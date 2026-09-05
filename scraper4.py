@@ -68,8 +68,9 @@ except ImportError as exc:
     ) from exc
 
 # Every APP_VERSION bump must add a new top CHANGELOG row (گزارش تغییرات نسخه‌ها).
-APP_VERSION = "10.145"
+APP_VERSION = "10.146"
 CHANGELOG = [
+    {"version":"10.146","date":"2026-09-05","title":"رفع استخراج صفر در صفحه شروع","items":["اگر رله HTTP 503 بدهد استخراج هم مثل پیش‌نمایش مستقیم تکرار می‌شود","خطای خالی‌ماندن config دیگر شروع برداشت را متوقف نمی‌کند","صفر محصول به‌جای سکوت، پیام خطا می‌دهد"]},
     {"version":"10.145","date":"2026-09-05","title":"رفع خطای بارگذاری صفحه سلکتورها","items":["مسیر پیش‌نمایش سلکتور دوباره به تابع درست وصل شد تا fetch_engine_installed بدون آرگومان صدا نشود"]},
     {"version":"10.144","date":"2026-09-05","title":"گزارش تغییرات نسخه ادامه یافت","items":["ورودی‌های ۱۰.۱۴۲ و ۱۰.۱۴۳ به فهرست گزارش تغییرات اضافه شد","از این نسخه هر انتشار در همین گزارش ثبت می‌شود"]},
     {"version":"10.143","date":"2026-09-05","title":"موتورهای کمکی سلکتور روی موبایل","items":["نصب جداگانه httpx و cloudscraper و curl_cffi در venv گوشی و VPS","Playwright و Selenium روی Termux نصب نمی‌شوند چون Chromium دسکتاپ ندارند","استخراج خودکار httpx را هم امتحان می‌کند اگر نصب باشد"]},
@@ -1496,9 +1497,70 @@ def save_extract_checkpoint(job_id: str, config: dict[str, Any], report: ScrapeR
         live_task_update(task_id,percent,f"صفحه {done} از {pages}","running","محصول‌ها: "+str(len(report.products))+" · "+last,done=done,total=pages,extracted=len(report.products),elapsed_seconds=elapsed,eta_seconds=eta)
 
 
+def fetch_engine_installed(engine: str) -> bool:
+    if engine in {"requests", "request"}:
+        return True
+    names = {"httpx": "httpx", "cloudscraper": "cloudscraper", "curl_cffi": "curl_cffi", "playwright": "playwright", "selenium": "selenium"}
+    mod = names.get(engine)
+    if not mod:
+        return True
+    try:
+        importlib.import_module(mod)
+        return True
+    except ImportError:
+        return False
+
+
+def _is_relay_block_error(text: str) -> bool:
+    raw = clean_text(text)
+    if any(code in raw for code in ("HTTP 502", "HTTP 503", "HTTP 504", "HTTP 520", "HTTP 521", "HTTP 522", "HTTP 523", "HTTP 524")):
+        return True
+    low = raw.lower()
+    return " 503" in (" " + raw) and any(x in low for x in ("proxy", "relay", "cloudflare", "abrhapaas", "workers.dev"))
+
+
+def _fetcher_direct(network: dict[str, Any]) -> "Fetcher":
+    cfg = dict(network or {})
+    cfg["proxy"] = ""
+    cfg["proxy_mode"] = "direct"
+    return Fetcher(cfg)
+
+
+def picker_http_fetch(url: str, fetcher: "Fetcher", errors: list[str]) -> Any:
+    relay_dead = False
+    for engine in ("requests", "httpx", "cloudscraper", "curl_cffi"):
+        if not fetch_engine_installed(engine):
+            continue
+        if relay_dead:
+            break
+        try:
+            return fetcher.get(url, engine=engine)
+        except FetchError as exc:
+            msg = clean_text(exc)
+            if "نصب نیست" in msg:
+                continue
+            errors.append(f"{engine}: {msg}")
+            if fetcher.proxy_mode in {"relay", "http"} and _is_relay_block_error(msg):
+                relay_dead = True
+    return None
+
+
+def picker_browser_fetch(url: str, timeout: int, scrolls: int, errors: list[str]) -> Any:
+    if fetch_engine_installed("playwright"):
+        try:
+            return render_playwright(url, timeout, scrolls)
+        except FetchError as exc:
+            msg = clean_text(exc)
+            if "نصب نیست" not in msg:
+                errors.append(f"playwright: {msg}")
+    return None
+
 def scrape(config: dict[str, Any]) -> ScrapeReport:
     source = public_http_url(str(config.get("url", "")))
-    pages = max(1, min(MAX_PAGES_HARD, int(config.get("pages", 1))))
+    try:
+        pages = max(1, min(MAX_PAGES_HARD, int(config.get("pages") or 1)))
+    except (TypeError, ValueError):
+        pages = 1
     mode = str(config.get("render", "auto"))
     selectors = config.get("selectors") if isinstance(config.get("selectors"), dict) else {}
     detail_selectors = config.get("detail_selectors") if isinstance(config.get("detail_selectors"), dict) else {}
@@ -1537,17 +1599,29 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
         # Playwright is only a DOM renderer fallback; it never calls a product API.
         if mode != "browser":
             requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","httpx","cloudscraper","curl_cffi","playwright","selenium"} else "auto";engines=[] if requested_engine in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine]);engine_errors=[]
-            for engine_index,engine in enumerate(engines):
-                if not fetch_engine_installed(engine):
-                    continue
-                try:
-                    if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"موتور {engine} · صفحه {number} از {pages}","running",f"تلاش DOM بدون API/hydration · {url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
-                    result=fetcher.get(url,engine=engine);candidate_rows,candidate_soup,candidate_diag=parse_html(result.text,result.url,selectors);engine_errors.append(f"{engine}: HTTP {result.status} · DOM={len(candidate_rows)}")
-                    if candidate_rows:
-                        rows,soup,diag=candidate_rows,candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors};report.modes.add("dom-"+engine);report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM با {engine}");break
-                    soup,diag=candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors}
-                except (FetchError,ValueError) as exc:
-                    fetch_error=str(exc);engine_errors.append(f"{engine}: {fetch_error}")
+            def _dom_with(active_fetcher):
+                nonlocal rows, soup, diag, fetch_error
+                relay_dead=False
+                for engine_index,engine in enumerate(engines):
+                    if engine!="requests" and not fetch_engine_installed(engine):
+                        continue
+                    if relay_dead:
+                        break
+                    try:
+                        if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"موتور {engine} · صفحه {number} از {pages}","running",f"تلاش DOM بدون API/hydration · {url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
+                        result=active_fetcher.get(url,engine=engine);candidate_rows,candidate_soup,candidate_diag=parse_html(result.text,result.url,selectors);engine_errors.append(f"{engine}: HTTP {result.status} · DOM={len(candidate_rows)}")
+                        if candidate_rows:
+                            rows,soup,diag=candidate_rows,candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors};report.modes.add("dom-"+engine);report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM با {engine}");return
+                        soup,diag=candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors}
+                    except (FetchError,ValueError) as exc:
+                        fetch_error=str(exc);engine_errors.append(f"{engine}: {fetch_error}")
+                        if active_fetcher.proxy_mode in {"relay","http"} and _is_relay_block_error(fetch_error):
+                            relay_dead=True
+            _dom_with(fetcher)
+            if not rows and fetcher.proxy_mode in {"relay","http"}:
+                report.logs.append("رله/پروکسی ناموفق — تلاش مستقیم بدون پروکسی")
+                if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+1),"تلاش مستقیم بدون پروکسی","running",url,done=number-1,total=pages,extracted=len(report.products))
+                _dom_with(_fetcher_direct(cfg.get("network") or {}))
             if not rows and engine_errors:diag={**diag,"attempts":engine_errors};report.logs.extend(f"صفحه {number} · {x}" for x in engine_errors)
 
         if not rows and mode in ("auto", "browser"):
@@ -1592,9 +1666,10 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
             report.logs.append("صفحه‌بندی متوقف شد: محصول تازه‌ای نبود")
             break
 
-    if not report.products and report.diagnostics.get("error"):
+    if not report.products:
         save_extract_checkpoint(job_id,config,report,max(start_page,report.pages or start_page),next_url,"failed")
-        raise FetchError("هیچ محصولی استخراج نشد؛ "+clean_text(report.diagnostics["error"])[:1200])
+        hint=clean_text(report.diagnostics.get("error") or " | ".join(report.logs[-8:]))[:1200]
+        raise FetchError("هیچ محصولی استخراج نشد"+(("؛ "+hint) if hint else " — آدرس، سلکتور یا اتصال شبکه را بررسی کنید"))
 
     if enrich and report.products:
         # Reuse already completed rich fields for unchanged products; "all" explicitly refreshes them.
@@ -2759,65 +2834,6 @@ def render_index() -> str:
 def index():
     return Response(render_index(), mimetype="text/html; charset=utf-8")
 
-
-
-def fetch_engine_installed(engine: str) -> bool:
-    if engine in {"requests", "request"}:
-        return True
-    names = {"httpx": "httpx", "cloudscraper": "cloudscraper", "curl_cffi": "curl_cffi", "playwright": "playwright", "selenium": "selenium"}
-    mod = names.get(engine)
-    if not mod:
-        return True
-    try:
-        importlib.import_module(mod)
-        return True
-    except ImportError:
-        return False
-
-
-def _is_relay_block_error(text: str) -> bool:
-    raw = clean_text(text)
-    if any(code in raw for code in ("HTTP 502", "HTTP 503", "HTTP 504", "HTTP 520", "HTTP 521", "HTTP 522", "HTTP 523", "HTTP 524")):
-        return True
-    low = raw.lower()
-    return " 503" in (" " + raw) and any(x in low for x in ("proxy", "relay", "cloudflare", "abrhapaas", "workers.dev"))
-
-
-def _fetcher_direct(network: dict[str, Any]) -> "Fetcher":
-    cfg = dict(network or {})
-    cfg["proxy"] = ""
-    cfg["proxy_mode"] = "direct"
-    return Fetcher(cfg)
-
-
-def picker_http_fetch(url: str, fetcher: "Fetcher", errors: list[str]) -> Any:
-    relay_dead = False
-    for engine in ("requests", "httpx", "cloudscraper", "curl_cffi"):
-        if not fetch_engine_installed(engine):
-            continue
-        if relay_dead:
-            break
-        try:
-            return fetcher.get(url, engine=engine)
-        except FetchError as exc:
-            msg = clean_text(exc)
-            if "نصب نیست" in msg:
-                continue
-            errors.append(f"{engine}: {msg}")
-            if fetcher.proxy_mode in {"relay", "http"} and _is_relay_block_error(msg):
-                relay_dead = True
-    return None
-
-
-def picker_browser_fetch(url: str, timeout: int, scrolls: int, errors: list[str]) -> Any:
-    if fetch_engine_installed("playwright"):
-        try:
-            return render_playwright(url, timeout, scrolls)
-        except FetchError as exc:
-            msg = clean_text(exc)
-            if "نصب نیست" not in msg:
-                errors.append(f"playwright: {msg}")
-    return None
 
 
 @app.get("/api/picker/preview")
@@ -5080,7 +5096,7 @@ button.linkish.danger{color:#fb7185!important}
 <div id="galManualBox" class="hidden"><label>سلکتورها (هر خط یا |)</label><textarea id="galSelectors" rows="3" dir="ltr" placeholder=".gallery img | .thumb img"></textarea></div>
 <div id="galNumberBox" class="hidden"><label>الگو با {n}</label><input id="galPattern" dir="ltr" placeholder=".thumb-{n} img"><div class="pair"><input id="galFrom" type="number" value="1" min="0"><input id="galTo" type="number" value="12" min="0"></div></div>
 <label class="checkline"><input type="checkbox" id="galSkipFirst"> عکس اول را رد کن</label></div></div>
-<div class="visual-picker"><div class="section-head"><div><h3>🎯 انتخابگر بصری DOM</h3><small>مانند نسخه PHP: جزء را روی صفحه انتخاب کنید و با والد/فرزند/هم‌سطح سلکتور را اصلاح کنید.</small></div><span id="pickerReady" class="badge">آماده بارگذاری</span></div><div class="picker-toolbar"><select id="pickerField" onchange="pickerContext()"></select><input id="pickerUrl" dir="ltr" placeholder="آدرس فهرست یا صفحه محصول"><button onclick="loadVisualPicker()">بارگذاری</button><button class="green" onclick="loadSnappPicker()">اسنپ‌شاپ / SPA</button><button class="green" onclick="nextPickerField()">⏭ فیلد بعدی</button><button class="gray" onclick="closeVisualPicker()">✕ بستن</button><button class="green" onclick="saveProfilePrompt()">💾 ذخیره در پروفایل</button></div><div id="pickerChips" class="picker-chips"></div><div id="pickerControls" class="picker-controls"><button onclick="pickerMove('up')">⬆ والد</button><button onclick="pickerMove('down')">⬇ فرزند</button><button onclick="pickerMove('prev')">→ قبلی</button><button onclick="pickerMove('next')">← بعدی</button><span id="pickerSelection">یک جزء را انتخاب کنید</span><label class="picker-height">ارتفاع <input type="range" min="350" max="1400" value="720" oninput="setPickerHeight(this.value)"></label></div><div id="pickerFrameWrap" class="picker-frame-wrap"><iframe id="pickerFrame" sandbox="allow-scripts" title="پیش‌نمایش انتخابگر سلکتور"></iframe></div><div id="pickerStatus" class="status">در تب فهرست، ظرف محصول و اجزای کارت را انتخاب کنید؛ در تب جزئیات، صفحه یکی از محصولات را باز کنید.</div></div></div></details><div class="primary-actions"><button id="runBtn" onclick="runScrape()">شروع برداشت</button><div class="export-row"><button type="button" class="ghost" onclick="saveProfilePrompt()">ذخیره</button><button type="button" class="ghost" onclick="downloadCSV()">CSV</button><button type="button" class="ghost" onclick="downloadJSON()">JSON</button><button type="button" class="ghost" onclick="downloadXLSX()">Excel</button><label class="ghost file-btn">ورود<input id="csvImport" type="file" accept=".csv,text/csv" onchange="importCSV(this)"></label></div></div>
+<div class="visual-picker"><div class="section-head"><div><h3>🎯 انتخابگر بصری DOM</h3><small>مانند نسخه PHP: جزء را روی صفحه انتخاب کنید و با والد/فرزند/هم‌سطح سلکتور را اصلاح کنید.</small></div><span id="pickerReady" class="badge">آماده بارگذاری</span></div><div class="picker-toolbar"><select id="pickerField" onchange="pickerContext()"></select><input id="pickerUrl" dir="ltr" placeholder="آدرس فهرست یا صفحه محصول"><button onclick="loadVisualPicker()">بارگذاری</button><button class="green" onclick="loadSnappPicker()">اسنپ‌شاپ / SPA</button><button class="green" onclick="nextPickerField()">⏭ فیلد بعدی</button><button class="gray" onclick="closeVisualPicker()">✕ بستن</button><button class="green" onclick="saveProfilePrompt()">💾 ذخیره در پروفایل</button></div><div id="pickerChips" class="picker-chips"></div><div id="pickerControls" class="picker-controls"><button onclick="pickerMove('up')">⬆ والد</button><button onclick="pickerMove('down')">⬇ فرزند</button><button onclick="pickerMove('prev')">→ قبلی</button><button onclick="pickerMove('next')">← بعدی</button><span id="pickerSelection">یک جزء را انتخاب کنید</span><label class="picker-height">ارتفاع <input type="range" min="350" max="1400" value="720" oninput="setPickerHeight(this.value)"></label></div><div id="pickerFrameWrap" class="picker-frame-wrap"><iframe id="pickerFrame" sandbox="allow-scripts" title="پیش‌نمایش انتخابگر سلکتور"></iframe></div><div id="pickerStatus" class="status">در تب فهرست، ظرف محصول و اجزای کارت را انتخاب کنید؛ در تب جزئیات، صفحه یکی از محصولات را باز کنید.</div></div></div></details><div class="primary-actions"><button id="runBtn" type="button" onclick="runScrape()">شروع برداشت</button><div class="export-row"><button type="button" class="ghost" onclick="saveProfilePrompt()">ذخیره</button><button type="button" class="ghost" onclick="downloadCSV()">CSV</button><button type="button" class="ghost" onclick="downloadJSON()">JSON</button><button type="button" class="ghost" onclick="downloadXLSX()">Excel</button><label class="ghost file-btn">ورود<input id="csvImport" type="file" accept=".csv,text/csv" onchange="importCSV(this)"></label></div></div>
 <div id="status" class="card status">آماده برای برداشت محصولات</div><div id="extractLiveTask" class="card live-task" style="display:none"><div class="live-task-head"><b id="extractTaskTitle">استخراج محصولات</b><span id="extractTaskPercent">۰٪</span></div><div class="progress-track"><i id="extractTaskBar"></i></div><div id="extractTaskMetrics" class="task-metrics"></div><div id="extractTaskStep" class="live-step"></div><div id="extractTaskDetails" class="live-details"></div></div><div id="extractCounters" class="stats clickable-counts"><button onclick="openChangeList('all')"><b>۰</b><span>کل محصولات</span></button><button onclick="openChangeList('added')"><b>۰</b><span>محصول جدید</span></button><button onclick="openChangeList('price_changed')"><b>۰</b><span>تغییر قیمت</span></button><button onclick="openChangeList('changed')"><b>۰</b><span>تغییر محتوا</span></button><button onclick="openChangeList('removed')"><b>۰</b><span>حذف‌شده</span></button><button onclick="openChangeList('unchanged')"><b>۰</b><span>بدون تغییر</span></button></div><div class="card tablebox"><table><thead><tr><th>#</th><th>تصویر</th><th>عنوان</th><th>قیمت</th><th>SKU</th><th>جزئیات</th><th>لینک</th></tr></thead><tbody id="rows"><tr><td class="empty" colspan="6">پس از شروع برداشت، محصولات اینجا نمایش داده می‌شوند.</td></tr></tbody></table></div></section>
 <section id="profileSettings" class="pane"><div class="card"><h3>⚙️ تنظیمات پروفایل</h3><div class="grid grid4"><div><label>پیشوند عنوان</label><input id="rule_title_prefix"></div><div><label>پسوند عنوان</label><input id="rule_title_suffix"></div><div><label>نوع تعدیل قیمت</label><select id="rule_price_mode"><option value="none">بدون تغییر</option><option value="percent">درصد</option><option value="multiplier">ضریب</option><option value="fixed">مبلغ ثابت</option></select></div><div><label>مقدار تعدیل</label><input id="rule_price_value" type="number" step="0.01" value="0"></div><div><label>گردکردن قیمت</label><input id="rule_price_round" type="number" value="0" placeholder="مثلاً 1000"></div><div><label>موجودی پیش‌فرض</label><input id="rule_default_stock" type="number"></div><div><label>دسته‌بندی پیش‌فرض</label><input id="rule_default_category"></div><div><label>شناسه دسته باسلام</label><input id="rule_bsl_category_id" type="number"></div><div><label>شناسه دسته ووکامرس</label><input id="rule_woo_category_id" type="number"></div></div><div class="destination-price-grid"><div class="destination-price-card woo-price-card"><h3>🛒 تعدیل قیمت ووکامرس</h3><div class="grid"><div><label>روش</label><select id="rule_woo_price_mode"><option value="none">بدون تغییر</option><option value="percent">درصد</option><option value="multiplier">ضریب</option><option value="fixed">مبلغ ثابت</option></select></div><div><label>مقدار</label><input id="rule_woo_price_value" type="number" step="0.01" value="0"></div><div class="wide"><label>گرد کردن</label><input id="rule_woo_price_round" type="number" value="0" placeholder="مثلاً 1000"></div></div></div><div class="destination-price-card bsl-price-card"><h3>🏪 تعدیل قیمت باسلام</h3><div class="grid"><div><label>روش</label><select id="rule_bsl_price_mode"><option value="none">بدون تغییر</option><option value="percent">درصد</option><option value="multiplier">ضریب</option><option value="fixed">مبلغ ثابت</option></select></div><div><label>مقدار</label><input id="rule_bsl_price_value" type="number" step="0.01" value="0"></div><div class="wide"><label>گرد کردن</label><input id="rule_bsl_price_round" type="number" value="0" placeholder="مثلاً 1000"></div></div></div></div><div class="note">تنظیم عمومی روی نتیجه استخراج اعمال می‌شود؛ تعدیل هر مقصد فقط هنگام ارسال همان پروفایل محاسبه خواهد شد.</div></div></section>
 <section id="selectors" class="pane"><div id="selectorsMount"></div></section>
@@ -5122,7 +5138,7 @@ function pickerMove(action){$('pickerFrame').contentWindow?.postMessage({action}
 function pickerContext(){$('pickerFrame').contentWindow?.postMessage({action:'context',selector:pickerKind==='list'&&$('pickerField').value!=='container'?$('sel_container').value.trim():''},'*')}
 function setPickerHeight(value){$('pickerFrameWrap').style.height=value+'px'}
 window.addEventListener('message',event=>{if(event.source!==$('pickerFrame').contentWindow)return;let d=event.data||{};if(d.type==='s4-picker-ready'){pickerContext();$('pickerReady').textContent='آماده انتخاب';$('pickerReady').className='badge ok';$('pickerStatus').textContent='فیلد را انتخاب کنید، سپس روی جزء متناظر در پیش‌نمایش بزنید.'}if(d.type==='s4-picker-error'){$('pickerReady').textContent='خطای بارگذاری';$('pickerReady').className='badge error';$('pickerStatus').innerHTML='<span class="error">'+esc(d.error||'بارگذاری ناموفق بود')+'</span>'}if(d.type==='s4-picker-picked'){let field=$('pickerField').value,input=$(pickerInputId(field));if(input){input.value=d.selector;input.dispatchEvent(new Event('change'));$('pickerSelection').textContent=d.selector;$('pickerStatus').innerHTML='<span class="ok">✓ '+esc(d.tag)+' · '+d.matches+' تطابق · '+esc(d.text||'')+'</span>';renderPickerChips()}}});selectorTab('list');
-function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());let profile_rules={title_prefix:$('rule_title_prefix').value.trim(),title_suffix:$('rule_title_suffix').value.trim(),price_mode:$('rule_price_mode').value,price_value:+$('rule_price_value').value,price_round:+$('rule_price_round').value,default_stock:$('rule_default_stock').value,default_category:$('rule_default_category').value.trim(),bsl_category_id:+$('rule_bsl_category_id').value,woo_category_id:+$('rule_woo_category_id').value,woo_price_mode:$('rule_woo_price_mode').value,woo_price_value:+$('rule_woo_price_value').value,woo_price_round:+$('rule_woo_price_round').value,bsl_price_mode:$('rule_bsl_price_mode').value,bsl_price_value:+$('rule_bsl_price_value').value,bsl_price_round:+$('rule_bsl_price_round').value};return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,fetch_engine:$('fetch_engine').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_scope:$('detail_scope').value,detail_limit:+$('detail_limit').value,selectors,detail_selectors,profile_rules,display_name:(profiles[activeProfile]&&profiles[activeProfile].display_name)||'',gallery:{mode:$('galMode')?$('galMode').value:'auto',box:$('galBox')?$('galBox').value.trim():'',selectors:$('galSelectors')?$('galSelectors').value.trim():'',pattern:$('galPattern')?$('galPattern').value.trim():'',from:+(($('galFrom')||{}).value||1),to:+(($('galTo')||{}).value||10),skip_first:!!($('galSkipFirst')&&$('galSkipFirst').checked)}}}
+function config(){const g=id=>$(id)||{value:'',checked:false};const num=(id,d)=>{const n=+(g(id).value);return Number.isFinite(n)?n:d};let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=g('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=g('det_'+k).value.trim());let profile_rules={title_prefix:g('rule_title_prefix').value.trim(),title_suffix:g('rule_title_suffix').value.trim(),price_mode:g('rule_price_mode').value||'none',price_value:num('rule_price_value',0),price_round:num('rule_price_round',0),default_stock:g('rule_default_stock').value,default_category:g('rule_default_category').value.trim(),bsl_category_id:num('rule_bsl_category_id',0),woo_category_id:num('rule_woo_category_id',0),woo_price_mode:g('rule_woo_price_mode').value||'none',woo_price_value:num('rule_woo_price_value',0),woo_price_round:num('rule_woo_price_round',0),bsl_price_mode:g('rule_bsl_price_mode').value||'none',bsl_price_value:num('rule_bsl_price_value',0),bsl_price_round:num('rule_bsl_price_round',0)};return {url:g('url').value.trim(),pages:Math.max(1,num('pages',1)),render:g('render').value||'auto',fetch_engine:g('fetch_engine').value||'auto',pagination:g('pagination').value||'query',page_value:g('page_value').value.trim(),scrolls:num('scrolls',4),enrich:g('enrich').value!=='0',detail_scope:g('detail_scope').value||'missing',detail_limit:num('detail_limit',0),selectors,detail_selectors,profile_rules,display_name:(profiles[activeProfile]&&profiles[activeProfile].display_name)||'',gallery:{mode:g('galMode').value||'auto',box:g('galBox').value.trim(),selectors:g('galSelectors').value.trim(),pattern:g('galPattern').value.trim(),from:num('galFrom',1),to:num('galTo',10),skip_first:!!g('galSkipFirst').checked}}}
 function galModeChanged(){const m=$('galMode')?$('galMode').value:'auto';['galAutoBox','galManualBox','galNumberBox'].forEach(id=>{const e=$(id);if(!e)return;e.classList.toggle('hidden', (id==='galAutoBox'&&m!=='auto')||(id==='galManualBox'&&m!=='manual')||(id==='galNumberBox'&&m!=='number'))})}
 function apply(c){if(!c)return;['url','pages','render','fetch_engine','pagination','page_value','scrolls','detail_scope','detail_limit'].forEach(k=>{if(c[k]!==undefined&&$(k))$(k).value=c[k]});if($('enrich'))$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''});(function(g){g=c.gallery||{};if($('galMode'))$('galMode').value=g.mode||'auto';if($('galBox'))$('galBox').value=g.box||'';if($('galSelectors'))$('galSelectors').value=g.selectors||'';if($('galPattern'))$('galPattern').value=g.pattern||'';if($('galFrom'))$('galFrom').value=g.from||1;if($('galTo'))$('galTo').value=g.to||10;if($('galSkipFirst'))$('galSkipFirst').checked=!!g.skip_first;if(typeof galModeChanged==='function')galModeChanged()})();let r=c.profile_rules||{};['title_prefix','title_suffix','price_mode','price_value','price_round','default_stock','default_category','bsl_category_id','woo_category_id','woo_price_mode','woo_price_value','woo_price_round','bsl_price_mode','bsl_price_value','bsl_price_round'].forEach(k=>{if($('rule_'+k)&&r[k]!==undefined)$('rule_'+k).value=r[k]});if($('pickerUrl'))$('pickerUrl').value=c.url||$('url')?.value||'';syncProfileAcrossTabs()}
 function syncProfileAcrossTabs(){const u=$('url')?.value||'';if($('pickerUrl')&&u)$('pickerUrl').value=u;if($('dispatchProfile')&&activeProfile)$('dispatchProfile').value=activeProfile;if($('dispatchProfileBasalam')&&activeProfile)$('dispatchProfileBasalam').value=activeProfile}

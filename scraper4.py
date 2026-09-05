@@ -68,8 +68,9 @@ except ImportError as exc:
     ) from exc
 
 # Every APP_VERSION bump must add a new top CHANGELOG row (گزارش تغییرات نسخه‌ها).
-APP_VERSION = "10.144"
+APP_VERSION = "10.145"
 CHANGELOG = [
+    {"version":"10.145","date":"2026-09-05","title":"رفع خطای بارگذاری صفحه سلکتورها","items":["مسیر پیش‌نمایش سلکتور دوباره به تابع درست وصل شد تا fetch_engine_installed بدون آرگومان صدا نشود"]},
     {"version":"10.144","date":"2026-09-05","title":"گزارش تغییرات نسخه ادامه یافت","items":["ورودی‌های ۱۰.۱۴۲ و ۱۰.۱۴۳ به فهرست گزارش تغییرات اضافه شد","از این نسخه هر انتشار در همین گزارش ثبت می‌شود"]},
     {"version":"10.143","date":"2026-09-05","title":"موتورهای کمکی سلکتور روی موبایل","items":["نصب جداگانه httpx و cloudscraper و curl_cffi در venv گوشی و VPS","Playwright و Selenium روی Termux نصب نمی‌شوند چون Chromium دسکتاپ ندارند","استخراج خودکار httpx را هم امتحان می‌کند اگر نصب باشد"]},
     {"version":"10.142","date":"2026-09-05","title":"پیش‌نمایش سلکتور و چندغرفه باسلام","items":["اگر رله HTTP 503 بدهد پیش‌نمایش مستقیم بدون پروکسی تکرار می‌شود","موتورهای نصب‌نشده دیگر خطای پیش‌نمایش نیستند","غرفه‌های اضافی باسلام با ارسال همزمان یا ترتیبی به همه غرفه‌های فعال"]},
@@ -2760,8 +2761,6 @@ def index():
 
 
 
-@app.get("/api/picker/preview")
-
 def fetch_engine_installed(engine: str) -> bool:
     if engine in {"requests", "request"}:
         return True
@@ -2821,6 +2820,7 @@ def picker_browser_fetch(url: str, timeout: int, scrolls: int, errors: list[str]
     return None
 
 
+@app.get("/api/picker/preview")
 def api_picker_preview():
     """Return a sandboxed, script-stripped DOM preview with our visual selector inspector."""
     url=public_http_url(clean_text(request.args.get("url")))

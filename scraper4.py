@@ -68,8 +68,9 @@ except ImportError as exc:
     ) from exc
 
 # Every APP_VERSION bump must add a new top CHANGELOG row (گزارش تغییرات نسخه‌ها).
-APP_VERSION = "10.148"
+APP_VERSION = "10.149"
 CHANGELOG = [
+    {"version":"10.149","date":"2026-09-05","title":"موتور مستر هر سایت","items":["استخراج سریع‌ترین موتوری که برای آن سایت محصول بدهد را مستر پروفایل می‌کند","صفحات بعد و استخراج بعدی ابتدا مستر را می‌زنند؛ بقیه فقط پشتیبان‌اند"]},
     {"version":"10.148","date":"2026-09-05","title":"قیمت باسلام به ریال","items":["هنگام ارسال به باسلام قیمت تومان در ۱۰ ضرب می‌شود مگر اینکه واحد از قبل ریال باشد"]},
     {"version":"10.147","date":"2026-09-05","title":"توضیح‌ساز و دسته‌بندی هوش مصنوعی","items":["توضیح کوتاه و بلند HTML با مدل فعال","دسته‌بندی فروشگاهی و تطبیق با دسته باسلام","اصلاح دسته‌های خالی، عمومی یا اشتباه در پس‌زمینه"]},
     {"version":"10.146","date":"2026-09-05","title":"رفع استخراج صفر در صفحه شروع","items":["اگر رله HTTP 503 بدهد استخراج هم مثل پیش‌نمایش مستقیم تکرار می‌شود","خطای خالی‌ماندن config دیگر شروع برداشت را متوقف نمی‌کند","صفر محصول به‌جای سکوت، پیام خطا می‌دهد"]},
@@ -1513,6 +1514,65 @@ def fetch_engine_installed(engine: str) -> bool:
         return False
 
 
+HTTP_ENGINE_ORDER = ("requests", "httpx", "curl_cffi", "cloudscraper")
+KNOWN_ENGINES = HTTP_ENGINE_ORDER + ("playwright", "selenium")
+
+
+def engine_http_order() -> list[str]:
+    out: list[str] = []
+    for engine in HTTP_ENGINE_ORDER:
+        if engine == "requests" or fetch_engine_installed(engine):
+            out.append(engine)
+    return out
+
+
+def engine_try_order(master: str, requested: str, mode: str) -> list[str]:
+    """Fastest-first chain: master/pin at the front, the rest are backups."""
+    http = engine_http_order()
+    browsers = [e for e in ("playwright",) if fetch_engine_installed(e)]
+    if requested == "selenium" or master == "selenium":
+        if fetch_engine_installed("selenium"):
+            browsers.append("selenium")
+    pin = requested if requested in KNOWN_ENGINES else ""
+    head = pin or (master if master in KNOWN_ENGINES else "")
+    if mode == "browser":
+        chain = browsers + http
+    elif head in {"playwright", "selenium"}:
+        chain = [head] + [x for x in browsers if x != head] + http
+    elif head in http:
+        chain = [head] + [x for x in http if x != head] + browsers
+    else:
+        chain = http + browsers
+    seen: set[str] = set()
+    out: list[str] = []
+    for engine in chain:
+        if engine not in seen:
+            seen.add(engine)
+            out.append(engine)
+    return out
+
+
+def persist_profile_master_engine(profile_name: str, engine: str, host: str = "", elapsed_ms: int = 0) -> None:
+    name = clean_text(profile_name)
+    engine = clean_text(engine).lower()
+    if not name or engine not in KNOWN_ENGINES:
+        return
+    try:
+        data = load_data()
+        prof = data.get("profiles", {}).get(name)
+        if not isinstance(prof, dict):
+            return
+        prof["fetch_engine_master"] = engine
+        if host:
+            prof["fetch_engine_host"] = host
+        if elapsed_ms:
+            prof["fetch_engine_ms"] = int(elapsed_ms)
+        prof["fetch_engine_learned_at"] = int(time.time())
+        save_data(data)
+    except Exception as exc:
+        report_error("engine_master", exc)
+
+
 def _is_relay_block_error(text: str) -> bool:
     raw = clean_text(text)
     if any(code in raw for code in ("HTTP 502", "HTTP 503", "HTTP 504", "HTTP 520", "HTTP 521", "HTTP 522", "HTTP 523", "HTTP 524")):
@@ -1582,6 +1642,17 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
     next_url = str(config.get("_next_url", ""))
     if not details_only:save_extract_checkpoint(job_id,config,report,start_page,next_url)
     task_id=clean_text(config.get("_live_task_id"))
+    source_host=(urlparse(source).hostname or "").lower()
+    requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto"
+    if requested_engine not in {"auto"}|set(KNOWN_ENGINES):
+        requested_engine="auto"
+    master=clean_text(config.get("fetch_engine_master")).lower()
+    saved_host=clean_text(config.get("fetch_engine_host")).lower()
+    if saved_host and source_host and saved_host!=source_host:
+        master=""
+    if requested_engine in KNOWN_ENGINES:
+        master=requested_engine
+    profile_name=clean_text(config.get("_profile_name"))
 
     for number in range(start_page, pages + 1):
         if task_id and live_task_cancelled(task_id):raise ValueError("استخراج با درخواست کاربر متوقف شد")
@@ -1599,10 +1670,17 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
 
         # scraper4.php strategy: fetch the page DOM and run selectors. In auto mode,
         # Playwright is only a DOM renderer fallback; it never calls a product API.
-        if mode != "browser":
-            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","httpx","cloudscraper","curl_cffi","playwright","selenium"} else "auto";engines=[] if requested_engine in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine]);engine_errors=[]
+        order=engine_try_order(master, requested_engine if requested_engine!="auto" else "", mode)
+        http_engines=[e for e in order if e not in {"playwright","selenium"}]
+        browser_engines=[e for e in order if e in {"playwright","selenium"}]
+        browser_first=bool(order and order[0] in {"playwright","selenium"})
+        engine_errors=[]
+        won_engine=""
+        won_ms=0
+        if mode!="browser" and http_engines and not browser_first:
+            engines=http_engines
             def _dom_with(active_fetcher):
-                nonlocal rows, soup, diag, fetch_error
+                nonlocal rows, soup, diag, fetch_error, won_engine, won_ms
                 relay_dead=False
                 for engine_index,engine in enumerate(engines):
                     if engine!="requests" and not fetch_engine_installed(engine):
@@ -1610,10 +1688,12 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
                     if relay_dead:
                         break
                     try:
-                        if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"موتور {engine} · صفحه {number} از {pages}","running",f"تلاش DOM بدون API/hydration · {url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
+                        if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"{'مستر' if engine==master else 'پشتیبان'} {engine} · صفحه {number} از {pages}","running",f"{url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
+                        t0=time.monotonic()
                         result=active_fetcher.get(url,engine=engine);candidate_rows,candidate_soup,candidate_diag=parse_html(result.text,result.url,selectors);engine_errors.append(f"{engine}: HTTP {result.status} · DOM={len(candidate_rows)}")
                         if candidate_rows:
-                            rows,soup,diag=candidate_rows,candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors};report.modes.add("dom-"+engine);report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM با {engine}");return
+                            won_engine,won_ms=engine,int((time.monotonic()-t0)*1000)
+                            rows,soup,diag=candidate_rows,candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors};report.modes.add("dom-"+engine);report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM با {engine} ({won_ms}ms)");return
                         soup,diag=candidate_soup,{**candidate_diag,"engine":engine,"attempts":engine_errors}
                     except (FetchError,ValueError) as exc:
                         fetch_error=str(exc);engine_errors.append(f"{engine}: {fetch_error}")
@@ -1626,23 +1706,53 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
                 _dom_with(_fetcher_direct(cfg.get("network") or {}))
             if not rows and engine_errors:diag={**diag,"attempts":engine_errors};report.logs.extend(f"صفحه {number} · {x}" for x in engine_errors)
 
-        if not rows and mode in ("auto", "browser"):
-            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto"
-            if requested_engine in {"playwright","selenium"}:
-                browser_try=[requested_engine]
-            else:
-                browser_try=["playwright"]
-            for bengine in browser_try:
+        if not rows and mode in ("auto", "browser") and browser_engines:
+            for bengine in browser_engines:
                 try:
-                    if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+2),f"رندر {bengine} صفحه {number} از {pages}","running",("HTML محصولی نداشت"+(" · "+fetch_error if fetch_error else "")+f"؛ {bengine} در حال اجراست"),done=number-1,total=pages,extracted=len(report.products))
-                    snapp="snappshop.ir" in (urlparse(url).hostname or "").lower();scrolls=int(config.get("scrolls", 8 if snapp else 4));result = render_playwright(url, fetcher.timeout, scrolls) if bengine=="playwright" else render_selenium(url, fetcher.timeout, scrolls)
+                    if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+2),f"{'مستر' if bengine==master else 'پشتیبان'} {bengine} · صفحه {number} از {pages}","running",("HTML محصولی نداشت"+(" · "+fetch_error if fetch_error else "")+f"؛ {bengine}"),done=number-1,total=pages,extracted=len(report.products))
+                    snapp="snappshop.ir" in (urlparse(url).hostname or "").lower();scrolls=int(config.get("scrolls", 8 if snapp else 4));t0=time.monotonic();result = render_playwright(url, fetcher.timeout, scrolls) if bengine=="playwright" else render_selenium(url, fetcher.timeout, scrolls)
                     rows, soup, diag = parse_html(result.text, result.url, selectors);diag={**diag,"engine":bengine,"attempts":diag.get("attempts",[])}
                     report.modes.add(bengine+"-dom")
-                    report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده با {bengine}")
                     if rows:
+                        won_engine,won_ms=bengine,int((time.monotonic()-t0)*1000)
+                        report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده با {bengine} ({won_ms}ms)")
                         break
+                    report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده با {bengine}")
                 except (FetchError, ValueError) as exc:
                     fetch_error = str(exc)
+
+        if not rows and browser_first and mode!="browser" and http_engines:
+            engines=http_engines
+            def _dom_with_backup(active_fetcher):
+                nonlocal rows, soup, diag, fetch_error, won_engine, won_ms
+                for engine_index,engine in enumerate(engines):
+                    if engine!="requests" and not fetch_engine_installed(engine):
+                        continue
+                    try:
+                        t0=time.monotonic()
+                        result=active_fetcher.get(url,engine=engine)
+                        candidate_rows,candidate_soup,candidate_diag=parse_html(result.text,result.url,selectors)
+                        if candidate_rows:
+                            won_engine,won_ms=engine,int((time.monotonic()-t0)*1000)
+                            rows,soup,diag=candidate_rows,candidate_soup,{**candidate_diag,"engine":engine}
+                            report.modes.add("dom-"+engine)
+                            report.logs.append(f"صفحه {number}: {len(rows)} محصول پشتیبان {engine}")
+                            return
+                    except (FetchError,ValueError) as exc:
+                        fetch_error=str(exc)
+            _dom_with_backup(fetcher)
+
+        if won_engine and (not master or master!=won_engine):
+            master=won_engine
+            config["fetch_engine_master"]=master
+            config["fetch_engine_host"]=source_host
+            report.diagnostics["fetch_engine_master"]=master
+            report.diagnostics["fetch_engine_ms"]=won_ms
+            report.logs.append(f"موتور مستر این سایت: {master}"+(f" · {won_ms}ms" if won_ms else ""))
+            persist_profile_master_engine(profile_name, master, source_host, won_ms)
+        elif won_engine:
+            report.diagnostics["fetch_engine_master"]=won_engine
+            if won_ms: report.diagnostics["fetch_engine_ms"]=won_ms
 
         if pag_kind == "next" and soup is not None:
             try:
@@ -1693,7 +1803,10 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
                 if task_id:
                     detail_percent=round(attempted/max(1,min(len(candidates),detail_limit))*96) if details_only else 88+round(attempted/max(1,min(len(candidates),detail_limit))*9)
                     live_task_update(task_id,detail_percent,f"جزئیات محصول {attempted} از {min(len(candidates),detail_limit)}","running",clean_text(product.get("title"))[:160],done=position,total=min(len(candidates),detail_limit),extracted=len(report.products))
-                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";host=(urlparse(product.get("link") or "").hostname or "").lower();spa=any(x in host for x in ("snappshop.ir","snapp.ir"));detail_engines=[] if requested in {"playwright","selenium"} or spa else (["requests","httpx","cloudscraper","curl_cffi"] if requested=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested=="auto" else [requested]));detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[];best_q=-1
+                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";host=(urlparse(product.get("link") or "").hostname or "").lower();spa=any(x in host for x in ("snappshop.ir","snapp.ir"));dmaster=clean_text(master or config.get("fetch_engine_master") or "");
+                if spa and not dmaster: dmaster="playwright"
+                dorder=engine_try_order(dmaster, requested if requested in KNOWN_ENGINES else "", mode)
+                detail_engines=[] if (dorder and dorder[0] in {"playwright","selenium"}) else [e for e in dorder if e not in {"playwright","selenium"}];detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[];best_q=-1
                 if mode!="browser":
                     for engine in detail_engines:
                         try:
@@ -5363,7 +5476,7 @@ button.linkish.danger{color:#fb7185!important}
 </div>
 <details class="start-more"><summary>پیشرفته</summary>
 <div class="more-grid">
-<div><label>موتور ضدبات</label><select id="fetch_engine"><option value="auto">چندلایه خودکار</option><option value="requests">Requests</option><option value="httpx">httpx</option><option value="cloudscraper">Cloudscraper</option><option value="curl_cffi">curl_cffi</option><option value="playwright">Playwright</option><option value="selenium">Selenium</option></select></div>
+<div><label>موتور ضدبات</label><select id="fetch_engine" onchange="onFetchEngineChange()"><option value="auto">خودکار · مستر + پشتیبان</option><option value="requests">Requests</option><option value="httpx">httpx</option><option value="cloudscraper">Cloudscraper</option><option value="curl_cffi">curl_cffi</option><option value="playwright">Playwright</option><option value="selenium">Selenium</option></select><input type="hidden" id="fetch_engine_master"><div id="engineMasterHint" class="quiet" style="font-size:11px;margin-top:4px">استخراج اول سریع‌ترین موتور این سایت را مستر می‌کند</div></div>
 <div><label>صفحه‌بندی</label><select id="pagination"><option value="query">Query</option><option value="path">مسیر</option><option value="full">URL کامل</option><option value="next">لینک بعد</option></select></div>
 <div><label>پارامتر صفحه</label><input id="page_value" value="page" dir="ltr" placeholder="page"></div>
 <div><label>اسکرول مرورگر</label><input id="scrolls" type="number" value="4" min="0" max="12"></div>
@@ -5420,9 +5533,9 @@ function pickerMove(action){$('pickerFrame').contentWindow?.postMessage({action}
 function pickerContext(){$('pickerFrame').contentWindow?.postMessage({action:'context',selector:pickerKind==='list'&&$('pickerField').value!=='container'?$('sel_container').value.trim():''},'*')}
 function setPickerHeight(value){$('pickerFrameWrap').style.height=value+'px'}
 window.addEventListener('message',event=>{if(event.source!==$('pickerFrame').contentWindow)return;let d=event.data||{};if(d.type==='s4-picker-ready'){pickerContext();$('pickerReady').textContent='آماده انتخاب';$('pickerReady').className='badge ok';$('pickerStatus').textContent='فیلد را انتخاب کنید، سپس روی جزء متناظر در پیش‌نمایش بزنید.'}if(d.type==='s4-picker-error'){$('pickerReady').textContent='خطای بارگذاری';$('pickerReady').className='badge error';$('pickerStatus').innerHTML='<span class="error">'+esc(d.error||'بارگذاری ناموفق بود')+'</span>'}if(d.type==='s4-picker-picked'){let field=$('pickerField').value,input=$(pickerInputId(field));if(input){input.value=d.selector;input.dispatchEvent(new Event('change'));$('pickerSelection').textContent=d.selector;$('pickerStatus').innerHTML='<span class="ok">✓ '+esc(d.tag)+' · '+d.matches+' تطابق · '+esc(d.text||'')+'</span>';renderPickerChips()}}});selectorTab('list');
-function config(){const g=id=>$(id)||{value:'',checked:false};const num=(id,d)=>{const n=+(g(id).value);return Number.isFinite(n)?n:d};let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=g('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=g('det_'+k).value.trim());let profile_rules={title_prefix:g('rule_title_prefix').value.trim(),title_suffix:g('rule_title_suffix').value.trim(),price_mode:g('rule_price_mode').value||'none',price_value:num('rule_price_value',0),price_round:num('rule_price_round',0),default_stock:g('rule_default_stock').value,default_category:g('rule_default_category').value.trim(),bsl_category_id:num('rule_bsl_category_id',0),woo_category_id:num('rule_woo_category_id',0),woo_price_mode:g('rule_woo_price_mode').value||'none',woo_price_value:num('rule_woo_price_value',0),woo_price_round:num('rule_woo_price_round',0),bsl_price_mode:g('rule_bsl_price_mode').value||'none',bsl_price_value:num('rule_bsl_price_value',0),bsl_price_round:num('rule_bsl_price_round',0)};return {url:g('url').value.trim(),pages:Math.max(1,num('pages',1)),render:g('render').value||'auto',fetch_engine:g('fetch_engine').value||'auto',pagination:g('pagination').value||'query',page_value:g('page_value').value.trim(),scrolls:num('scrolls',4),enrich:g('enrich').value!=='0',detail_scope:g('detail_scope').value||'missing',detail_limit:num('detail_limit',0),selectors,detail_selectors,profile_rules,display_name:(profiles[activeProfile]&&profiles[activeProfile].display_name)||'',gallery:{mode:g('galMode').value||'auto',box:g('galBox').value.trim(),selectors:g('galSelectors').value.trim(),pattern:g('galPattern').value.trim(),from:num('galFrom',1),to:num('galTo',10),skip_first:!!g('galSkipFirst').checked}}}
+function config(){const g=id=>$(id)||{value:'',checked:false};const num=(id,d)=>{const n=+(g(id).value);return Number.isFinite(n)?n:d};let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=g('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=g('det_'+k).value.trim());let profile_rules={title_prefix:g('rule_title_prefix').value.trim(),title_suffix:g('rule_title_suffix').value.trim(),price_mode:g('rule_price_mode').value||'none',price_value:num('rule_price_value',0),price_round:num('rule_price_round',0),default_stock:g('rule_default_stock').value,default_category:g('rule_default_category').value.trim(),bsl_category_id:num('rule_bsl_category_id',0),woo_category_id:num('rule_woo_category_id',0),woo_price_mode:g('rule_woo_price_mode').value||'none',woo_price_value:num('rule_woo_price_value',0),woo_price_round:num('rule_woo_price_round',0),bsl_price_mode:g('rule_bsl_price_mode').value||'none',bsl_price_value:num('rule_bsl_price_value',0),bsl_price_round:num('rule_bsl_price_round',0)};return {url:g('url').value.trim(),pages:Math.max(1,num('pages',1)),render:g('render').value||'auto',fetch_engine:g('fetch_engine').value||'auto',fetch_engine_master:g('fetch_engine_master').value||((profiles[activeProfile]&&profiles[activeProfile].fetch_engine_master)||''),fetch_engine_host:(profiles[activeProfile]&&profiles[activeProfile].fetch_engine_host)||'',pagination:g('pagination').value||'query',page_value:g('page_value').value.trim(),scrolls:num('scrolls',4),enrich:g('enrich').value!=='0',detail_scope:g('detail_scope').value||'missing',detail_limit:num('detail_limit',0),selectors,detail_selectors,profile_rules,display_name:(profiles[activeProfile]&&profiles[activeProfile].display_name)||'',gallery:{mode:g('galMode').value||'auto',box:g('galBox').value.trim(),selectors:g('galSelectors').value.trim(),pattern:g('galPattern').value.trim(),from:num('galFrom',1),to:num('galTo',10),skip_first:!!g('galSkipFirst').checked}}}
 function galModeChanged(){const m=$('galMode')?$('galMode').value:'auto';['galAutoBox','galManualBox','galNumberBox'].forEach(id=>{const e=$(id);if(!e)return;e.classList.toggle('hidden', (id==='galAutoBox'&&m!=='auto')||(id==='galManualBox'&&m!=='manual')||(id==='galNumberBox'&&m!=='number'))})}
-function apply(c){if(!c)return;['url','pages','render','fetch_engine','pagination','page_value','scrolls','detail_scope','detail_limit'].forEach(k=>{if(c[k]!==undefined&&$(k))$(k).value=c[k]});if($('enrich'))$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''});(function(g){g=c.gallery||{};if($('galMode'))$('galMode').value=g.mode||'auto';if($('galBox'))$('galBox').value=g.box||'';if($('galSelectors'))$('galSelectors').value=g.selectors||'';if($('galPattern'))$('galPattern').value=g.pattern||'';if($('galFrom'))$('galFrom').value=g.from||1;if($('galTo'))$('galTo').value=g.to||10;if($('galSkipFirst'))$('galSkipFirst').checked=!!g.skip_first;if(typeof galModeChanged==='function')galModeChanged()})();let r=c.profile_rules||{};['title_prefix','title_suffix','price_mode','price_value','price_round','default_stock','default_category','bsl_category_id','woo_category_id','woo_price_mode','woo_price_value','woo_price_round','bsl_price_mode','bsl_price_value','bsl_price_round'].forEach(k=>{if($('rule_'+k)&&r[k]!==undefined)$('rule_'+k).value=r[k]});if($('pickerUrl'))$('pickerUrl').value=c.url||$('url')?.value||'';syncProfileAcrossTabs()}
+function apply(c){if(!c)return;['url','pages','render','fetch_engine','pagination','page_value','scrolls','detail_scope','detail_limit'].forEach(k=>{if(c[k]!==undefined&&$(k))$(k).value=c[k]});if($('fetch_engine_master'))$('fetch_engine_master').value=c.fetch_engine_master||'';if(typeof updateEngineHint==='function')updateEngineHint();if($('enrich'))$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''});(function(g){g=c.gallery||{};if($('galMode'))$('galMode').value=g.mode||'auto';if($('galBox'))$('galBox').value=g.box||'';if($('galSelectors'))$('galSelectors').value=g.selectors||'';if($('galPattern'))$('galPattern').value=g.pattern||'';if($('galFrom'))$('galFrom').value=g.from||1;if($('galTo'))$('galTo').value=g.to||10;if($('galSkipFirst'))$('galSkipFirst').checked=!!g.skip_first;if(typeof galModeChanged==='function')galModeChanged()})();let r=c.profile_rules||{};['title_prefix','title_suffix','price_mode','price_value','price_round','default_stock','default_category','bsl_category_id','woo_category_id','woo_price_mode','woo_price_value','woo_price_round','bsl_price_mode','bsl_price_value','bsl_price_round'].forEach(k=>{if($('rule_'+k)&&r[k]!==undefined)$('rule_'+k).value=r[k]});if($('pickerUrl'))$('pickerUrl').value=c.url||$('url')?.value||'';syncProfileAcrossTabs()}
 function syncProfileAcrossTabs(){const u=$('url')?.value||'';if($('pickerUrl')&&u)$('pickerUrl').value=u;if($('dispatchProfile')&&activeProfile)$('dispatchProfile').value=activeProfile;if($('dispatchProfileBasalam')&&activeProfile)$('dispatchProfileBasalam').value=activeProfile}
 function asciiFile(file,fallback){if(!file)return file;let n=String(file.name||fallback||'upload.bin'),s='';for(let i=0;i<n.length;i++){const c=n.charCodeAt(i);s+=(c>=32&&c<=126)?n[i]:'_'}if(!/[A-Za-z0-9]/.test(s))s=fallback||'upload.bin';return new File([file],s,{type:file.type||'application/octet-stream'})}
 function headerLatin(v){const s=String(v??'');for(let i=0;i<s.length;i++) if(s.charCodeAt(i)>255) return encodeURIComponent(s);return s}
@@ -5544,7 +5657,9 @@ function openChangeList(kind){let rows=kind==='all'?products:(lastComparison.lis
 function closeChangeList(){$('changeModal').classList.remove('open');if(!$('settingsPanel').classList.contains('open')&&!$('aiTestModal').classList.contains('open'))document.body.style.overflow=''}
 function renderExtractTask(t){$('extractLiveTask').style.display='block';$('extractTaskTitle').textContent=t.title||'استخراج';$('extractTaskPercent').textContent=toFa(Math.round(t.progress||0))+'٪';$('extractTaskBar').style.width=(t.progress||0)+'%';if($('extractTaskMetrics'))$('extractTaskMetrics').innerHTML=`<span><small>انجام</small><b>${toFa(t.done??'—')} / ${toFa(t.total??'—')}</b></span><span><small>محصول</small><b>${toFa(t.extracted??'—')}</b></span><span><small>سپری‌شده</small><b>${esc(shortDuration(t.elapsed_seconds))}</b></span>${t.eta_seconds?`<span><small>باقی‌مانده</small><b>≈ ${esc(shortDuration(t.eta_seconds))}</b></span>`:''}`;$('extractTaskStep').textContent=t.step||'';const events=compactTaskDetails(t.details);$('extractTaskDetails').innerHTML=events.map(x=>`<div class="live-detail"><b>${esc(x.at)}</b> · ${esc(clipTaskText(x.text))}${x.n>1?` ×${toFa(x.n)}`:''}</div>`).join('');$('extractTaskDetails').scrollTop=$('extractTaskDetails').scrollHeight}
 async function watchDetailTask(id){for(;;){try{let d=await api('/api/tasks/'+encodeURIComponent(id)),t=d.task;renderExtractTask(t);if(['completed','failed','cancelled','interrupted'].includes(t.status)){if(t.status==='completed'&&t.result){products=t.result.products||products;renderRows();renderComparisonCards(t.result.comparison||{});$('status').innerHTML='<span class="ok">✓ فهرست سریع آماده بود و اکنون جزئیات '+(t.result.diagnostics?.details?.completed||0)+' محصول نیز تکمیل شد.</span>'}else $('status').innerHTML+='<br><span class="error">وظیفه جزئیات: '+esc(t.error||t.step)+'</span>';loadTaskTopSummary();break}await new Promise(r=>setTimeout(r,1800))}catch(e){break}}}
-async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;lastComparison={lists:{}};renderComparisonCards({});btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="progress-pulse">● وظیفه استخراج روی سرور اجرا می‌شود؛ جزئیات زنده پایین نمایش داده می‌شود.</span>';try{let started=await api('/api/scrape/start',{method:'POST',body:JSON.stringify(config())}),task;for(;;){let d=await api('/api/tasks/'+encodeURIComponent(started.task.id));task=d.task;renderExtractTask(task);if(['completed','failed','cancelled','interrupted'].includes(task.status))break;await new Promise(r=>setTimeout(r,750))}if(task.status!=='completed')throw Error(task.error||task.step||'استخراج کامل نشد');let d=task.result;products=d.products;renderRows();let c=d.comparison||{};renderComparisonCards(c);if(activeProfile&&profiles[activeProfile]){let p=profiles[activeProfile],summary={...c};delete summary.lists;p.last_comparison=c;p.comparison_history=[summary,...(p.comparison_history||[])].slice(0,10);renderComparisonHistory(p.comparison_history)}else renderComparisonHistory([c]);$('status').innerHTML=`<span class="ok">⚡ ${d.total} محصول از ${d.pages} صفحه با فاز سریع استخراج شد</span>\n${d.detail_task?'جزئیات به‌صورت مستقل در پس‌زمینه ادامه دارد؛ نتیجه فهرست منتظر آن نمی‌ماند.':'جدول کامل در تب «نتایج» است.'}\nروش: ${esc(d.modes.join(' · '))}`;if(d.detail_task)watchDetailTask(d.detail_task.id)}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
+function updateEngineHint(){const el=$('engineMasterHint');if(!el)return;const m=(($('fetch_engine_master')||{}).value||'').trim();const pin=(($('fetch_engine')||{}).value||'auto');el.textContent=m?( (pin!=='auto'?'پین دستی: ':'مستر این سایت: ')+m+' · بقیه پشتیبان'):'هنوز مستر نیست؛ استخراج اول سریع‌ترین موتور موفق را ذخیره می‌کند'}
+function onFetchEngineChange(){const v=(($('fetch_engine')||{}).value||'auto');if(v&&v!=='auto'&&$('fetch_engine_master'))$('fetch_engine_master').value=v;updateEngineHint()}
+async function runScrape(){const btn=$('runBtn'),old=btn.innerHTML;if(!$('url').value.trim()){$('status').innerHTML='<span class="error">لطفاً آدرس صفحه را وارد کنید.</span>';$('url').focus();return}btn.disabled=true;lastComparison={lists:{}};renderComparisonCards({});btn.innerHTML='<span class="spinner"></span>در حال برداشت';$('status').innerHTML='<span class="progress-pulse">● وظیفه استخراج روی سرور اجرا می‌شود؛ جزئیات زنده پایین نمایش داده می‌شود.</span>';try{let started=await api('/api/scrape/start',{method:'POST',body:JSON.stringify(config())}),task;for(;;){let d=await api('/api/tasks/'+encodeURIComponent(started.task.id));task=d.task;renderExtractTask(task);if(['completed','failed','cancelled','interrupted'].includes(task.status))break;await new Promise(r=>setTimeout(r,750))}if(task.status!=='completed')throw Error(task.error||task.step||'استخراج کامل نشد');let d=task.result;products=d.products;if(d.diagnostics&&d.diagnostics.fetch_engine_master){if($('fetch_engine_master'))$('fetch_engine_master').value=d.diagnostics.fetch_engine_master;if(activeProfile&&profiles[activeProfile]){profiles[activeProfile].fetch_engine_master=d.diagnostics.fetch_engine_master;profiles[activeProfile].fetch_engine_ms=d.diagnostics.fetch_engine_ms||0}updateEngineHint()}renderRows();let c=d.comparison||{};renderComparisonCards(c);if(activeProfile&&profiles[activeProfile]){let p=profiles[activeProfile],summary={...c};delete summary.lists;p.last_comparison=c;p.comparison_history=[summary,...(p.comparison_history||[])].slice(0,10);renderComparisonHistory(p.comparison_history)}else renderComparisonHistory([c]);$('status').innerHTML=`<span class="ok">⚡ ${d.total} محصول از ${d.pages} صفحه با فاز سریع استخراج شد${d.diagnostics&&d.diagnostics.fetch_engine_master?(' · مستر '+d.diagnostics.fetch_engine_master):''}</span>\n${d.detail_task?'جزئیات به‌صورت مستقل در پس‌زمینه ادامه دارد؛ نتیجه فهرست منتظر آن نمی‌ماند.':'جدول کامل در تب «نتایج» است.'}\nروش: ${esc(d.modes.join(' · '))}`;if(d.detail_task)watchDetailTask(d.detail_task.id)}catch(e){$('status').innerHTML='<span class="error">✗ عملیات ناموفق بود\n'+esc(e.message)+'</span>'}finally{btn.disabled=false;btn.innerHTML=old}}
 function renderDetailCoverage(){let n=products.length,count=f=>products.filter(f).length,cards=[['توضیحات',count(p=>p.short_desc||p.long_desc)],['گالری چندتصویری',count(p=>(p.images||[]).length>1)],['تنوع‌ها',count(p=>(p.variation_groups||[]).length||p.variations_text)],['مشخصات',count(p=>(p.attributes||[]).length)],['جزئیات کامل',count(p=>p.detail_status==='complete')]];$('detailCoverage').innerHTML=cards.map(([name,value])=>`<div class="space-card coverage-card"><b>${value}</b><span>${name} · ${n?Math.round(value/n*100):0}٪</span></div>`).join('')}
 function openProductDetail(i){let p=products[i];if(!p)return;$('productDetailTitle').textContent=p.title||'جزئیات محصول';$('productDetailMeta').textContent='SKU: '+(p.sku||'—')+' · '+(p.detail_status==='complete'?'استخراج تفصیلی کامل':'اطلاعات موجود');let imgs=(p.images||[p.image]).filter(Boolean),groups=p.variation_groups||[],attrs=p.attributes||[];$('productDetailBody').innerHTML=`<div class="product-detail-grid"><div><section class="detail-section"><h3>📝 توضیح کوتاه</h3><div class="rich-description">${esc(p.short_desc||'استخراج نشده')}</div></section><section class="detail-section"><h3>📄 توضیحات کامل</h3><div class="rich-description">${esc(p.long_desc||'استخراج نشده')}</div></section><section class="detail-section"><h3>🎨 تنوع‌ها</h3>${groups.map(g=>`<div class="variation-group"><b>${esc(g.name)}</b><div class="variation-values">${(g.values||[]).map(v=>`<i>${esc(v)}</i>`).join('')}</div></div>`).join('')||esc(p.variations_text||'استخراج نشده')}</section><section class="detail-section"><h3>📋 مشخصات</h3>${attrs.map(a=>`<div class="attribute-row"><b>${esc(a.name)}</b><span>${esc(a.value)}</span></div>`).join('')||'استخراج نشده'}</section></div><aside><section class="detail-section"><h3>🖼 گالری (${imgs.length})</h3><div class="product-gallery">${imgs.map(x=>`<a href="${esc(x)}" target="_blank" rel="noopener"><img src="${esc(x)}" loading="lazy" alt=""></a>`).join('')||'تصویری نیست'}</div></section><section class="detail-section"><h3>اطلاعات پایه</h3><div class="attribute-row"><b>قیمت</b><span>${esc(p.price||'—')}</span></div><div class="attribute-row"><b>موجودی</b><span>${esc(p.stock||'—')}</span></div><div class="attribute-row"><b>برند</b><span>${esc(p.brand||'—')}</span></div><div class="attribute-row"><b>وزن</b><span>${esc(p.weight||'—')}</span></div><div class="attribute-row"><b>دسته</b><span>${esc(p.category||'—')}</span></div></section></aside></div>`;$('productDetailModal').classList.add('open');document.body.style.overflow='hidden'}
 function closeProductDetail(){$('productDetailModal').classList.remove('open');document.body.style.overflow=''}

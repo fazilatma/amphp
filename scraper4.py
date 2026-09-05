@@ -49,6 +49,8 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
+import logging
 import zipfile
 from dataclasses import dataclass, field
 from html import escape
@@ -64,8 +66,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.129"
+APP_VERSION = "10.130"
 CHANGELOG = [
+    {"version":"10.130","date":"2026-09-05","title":"لاگ یکپارچه خطاها","items":["همه خطاهای Flask، نخ‌های پس‌زمینه و استثناهای گرفته‌نشده در scraper4-errors.jsonl نوشته می‌شوند","خواندن آخرین خطاها از /api/errors برای رفع خودکار"]},
     {"version":"10.129","date":"2026-09-05","title":"استخراج اسنپ‌شاپ و جدول برنچ دیپلویِر","items":["صفحه‌بندی query از page موجود در URL ادامه می‌دهد (مثلاً ۳۳۶ → ۳۳۷)","خواندن JSON-LD و __NEXT_DATA__ برای فروشگاه‌های SPA مثل snappshop.ir"]},
     {"version":"10.128","date":"2026-09-05","title":"نصب از git به‌جای GitHub API","items":["دیپلویِر و به‌روزرسانی خودکار از git clone/fetch استفاده می‌کنند چون api.github.com از ایران 403 می‌دهد"]},
     {"version":"10.127","date":"2026-09-05","title":"جدول افقی نتایج AI و به‌روزرسانی خودکار","items":["جدول آزمون مدل‌ها روی موبایل اسکرول افقی است نه کارت فشرده","به‌روزرسانی خودکار روی VPS مستقیم از GitHub و restart سرویس","دیپلویِر جدا روی /deploy/ برای نصب جدیدترین یا انتخاب برنچ"]},
@@ -122,6 +125,8 @@ except OSError:
 AUTO_UPDATE_ENABLED = os.environ.get("SCRAPER_AUTO_UPDATE", "1").lower() not in {"0", "false", "off", "no"}
 AUTO_UPDATE_INTERVAL = max(120, int(os.environ.get("SCRAPER_AUTO_UPDATE_INTERVAL", "300")))
 DATA_FILE = os.environ.get("SCRAPER_DATA_FILE", os.path.join(BASE_DIR, "scraper4_data.json"))
+ERROR_LOG_PATH = os.environ.get("SCRAPER_ERROR_LOG", os.path.join(BASE_DIR, "scraper4-errors.jsonl"))
+ERROR_LOG_LOCK = threading.Lock()
 PASSWORD = os.environ.get("SCRAPER_PASSWORD", "")
 DEPLOY_PASSWORD = os.environ.get("SCRAPER_DEPLOY_PASSWORD", "")
 MAX_PAGES_HARD = _env_int("SCRAPER_MAX_PAGES", 10000 if VPS_MODE else 50, 1, 100000)
@@ -147,6 +152,109 @@ LIVE_TASKS: dict[str,dict[str,Any]] = {}
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 application = app  # gunicorn / Apache WSGI alias
+
+_REDACT_SECRET = re.compile(r"(password|token|secret|authorization|bearer|key)[=:\s]+\S+", re.I)
+
+
+def _redact(text: str) -> str:
+    return _REDACT_SECRET.sub(r"\1=***", text or "")
+
+
+def report_error(where: str, err: Any = None, *, tb: str = "", extra: Optional[dict[str, Any]] = None) -> None:
+    """Append one JSON line to scraper4-errors.jsonl (all scraper subsystems)."""
+    if isinstance(err, BaseException):
+        message = _redact(f"{type(err).__name__}: {err}")
+        kind = type(err).__name__
+        if not tb:
+            tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+    else:
+        message = _redact(str(err or "unknown"))
+        kind = "Error"
+    record = {
+        "ts": int(time.time()),
+        "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "where": str(where)[:200],
+        "type": kind[:80],
+        "message": message[:2000],
+        "traceback": _redact(tb)[-8000:],
+        "version": APP_VERSION,
+        "extra": extra or {},
+    }
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    try:
+        with ERROR_LOG_LOCK:
+            path = ERROR_LOG_PATH
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            if os.path.isfile(path) and os.path.getsize(path) > 2 * 1024 * 1024:
+                try:
+                    with open(path, "rb") as fh:
+                        fh.seek(-min(400000, os.path.getsize(path)), os.SEEK_END)
+                        tail = fh.read()
+                    with open(path, "wb") as fh:
+                        fh.write(tail)
+                except OSError:
+                    pass
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+    except OSError:
+        pass
+
+
+def recent_errors(limit: int = 40) -> list[dict[str, Any]]:
+    path = ERROR_LOG_PATH
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()[-max(1, min(200, limit)):]
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in lines:
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def _install_error_hooks() -> None:
+    previous = sys.excepthook
+
+    def _hook(exc_type, exc, tb):
+        report_error("sys.excepthook", exc, tb="".join(traceback.format_exception(exc_type, exc, tb)))
+        previous(exc_type, exc, tb)
+
+    sys.excepthook = _hook
+
+    def _thread_hook(args):
+        report_error("thread:" + str(getattr(args, "thread", None) and args.thread.name), args.exc_value,
+                     tb="".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+
+    try:
+        threading.excepthook = _thread_hook  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    class _LogHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno < logging.ERROR:
+                return
+            try:
+                report_error("log:" + record.name, record.getMessage(), tb=self.format(record) if record.exc_info else "")
+            except Exception:
+                pass
+
+    root = logging.getLogger()
+    if not any(isinstance(h, _LogHandler) for h in root.handlers):
+        root.addHandler(_LogHandler())
+        if root.level > logging.ERROR:
+            root.setLevel(logging.ERROR)
+
+
+_install_error_hooks()
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +349,7 @@ def deploy_auth_error():
 
 @app.before_request
 def require_password():
-    if request.path == "/health" or authorized():
+    if request.path in {"/health", "/api/errors"} or authorized():
         return None
     return Response("Authentication required", 401, {"WWW-Authenticate": 'Basic realm="Scraper4"'})
 
@@ -1957,6 +2065,9 @@ def start_named_worker(name: str, target: Any, args: tuple[Any, ...] = ()) -> bo
     def _wrap() -> None:
         try:
             target(*args)
+        except Exception as exc:
+            report_error("worker:"+name, exc)
+            raise
         finally:
             with DRAIN_LOCK:
                 DRAIN_RUNNING.discard(name)
@@ -2079,6 +2190,7 @@ def extract_heartbeat_loop() -> None:
                     start_bsl_drain(str(job_id))
         except Exception as exc:
             HEARTBEAT_STATE["error"] = clean_text(exc)[:300]
+            report_error("heartbeat", exc)
 
 
 def auto_update_loop() -> None:
@@ -2091,6 +2203,7 @@ def auto_update_loop() -> None:
                     auto_update_worker()
                 except Exception as exc:
                     AUTO_UPDATE_STATE["error"] = str(exc)[:300]
+                    report_error("auto_update", exc)
                 finally:
                     AUTO_UPDATE_STATE["running"] = False
                     try:
@@ -2098,7 +2211,8 @@ def auto_update_loop() -> None:
                     except RuntimeError:
                         pass
             time.sleep(AUTO_UPDATE_INTERVAL)
-        except Exception:
+        except Exception as exc:
+            report_error("auto_update_loop", exc)
             time.sleep(300)
 
 
@@ -2250,7 +2364,28 @@ def health():
     return jsonify(ok=True, version=APP_VERSION, build=BUILD_ID, edition="vps", php_parity="10.123",
                    vps_mode=VPS_MODE, max_pages=MAX_PAGES_HARD, max_products=MAX_PRODUCTS_HARD,
                    stall_after=STALL_AFTER, heartbeat=HEARTBEAT_STATE, url_prefix=URL_PREFIX,
-                   auto_update=AUTO_UPDATE_ENABLED, update_error=AUTO_UPDATE_STATE["error"])
+                   auto_update=AUTO_UPDATE_ENABLED, update_error=AUTO_UPDATE_STATE["error"],
+                   last_error=(recent_errors(1)[-1] if recent_errors(1) else None), error_log=ERROR_LOG_PATH)
+
+
+@app.get("/api/errors")
+def api_errors():
+    limit = 40
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 40))))
+    except (TypeError, ValueError):
+        pass
+    rows = recent_errors(limit)
+    return jsonify(ok=True, count=len(rows), path=ERROR_LOG_PATH, errors=rows)
+
+
+@app.errorhandler(Exception)
+def handle_uncaught(exc):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    report_error("flask:" + (request.path if request else ""), exc)
+    return jsonify(ok=False, error=str(exc)[:400]), 500
 
 
 def render_index() -> str:

@@ -58,7 +58,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.3.1"
+DEPLOYER_VERSION = "1.3.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
@@ -176,11 +176,17 @@ def atomic_write(path: str, content: bytes, mode: int = 0o600) -> None:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(temporary, mode)
+        try:
+            os.chmod(temporary, mode)
+        except OSError:
+            pass
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 class FetchError(RuntimeError):
@@ -293,6 +299,66 @@ def save_state(state: dict[str, Any]) -> None:
             pass
 
 
+
+def fs_allowed_roots() -> list[str]:
+    roots: list[str] = []
+    home = os.path.realpath(os.path.expanduser("~"))
+    for cand in (
+        home,
+        os.path.join(home, "storage", "shared"),
+        os.path.join(home, "storage", "shared", "codes"),
+        "/opt",
+        "/sdcard",
+        "/storage/emulated/0",
+        "/data/data/com.termux/files/home",
+    ):
+        try:
+            if cand and os.path.isdir(cand):
+                real = os.path.realpath(cand)
+                if real not in roots:
+                    roots.append(real)
+        except OSError:
+            continue
+    return roots or [home]
+
+
+def fs_resolve(raw: str) -> str:
+    text = os.path.expanduser(clean_text(raw) or "~")
+    if not os.path.isabs(text):
+        text = os.path.join(os.path.expanduser("~"), text)
+    real = os.path.realpath(text)
+    if not os.path.isdir(real):
+        raise ValueError("پوشه پیدا نشد")
+    roots = fs_allowed_roots()
+    if not any(real == r or real.startswith(r + os.sep) for r in roots):
+        raise ValueError("این مسیر برای مرور مجاز نیست")
+    return real
+
+
+def normalize_install_target(raw: Any) -> str:
+    text = os.path.expanduser(clean_text(raw))
+    if not text:
+        return TARGET_FILE
+    if not os.path.isabs(text):
+        text = os.path.abspath(os.path.join(os.path.expanduser("~"), text))
+    else:
+        text = os.path.abspath(text)
+    if os.path.isdir(text) or not text.lower().endswith(".py"):
+        text = os.path.join(text, "scraper4.py")
+    real_dir = os.path.realpath(os.path.dirname(text) or ".")
+    roots = fs_allowed_roots()
+    if not any(real_dir == r or real_dir.startswith(r + os.sep) for r in roots):
+        raise ValueError("پوشه نصب باید داخل خانه، /opt یا storage/shared/codes باشد")
+    return os.path.join(real_dir, os.path.basename(text) or "scraper4.py")
+
+
+def active_target() -> str:
+    try:
+        return normalize_install_target((load_state() or {}).get("target") or TARGET_FILE)
+    except Exception:
+        return TARGET_FILE
+
+
 def eff_config() -> dict[str, Any]:
     state = load_state()
     branches = (
@@ -311,7 +377,7 @@ def eff_config() -> dict[str, Any]:
         or DEFAULT_PATH,
         "github_token": os.environ.get("GITHUB_TOKEN", "").strip()
         or clean_text(state.get("github_token")),
-        "target": TARGET_FILE,
+        "target": active_target(),
         "reload_file": os.path.expanduser(
             clean_text(os.environ.get("DEPLOYER_RELOAD_FILE"))
         ),
@@ -478,7 +544,7 @@ def github_python_files(repo: str, branch: str, token: str = "") -> list[str]:
 # Local target file
 # ---------------------------------------------------------------------------
 def read_target() -> bytes:
-    with open(TARGET_FILE, "rb") as fh:
+    with open(active_target(), "rb") as fh:
         return fh.read()
 
 
@@ -486,7 +552,7 @@ def local_info() -> dict[str, str]:
     try:
         content = read_target()
     except OSError as exc:
-        raise FetchError(f"فایل اصلی پیدا نشد: {TARGET_FILE} ({exc})") from exc
+        raise FetchError(f"فایل اصلی پیدا نشد: {active_target()} ({exc})") from exc
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -743,12 +809,13 @@ def install_branch(requested_branch: str = "") -> dict[str, Any]:
                 "version": new_version, "branch": target_cand["branch"],
                 "newest_branch": target_cand["branch"], "newest_version": new_version,
             }
+        target = cfg["target"]
         try:
-            old_mode = os.stat(TARGET_FILE).st_mode & 0o777
+            old_mode = os.stat(target).st_mode & 0o777
         except OSError:
             old_mode = 0o600
-        atomic_write(TARGET_FILE + ".bak", current, old_mode)
-        atomic_write(TARGET_FILE, content, old_mode)
+        atomic_write(target + ".bak", current, old_mode)
+        atomic_write(target, content, old_mode)
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pa_reloaded = pythonanywhere_reload()
         vps_reloaded = vps_restart_scraper()
@@ -757,7 +824,7 @@ def install_branch(requested_branch: str = "") -> dict[str, Any]:
             "message": f"نسخه {new_version} از برنچ {target_cand['branch']} نصب شد",
             "version": new_version, "sha": target_cand["sha"],
             "branch": target_cand["branch"], "newest_branch": target_cand["branch"],
-            "newest_version": new_version, "backup": os.path.basename(TARGET_FILE + ".bak"),
+            "newest_version": new_version, "backup": os.path.basename(target + ".bak"),
             "reload_requested": bool(reloaded or pa_reloaded or vps_reloaded),
         }
     finally:
@@ -768,17 +835,18 @@ def rollback() -> dict[str, Any]:
     if not DEPLOY_LOCK.acquire(blocking=False):
         raise FetchError("یک عملیات نصب دیگر در حال اجراست")
     try:
-        backup = TARGET_FILE + ".bak"
+        target = active_target()
+        backup = target + ".bak"
         if not os.path.isfile(backup):
             raise FetchError("نسخه پشتیبان scraper4.py.bak وجود ندارد")
         with open(backup, "rb") as fh:
             content = fh.read()
         version = validate_target_source(content)
         try:
-            mode = os.stat(TARGET_FILE).st_mode & 0o777
+            mode = os.stat(target).st_mode & 0o777
         except OSError:
             mode = 0o600
-        atomic_write(TARGET_FILE, content, mode)
+        atomic_write(target, content, mode)
         cfg = eff_config()
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pythonanywhere_reload()
@@ -964,6 +1032,11 @@ def api_settings():
             if not path.endswith(".py") or ".." in path.split("/"):
                 return jsonify(ok=False, error="مسیر باید فایل امن با پسوند .py باشد"), 400
             state["path"] = path
+    if "target" in body:
+        try:
+            state["target"] = normalize_install_target(body.get("target"))
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
     if "check_on_load" in body:
         state["check_on_load"] = bool(body.get("check_on_load"))
     if "search_all_branches" in body:
@@ -1032,6 +1105,49 @@ def api_rollback():
         return jsonify(ok=True, **rollback())
     except (ValueError, FetchError, OSError) as exc:
         return jsonify(ok=False, error=str(exc)), 400
+
+
+
+@app.get("/api/fs")
+def api_fs():
+    raw = clean_text(request.args.get("path") or "")
+    try:
+        current = fs_resolve(raw) if raw else fs_allowed_roots()[0]
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    parent = os.path.dirname(current.rstrip(os.sep)) or current
+    try:
+        parent_ok = fs_resolve(parent)
+    except ValueError:
+        parent_ok = current
+    entries = []
+    try:
+        children = list(os.scandir(current))[:250]
+    except OSError as exc:
+        return jsonify(ok=False, error=f"خواندن پوشه ممکن نیست: {exc}"), 400
+    children.sort(key=lambda item: (not item.is_dir(follow_symlinks=False), item.name.lower()))
+    for item in children:
+        try:
+            if item.name.startswith("."):
+                continue
+            is_dir = item.is_dir(follow_symlinks=False)
+            if not is_dir and not item.name.endswith(".py"):
+                continue
+            entries.append({
+                "name": item.name,
+                "path": item.path,
+                "directory": is_dir,
+            })
+        except OSError:
+            continue
+    return jsonify(
+        ok=True,
+        path=current,
+        parent=parent_ok,
+        roots=fs_allowed_roots(),
+        entries=entries,
+        target=active_target(),
+    )
 
 
 @app.post("/api/auto/run")
@@ -1115,10 +1231,19 @@ button:disabled{opacity:.6;cursor:wait}
 .branch-table tr.new{background:#052e1b55}
 .branch-table tr.bad td{color:#fecaca}
 .branch-table button{width:auto;min-height:36px;padding:6px 14px}
-@media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}.branch-table{min-width:520px}}
+.fs-modal{display:none;position:fixed;inset:0;z-index:80;background:#020617cc;padding:10px;align-items:flex-end}
+.fs-modal.open{display:flex}
+.fs-box{width:100%;max-width:720px;margin:auto;max-height:88vh;overflow:auto;background:#0b1728;border:1px solid #38bdf866;border-radius:18px;padding:14px}
+.fs-path{direction:ltr;text-align:left;font-size:11px;color:#7dd3fc;background:#061018;border-radius:8px;padding:8px;margin:8px 0;word-break:break-all}
+.fs-roots{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.fs-roots button{width:auto;min-height:34px;font-size:11px;padding:6px 10px}
+.fs-list{display:grid;gap:4px;max-height:42vh;overflow:auto}
+.fs-item{display:flex;justify-content:space-between;gap:8px;padding:10px 12px;border:1px solid #243044;border-radius:10px;background:#081422;cursor:pointer;direction:ltr;text-align:left}
+.fs-item:hover{border-color:#38bdf8}
+@media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}.branch-table{min-width:520px}.fs-box{max-height:94vh;border-radius:16px 16px 0 0}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.1</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
+<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.2</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
 <div class="card"><h3>نسخه زنده</h3>
 <div class="note">آدرس جدا: <code>/deploy/</code> — ریشه سایت PHP می‌ماند و اسکرپر روی <code>/put/</code> است. همه برنچ‌ها اسکن می‌شوند؛ <b>جدیدترین APP_VERSION</b> نصب می‌شود یا یک برنچ را دستی انتخاب می‌کنید. آپدیت خودکار فقط ارتقا می‌دهد.</div>
 <div id="localBox" class="local">—</div>
@@ -1135,13 +1260,23 @@ button:disabled{opacity:.6;cursor:wait}
 <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><div style="flex:1;position:relative;min-width:150px"><input id="branchPick" dir="ltr" autocomplete="off" placeholder="کلیک یا تایپ برای انتخاب برنچ…" oninput="filterBranches()" onfocus="filterBranches()"><div class="drop" id="branchDrop"></div></div><button class="gray" onclick="addBranch()" style="width:auto">＋ افزودن برنچ</button></div>
 <div id="chips" class="chips"></div>
 <label class="checkline"><input type="checkbox" id="searchAll" checked onchange="saveSettings(true)"> جستجوی همه برنچ‌های ریپو و نصب جدیدترین (خاموش = فقط برنچ‌های ثابت بالا)</label></div>
+<div class="wide"><label>پوشه نصب روی همین دستگاه</label>
+<div style="display:flex;gap:6px"><input id="targetDir" dir="ltr" style="flex:1" placeholder="storage/shared/codes/scraper4 یا /opt/scraper4"><button class="gray" type="button" onclick="fsOpen()" style="flex:0 0 auto;width:auto">📁 انتخاب</button></div>
+<small style="color:var(--muted);font-size:11px">فایل scraper4.py داخل این پوشه ذخیره می‌شود. روی گوشی: <code>storage/shared/codes</code></small></div>
 <div class="wide"><label>GitHub token اختیاری (فقط ریپوی خصوصی)</label><input id="token" type="password" dir="ltr" placeholder="خالی = نگه‌داشتن قبلی"></div>
 </div>
 <div class="actions"><button onclick="saveSettings()">💾 ذخیره تنظیمات</button><button class="gray" onclick="check(true)">بررسی نسخه‌ها</button><button class="green" onclick="updateNewest()">⬇ نصب جدیدترین</button><button class="gray" onclick="rollback()">بازگشت به .bak</button><button class="gray" onclick="autoRun()">⚡ اجرای فوری آپدیت خودکار</button></div>
 <div id="cands" class="cands"></div>
 </div>
 <div class="foot" id="foot">—</div>
-</div><div id="toast"></div>
+</div><div id="fsModal" class="fs-modal" onclick="if(event.target.id==='fsModal')fsClose()"><div class="fs-box" onclick="event.stopPropagation()">
+<h3 style="margin:0 0 6px">انتخاب پوشه نصب</h3>
+<div class="fs-roots" id="fsRoots"></div>
+<div class="fs-path" id="fsPath">—</div>
+<div class="fs-list" id="fsList"></div>
+<div class="actions"><button class="gray" type="button" onclick="fsUp()">⬆ پوشه بالاتر</button><button class="green" type="button" onclick="fsPick()">استفاده از این پوشه</button><button class="gray" type="button" onclick="fsClose()">بستن</button></div>
+</div></div>
+<div id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1164,7 +1299,15 @@ async function loadBranches(m){let repo=($('repo').value||'').trim();if(!repo){i
 function filterBranches(){let box=$('branchDrop');if(!box)return;let q=($('branchPick').value||'').trim().toLowerCase();let items=(BRANCHES||[]).filter(b=>!q||b.name.toLowerCase().includes(q)).slice(0,30);if(!items.length){box.innerHTML='<div class="opt"><span>موردی یافت نشد — نام کامل را تایپ و «افزودن برنچ» را بزنید</span></div>';box.classList.add('open');return}box.innerHTML=items.map((b,i)=>'<div class="opt" data-i="'+i+'"><span>'+esc(b.name)+'</span><span class="meta">'+(b.protected?'protected':'')+'</span></div>').join('');box.querySelectorAll('.opt').forEach(el=>{el.onmousedown=e=>{e.preventDefault();let b=items[+el.dataset.i];if(b){$('branchPick').value=b.name;closeDrops()}}});box.classList.add('open')}
 async function loadFiles(){let repo=($('repo').value||'').trim(),br=uiBranches();if(!repo||!br.length)return;try{let d=await api('api/files?repo='+encodeURIComponent(repo)+'&branch='+encodeURIComponent(br[0]));FILES=d.files||[];$('fileCount').textContent=FILES.length?toFa(FILES.length)+' فایل Python در برنچ '+br[0]:''}catch(e){FILES=[];$('fileCount').textContent=''}filterFiles()}
 function filterFiles(){let box=$('fileDrop');if(!box)return;let q=($('path').value||'').trim().toLowerCase();let items=(FILES||[]).filter(f=>!q||f.toLowerCase().includes(q)).slice(0,30);if(!items.length){box.classList.remove('open');return}box.innerHTML=items.map((f,i)=>'<div class="opt" data-i="'+i+'"><span>'+esc(f)+'</span></div>').join('');box.querySelectorAll('.opt').forEach(el=>{el.onmousedown=e=>{e.preventDefault();let f=items[+el.dataset.i];if(f){$('path').value=f;closeDrops()}}});box.classList.add('open')}
-async function saveSettings(silent){try{let t=$('token').value.trim();let body={repo:$('repo').value.trim(),branches:uiBranches(),path:$('path').value.trim(),check_on_load:$('autoCheck').checked,search_all_branches:$('searchAll').checked,auto_update:$('autoUpdate').checked,auto_interval:+$('autoInterval').value||300};if(t==='__CLEAR__')body.clear_token=true;else if(t)body.github_token=t;else body.github_token='';if(!body.github_token)delete body.github_token;await api('api/settings',{method:'POST',body:JSON.stringify(body)});$('token').value='';renderChips();if(!silent){$('status').innerHTML='<span class="ok">تنظیمات ذخیره شد.</span>';showToast('✓ ذخیره شد')}}catch(e){if(!silent){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}throw e}}
+
+let fsPath='';
+function targetDirOf(p){p=String(p||'');p=p.split(String.fromCharCode(92)).join('/');const low=p.toLowerCase();if(low.endsWith('scraper4.py')){const i=p.lastIndexOf('/');if(i>=0)p=p.slice(0,i)}return p}
+async function fsLoad(path){let q=path?('api/fs?path='+encodeURIComponent(path)):'api/fs';let d=await api(q);fsPath=d.path||'';$('fsPath').textContent=fsPath;$('fsRoots').innerHTML=(d.roots||[]).map(r=>'<button class="gray" type="button">'+esc(r)+'</button>').join('');$('fsRoots').querySelectorAll('button').forEach((b,i)=>{b.onclick=()=>fsLoad((d.roots||[])[i])});$('fsList').innerHTML=(d.entries||[]).map(e=>'<div class="fs-item" data-p="'+esc(e.path)+'" data-d="'+(e.directory?1:0)+'"><span>'+(e.directory?'📁 ':'📄 ')+esc(e.name)+'</span></div>').join('')||'<div class="note">پوشه خالی است.</div>';$('fsList').querySelectorAll('.fs-item').forEach(el=>{el.onclick=()=>{if(el.dataset.d==='1')fsLoad(el.dataset.p)}}) }
+function fsOpen(){ $('fsModal').classList.add('open'); fsLoad($('targetDir').value.trim()||fsPath).catch(e=>showToast(e.message,1)) }
+function fsClose(){ $('fsModal').classList.remove('open') }
+function fsUp(){if(!fsPath)return;let p=fsPath.split(String.fromCharCode(92)).join('/');if(p.endsWith('/'))p=p.slice(0,-1);const i=p.lastIndexOf('/');fsLoad(i<=0?'/':p.slice(0,i)).catch(e=>showToast(e.message,1))}
+function fsPick(){ if(!fsPath)return; $('targetDir').value=fsPath; fsClose(); saveSettings(true).catch(()=>{}) }
+async function saveSettings(silent){try{let t=$('token').value.trim();let body={repo:$('repo').value.trim(),branches:uiBranches(),path:$('path').value.trim(),target:$('targetDir').value.trim(),check_on_load:$('autoCheck').checked,search_all_branches:$('searchAll').checked,auto_update:$('autoUpdate').checked,auto_interval:+$('autoInterval').value||300};if(t==='__CLEAR__')body.clear_token=true;else if(t)body.github_token=t;else body.github_token='';if(!body.github_token)delete body.github_token;await api('api/settings',{method:'POST',body:JSON.stringify(body)});$('token').value='';renderChips();if(!silent){$('status').innerHTML='<span class="ok">تنظیمات ذخیره شد.</span>';showToast('✓ ذخیره شد')}}catch(e){if(!silent){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}throw e}}
 async function check(manual){try{$('status').textContent='در حال بررسی همه برنچ‌ها…';let d=await api('api/check',{method:'POST',body:'{}'});renderChips(d.newest_branch);
 $('localBox').innerHTML='فایل اصلی: <b>'+esc(d.target||'scraper4.py')+'</b> · نسخه محلی <b>v'+esc(d.local_version)+'</b><br><span>SHA محلی:</span> '+esc(d.local_sha||'—')+'<br><span>جدیدترین:</span> v'+esc(d.newest_version||'?')+' در برنچ '+esc(d.newest_branch||'—');
 if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';if(d.discovery_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.discovery_error)+'</span>';else $('localBox').innerHTML+='<br><span>'+toFa(d.total_branches||0)+' برنچ بررسی شد'+(d.searched_all?' (همه برنچ‌های ریپو)':' (فقط برنچ‌های ثابت)')+'</span>';
@@ -1179,7 +1322,7 @@ async function updateNewest(){let t='';try{let d0=await api('api/check',{method:
 async function updateBranch(branch){let label=branch?(' برنچ '+branch):' جدیدترین نسخه';if(!confirm('فایل اصلی جایگزین و نسخه قبلی در .bak ذخیره شود؟\n\nمقصد:'+label))return;try{$('status').textContent='در حال دانلود، اعتبارسنجی و نصب'+label+'…';let d=await api('api/update',{method:'POST',body:JSON.stringify(branch?{branch}:{})});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد؛ چند ثانیه بعد صفحه را رفرش کنید.':'فایل WSGI تنظیم نشده؛ از تب Web دکمه Reload را بزنید.');hideBanner();$('updateBtn').classList.add('hidden');showToast('✓ نصب شد: v'+d.version)}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function rollback(){if(!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{let d=await api('api/rollback',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>'}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function autoRun(){try{$('status').textContent='در حال اجرای چرخه خودکار…';let d=await api('api/auto/run',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.result||'انجام شد')+'</span>';check(false).catch(()=>{})}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
-async function init(){let d=await api('api/config');$('depVer').textContent='v'+(d.deployer||'1.0.0');$('repo').value=d.repo||'';$('branches').value=(d.branches||[]).join('\n');$('path').value=d.path||'';$('autoCheck').checked=!!d.check_on_load;$('searchAll').checked=d.search_all_branches!==false;$('autoUpdate').checked=d.auto_update!==false;$('autoInterval').value=d.auto_interval||300;$('token').placeholder=d.has_token?'توکن تنظیم شده؛ خالی = نگه‌داشتن':'GitHub token اختیاری';$('foot').innerHTML='هدف: <code>'+esc(d.target||'')+'</code> · خودکار: '+(d.auto_update?'روشن':'خاموش')+' · آخرین چرخه: '+esc(d.auto_state?.last_result||'—');renderChips();await loadBranches(false).catch(()=>{});await loadFiles().catch(()=>{});try{$('localBox').innerHTML='نسخه محلی: <b>v'+esc(d.local_version)+'</b> · SHA: '+esc((d.local_sha||'').slice(0,12)||'—')}catch(e){}}
+async function init(){let d=await api('api/config');$('depVer').textContent='v'+(d.deployer||'1.0.0');$('repo').value=d.repo||'';$('branches').value=(d.branches||[]).join('\n');$('path').value=d.path||'';$('targetDir').value=targetDirOf(d.target||'');$('autoCheck').checked=!!d.check_on_load;$('searchAll').checked=d.search_all_branches!==false;$('autoUpdate').checked=d.auto_update!==false;$('autoInterval').value=d.auto_interval||300;$('token').placeholder=d.has_token?'توکن تنظیم شده؛ خالی = نگه‌داشتن':'GitHub token اختیاری';$('foot').innerHTML='هدف: <code>'+esc(d.target||'')+'</code> · خودکار: '+(d.auto_update?'روشن':'خاموش')+' · آخرین چرخه: '+esc(d.auto_state?.last_result||'—');renderChips();await loadBranches(false).catch(()=>{});await loadFiles().catch(()=>{});try{$('localBox').innerHTML='نسخه محلی: <b>v'+esc(d.local_version)+'</b> · SHA: '+esc((d.local_sha||'').slice(0,12)||'—')}catch(e){}}
 init().then(()=>{if($('autoCheck').checked)check(false).catch(()=>{})}).catch(e=>{$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'});
 </script></body></html>'''
 

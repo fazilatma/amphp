@@ -37,13 +37,13 @@ if is_termux; then
     HOME_REAL="${HOME}"
   fi
   SRC="${HOME_REAL}/amphp"
-  RUN="${HOME_REAL}/scraper4"
+  VENV="${HOME_REAL}/scraper4-venv"
+  RUN="${HOME_REAL}/storage/shared/codes/scraper4"
 elif is_vps; then
-  ROLE="vps"; SRC="/opt/amphp"; RUN="/opt/scraper4"
+  ROLE="vps"; SRC="/opt/amphp"; RUN="/opt/scraper4"; VENV="${RUN}/venv"
 else
-  ROLE="linux"; SRC="${HOME}/amphp"; RUN="${HOME}/scraper4"
+  ROLE="linux"; SRC="${HOME}/amphp"; RUN="${HOME}/scraper4"; VENV="${RUN}/venv"
 fi
-VENV="${RUN}/venv"
 PY="${VENV}/bin/python"
 
 require_writable() {
@@ -57,26 +57,39 @@ require_writable() {
 
 termux_prepare() {
   [ "$ROLE" = "termux" ] || return 0
-  if is_shared_fs "${PWD:-}" || is_shared_fs "$(readlink -f "$0" 2>/dev/null || echo "$0")"; then
-    echo "NOTE: started from shared storage. Git and backups go in ${HOME_REAL} (internal)."
+  SHARED="${HOME_REAL}/storage/shared"
+  if [ ! -d "$SHARED" ]; then
+    mkdir -p "${HOME_REAL}/storage"
+    if [ -d /sdcard ]; then
+      ln -sfn /sdcard "$SHARED"
+    elif [ -d /storage/emulated/0 ]; then
+      ln -sfn /storage/emulated/0 "$SHARED"
+    else
+      echo "Run this once in Termux, then Allow:  termux-setup-storage"
+    fi
   fi
+  mkdir -p "${SHARED}/codes" || fail "cannot create storage/shared/codes — run: termux-setup-storage"
+  RUN="${SHARED}/codes/scraper4"
+  VENV="${HOME_REAL}/scraper4-venv"
+  PY="${VENV}/bin/python"
+  SRC="${HOME_REAL}/amphp"
   if [ -L "$SRC" ]; then
-    echo "Removing symlink $SRC (sdcard is read-only for git/backup)"
+    echo "Removing symlink $SRC (git stays in Termux home)"
     rm -f "$SRC"
-  fi
-  if [ -L "$RUN" ]; then
-    rm -f "$RUN"
   fi
   require_writable "$HOME_REAL"
   require_writable "$SRC"
+  require_writable "$VENV"
   require_writable "$RUN"
+  echo "Git:  $SRC"
+  echo "App:  $RUN"
+  echo "Data: ${RUN}/scraper4_data.json"
   export SCRAPER_DATA_FILE="${RUN}/scraper4_data.json"
   export DEPLOYER_DATA_FILE="${RUN}/deployer4_data.json"
   export SCRAPER_ERROR_LOG="${RUN}/scraper4-errors.jsonl"
   for old in \
-      "${HOME}/storage/shared/scraper4/scraper4_data.json" \
-      "/sdcard/scraper4/scraper4_data.json" \
-      "/storage/emulated/0/scraper4/scraper4_data.json"
+      "${HOME_REAL}/scraper4/scraper4_data.json" \
+      "${SHARED}/scraper4/scraper4_data.json"
   do
     if [ -f "$old" ] && [ ! -f "${RUN}/scraper4_data.json" ]; then
       echo "Copying backup data from $old"
@@ -231,6 +244,7 @@ do_update() {
     return
   fi
   [ "$ROLE" = "termux" ] && termux_pkgs
+  termux_prepare
   fetch_latest
   if [ "${S4_REEXEC:-0}" != 1 ] && [ -f "${SRC}/run_scraper4.sh" ]; then
     echo "Re-run latest script from ${SRC}"

@@ -68,8 +68,9 @@ except ImportError as exc:
     ) from exc
 
 # Every APP_VERSION bump must add a new top CHANGELOG row (گزارش تغییرات نسخه‌ها).
-APP_VERSION = "10.146"
+APP_VERSION = "10.147"
 CHANGELOG = [
+    {"version":"10.147","date":"2026-09-05","title":"توضیح‌ساز و دسته‌بندی هوش مصنوعی","items":["توضیح کوتاه و بلند HTML با مدل فعال","دسته‌بندی فروشگاهی و تطبیق با دسته باسلام","اصلاح دسته‌های خالی، عمومی یا اشتباه در پس‌زمینه"]},
     {"version":"10.146","date":"2026-09-05","title":"رفع استخراج صفر در صفحه شروع","items":["اگر رله HTTP 503 بدهد استخراج هم مثل پیش‌نمایش مستقیم تکرار می‌شود","خطای خالی‌ماندن config دیگر شروع برداشت را متوقف نمی‌کند","صفر محصول به‌جای سکوت، پیام خطا می‌دهد"]},
     {"version":"10.145","date":"2026-09-05","title":"رفع خطای بارگذاری صفحه سلکتورها","items":["مسیر پیش‌نمایش سلکتور دوباره به تابع درست وصل شد تا fetch_engine_installed بدون آرگومان صدا نشود"]},
     {"version":"10.144","date":"2026-09-05","title":"گزارش تغییرات نسخه ادامه یافت","items":["ورودی‌های ۱۰.۱۴۲ و ۱۰.۱۴۳ به فهرست گزارش تغییرات اضافه شد","از این نسخه هر انتشار در همین گزارش ثبت می‌شود"]},
@@ -3563,6 +3564,275 @@ def api_ai_enrich():
     save_data(data);return jsonify(ok=not errors,done=done,errors=errors,total=len(done))
 
 
+
+_AI_BAD_CAT = {"", "عمومی", "سایر", "دیگر", "متفرقه", "uncategorized", "general", "default", "بدون دسته", "none", "null"}
+
+
+def ai_parse_json_object(text: str) -> dict[str, Any]:
+    raw = clean_text(text)
+    if not raw:
+        raise ValueError("پاسخ خالی هوش مصنوعی")
+    match = re.search(r"\{.*\}", raw, re.S)
+    obj = json.loads(match.group(0) if match else raw)
+    if not isinstance(obj, dict):
+        raise ValueError("پاسخ JSON شیء نبود")
+    return obj
+
+
+def ai_product_needs_content(product: dict[str, Any]) -> bool:
+    short = clean_text(product.get("short_desc") or product.get("shortDesc") or "")
+    longd = clean_text(product.get("long_desc") or product.get("longDesc") or product.get("long_desc_html") or "")
+    return len(short) < 20 or len(longd) < 40
+
+
+def ai_product_needs_category(product: dict[str, Any]) -> bool:
+    cid = int(product.get("basalam_category_id") or product.get("bsl_category_id") or 0)
+    name = clean_text(product.get("category") or product.get("bsl_category_name") or "")
+    return cid <= 0 or not name
+
+
+def ai_category_suspect(product: dict[str, Any]) -> bool:
+    name = clean_text(product.get("category") or product.get("bsl_category_name") or "").lower()
+    cid = int(product.get("basalam_category_id") or product.get("bsl_category_id") or 0)
+    return cid <= 0 or name in _AI_BAD_CAT or len(name) < 2
+
+
+def ai_load_category_rows() -> list[dict[str, Any]]:
+    rows = list(BASALAM_CATEGORY_CACHE.get("rows") or [])
+    if rows and time.time() - float(BASALAM_CATEGORY_CACHE.get("at") or 0) < 3600:
+        return rows
+    try:
+        payload, _client = basalam_strategy(lambda: basalam_client().get_categories_sync(), lambda: basalam_api_request("GET", "/v1/categories"))
+        flat = basalam_flat_categories(payload)
+        unique = {str(x["id"]): x for x in flat if isinstance(x, dict) and x.get("id") is not None}
+        rows = list(unique.values())
+        BASALAM_CATEGORY_CACHE.update(at=time.time(), rows=rows)
+    except Exception:
+        pass
+    return rows
+
+
+def ai_match_category(name: str, rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    needle = clean_text(name).lower()
+    if not needle or not rows:
+        return None
+    for row in rows:
+        if clean_text(row.get("name")).lower() == needle:
+            return row
+    for row in rows:
+        path = (clean_text(row.get("path")) + " " + clean_text(row.get("name"))).lower()
+        if needle in path or clean_text(row.get("name")).lower() in needle:
+            return row
+    tokens = [x for x in re.split(r"\s+", needle) if len(x) > 2]
+    best = None
+    best_n = 0
+    for row in rows:
+        path = (clean_text(row.get("path")) + " " + clean_text(row.get("name"))).lower()
+        n = sum(1 for tok in tokens if tok in path)
+        if n > best_n:
+            best, best_n = row, n
+    return best if best_n >= 2 else None
+
+
+def ai_collect_products(scope: str) -> list[dict[str, Any]]:
+    data = load_data()
+    out: list[dict[str, Any]] = []
+
+    def add(source: str, index: int, product: Any) -> None:
+        if not isinstance(product, dict):
+            return
+        title = clean_text(product.get("title") or product.get("name"))
+        if not title:
+            return
+        out.append({"source": source, "index": index, "product": dict(product)})
+
+    if scope == "all":
+        for name, prof in (data.get("profiles") or {}).items():
+            if not isinstance(prof, dict):
+                continue
+            for index, product in enumerate(prof.get("saved_products") or []):
+                add("profile:" + name, index, product)
+        return out
+    if scope == "profile":
+        name = clean_text(data.get("active_profile"))
+        prof = (data.get("profiles") or {}).get(name) if name else None
+        rows = (prof.get("saved_products") if isinstance(prof, dict) else None) or data.get("last_result") or []
+        source = ("profile:" + name) if name and isinstance(prof, dict) else "results"
+        for index, product in enumerate(rows):
+            add(source, index, product)
+        return out
+    for index, product in enumerate(data.get("last_result") or []):
+        add("results", index, product)
+    return out
+
+
+def ai_commit_product(item: dict[str, Any]) -> None:
+    data = load_data()
+    product = item.get("product") if isinstance(item.get("product"), dict) else {}
+    source = str(item.get("source") or "results")
+    index = int(item.get("index") or 0)
+    if source == "results":
+        rows = data.setdefault("last_result", [])
+        if 0 <= index < len(rows) and isinstance(rows[index], dict):
+            rows[index] = product
+        active = clean_text(data.get("active_profile"))
+        prof = (data.get("profiles") or {}).get(active)
+        if isinstance(prof, dict):
+            saved = prof.get("saved_products") if isinstance(prof.get("saved_products"), list) else []
+            key = product_key(product)
+            for i, row in enumerate(saved):
+                if isinstance(row, dict) and product_key(row) == key:
+                    saved[i] = product
+                    break
+            prof["saved_products"] = saved
+    elif source.startswith("profile:"):
+        name = source.split(":", 1)[1]
+        prof = (data.get("profiles") or {}).get(name)
+        if isinstance(prof, dict):
+            saved = prof.get("saved_products") if isinstance(prof.get("saved_products"), list) else []
+            if 0 <= index < len(saved) and isinstance(saved[index], dict):
+                saved[index] = product
+            prof["saved_products"] = saved
+        rows = data.get("last_result") or []
+        key = product_key(product)
+        for i, row in enumerate(rows):
+            if isinstance(row, dict) and product_key(row) == key:
+                rows[i] = product
+                break
+        data["last_result"] = rows
+    save_data(data)
+
+
+def ai_generate_product_fields(product: dict[str, Any], mode: str, cat_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    title = clean_text(product.get("title") or product.get("name"))
+    ctx = {
+        "title": title,
+        "brand": clean_text(product.get("brand")),
+        "category": clean_text(product.get("category")),
+        "price": product.get("price") or "",
+        "variations_text": clean_text(product.get("variations_text")),
+    }
+    names = [clean_text(x.get("path") or x.get("name")) for x in cat_rows[:50] if isinstance(x, dict)]
+    names = [x for x in names if x]
+    parts = [f"محصول: {title}", "فقط یک JSON معتبر فارسی برگردان. بدون متن اضافه."]
+    keys: list[str] = []
+    if mode in {"desc", "all"}:
+        keys += ["short_desc", "long_desc_html", "tags"]
+        parts.append("short_desc: یک یا دو جمله معرفی فارسی، بدون ادعای ساختگی.")
+        parts.append("long_desc_html: HTML فارسی با p و ul/li و strong و h3 برای معرفی، ویژگی‌ها و جمع‌بندی خرید.")
+        parts.append("tags: آرایه ۳ تا ۸ تگ کوتاه فارسی.")
+    if mode in {"category", "catfix", "all"}:
+        keys.append("category")
+        parts.append("category: نام دقیق دسته فروشگاهی (برگ درخت، ترجیحاً سازگار با باسلام).")
+        if names:
+            parts.append("اگر ممکن است category را عیناً از این فهرست بردار: " + " | ".join(names[:35]))
+    parts.append("کلیدها: " + ", ".join(keys))
+    parts.append("زمینه محصول: " + json.dumps(ctx, ensure_ascii=False))
+    return ai_parse_json_object(ai_chat("\n".join(parts)))
+
+
+def ai_apply_generated(product: dict[str, Any], obj: dict[str, Any], cat_rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+    if mode in {"desc", "all"}:
+        short = clean_text(obj.get("short_desc") or obj.get("short_description"))
+        html = str(obj.get("long_desc_html") or obj.get("description_html") or obj.get("long_desc") or "").strip()
+        if short:
+            product["short_desc"] = short
+        if html:
+            product["long_desc_html"] = html
+            product["long_desc"] = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+        tags = obj.get("tags")
+        if isinstance(tags, list):
+            product["tags"] = [clean_text(x) for x in tags if clean_text(str(x))][:12]
+        product["ai_content_at"] = int(time.time())
+    if mode in {"category", "catfix", "all"}:
+        name = clean_text(obj.get("category") or obj.get("category_name"))
+        if name:
+            old = clean_text(product.get("category"))
+            product["category_before"] = old
+            product["category"] = name
+            matched = ai_match_category(name, cat_rows)
+            if matched:
+                product["basalam_category_id"] = int(matched.get("id") or 0)
+                product["bsl_category_name"] = clean_text(matched.get("name") or name)
+            product["ai_category_at"] = int(time.time())
+            if old and old != name:
+                product["category_fixed"] = True
+    return product
+
+
+def ai_content_worker(task_id: str, mode: str, scope: str, limit: int, only_missing: bool) -> None:
+    titles = {"desc": "توضیح‌ساز", "category": "دسته‌بندی", "catfix": "اصلاح دسته", "all": "محتوا و دسته"}
+    label = titles.get(mode, "هوش مصنوعی")
+    try:
+        live_task_update(task_id, 2, "آماده‌سازی فهرست محصولات", "running", f"{label} · منبع {scope}")
+        items = ai_collect_products(scope)
+        selected: list[dict[str, Any]] = []
+        for item in items:
+            product = item["product"]
+            if mode == "desc" and only_missing and not ai_product_needs_content(product):
+                continue
+            if mode == "category" and only_missing and not ai_product_needs_category(product):
+                continue
+            if mode == "catfix" and only_missing and not ai_category_suspect(product):
+                continue
+            if mode == "all" and only_missing and not (ai_product_needs_content(product) or ai_product_needs_category(product)):
+                continue
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+        if not selected:
+            live_task_update(task_id, 100, "محصولی برای این کار نبود", "completed", "فیلتر ناقص/مشکوک چیزی برنگرداند", filled=0, failed=0, total=0)
+            return
+        cat_rows = ai_load_category_rows() if mode in {"category", "catfix", "all"} else []
+        filled = 0
+        failed = 0
+        total = len(selected)
+        for index, item in enumerate(selected, 1):
+            if live_task_cancelled(task_id):
+                live_task_update(task_id, max(5, int((index - 1) / total * 100)), "متوقف شد", "cancelled", f"{filled} موفق · {failed} خطا", filled=filled, failed=failed, total=total)
+                return
+            title = clean_text(item["product"].get("title") or item["product"].get("name"))
+            live_task_update(task_id, max(4, int((index - 1) / total * 96)), f"{label} {index} از {total}", "running", title[:160], done=index - 1, total=total, filled=filled, failed=failed)
+            try:
+                obj = ai_generate_product_fields(item["product"], mode, cat_rows)
+                item["product"] = ai_apply_generated(item["product"], obj, cat_rows, mode)
+                ai_commit_product(item)
+                filled += 1
+            except Exception as exc:
+                failed += 1
+                report_error("ai_content", exc)
+                live_task_update(task_id, max(4, int(index / total * 96)), f"{label} {index} از {total}", "running", f"✕ {title[:80]} · {clean_text(exc)[:180]}", done=index, total=total, filled=filled, failed=failed)
+        live_task_update(task_id, 100, f"{label} تمام شد", "completed", f"{filled} موفق · {failed} خطا از {total}", filled=filled, failed=failed, total=total, done=total)
+    except Exception as exc:
+        report_error("ai_content_worker", exc)
+        live_task_update(task_id, 100, "کار هوش مصنوعی ناموفق بود", "failed", clean_text(exc)[:800], error=clean_text(exc)[:1500])
+
+
+@app.post("/api/ai/content/start")
+def api_ai_content_start():
+    if not deploy_authorized():
+        return deploy_auth_error()
+    body = request.get_json(silent=True) or {}
+    mode = clean_text(body.get("mode") or "desc").lower()
+    if mode not in {"desc", "category", "catfix", "all"}:
+        return jsonify(ok=False, error="حالت نامعتبر است"), 400
+    scope = clean_text(body.get("scope") or "results").lower()
+    if scope not in {"results", "profile", "all"}:
+        scope = "results"
+    try:
+        limit = max(1, min(80, int(body.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+    only_missing = bool(body.get("only_missing", True))
+    titles = {"desc": "توضیح‌ساز هوش مصنوعی", "category": "دسته‌بندی با هوش مصنوعی", "catfix": "اصلاح دسته‌بندی اشتباه", "all": "محتوا و دسته با هوش مصنوعی"}
+    task = live_task_create("ai_content", titles[mode], private=False)
+    task.update(mode=mode, scope=scope, limit=limit)
+    LIVE_TASKS[task["id"]] = task
+    live_task_disk_write(task)
+    threading.Thread(target=ai_content_worker, args=(task["id"], mode, scope, limit, only_missing), name="ai-content", daemon=True).start()
+    return jsonify(ok=True, task=task)
+
+
 @app.post("/api/profile")
 def profile_save():
     body = request.get_json(silent=True) or {}
@@ -5069,7 +5339,8 @@ button.linkish.danger{color:#fb7185!important}
 </div>
 <div id="bsShopsHint" class="status"></div>
 </div>
-<div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="installBasalamSdk()">نصب/ترمیم SDK</button><button class="gray" onclick="testBasalam()">تست اتصال باسلام</button><button class="green" onclick="loadBasalamVendor()">اطلاعات غرفه</button><button class="green" onclick="loadBasalamProducts()">محصولات غرفه</button></div><div id="bslAdminStatus" class="status">توکن را بدون عبارت Bearer وارد کنید؛ در خطای 401 یک canary بی‌خطر مشخص می‌کند مشکل از Worker است یا خود توکن. هیچ fallback مخفی به اتصال مستقیم انجام نمی‌شود.</div><div id="bslLiveTask" class="live-task" style="display:none"><div class="live-task-head"><b id="bslTaskTitle">در حال اجرا</b><span id="bslTaskPercent">۰٪</span></div><div class="progress-track"><i id="bslTaskBar"></i></div><div id="bslTaskStep" class="live-step"></div><div id="bslTaskDetails" class="live-details"></div></div><div id="bslVendorCard"></div><div id="bslProductList" class="provider-list"></div></div><div class="card operations-card"><div class="section-head"><div><h3>💬 مرکز عملیات باسلام</h3><small>REST API مستقل برای گفت‌وگوها، پیام‌ها و سفارش‌های غرفه</small></div><span class="badge">فاز عملیات</span></div><div class="actions"><button class="green" onclick="loadBasalamOperations()">دریافت داشبورد</button><button class="gray" onclick="loadBasalamOperations()">↻ بروزرسانی</button></div><div id="bslOperationStats" class="stats"></div><div class="operation-columns"><div><h4>گفت‌وگوهای اخیر</h4><div id="bslChatList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div><div><h4>سفارش‌های غرفه</h4><div id="bslOrderList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div></div><div id="bslChatPanel" class="chat-panel" style="display:none"><div class="section-head"><b id="bslChatTitle">گفت‌وگو</b><button class="gray" onclick="$('bslChatPanel').style.display='none'">✕</button></div><div id="bslMessages" class="message-list"></div><div class="chat-compose"><textarea id="bslMessageText" rows="2" placeholder="پاسخ به مشتری…"></textarea><button onclick="sendBasalamMessage()">ارسال پیام</button></div></div><div id="bslOperationStatus" class="status">این بخش از REST API استفاده می‌کند و به نصب SDK وابسته نیست.</div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><div class="section-head"><div><h3>🤖 مرکز هوش مصنوعی</h3><small>مدیریت چند ارائه‌دهنده، مدل‌ها و چند کلید API مانند نسخه PHP</small></div><span id="aiSummary" class="badge">در حال خواندن…</span></div><div class="ai-tabs"><button class="on" onclick="aiPane('providers',this)">🧠 ارائه‌دهنده‌ها</button><button onclick="aiPane('editor',this)">✏️ ویرایش</button><button onclick="aiPane('models',this);loadAIStats()">📋 مدل‌ها</button><button onclick="aiPane('candidates',this);loadAICandidates()">🏆 کاندید + مستر</button><button onclick="aiPane('test',this)">✨ محتوا</button><button onclick="aiPane('health',this);loadAITestJobs()">🧪 تست مدل‌ها</button></div><div id="aiPaneProviders" class="ai-pane on"><div class="grid"><div><label>ارائه‌دهنده فعال</label><select id="ai_provider" onchange="aiSelectProvider()"><option value="">— ارائه‌دهنده‌ای نیست —</option></select></div><div><label>مدل فعال</label><select id="ai_model" onchange="aiSelectModel()"><option value="">—</option></select></div></div><div id="aiProviderList" class="provider-list"></div><div class="actions"><label class="file-btn">⬆ بارگذاری ai_providers.json<input type="file" accept=".json,application/json" onchange="importAIProviders(this)"></label><button class="gray" onclick="loadAI()">↻ تازه‌سازی</button></div></div><div id="aiPaneEditor" class="ai-pane"><div class="grid"><div><label>شناسه یکتا</label><input id="ai_edit_id" dir="ltr" placeholder="openrouter"></div><div><label>نام نمایشی</label><input id="ai_edit_name" placeholder="OpenRouter"></div><div><label>Vendor اختیاری</label><input id="ai_edit_vendor" dir="ltr"></div><div><label><input id="ai_edit_enabled" type="checkbox" checked style="width:auto"> ارائه‌دهنده فعال باشد</label></div><div class="wide"><label>Base URL یا Endpoint</label><input id="ai_endpoint" dir="ltr" placeholder="https://.../v1/chat/completions"></div><div class="wide"><label>کلیدهای API — هر خط: کلید | برچسب | Account ID کلادفلر</label><textarea id="ai_keys" rows="4" dir="ltr" placeholder="sk-... | حساب اول"></textarea></div><div class="wide"><label>مدل‌ها — هر خط: model-id | نام نمایشی | free</label><textarea id="ai_models" rows="7" dir="ltr" placeholder="model/id | نام مدل | free"></textarea></div></div><div class="actions"><button onclick="saveAIProvider()">ذخیره ارائه‌دهنده</button><button class="gray" onclick="newAIProvider()">ارائه‌دهنده تازه</button><button class="gray" onclick="deleteAIProvider()">حذف</button></div></div><div id="aiPaneModels" class="ai-pane"><div id="aiStatsCards" class="stats"></div><div id="aiStatsBars"></div><div class="modal-tools" style="padding:10px 0"><input id="aiCatalogSearch" placeholder="جستجوی مدل یا ارائه‌دهنده…" oninput="renderAIModelCatalog()"><select id="aiCatalogFilter" onchange="renderAIModelCatalog()"><option value="all">همه مدل‌ها</option><option value="available">سالم</option><option value="failed">ناموفق</option><option value="untested">تست‌نشده</option><option value="free">رایگان</option></select></div><div id="aiModelCatalog" class="model-catalog"></div></div><div id="aiPaneCandidates" class="ai-pane"><div class="note">مانند نسخه PHP، مدل‌های سالم را به کاندیدها اضافه کنید و یک مدل مستر برای دسته‌بندی و پاسخ خودکار تعیین کنید.</div><div class="grid"><div><label>ارائه‌دهنده</label><select id="aiCandProvider" onchange="renderCandidateModels()"></select></div><div><label>مدل سالم</label><select id="aiCandModel"></select></div></div><div class="actions"><button onclick="addAICandidate()">افزودن کاندید</button><button class="green" onclick="addAllHealthyCandidates()">افزودن همه سالم‌ها</button><button class="gray" onclick="saveAICandidates()">ذخیره</button></div><div id="aiCandidateList" class="candidate-list"></div><div class="grid"><div class="wide"><label>مدل مستر</label><select id="aiMasterModel" onchange="saveAICandidates()"><option value="">خودکار — بهترین امتیاز</option></select></div></div></div><div id="aiPaneTest" class="ai-pane"><div class="grid"><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div><div><label>Max tokens</label><input id="ai_max_tokens" type="number" min="64" max="32000"></div><div class="wide"><label>System prompt</label><textarea id="ai_system_prompt" rows="3"></textarea></div><div class="wide"><label>پیام آزمایش</label><textarea id="ai_test_prompt" rows="3">فقط این JSON را برگردان: {"status":"ok"}</textarea></div></div><div class="actions"><button onclick="saveAIOptions()">ذخیره گزینه‌ها</button><button class="gray" onclick="testAI()">تست مدل فعال</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div></div><div id="aiPaneHealth" class="ai-pane"><div class="grid grid4"><div><label>حداکثر مدل هر ارائه‌دهنده</label><input id="ai_test_per" type="number" min="1" max="5000" value="5000"></div><div><label>تأخیر بین مدل‌ها (ms)</label><input id="ai_test_delay" type="number" min="0" max="60000" value="120"></div><div><label>مدل در هر درخواست</label><input id="ai_test_batch" type="number" min="1" max="3" value="1"></div><div><label><input id="ai_test_only" type="checkbox" style="width:auto"> فقط تست‌نشده‌ها</label><label><input id="ai_test_skip" type="checkbox" checked style="width:auto"> ردکردن مدل غیرچت</label></div><div class="wide"><label>پیام نمونه مشتری</label><textarea id="ai_reply_sample" rows="2">سلام، این محصول موجود است و چه زمانی ارسال می‌شود؟</textarea></div><div class="wide"><label>عنوان نمونه برای دسته‌بندی</label><input id="ai_category_sample" value="ادو پرفیوم مردانه دیور ساواج ۱۰۰ میلی‌لیتر"></div></div><div class="actions"><button class="green" onclick="startAutoAITests()">▶ تست خودکار همه مدل‌ها</button><button onclick="processAITests()">اجرای فقط یک مرحله</button><button class="gray" onclick="stopAutoAITests()">توقف خودکار</button><button class="gray" onclick="openAITestModal()">جدول پیشرفته نتایج</button></div><div id="aiTestSummary" class="stats"></div><div id="aiTestRows" class="test-results"></div></div><div id="aiStatus" class="status">فایل PHP را بارگذاری کنید؛ ارائه‌دهنده‌ها و مدل‌ها فوراً در فهرست ظاهر می‌شوند.</div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
+<div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="installBasalamSdk()">نصب/ترمیم SDK</button><button class="gray" onclick="testBasalam()">تست اتصال باسلام</button><button class="green" onclick="loadBasalamVendor()">اطلاعات غرفه</button><button class="green" onclick="loadBasalamProducts()">محصولات غرفه</button></div><div id="bslAdminStatus" class="status">توکن را بدون عبارت Bearer وارد کنید؛ در خطای 401 یک canary بی‌خطر مشخص می‌کند مشکل از Worker است یا خود توکن. هیچ fallback مخفی به اتصال مستقیم انجام نمی‌شود.</div><div id="bslLiveTask" class="live-task" style="display:none"><div class="live-task-head"><b id="bslTaskTitle">در حال اجرا</b><span id="bslTaskPercent">۰٪</span></div><div class="progress-track"><i id="bslTaskBar"></i></div><div id="bslTaskStep" class="live-step"></div><div id="bslTaskDetails" class="live-details"></div></div><div id="bslVendorCard"></div><div id="bslProductList" class="provider-list"></div></div><div class="card operations-card"><div class="section-head"><div><h3>💬 مرکز عملیات باسلام</h3><small>REST API مستقل برای گفت‌وگوها، پیام‌ها و سفارش‌های غرفه</small></div><span class="badge">فاز عملیات</span></div><div class="actions"><button class="green" onclick="loadBasalamOperations()">دریافت داشبورد</button><button class="gray" onclick="loadBasalamOperations()">↻ بروزرسانی</button></div><div id="bslOperationStats" class="stats"></div><div class="operation-columns"><div><h4>گفت‌وگوهای اخیر</h4><div id="bslChatList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div><div><h4>سفارش‌های غرفه</h4><div id="bslOrderList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div></div><div id="bslChatPanel" class="chat-panel" style="display:none"><div class="section-head"><b id="bslChatTitle">گفت‌وگو</b><button class="gray" onclick="$('bslChatPanel').style.display='none'">✕</button></div><div id="bslMessages" class="message-list"></div><div class="chat-compose"><textarea id="bslMessageText" rows="2" placeholder="پاسخ به مشتری…"></textarea><button onclick="sendBasalamMessage()">ارسال پیام</button></div></div><div id="bslOperationStatus" class="status">این بخش از REST API استفاده می‌کند و به نصب SDK وابسته نیست.</div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><div class="section-head"><div><h3>🤖 مرکز هوش مصنوعی</h3><small>مدیریت چند ارائه‌دهنده، مدل‌ها و چند کلید API مانند نسخه PHP</small></div><span id="aiSummary" class="badge">در حال خواندن…</span></div><div class="ai-tabs"><button class="on" onclick="aiPane('providers',this)">🧠 ارائه‌دهنده‌ها</button><button onclick="aiPane('editor',this)">✏️ ویرایش</button><button onclick="aiPane('models',this);loadAIStats()">📋 مدل‌ها</button><button onclick="aiPane('candidates',this);loadAICandidates()">🏆 کاندید + مستر</button><button onclick="aiPane('test',this)">⚙️ مدل</button><button onclick="aiPane('content',this)">✍️ محتوا و دسته</button><button onclick="aiPane('health',this);loadAITestJobs()">🧪 تست مدل‌ها</button></div><div id="aiPaneProviders" class="ai-pane on"><div class="grid"><div><label>ارائه‌دهنده فعال</label><select id="ai_provider" onchange="aiSelectProvider()"><option value="">— ارائه‌دهنده‌ای نیست —</option></select></div><div><label>مدل فعال</label><select id="ai_model" onchange="aiSelectModel()"><option value="">—</option></select></div></div><div id="aiProviderList" class="provider-list"></div><div class="actions"><label class="file-btn">⬆ بارگذاری ai_providers.json<input type="file" accept=".json,application/json" onchange="importAIProviders(this)"></label><button class="gray" onclick="loadAI()">↻ تازه‌سازی</button></div></div><div id="aiPaneEditor" class="ai-pane"><div class="grid"><div><label>شناسه یکتا</label><input id="ai_edit_id" dir="ltr" placeholder="openrouter"></div><div><label>نام نمایشی</label><input id="ai_edit_name" placeholder="OpenRouter"></div><div><label>Vendor اختیاری</label><input id="ai_edit_vendor" dir="ltr"></div><div><label><input id="ai_edit_enabled" type="checkbox" checked style="width:auto"> ارائه‌دهنده فعال باشد</label></div><div class="wide"><label>Base URL یا Endpoint</label><input id="ai_endpoint" dir="ltr" placeholder="https://.../v1/chat/completions"></div><div class="wide"><label>کلیدهای API — هر خط: کلید | برچسب | Account ID کلادفلر</label><textarea id="ai_keys" rows="4" dir="ltr" placeholder="sk-... | حساب اول"></textarea></div><div class="wide"><label>مدل‌ها — هر خط: model-id | نام نمایشی | free</label><textarea id="ai_models" rows="7" dir="ltr" placeholder="model/id | نام مدل | free"></textarea></div></div><div class="actions"><button onclick="saveAIProvider()">ذخیره ارائه‌دهنده</button><button class="gray" onclick="newAIProvider()">ارائه‌دهنده تازه</button><button class="gray" onclick="deleteAIProvider()">حذف</button></div></div><div id="aiPaneModels" class="ai-pane"><div id="aiStatsCards" class="stats"></div><div id="aiStatsBars"></div><div class="modal-tools" style="padding:10px 0"><input id="aiCatalogSearch" placeholder="جستجوی مدل یا ارائه‌دهنده…" oninput="renderAIModelCatalog()"><select id="aiCatalogFilter" onchange="renderAIModelCatalog()"><option value="all">همه مدل‌ها</option><option value="available">سالم</option><option value="failed">ناموفق</option><option value="untested">تست‌نشده</option><option value="free">رایگان</option></select></div><div id="aiModelCatalog" class="model-catalog"></div></div><div id="aiPaneCandidates" class="ai-pane"><div class="note">مانند نسخه PHP، مدل‌های سالم را به کاندیدها اضافه کنید و یک مدل مستر برای دسته‌بندی و پاسخ خودکار تعیین کنید.</div><div class="grid"><div><label>ارائه‌دهنده</label><select id="aiCandProvider" onchange="renderCandidateModels()"></select></div><div><label>مدل سالم</label><select id="aiCandModel"></select></div></div><div class="actions"><button onclick="addAICandidate()">افزودن کاندید</button><button class="green" onclick="addAllHealthyCandidates()">افزودن همه سالم‌ها</button><button class="gray" onclick="saveAICandidates()">ذخیره</button></div><div id="aiCandidateList" class="candidate-list"></div><div class="grid"><div class="wide"><label>مدل مستر</label><select id="aiMasterModel" onchange="saveAICandidates()"><option value="">خودکار — بهترین امتیاز</option></select></div></div></div><div id="aiPaneTest" class="ai-pane"><div class="grid"><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div><div><label>Max tokens</label><input id="ai_max_tokens" type="number" min="64" max="32000"></div><div class="wide"><label>System prompt</label><textarea id="ai_system_prompt" rows="3"></textarea></div><div class="wide"><label>پیام آزمایش</label><textarea id="ai_test_prompt" rows="3">فقط این JSON را برگردان: {"status":"ok"}</textarea></div></div><div class="actions"><button onclick="saveAIOptions()">ذخیره گزینه‌ها</button><button class="gray" onclick="testAI()">تست مدل فعال</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div></div><div id="aiPaneContent" class="ai-pane"><div class="note">توضیح‌ساز، دسته‌بندی و اصلاح دسته با <b>مدل فعال</b>. کار روی سرور می‌ماند.</div><div class="grid"><div><label>منبع محصولات</label><select id="ai_c_scope"><option value="results">نتایج همین استخراج</option><option value="profile">پروفایل فعال</option><option value="all">همه پروفایل‌ها</option></select></div><div><label>سقف هر اجرا</label><input id="ai_c_limit" type="number" min="1" max="80" value="20"></div><div class="wide"><label><input id="ai_c_missing" type="checkbox" checked style="width:auto"> فقط ناقص / دسته مشکوک</label></div></div><div class="actions" style="flex-wrap:wrap"><button class="green" onclick="startAIContent('desc')">✍️ توضیح‌ساز</button><button onclick="startAIContent('category')">📂 دسته‌بندی</button><button onclick="startAIContent('catfix')">🛠️ اصلاح دسته اشتباه</button><button class="gray" onclick="startAIContent('all')">همه با هم</button></div><div id="aiContentStatus" class="status">مدل و کلید را از تب ارائه‌دهنده‌ها انتخاب کنید.</div><div id="aiContentTask" class="card live-task" style="display:none"><div class="live-task-head"><b id="aiContentTitle">هوش مصنوعی</b><span id="aiContentPercent">۰٪</span></div><div class="progress-track"><i id="aiContentBar"></i></div><div id="aiContentStep" class="live-step"></div><div id="aiContentDetails" class="live-details"></div></div></div>
+<div id="aiPaneHealth" class="ai-pane"><div class="grid grid4"><div><label>حداکثر مدل هر ارائه‌دهنده</label><input id="ai_test_per" type="number" min="1" max="5000" value="5000"></div><div><label>تأخیر بین مدل‌ها (ms)</label><input id="ai_test_delay" type="number" min="0" max="60000" value="120"></div><div><label>مدل در هر درخواست</label><input id="ai_test_batch" type="number" min="1" max="3" value="1"></div><div><label><input id="ai_test_only" type="checkbox" style="width:auto"> فقط تست‌نشده‌ها</label><label><input id="ai_test_skip" type="checkbox" checked style="width:auto"> ردکردن مدل غیرچت</label></div><div class="wide"><label>پیام نمونه مشتری</label><textarea id="ai_reply_sample" rows="2">سلام، این محصول موجود است و چه زمانی ارسال می‌شود؟</textarea></div><div class="wide"><label>عنوان نمونه برای دسته‌بندی</label><input id="ai_category_sample" value="ادو پرفیوم مردانه دیور ساواج ۱۰۰ میلی‌لیتر"></div></div><div class="actions"><button class="green" onclick="startAutoAITests()">▶ تست خودکار همه مدل‌ها</button><button onclick="processAITests()">اجرای فقط یک مرحله</button><button class="gray" onclick="stopAutoAITests()">توقف خودکار</button><button class="gray" onclick="openAITestModal()">جدول پیشرفته نتایج</button></div><div id="aiTestSummary" class="stats"></div><div id="aiTestRows" class="test-results"></div></div><div id="aiStatus" class="status">فایل PHP را بارگذاری کنید؛ ارائه‌دهنده‌ها و مدل‌ها فوراً در فهرست ظاهر می‌شوند.</div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
 <div id="deployBanner" class="deploy-banner"><span id="deployBannerText" style="flex:1;min-width:200px">⬆ نسخه جدید موجود است</span><button onclick="deployGoTo()">نصب کن</button><button class="ghost" onclick="dismissDeployBanner()">بعداً</button></div><header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>🛒 اسکرپر <small id="appVersion" onclick="deployGoTo()" title="برای بررسی به‌روزرسانی کلیک کنید">v10.141</small></h1><div class="sub">استخراج و مدیریت هوشمند محصولات</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header><div id="toast"></div>
 
 <section id="scrape" class="pane on"><div class="start-journey"><div class="journey-step active"><i>۱</i><span><b>پروفایل</b><small>انتخاب فروشگاه</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۲</i><span><b>منبع</b><small>آدرس و صفحات</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۳</i><span><b>استخراج سریع</b><small>فهرست بدون انتظار</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۴</i><span><b>جزئیات</b><small>وظیفه پس‌زمینه</small></span></div></div><div class="card profile-picker start-block"><div class="row-head"><h3>پروفایل</h3><span id="activeProfileBadge" class="badge">جدید</span></div><select id="profileSelect" onchange="loadSelectedProfile()"><option value="">— پروفایل جدید —</option></select><div id="activeProfileInfo" class="quiet">با انتخاب، روی سرور ذخیره می‌شود.</div><div class="text-actions"><button type="button" class="linkish" onclick="saveProfilePrompt()">ذخیره</button><button type="button" class="linkish" onclick="renameSelectedProfile()">تغییر نام</button><button type="button" class="linkish danger" onclick="deleteSelectedProfile()">حذف</button></div></div><div class="card source-card start-block"><div class="row-head"><h3>منبع</h3></div>
@@ -5222,6 +5493,8 @@ async function saveAIProvider(){try{let id=$('ai_edit_id').value.trim();if(!id)t
 async function deleteAIProvider(){let id=$('ai_edit_id').value.trim();if(!id||!confirm('ارائه‌دهنده و مدل‌هایش حذف شوند؟'))return;try{let d=await deployApi('/api/ai/providers/'+encodeURIComponent(id),{method:'DELETE'});aiProviders=d.providers||[];renderAI();newAIProvider();$('aiStatus').innerHTML='<span class="ok">حذف شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function saveAIOptions(){try{let ai={temperature:+$('ai_temperature').value,max_tokens:+$('ai_max_tokens').value,system_prompt:$('ai_system_prompt').value};await deployApi('/api/ai/settings',{method:'POST',body:JSON.stringify({ai})});$('aiStatus').innerHTML='<span class="ok">گزینه‌های تولید ذخیره شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function testAI(){try{$('aiStatus').textContent='در حال تست مدل انتخاب‌شده…';let d=await deployApi('/api/ai/test',{method:'POST',body:JSON.stringify({provider:$('ai_provider').value,model:$('ai_model').value,prompt:$('ai_test_prompt').value})});$('aiStatus').innerHTML='<span class="ok">اتصال موفق: '+esc(d.answer)+'</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function startAIContent(mode){const names={desc:'توضیح‌ساز',category:'دسته‌بندی',catfix:'اصلاح دسته',all:'محتوا و دسته'};try{$('aiContentStatus').innerHTML='<span class="spinner"></span> شروع '+names[mode]+'…';let d=await deployApi('/api/ai/content/start',{method:'POST',body:JSON.stringify({mode,scope:($('ai_c_scope')||{}).value||'results',limit:+(($('ai_c_limit')||{}).value||20),only_missing:!($('ai_c_missing')&&$('ai_c_missing').checked===false)})});await watchAIContentTask(d.task.id)}catch(e){if($('aiContentStatus'))$('aiContentStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
+async function watchAIContentTask(id){if($('aiContentTask'))$('aiContentTask').style.display='block';for(;;){let d=await deployApi('/api/tasks/'+encodeURIComponent(id));const t=d.task||{};if($('aiContentTitle'))$('aiContentTitle').textContent=t.title||'هوش مصنوعی';if($('aiContentPercent'))$('aiContentPercent').textContent=toFa(Math.round(t.progress||0))+'٪';if($('aiContentBar'))$('aiContentBar').style.width=(t.progress||0)+'%';if($('aiContentStep'))$('aiContentStep').textContent=t.step||'';const ev=compactTaskDetails(t.details).slice().reverse().slice(0,8);if($('aiContentDetails'))$('aiContentDetails').innerHTML=ev.map(x=>'<div class="live-line">'+esc(x.text||'')+'</div>').join('');if(['completed','failed','cancelled'].includes(t.status)){const ok=t.status==='completed';if($('aiContentStatus'))$('aiContentStatus').innerHTML='<span class="'+(ok?'ok':'error')+'">'+(ok?('انجام شد · موفق '+toFa(t.filled||0)+' · خطا '+toFa(t.failed||0)):esc(t.error||t.step||'ناموفق'))+'</span>';break}await new Promise(r=>setTimeout(r,800))}}
 async function enrichAI(){if(!confirm('توضیحات حداکثر ۳ محصول ناقص با مدل فعال ساخته شود؟'))return;try{$('aiStatus').textContent='در حال تولید محتوا…';let d=await deployApi('/api/ai/enrich',{method:'POST',body:JSON.stringify({limit:3})});$('aiStatus').innerHTML='<span class="ok">'+d.total+' محصول تکمیل شد.</span>'}catch(e){$('aiStatus').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 let aiStatsData=null,aiCandidates=[];
 async function loadAIStats(){try{aiStatsData=await deployApi('/api/ai/stats');$('aiStatsCards').innerHTML=`<div class="space-card"><b>${aiStatsData.total}</b><span>کل مدل‌ها</span></div><div class="space-card"><b>${aiStatsData.available}</b><span>سالم</span></div><div class="space-card"><b>${aiStatsData.failed}</b><span>ناموفق</span></div><div class="space-card"><b>${aiStatsData.untested}</b><span>تست‌نشده</span></div><div class="space-card"><b>${aiStatsData.avg_latency||'—'}</b><span>میانگین ms</span></div><div class="space-card"><b>${aiStatsData.tool_calling}</b><span>ابزارپذیر</span></div>`;$('aiStatsBars').innerHTML=`<div class="live-task" style="display:block"><div class="live-task-head"><b>پوشش آزمایش</b><span>${aiStatsData.coverage_pct}٪</span></div><div class="progress-track"><i style="width:${aiStatsData.coverage_pct}%"></i></div><div class="live-task-head"><b>سلامت مدل‌های آزمایش‌شده</b><span>${aiStatsData.health_pct}٪</span></div><div class="progress-track"><i style="width:${aiStatsData.health_pct}%"></i></div></div>`;renderAIModelCatalog()}catch(e){$('aiModelCatalog').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}

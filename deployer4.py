@@ -38,6 +38,7 @@ import re
 import secrets
 import tempfile
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Optional
@@ -58,14 +59,26 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.3.2"
+DEPLOYER_VERSION = "1.3.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
-TARGET_FILE = os.environ.get(
-    "DEPLOYER_TARGET",
-    "/opt/scraper4/scraper4.py" if os.path.isfile("/opt/scraper4/scraper4.py") else os.path.join(BASE_DIR, "scraper4.py"),
-)
+def detect_target_file() -> str:
+    env = os.environ.get("DEPLOYER_TARGET", "").strip()
+    if env:
+        return env
+    home = os.path.expanduser("~")
+    for cand in (
+        "/opt/scraper4/scraper4.py",
+        os.path.join(home, "storage", "shared", "codes", "scraper4", "scraper4.py"),
+        os.path.join(home, "scraper4", "scraper4.py"),
+        os.path.join(BASE_DIR, "scraper4.py"),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return os.path.join(BASE_DIR, "scraper4.py")
+
+TARGET_FILE = detect_target_file()
 DATA_FILE = os.environ.get(
     "DEPLOYER_DATA_FILE", os.path.join(BASE_DIR, "deployer4_data.json")
 )
@@ -664,6 +677,62 @@ def vps_restart_scraper() -> bool:
         return False
 
 
+def running_scraper_health() -> dict[str, str]:
+    for url in ("http://127.0.0.1:8000/health", "http://127.0.0.1:8000/put/health"):
+        try:
+            response = requests.get(url, timeout=2)
+            data = response.json() if response.ok else {}
+            if isinstance(data, dict) and data.get("version"):
+                return {
+                    "version": str(data.get("version") or ""),
+                    "build": str(data.get("build") or ""),
+                    "url": url,
+                }
+        except Exception:
+            continue
+    return {}
+
+
+def restart_scraper_process() -> bool:
+    if vps_restart_scraper():
+        return True
+    target = active_target()
+    cwd = os.path.dirname(os.path.abspath(target)) or "."
+    home = os.path.expanduser("~")
+    py_candidates = [
+        os.path.join(cwd, "venv", "bin", "python"),
+        os.path.join(home, "scraper4-venv", "bin", "python"),
+        os.path.join(home, "scraper4", "venv", "bin", "python"),
+        sys.executable,
+    ]
+    python = next((c for c in py_candidates if c and os.path.isfile(c)), sys.executable)
+    try:
+        subprocess.run(["pkill", "-f", "gunicorn.*scraper4:application"], timeout=8, capture_output=True)
+    except Exception:
+        pass
+    time.sleep(0.8)
+    env = os.environ.copy()
+    env.setdefault("SCRAPER_RUNTIME", "vps")
+    env["SCRAPER_AUTO_UPDATE"] = "0"
+    env["SCRAPER_DATA_FILE"] = os.path.join(cwd, "scraper4_data.json")
+    env["PYTHONUNBUFFERED"] = "1"
+    log_path = os.path.join(cwd, "scraper4.log")
+    cmd = [
+        python, "-m", "gunicorn",
+        "--bind", "0.0.0.0:8000",
+        "--workers", "1",
+        "--threads", "4",
+        "--timeout", "0",
+        "scraper4:application",
+    ]
+    try:
+        with open(log_path, "a", encoding="utf-8") as fh:
+            subprocess.Popen(cmd, cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        return True
+    except Exception:
+        return False
+
+
 def pythonanywhere_reload() -> bool:
     token_file = os.path.expanduser("~/.pythonanywhere_api_token")
     try:
@@ -749,6 +818,7 @@ def check_all() -> dict[str, Any]:
         "candidates": sort_candidates_by_version(candidates), "check_on_load": cfg["check_on_load"],
         "searched_all": bool(cfg.get("search_all_branches")),
         "total_branches": len(scan_branches), "discovery_error": discovery_error,
+        "running_version": running_scraper_health().get("version", ""),
     }
 
 
@@ -818,7 +888,7 @@ def install_branch(requested_branch: str = "") -> dict[str, Any]:
         atomic_write(target, content, old_mode)
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pa_reloaded = pythonanywhere_reload()
-        vps_reloaded = vps_restart_scraper()
+        vps_reloaded = restart_scraper_process()
         return {
             "changed": True,
             "message": f"نسخه {new_version} از برنچ {target_cand['branch']} نصب شد",
@@ -850,7 +920,7 @@ def rollback() -> dict[str, Any]:
         cfg = eff_config()
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pythonanywhere_reload()
-        vps_restart_scraper()
+        restart_scraper_process()
         return {
             "changed": True, "message": "نسخه پشتیبان بازیابی شد",
             "version": version, "reload_requested": True,
@@ -1000,6 +1070,7 @@ def api_config():
         local_version=info.get("version", "unknown"),
         local_sha=info.get("sha", ""),
         local_error=info.get("error", ""),
+        running_version=running_scraper_health().get("version", ""),
         auto_state={
             "running": AUTO_STATE["running"],
             "last_result": AUTO_STATE["last_result"],
@@ -1150,6 +1221,15 @@ def api_fs():
     )
 
 
+@app.post("/api/restart")
+def api_restart():
+    ok = restart_scraper_process()
+    live = running_scraper_health()
+    if not ok:
+        return jsonify(ok=False, error="ری‌استارت اسکرپر ناموفق بود", running_version=live.get("version", "")), 500
+    return jsonify(ok=True, message="اسکرپر ری‌استارت شد", running_version=live.get("version", ""), target=active_target())
+
+
 @app.post("/api/auto/run")
 def api_auto_run():
     if AUTO_LOCK.acquire(blocking=False):
@@ -1243,11 +1323,12 @@ button:disabled{opacity:.6;cursor:wait}
 @media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}.branch-table{min-width:520px}.fs-box{max-height:94vh;border-radius:16px 16px 0 0}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.2</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
+<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.3</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
 <div class="card"><h3>نسخه زنده</h3>
 <div class="note">آدرس جدا: <code>/deploy/</code> — ریشه سایت PHP می‌ماند و اسکرپر روی <code>/put/</code> است. همه برنچ‌ها اسکن می‌شوند؛ <b>جدیدترین APP_VERSION</b> نصب می‌شود یا یک برنچ را دستی انتخاب می‌کنید. آپدیت خودکار فقط ارتقا می‌دهد.</div>
 <div id="localBox" class="local">—</div>
 <button class="green" id="mainBtn" onclick="checkInstall(true)" style="width:100%;padding:12px">🔍 بررسی و نصب نسخهٔ جدید</button>
+<button class="gray" id="restartBtn" onclick="restartScraper()" style="width:100%;padding:11px;margin-top:8px">↻ ری‌استارت اسکرپر در حال اجرا</button>
 <button class="gray hidden" id="updateBtn" onclick="updateNewest()" style="width:100%;padding:11px;margin-top:8px">⬇ نصب جدیدترین نسخه</button>
 <div id="status" class="status" style="margin-top:8px">آماده بررسی.</div>
 <label class="checkline"><input type="checkbox" id="autoCheck" onchange="saveSettings(true)"> بررسی خودکار هنگام باز شدن صفحه (فقط اطلاع؛ نصب با تأیید شماست)</label>
@@ -1309,7 +1390,8 @@ function fsUp(){if(!fsPath)return;let p=fsPath.split(String.fromCharCode(92)).jo
 function fsPick(){ if(!fsPath)return; $('targetDir').value=fsPath; fsClose(); saveSettings(true).catch(()=>{}) }
 async function saveSettings(silent){try{let t=$('token').value.trim();let body={repo:$('repo').value.trim(),branches:uiBranches(),path:$('path').value.trim(),target:$('targetDir').value.trim(),check_on_load:$('autoCheck').checked,search_all_branches:$('searchAll').checked,auto_update:$('autoUpdate').checked,auto_interval:+$('autoInterval').value||300};if(t==='__CLEAR__')body.clear_token=true;else if(t)body.github_token=t;else body.github_token='';if(!body.github_token)delete body.github_token;await api('api/settings',{method:'POST',body:JSON.stringify(body)});$('token').value='';renderChips();if(!silent){$('status').innerHTML='<span class="ok">تنظیمات ذخیره شد.</span>';showToast('✓ ذخیره شد')}}catch(e){if(!silent){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}throw e}}
 async function check(manual){try{$('status').textContent='در حال بررسی همه برنچ‌ها…';let d=await api('api/check',{method:'POST',body:'{}'});renderChips(d.newest_branch);
-$('localBox').innerHTML='فایل اصلی: <b>'+esc(d.target||'scraper4.py')+'</b> · نسخه محلی <b>v'+esc(d.local_version)+'</b><br><span>SHA محلی:</span> '+esc(d.local_sha||'—')+'<br><span>جدیدترین:</span> v'+esc(d.newest_version||'?')+' در برنچ '+esc(d.newest_branch||'—');
+$('localBox').innerHTML='فایل نصب: <b>'+esc(d.target||'scraper4.py')+'</b> · روی دیسک <b>v'+esc(d.local_version)+'</b><br><span>در حال اجرا:</span> <b>v'+esc(d.running_version||'نامشخص')+'</b><br><span>SHA محلی:</span> '+esc(d.local_sha||'—')+'<br><span>جدیدترین گیت:</span> v'+esc(d.newest_version||'?')+' در برنچ '+esc(d.newest_branch||'—');
+if(d.running_version&&d.local_version&&d.running_version!==d.local_version)showBanner('فایل v'+d.local_version+' است ولی فرآیند در حال اجرا هنوز v'+d.running_version+' است — ری‌استارت کنید');
 if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';if(d.discovery_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.discovery_error)+'</span>';else $('localBox').innerHTML+='<br><span>'+toFa(d.total_branches||0)+' برنچ بررسی شد'+(d.searched_all?' (همه برنچ‌های ریپو)':' (فقط برنچ‌های ثابت)')+'</span>';
 if(!d.update_available){$('status').innerHTML='<span class="ok">✓ به‌روز است — v'+esc(d.local_version)+'</span>';$('updateBtn').classList.add('hidden');hideBanner()}
 else{$('status').innerHTML='⬆ نسخه جدید: <b>v'+esc(d.newest_version||'?')+'</b> در برنچ <code>'+esc(d.newest_branch||'')+'</code> · جاری v'+esc(d.local_version);$('updateBtn').classList.remove('hidden');showBanner('⬆ نسخه جدید v'+(d.newest_version||'')+' در برنچ '+(d.newest_branch||'')+' موجود است')}
@@ -1317,10 +1399,11 @@ function verParts(v){return String(v||'').split(/\D+/).filter(Boolean).map(n=>+n
 function sortCands(list){return (list||[]).slice().sort((a,b)=>{let ae=!(!a.error&&a.version&&a.version!=='unknown'),be=!(!b.error&&b.version&&b.version!=='unknown');if(ae!==be)return ae-be;let pa=verParts(a.version),pb=verParts(b.version),n=Math.max(pa.length,pb.length);for(let i=0;i<n;i++){let d=(pb[i]||0)-(pa[i]||0);if(d)return d}return String(a.branch||'').localeCompare(String(b.branch||''))})}
 $('cands').innerHTML=(d.candidates||[]).length?'<div class="table-wrap"><table class="branch-table"><thead><tr><th>برنچ</th><th>نسخه</th><th>وضعیت</th><th>نصب</th></tr></thead><tbody>'+sortCands(d.candidates).map(c=>{let isN=c.branch===(d.newest_branch||'');let ver=(!c.error&&c.version)?('v'+esc(c.version)):'—';let st=c.error?('<span class="error">'+esc(c.error)+'</span>'):(isN?'★ جدیدترین':(c.update_available?'متفاوت از نصب فعلی':'همین نسخه'));return '<tr class="'+(isN?'new':'')+(c.error?' bad':'')+'"><td dir="ltr">'+esc(c.branch)+'</td><td>'+ver+'</td><td>'+st+'</td><td><button class="green" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب</button></td></tr>'}).join('')+'</tbody></table></div>':'<div class="note">کاندیدی یافت نشد.</div>';
 if(manual&&d.update_available)showToast('⬆ نسخه جدید v'+(d.newest_version||'')+' آماده نصب است');return d}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';if(manual)showToast(e.message,1);throw e}}
-async function checkInstall(manual){let b=$('mainBtn');if(b){b.disabled=true;b.textContent='⏳ در حال بررسی…'}try{let d=await check(false);if(!d.update_available){if(manual)showToast('✓ به‌روز است');return d}await updateNewest()}catch(e){}finally{if(b){b.disabled=false;b.textContent='🔍 بررسی و نصب نسخهٔ جدید'}}}
+async function checkInstall(manual){let b=$('mainBtn');if(b){b.disabled=true;b.textContent='⏳ در حال بررسی…'}try{let d=await check(false);if(d.update_available){await updateNewest();return}if(d.running_version&&d.local_version&&d.running_version!==d.local_version){await restartScraper();return}if(manual)showToast('✓ فایل و فرآیند هر دو v'+(d.local_version||'')+' هستند')}catch(e){}finally{if(b){b.disabled=false;b.textContent='🔍 بررسی و نصب نسخهٔ جدید'}}}
 async function updateNewest(){let t='';try{let d0=await api('api/check',{method:'POST',body:'{}'});if(d0&&d0.newest_branch)t=d0.newest_branch}catch(e){}await updateBranch(t)}
 async function updateBranch(branch){let label=branch?(' برنچ '+branch):' جدیدترین نسخه';if(!confirm('فایل اصلی جایگزین و نسخه قبلی در .bak ذخیره شود؟\n\nمقصد:'+label))return;try{$('status').textContent='در حال دانلود، اعتبارسنجی و نصب'+label+'…';let d=await api('api/update',{method:'POST',body:JSON.stringify(branch?{branch}:{})});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>\n'+(d.reload_requested?'درخواست reload فرستاده شد؛ چند ثانیه بعد صفحه را رفرش کنید.':'فایل WSGI تنظیم نشده؛ از تب Web دکمه Reload را بزنید.');hideBanner();$('updateBtn').classList.add('hidden');showToast('✓ نصب شد: v'+d.version)}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function rollback(){if(!confirm('نسخه scraper4.py.bak بازیابی شود؟'))return;try{let d=await api('api/rollback',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.message)+' — نسخه '+esc(d.version)+'</span>'}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
+async function restartScraper(){try{$('status').textContent='در حال ری‌استارت اسکرپر…';let d=await api('api/restart',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.message||'ری‌استارت شد')+(d.running_version?(' · در حال اجرا v'+esc(d.running_version)):'')+'</span>';showToast('↻ اسکرپر ری‌استارت شد');check(false).catch(()=>{})}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';showToast(e.message,1)}}
 async function autoRun(){try{$('status').textContent='در حال اجرای چرخه خودکار…';let d=await api('api/auto/run',{method:'POST',body:'{}'});$('status').innerHTML='<span class="ok">'+esc(d.result||'انجام شد')+'</span>';check(false).catch(()=>{})}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'}}
 async function init(){let d=await api('api/config');$('depVer').textContent='v'+(d.deployer||'1.0.0');$('repo').value=d.repo||'';$('branches').value=(d.branches||[]).join('\n');$('path').value=d.path||'';$('targetDir').value=targetDirOf(d.target||'');$('autoCheck').checked=!!d.check_on_load;$('searchAll').checked=d.search_all_branches!==false;$('autoUpdate').checked=d.auto_update!==false;$('autoInterval').value=d.auto_interval||300;$('token').placeholder=d.has_token?'توکن تنظیم شده؛ خالی = نگه‌داشتن':'GitHub token اختیاری';$('foot').innerHTML='هدف: <code>'+esc(d.target||'')+'</code> · خودکار: '+(d.auto_update?'روشن':'خاموش')+' · آخرین چرخه: '+esc(d.auto_state?.last_result||'—');renderChips();await loadBranches(false).catch(()=>{});await loadFiles().catch(()=>{});try{$('localBox').innerHTML='نسخه محلی: <b>v'+esc(d.local_version)+'</b> · SHA: '+esc((d.local_sha||'').slice(0,12)||'—')}catch(e){}}
 init().then(()=>{if($('autoCheck').checked)check(false).catch(()=>{})}).catch(e=>{$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>'});

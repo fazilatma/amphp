@@ -30,6 +30,9 @@ apt-get install -y python3 python3-pip python3-venv python3-dev \
 mkdir -p "$APP_DIR"
 cp -a "$SRC" "$APP_DIR/scraper4.py"
 chmod 755 "$APP_DIR/scraper4.py"
+if [[ -f "${REPO_DIR}/deployer4.py" ]]; then
+  cp -a "${REPO_DIR}/deployer4.py" "$APP_DIR/deployer4.py"
+fi
 
 # Isolated venv — never uninstall Debian pip/blinker RECORD-less packages.
 "$PY" -m venv "$VENV"
@@ -37,9 +40,16 @@ chmod 755 "$APP_DIR/scraper4.py"
 "$VENV/bin/pip" install flask requests beautifulsoup4 lxml gunicorn
 
 install -m 644 "${REPO_DIR}/deploy/scraper4.service" /etc/systemd/system/scraper4.service
+if [[ -f "${REPO_DIR}/deploy/deployer4.service" ]]; then
+  install -m 644 "${REPO_DIR}/deploy/deployer4.service" /etc/systemd/system/deployer4.service
+fi
 systemctl daemon-reload
 systemctl enable scraper4.service
 systemctl restart scraper4.service
+if [[ -f /etc/systemd/system/deployer4.service ]]; then
+  systemctl enable deployer4.service
+  systemctl restart deployer4.service
+fi
 
 a2enmod proxy proxy_http headers rewrite >/dev/null
 

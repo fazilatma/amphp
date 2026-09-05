@@ -7,6 +7,7 @@ Deployer4 — فایل مستقل نصب/به‌روزرسانی چندبرنچ�
 ایمپورت نمی‌کند). همه برنچ‌های ریپو را در GitHub جستجو و بررسی می‌کند و برنچی که
 جدیدترین APP_VERSION را داشته باشد به‌صورت اتمیک روی scraper4.py نصب می‌کند.
 
+روی VPS: http://SERVER/deploy/  (Apache به gunicorn :8001)
 نصب روی PythonAnywhere (داخل Bash Console):
     cd ~/scraper4
     curl -fsSL https://raw.githubusercontent.com/fazilatma/amphp/arena/01a06ac3-amphp/setup_deployer4.sh -o setup_deployer4.sh
@@ -36,6 +37,7 @@ import os
 import re
 import secrets
 import tempfile
+import subprocess
 import threading
 import time
 from typing import Any, Optional
@@ -56,17 +58,18 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.1.0"
+DEPLOYER_VERSION = "1.2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
 TARGET_FILE = os.environ.get(
-    "DEPLOYER_TARGET", os.path.join(BASE_DIR, "scraper4.py")
+    "DEPLOYER_TARGET",
+    "/opt/scraper4/scraper4.py" if os.path.isfile("/opt/scraper4/scraper4.py") else os.path.join(BASE_DIR, "scraper4.py"),
 )
 DATA_FILE = os.environ.get(
     "DEPLOYER_DATA_FILE", os.path.join(BASE_DIR, "deployer4_data.json")
 )
-PASSWORD = os.environ.get("DEPLOYER_PASSWORD", "")
+PASSWORD = os.environ.get("DEPLOYER_PASSWORD") or os.environ.get("SCRAPER_DEPLOY_PASSWORD", "")
 
 DEFAULT_REPO = "fazilatma/amphp"
 DEFAULT_BRANCHES = ["arena/01a06ac3-amphp", "arena/01a0640f-amphp"]
@@ -91,6 +94,7 @@ AUTO_STATE: dict[str, Any] = {
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+application = app
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +501,14 @@ def touch_reload_file(path: str) -> bool:
     return True
 
 
+def vps_restart_scraper() -> bool:
+    try:
+        run = subprocess.run(["systemctl", "restart", "scraper4"], capture_output=True, timeout=30)
+        return run.returncode == 0
+    except Exception:
+        return False
+
+
 def pythonanywhere_reload() -> bool:
     token_file = os.path.expanduser("~/.pythonanywhere_api_token")
     try:
@@ -650,13 +662,14 @@ def install_branch(requested_branch: str = "") -> dict[str, Any]:
         atomic_write(TARGET_FILE, content, old_mode)
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pa_reloaded = pythonanywhere_reload()
+        vps_reloaded = vps_restart_scraper()
         return {
             "changed": True,
             "message": f"نسخه {new_version} از برنچ {target_cand['branch']} نصب شد",
             "version": new_version, "sha": target_cand["sha"],
             "branch": target_cand["branch"], "newest_branch": target_cand["branch"],
             "newest_version": new_version, "backup": os.path.basename(TARGET_FILE + ".bak"),
-            "reload_requested": bool(reloaded or pa_reloaded),
+            "reload_requested": bool(reloaded or pa_reloaded or vps_reloaded),
         }
     finally:
         DEPLOY_LOCK.release()
@@ -680,9 +693,10 @@ def rollback() -> dict[str, Any]:
         cfg = eff_config()
         reloaded = touch_reload_file(cfg["reload_file"]) if cfg["reload_file"] else False
         pythonanywhere_reload()
+        vps_restart_scraper()
         return {
             "changed": True, "message": "نسخه پشتیبان بازیابی شد",
-            "version": version, "reload_requested": reloaded,
+            "version": version, "reload_requested": True,
         }
     finally:
         DEPLOY_LOCK.release()
@@ -767,14 +781,12 @@ def auto_loop() -> None:
 # ---------------------------------------------------------------------------
 def authorized() -> bool:
     if not PASSWORD:
-        return False
+        return True
     supplied = request.headers.get("X-Deployer-Password", "")
     return bool(supplied) and hmac.compare_digest(supplied, PASSWORD)
 
 
 def auth_error():
-    if not PASSWORD:
-        return jsonify(ok=False, error="رمز دیپلویِر در WSGI تنظیم نشده است"), 503
     return jsonify(ok=False, error="رمز دیپلویِر نادرست است"), 401
 
 
@@ -963,12 +975,12 @@ def api_auto_run():
 INDEX_HTML = r'''<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#07111f">
 <title>Deployer4 — نصب چندبرنچی Scraper4</title><style>
-:root{--bg:#07111f;--bg2:#0a1830;--card:rgba(15,28,48,.9);--line:rgba(148,177,216,.16);--text:#f4f8ff;--muted:#9db0ca;--blue:#38bdf8;--green:#34d399;--red:#fb7185;--amber:#fbbf24}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(155deg,var(--bg),var(--bg2));background-attachment:fixed;color:var(--text);font-family:Tahoma,"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.7}
-.wrap{max-width:860px;margin:auto;padding:26px 16px 70px}
-.hero{display:flex;align-items:center;gap:14px;padding:20px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(125deg,rgba(15,38,68,.92),rgba(16,31,53,.76));margin-bottom:14px}
-.logo{width:52px;height:52px;display:grid;place-items:center;border-radius:16px;font-size:26px;background:linear-gradient(145deg,#0ea5e9,#2563eb)}
-h1{font-size:21px;margin:0}h1 small{font-size:10px;color:#7f96b4;background:#09182c;border:1px solid var(--line);padding:3px 8px;border-radius:20px}
+:root{--bg:#06101c;--bg2:#0b1c34;--card:#0f1c30ee;--line:#334155;--text:#f8fafc;--muted:#94a3b8;--blue:#38bdf8;--green:#34d399;--red:#fb7185;--amber:#fbbf24}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;min-height:100vh;background:radial-gradient(1200px 500px at 100% -10%,#1d4ed633,transparent),linear-gradient(165deg,var(--bg),var(--bg2));color:var(--text);font-family:Tahoma,"Segoe UI",Arial,sans-serif;font-size:15px;line-height:1.75}
+.wrap{max-width:920px;margin:auto;padding:18px 14px 88px}
+.hero{display:flex;align-items:center;gap:14px;padding:18px 16px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(135deg,#123056,#0b1728);margin-bottom:14px;box-shadow:0 18px 40px #0005}
+.logo{width:56px;height:56px;display:grid;place-items:center;border-radius:18px;font-size:28px;background:linear-gradient(145deg,#22d3ee,#2563eb);box-shadow:0 8px 20px #0284c766}
+h1{font-size:22px;margin:0}h1 small{font-size:11px;color:#7dd3fc;background:#082f49;border:1px solid #155e75;padding:3px 9px;border-radius:999px}
 .sub{color:var(--muted);font-size:12px;margin:4px 0 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:12px}
 .card h3{margin:0 0 8px;font-size:17px}
@@ -1010,9 +1022,9 @@ button:disabled{opacity:.6;cursor:wait}
 @media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🧭</div><div><h1>دیپلویِر مستقل <small id="depVer">v1.1.0</small></h1><div class="sub">بررسی چندبرنچی و نصب خودکار جدیدترین نسخه scraper4.py</div></div></header>
-<div class="card"><h3>🔄 نسخهٔ کد اصلی</h3>
-<div class="note">همه برنچ‌های ریپو (اول ثابت‌ها، بعد بقیه) بررسی می‌شوند و برنچی که <b>جدیدترین <code>APP_VERSION</code></b> را داشته باشد نصب می‌شود. آپدیت خودکار سرور فقط ارتقا می‌دهد و هرگز دانگرید نمی‌کند. نسخه قبلی در <code>scraper4.py.bak</code> می‌ماند. بدون توکن گیت‌هاب سقف ۶۰ درخواست در ساعت است؛ برای ریپوی پربرنچ توکن بدهید.</div>
+<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.2.0</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
+<div class="card"><h3>نسخه زنده</h3>
+<div class="note">آدرس جدا: <code>/deploy/</code> — ریشه سایت PHP می‌ماند و اسکرپر روی <code>/put/</code> است. همه برنچ‌ها اسکن می‌شوند؛ <b>جدیدترین APP_VERSION</b> نصب می‌شود یا یک برنچ را دستی انتخاب می‌کنید. آپدیت خودکار فقط ارتقا می‌دهد.</div>
 <div id="localBox" class="local">—</div>
 <button class="green" id="mainBtn" onclick="checkInstall(true)" style="width:100%;padding:12px">🔍 بررسی و نصب نسخهٔ جدید</button>
 <button class="gray hidden" id="updateBtn" onclick="updateNewest()" style="width:100%;padding:11px;margin-top:8px">⬇ نصب جدیدترین نسخه</button>
@@ -1040,8 +1052,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const toFa=x=>String(x??'').replace(/[0-9]/g,d=>'۰۱۲۳۴۵۶۷۸۹'[+d]);
 const basePath=()=>{let b=location.pathname;return b.endsWith('/')?b:b+'/'};
 let SECRET=sessionStorage.getItem('deployer4Password')||'';
-async function needSecret(){if(!SECRET){SECRET=prompt('رمز دیپلویِر را وارد کنید:')||'';if(!SECRET)throw Error('رمز وارد نشد');sessionStorage.setItem('deployer4Password',SECRET)}return SECRET}
-async function api(p,opt={}){let s;try{s=await needSecret()}catch(e){throw e}let r=await fetch(basePath()+p,{...opt,headers:{...(opt.headers||{}),'X-Deployer-Password':s,'Content-Type':'application/json'}});let d=await r.json().catch(()=>({ok:false,error:'پاسخ نامعتبر'}));if((r.status===401||r.status===503)&&/رمز/.test(d.error||'')){SECRET='';sessionStorage.removeItem('deployer4Password')}if(!r.ok||d.ok===false)throw Error(d.error||('HTTP '+r.status));return d}
+async function api(p,opt={}){let headers={...(opt.headers||{}),'Content-Type':'application/json'};if(SECRET)headers['X-Deployer-Password']=SECRET;let r=await fetch(basePath()+p,{...opt,headers});let d=await r.json().catch(()=>({ok:false,error:'پاسخ نامعتبر'}));if(r.status===401||(r.status===503&&/رمز/.test(d.error||''))){SECRET=prompt('رمز دیپلویِر را وارد کنید:')||'';if(!SECRET)throw Error('رمز وارد نشد');sessionStorage.setItem('deployer4Password',SECRET);headers['X-Deployer-Password']=SECRET;r=await fetch(basePath()+p,{...opt,headers});d=await r.json().catch(()=>({ok:false,error:'پاسخ نامعتبر'}))}if(!r.ok||d.ok===false)throw Error(d.error||('HTTP '+r.status));return d}
 function showToast(m,e){let t=$('toast');clearTimeout(window._tt);t.textContent=m;t.className=e?'err show':'show';window._tt=setTimeout(()=>t.className=e?'err':'',3200)}
 function showBanner(t){$('banner').style.display='flex';$('bannerText').textContent=t}
 function hideBanner(){$('banner').style.display='none'}

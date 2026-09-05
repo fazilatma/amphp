@@ -64,8 +64,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.127"
+APP_VERSION = "10.128"
 CHANGELOG = [
+    {"version":"10.128","date":"2026-09-05","title":"نصب از git به‌جای GitHub API","items":["دیپلویِر و به‌روزرسانی خودکار از git clone/fetch استفاده می‌کنند چون api.github.com از ایران 403 می‌دهد"]},
     {"version":"10.127","date":"2026-09-05","title":"جدول افقی نتایج AI و به‌روزرسانی خودکار","items":["جدول آزمون مدل‌ها روی موبایل اسکرول افقی است نه کارت فشرده","به‌روزرسانی خودکار روی VPS مستقیم از GitHub و restart سرویس","دیپلویِر جدا روی /deploy/ برای نصب جدیدترین یا انتخاب برنچ"]},
     {"version":"10.126","date":"2026-09-05","title":"حذف فیلترهای آزمایشگاه مدل","items":["دراپ‌داون‌های فیلتر جدول نتایج تست AI حذف شد تا ردیف مدل‌ها روی موبایل جا شود","فقط جستجوی تک‌خطی بالای فهرست می‌ماند"]},
     {"version":"10.125","date":"2026-09-05","title":"جدول آزمون مدل‌ها برای موبایل","items":["نتایج تست AI روی گوشی به‌صورت کارت خوانا است نه جدول ۱۰۵۰ پیکسلی","فیلترهای آزمایشگاه جمع می‌شوند تا ردیف مدل‌ها جا داشته باشند","فهرست فشرده تست، مدل و وضعیت را بدون بریدن نام نشان می‌دهد"]},
@@ -1395,6 +1396,37 @@ def extract_version_from_text(text: str) -> str:
     return match.group(1).strip() if match else "unknown"
 
 
+def _scraper_git_dir() -> str:
+    for cand in (os.environ.get("SCRAPER_GIT_DIR", ""), "/opt/amphp", BASE_DIR):
+        if cand and os.path.isdir(os.path.join(cand, ".git")):
+            return cand
+    return "/opt/amphp"
+
+
+def git_file_for(repo: str, branch: str, remote_path: str, include_content: bool = False) -> dict[str, Any]:
+    directory = _scraper_git_dir()
+    os.makedirs(directory, exist_ok=True)
+    url = "https://github.com/" + repo + ".git"
+    if not os.path.isdir(os.path.join(directory, ".git")):
+        clone = subprocess.run(["git", "clone", "--depth", "1", url, directory], capture_output=True, timeout=180)
+        if clone.returncode:
+            raise FetchError("git clone ناموفق بود")
+    fetch = subprocess.run(["git", "-C", directory, "fetch", "--depth", "1", "origin", branch], capture_output=True, timeout=120)
+    if fetch.returncode:
+        raise FetchError(f"git fetch {branch} ناموفق بود")
+    show = subprocess.run(["git", "-C", directory, "show", f"FETCH_HEAD:{remote_path}"], capture_output=True, timeout=30)
+    if show.returncode:
+        show = subprocess.run(["git", "-C", directory, "show", f"origin/{branch}:{remote_path}"], capture_output=True, timeout=30)
+    if show.returncode:
+        raise FetchError(f"فایل {remote_path} در {branch} پیدا نشد")
+    content = show.stdout
+    out: dict[str, Any] = {"sha": git_blob_sha(content), "size": len(content), "html_url": "", "name": os.path.basename(remote_path), "branch": branch}
+    if include_content:
+        out["content"] = content
+        out["version"] = extract_version_from_text(content.decode("utf-8", errors="replace"))
+    return out
+
+
 def github_file_for(repo: str, branch: str, remote_path: str, token: str = "", include_content: bool = False) -> dict[str, Any]:
     repo = str(repo or "").strip("/")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
@@ -1405,6 +1437,11 @@ def github_file_for(repo: str, branch: str, remote_path: str, token: str = "", i
     remote_path = str(remote_path or "").strip("/")
     if not remote_path or not remote_path.endswith(".py") or ".." in remote_path.split("/"):
         raise ValueError("مسیر منبع باید یک فایل امن با پسوند .py باشد")
+    try:
+        return git_file_for(repo, branch_cleaned, remote_path, include_content)
+    except FetchError as git_exc:
+        if os.path.isdir(os.path.join(_scraper_git_dir(), ".git")):
+            raise git_exc
     api_url = "https://api.github.com/repos/" + repo + "/contents/" + quote(remote_path, safe="/")
     headers = {"User-Agent": "scraper4-python-deployer", "Accept": "application/vnd.github+json"}
     if token:
@@ -1480,6 +1517,20 @@ def github_branch_list(repo: str, token: str = "") -> list[dict[str, str]]:
     repo = str(repo or "").strip("/")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("نام repository باید به صورت owner/repo باشد")
+    try:
+        run = subprocess.run(["git", "ls-remote", "--heads", "https://github.com/" + repo + ".git"], capture_output=True, timeout=60)
+        if run.returncode == 0:
+            out_heads: list[dict[str, str]] = []
+            for line in run.stdout.decode("utf-8", "replace").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                    name = clean_branch(parts[1][11:])
+                    if name:
+                        out_heads.append({"name": name, "protected": ""})
+            if out_heads:
+                return out_heads[:100]
+    except Exception:
+        pass
     data = github_api_json("https://api.github.com/repos/" + repo + "/branches", token, params={"per_page": 100})
     out: list[dict[str, str]] = []
     if isinstance(data, list):

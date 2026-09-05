@@ -58,7 +58,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.2.0"
+DEPLOYER_VERSION = "1.2.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
@@ -185,6 +185,74 @@ def atomic_write(path: str, content: bytes, mode: int = 0o600) -> None:
 
 class FetchError(RuntimeError):
     pass
+
+
+def _git_dir() -> str:
+    env = os.environ.get("DEPLOYER_GIT_DIR", "").strip()
+    for cand in (env, "/opt/amphp", BASE_DIR):
+        if cand and os.path.isdir(os.path.join(cand, ".git")):
+            return cand
+    return env or "/opt/amphp"
+
+
+def _repo_git_url(repo: str, token: str = "") -> str:
+    if token:
+        return f"https://{token}@github.com/{repo}.git"
+    return f"https://github.com/{repo}.git"
+
+
+def _git(args: list[str], cwd: str | None = None, timeout: int = 90) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, timeout=timeout)
+
+
+def git_ls_heads(repo: str, token: str = "") -> list[dict[str, Any]]:
+    run = _git(["ls-remote", "--heads", _repo_git_url(repo, token)], timeout=60)
+    if run.returncode:
+        raise FetchError((run.stderr or run.stdout).decode("utf-8", "replace")[:280] or "git ls-remote ناموفق بود")
+    out: list[dict[str, Any]] = []
+    for line in run.stdout.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[1].startswith("refs/heads/"):
+            continue
+        name = clean_branch(parts[1][len("refs/heads/"):])
+        if name:
+            out.append({"name": name, "protected": False})
+    return out[:100]
+
+
+def git_file_for(repo: str, branch: str, remote_path: str, include_content: bool = False) -> dict[str, Any]:
+    directory = _git_dir()
+    os.makedirs(directory, exist_ok=True)
+    if not os.path.isdir(os.path.join(directory, ".git")):
+        clone = _git(["clone", "--depth", "1", _repo_git_url(repo), directory], timeout=180)
+        if clone.returncode:
+            raise FetchError("git clone ناموفق بود: " + (clone.stderr or clone.stdout).decode("utf-8", "replace")[:240])
+    fetch = _git(["fetch", "--depth", "1", "origin", branch], cwd=directory, timeout=120)
+    if fetch.returncode:
+        raise FetchError(f"git fetch {branch} ناموفق بود")
+    show = _git(["show", f"FETCH_HEAD:{remote_path}"], cwd=directory, timeout=30)
+    if show.returncode:
+        show = _git(["show", f"origin/{branch}:{remote_path}"], cwd=directory, timeout=30)
+    if show.returncode:
+        raise FetchError(f"فایل {remote_path} در برنچ {branch} پیدا نشد")
+    content = show.stdout
+    if len(content) > 8 * 1024 * 1024:
+        raise FetchError("فایل به‌روزرسانی بزرگ‌تر از ۸ مگابایت است")
+    out: dict[str, Any] = {
+        "sha": git_blob_sha(content),
+        "size": len(content),
+        "html_url": f"https://github.com/{repo}/blob/{branch}/{remote_path}",
+        "name": os.path.basename(remote_path),
+        "branch": branch,
+        "via": "git",
+    }
+    if include_content:
+        out["content"] = content
+        try:
+            out["version"] = extract_version_from_text(content.decode("utf-8", errors="replace"))
+        except Exception:
+            out["version"] = "unknown"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +392,11 @@ def github_file_for(
         or ".." in remote_path.split("/")
     ):
         raise ValueError("مسیر منبع باید یک فایل امن با پسوند .py باشد")
+    try:
+        return git_file_for(repo, branch_cleaned, remote_path, include_content)
+    except FetchError as git_exc:
+        if os.path.isdir(os.path.join(_git_dir(), ".git")):
+            raise git_exc
     api_url = (
         "https://api.github.com/repos/" + repo + "/contents/" + quote(remote_path, safe="/")
     )
@@ -357,6 +430,12 @@ def github_branch_list(repo: str, token: str = "") -> list[dict[str, Any]]:
     repo = str(repo or "").strip("/")
     if not REPO_RE.fullmatch(repo):
         raise ValueError("نام repository باید به صورت owner/repo باشد")
+    try:
+        heads = git_ls_heads(repo, token)
+        if heads:
+            return heads
+    except FetchError:
+        pass
     data = gh_get(
         "https://api.github.com/repos/" + repo + "/branches",
         token,

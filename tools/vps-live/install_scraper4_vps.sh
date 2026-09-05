@@ -25,7 +25,7 @@ export NEEDRESTART_MODE=a
 apt-get update -y
 apt-get install -y python3 python3-pip python3-venv python3-dev \
   libxml2-dev libxslt1-dev zlib1g-dev gcc \
-  apache2 curl ca-certificates
+  apache2 curl ca-certificates unzip snapd
 
 mkdir -p "$APP_DIR"
 cp -a "$SRC" "$APP_DIR/scraper4.py"
@@ -99,6 +99,22 @@ echo
 echo "Installing optional scrape engines (httpx, selenium, playwright, …)…"
 "$VENV/bin/pip" install \
   playwright cloudscraper curl_cffi httpx selenium playwright-stealth basalam-sdk || true
-"$VENV/bin/python" -m playwright install --with-deps chromium || \
-  "$VENV/bin/python" -m playwright install chromium || true
+# cdn.playwright.dev is geo-blocked in Iran (403). Prefer Ubuntu Chromium.
+apt-get install -y chromium-browser || apt-get install -y chromium || true
+snap install chromium || true
+if ! "$VENV/bin/python" -m playwright install --with-deps chromium; then
+  echo "Playwright CDN blocked; trying npmmirror Chrome for Testing…"
+  CFT_VER="${PLAYWRIGHT_CFT_VERSION:-151.0.7922.34}"
+  ZIP=/tmp/chrome-linux64.zip
+  if curl -fL --retry 3 --max-time 180 -o "$ZIP" \
+      "https://cdn.npmmirror.com/binaries/chrome-for-testing/${CFT_VER}/linux64/chrome-linux64.zip"; then
+    unzip -o "$ZIP" -d "$APP_DIR"
+    chmod +x "$APP_DIR/chrome-linux64/chrome" || true
+    rm -f "$ZIP"
+  else
+    echo "npmmirror also failed; system Chromium will be used if present."
+  fi
+fi
 echo "Optional engines done."
+which chromium chromium-browser 2>/dev/null || true
+ls -l /snap/bin/chromium /usr/bin/chromium /usr/bin/chromium-browser "$APP_DIR/chrome-linux64/chrome" 2>/dev/null || true

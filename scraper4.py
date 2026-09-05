@@ -797,12 +797,26 @@ def configured_browser_path() -> str:
 
 
 def find_browser_executable(preferred: str = "") -> str:
+    system_bins = [
+        os.path.join(BASE_DIR, "chrome-linux64", "chrome"),
+        "/opt/scraper4/chrome-linux64/chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/chrome",
+    ]
     roots = []
-    for root in (preferred, os.path.join(BASE_DIR, "ms-playwright"), temporary_browser_path(), os.path.expanduser("~/.cache/ms-playwright")):
+    for root in (preferred, os.path.join(BASE_DIR, "ms-playwright"), temporary_browser_path(), os.path.expanduser("~/.cache/ms-playwright"), "/usr/bin", "/snap/bin", "/opt/google/chrome", "/opt/scraper4"):
         root = os.path.abspath(root) if root else ""
         if root and root not in roots and os.path.isdir(root): roots.append(root)
-    names = {"chrome", "chromium", "chrome-headless-shell", "headless_shell", "google-chrome"}
+    names = {"chrome", "chromium", "chrome-headless-shell", "headless_shell", "google-chrome", "google-chrome-stable", "chromium-browser"}
     candidates = []
+    if VPS_MODE:
+        for path in system_bins:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                candidates.append(path)
     for root in roots:
         for directory, _, files in os.walk(root):
             for name in files:

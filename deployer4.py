@@ -58,7 +58,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.3.0"
+DEPLOYER_VERSION = "1.3.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
@@ -555,6 +555,16 @@ def fetch_candidates(
     return candidates, local_sha
 
 
+def sort_candidates_by_version(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest APP_VERSION first; missing/error versions last."""
+    def key(c: dict[str, Any]) -> tuple[Any, ...]:
+        ver = str(c.get("version") or "").strip()
+        ok = bool(ver) and ver.lower() not in {"unknown", "?"} and not c.get("error")
+        tup = parse_version_tuple(ver if ok else "0")
+        return (0 if ok else 1, tuple(-n for n in tup), str(c.get("branch") or ""))
+    return sorted(candidates, key=key)
+
+
 def pick_newest(candidates: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     valid = [c for c in candidates if c.get("sha") and not c.get("error")]
     if not valid:
@@ -670,7 +680,7 @@ def check_all() -> dict[str, Any]:
         "target": cfg["target"], "local_version": info["version"], "local_sha": local_sha,
         "newest_branch": newest["branch"], "newest_version": newest.get("version", "unknown"),
         "update_available": local_sha != newest["sha"],
-        "candidates": candidates, "check_on_load": cfg["check_on_load"],
+        "candidates": sort_candidates_by_version(candidates), "check_on_load": cfg["check_on_load"],
         "searched_all": bool(cfg.get("search_all_branches")),
         "total_branches": len(scan_branches), "discovery_error": discovery_error,
     }
@@ -1108,7 +1118,7 @@ button:disabled{opacity:.6;cursor:wait}
 @media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}.branch-table{min-width:520px}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.0</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
+<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.1</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
 <div class="card"><h3>نسخه زنده</h3>
 <div class="note">آدرس جدا: <code>/deploy/</code> — ریشه سایت PHP می‌ماند و اسکرپر روی <code>/put/</code> است. همه برنچ‌ها اسکن می‌شوند؛ <b>جدیدترین APP_VERSION</b> نصب می‌شود یا یک برنچ را دستی انتخاب می‌کنید. آپدیت خودکار فقط ارتقا می‌دهد.</div>
 <div id="localBox" class="local">—</div>
@@ -1160,7 +1170,9 @@ $('localBox').innerHTML='فایل اصلی: <b>'+esc(d.target||'scraper4.py')+'<
 if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';if(d.discovery_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.discovery_error)+'</span>';else $('localBox').innerHTML+='<br><span>'+toFa(d.total_branches||0)+' برنچ بررسی شد'+(d.searched_all?' (همه برنچ‌های ریپو)':' (فقط برنچ‌های ثابت)')+'</span>';
 if(!d.update_available){$('status').innerHTML='<span class="ok">✓ به‌روز است — v'+esc(d.local_version)+'</span>';$('updateBtn').classList.add('hidden');hideBanner()}
 else{$('status').innerHTML='⬆ نسخه جدید: <b>v'+esc(d.newest_version||'?')+'</b> در برنچ <code>'+esc(d.newest_branch||'')+'</code> · جاری v'+esc(d.local_version);$('updateBtn').classList.remove('hidden');showBanner('⬆ نسخه جدید v'+(d.newest_version||'')+' در برنچ '+(d.newest_branch||'')+' موجود است')}
-$('cands').innerHTML=(d.candidates||[]).length?'<div class="table-wrap"><table class="branch-table"><thead><tr><th>برنچ</th><th>نسخه</th><th>وضعیت</th><th>نصب</th></tr></thead><tbody>'+(d.candidates||[]).map(c=>{let isN=c.branch===(d.newest_branch||'');let ver=(!c.error&&c.version)?('v'+esc(c.version)):'—';let st=c.error?('<span class="error">'+esc(c.error)+'</span>'):(isN?'★ جدیدترین':(c.update_available?'متفاوت از نصب فعلی':'همین نسخه'));return '<tr class="'+(isN?'new':'')+(c.error?' bad':'')+'"><td dir="ltr">'+esc(c.branch)+'</td><td>'+ver+'</td><td>'+st+'</td><td><button class="green" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب</button></td></tr>'}).join('')+'</tbody></table></div>':'<div class="note">کاندیدی یافت نشد.</div>';
+function verParts(v){return String(v||'').split(/\D+/).filter(Boolean).map(n=>+n)}
+function sortCands(list){return (list||[]).slice().sort((a,b)=>{let ae=!(!a.error&&a.version&&a.version!=='unknown'),be=!(!b.error&&b.version&&b.version!=='unknown');if(ae!==be)return ae-be;let pa=verParts(a.version),pb=verParts(b.version),n=Math.max(pa.length,pb.length);for(let i=0;i<n;i++){let d=(pb[i]||0)-(pa[i]||0);if(d)return d}return String(a.branch||'').localeCompare(String(b.branch||''))})}
+$('cands').innerHTML=(d.candidates||[]).length?'<div class="table-wrap"><table class="branch-table"><thead><tr><th>برنچ</th><th>نسخه</th><th>وضعیت</th><th>نصب</th></tr></thead><tbody>'+sortCands(d.candidates).map(c=>{let isN=c.branch===(d.newest_branch||'');let ver=(!c.error&&c.version)?('v'+esc(c.version)):'—';let st=c.error?('<span class="error">'+esc(c.error)+'</span>'):(isN?'★ جدیدترین':(c.update_available?'متفاوت از نصب فعلی':'همین نسخه'));return '<tr class="'+(isN?'new':'')+(c.error?' bad':'')+'"><td dir="ltr">'+esc(c.branch)+'</td><td>'+ver+'</td><td>'+st+'</td><td><button class="green" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب</button></td></tr>'}).join('')+'</tbody></table></div>':'<div class="note">کاندیدی یافت نشد.</div>';
 if(manual&&d.update_available)showToast('⬆ نسخه جدید v'+(d.newest_version||'')+' آماده نصب است');return d}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';if(manual)showToast(e.message,1);throw e}}
 async function checkInstall(manual){let b=$('mainBtn');if(b){b.disabled=true;b.textContent='⏳ در حال بررسی…'}try{let d=await check(false);if(!d.update_available){if(manual)showToast('✓ به‌روز است');return d}await updateNewest()}catch(e){}finally{if(b){b.disabled=false;b.textContent='🔍 بررسی و نصب نسخهٔ جدید'}}}
 async function updateNewest(){let t='';try{let d0=await api('api/check',{method:'POST',body:'{}'});if(d0&&d0.newest_branch)t=d0.newest_branch}catch(e){}await updateBranch(t)}

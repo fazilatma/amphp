@@ -30,12 +30,9 @@ mkdir -p "$APP_DIR"
 cp -a "$SRC" "$APP_DIR/scraper4.py"
 chmod 755 "$APP_DIR/scraper4.py"
 
-# Debian/Ubuntu pip has no RECORD file — never try to uninstall/upgrade it.
-"$PY" -m pip install --break-system-packages \
-  flask requests beautifulsoup4 lxml playwright cloudscraper curl_cffi \
-  gunicorn basalam-sdk httpx selenium playwright-stealth
-# Full Chromium (not PythonAnywhere headless-shell).
-"$PY" -m playwright install --with-deps chromium || "$PY" -m playwright install chromium || true
+# Required for gunicorn to boot. Do not bundle optional scrape libs here —
+# one failed extra package used to abort the whole install before :8000 existed.
+"$PY" -m pip install --break-system-packages flask requests beautifulsoup4 lxml gunicorn
 
 install -m 644 "${REPO_DIR}/deploy/scraper4.service" /etc/systemd/system/scraper4.service
 systemctl daemon-reload
@@ -83,16 +80,23 @@ apache2ctl configtest
 systemctl reload apache2
 
 echo
-if systemctl is-active --quiet scraper4; then
-  echo "Scraper4 VPS is up. PHP stays on / ; Python is /put/"
-else
+if ! systemctl is-active --quiet scraper4; then
   echo "scraper4.service failed:" >&2
   journalctl -u scraper4 -n 50 --no-pager >&2 || true
   exit 1
 fi
+echo "===== /put is up (Chromium installs next, optional) ====="
 echo "  health:  curl -sS http://127.0.0.1:8000/health"
 echo "  public:  http://$(hostname -I | awk '{print $1}')/put/"
 curl -sS http://127.0.0.1:8000/health || true
 echo
 curl -sSI http://127.0.0.1/put/ | head -n 15 || true
 systemctl --no-pager --full status scraper4 | head -20
+
+echo
+echo "Installing optional scrape engines (httpx, selenium, playwright, …)…"
+"$PY" -m pip install --break-system-packages \
+  playwright cloudscraper curl_cffi httpx selenium playwright-stealth basalam-sdk || true
+# Full Chromium (not PythonAnywhere headless-shell).
+"$PY" -m playwright install --with-deps chromium || "$PY" -m playwright install chromium || true
+echo "Optional engines done."

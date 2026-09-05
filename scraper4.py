@@ -66,8 +66,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.136"
+APP_VERSION = "10.137"
 CHANGELOG = [
+    {"version":"10.137","date":"2026-09-05","title":"نام نمایشی پروفایل و جزئیات کامل‌تر","items":["تغییر نام در دراپ‌داون می‌ماند","بعد از فهرست، گالری و توضیحات صفحه محصول استخراج می‌شود","JSON-LD و گالری ووکامرس","اسنپ‌شاپ با Playwright"]},
     {"version":"10.136","date":"2026-09-05","title":"نام پروفایل خوانا مثل PHP","items":["نام نمایشی از دامنه و مسیر URL نه کد D9","صفحه شروع لینک را تکرار نمی‌کند","Selenium خودکار حذف شد","تایم‌اوت اسنپ‌شاپ کوتاه‌تر"]},
     {"version":"10.135","date":"2026-09-05","title":"تغییر نام پروفایل و سلکتور اسنپ‌شاپ","items":["تغییر نام پروفایل بدون از دست رفتن محصولات","انتخاب پروفایل همه تب‌ها از جمله URL سلکتور را پر می‌کند","پیش‌نمایش سلکتور برای snappshop.ir با Playwright و اسکرول واقعی","صفحه شروع با رنگ‌بندی کارت‌ها"]},
     {"version":"10.134","date":"2026-09-05","title":"شروع موبایلی و منوی فشرده","items":["منوی همبرگر فهرست ۴۴ پیکسلی به‌جای کاشی درشت","صفحه شروع: فقط URL و صفحات؛ بقیه پشت «پیشرفته»","هیچ اسکرول افقی اجباری روی موبایل","دکمه‌ها کوچک؛ فقط یک CTA اصلی"]},
@@ -906,18 +907,91 @@ def sanitize_rich_html(value: str) -> str:
     return "".join(str(x) for x in fragment.contents)[:40000]
 
 
+def _usable_image(url: str) -> bool:
+    low=(url or "").lower()
+    if not url or url.startswith("data:") or low.endswith(".svg"):
+        return False
+    return not any(x in low for x in ("logo","icon","avatar","placeholder","spinner","sprite","blank.gif","pixel.gif","1x1","favicon","dummy"))
+
+def _srcset_largest(srcset: str, base: str) -> str:
+    best, width = "", -1
+    for part in (srcset or "").split(","):
+        bits=part.strip().split()
+        if not bits: continue
+        url=absolute_url(bits[0], base)
+        w=0
+        if len(bits)>1 and bits[1].endswith("w"):
+            try: w=int(bits[1][:-1])
+            except ValueError: w=0
+        if url and w>=width:
+            best, width = url, w
+    return best if _usable_image(best) else ""
+
 def _detail_image_url(node: Tag, base: str) -> str:
-    for attr in ("data-zoom-image","data-large_image","data-full","data-zoom","data-large","data-src","data-lazy-src","src"):
+    for attr in ("data-zoom-image","data-large_image","data-large-image","data-full","data-zoom","data-original","data-lazy","data-src","data-lazy-src","data-image","href"):
         url=absolute_url(node.get(attr),base)
-        if url:return url
-    srcset=clean_text(node.get("srcset"))
-    if srcset:
-        candidate=srcset.split(",")[-1].strip().split(" ")[0]
-        return absolute_url(candidate,base)
-    source=node.select_one("source[srcset]")
+        if _usable_image(url): return url
+    for attr in ("data-srcset","data-lazy-srcset","srcset"):
+        found=_srcset_largest(clean_text(node.get(attr)), base)
+        if found: return found
+    source=node.select_one("source[srcset],source[data-srcset]")
     if source:
-        return absolute_url(clean_text(source.get("srcset")).split(",")[-1].strip().split(" ")[0],base)
+        found=_srcset_largest(clean_text(source.get("srcset") or source.get("data-srcset")), base)
+        if found: return found
+    url=absolute_url(node.get("src"),base)
+    if _usable_image(url): return url
+    parent=node.parent
+    if parent is not None:
+        for attr in ("data-large_image","data-zoom-image","href"):
+            url=absolute_url(parent.get(attr),base)
+            if _usable_image(url): return url
     return ""
+
+def _iter_json_ld(data: Any):
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_json_ld(item)
+    elif isinstance(data, dict):
+        if "@graph" in data:
+            yield from _iter_json_ld(data.get("@graph"))
+        else:
+            yield data
+
+def parse_json_ld_product(soup: BeautifulSoup, base: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}; images: list[str] = []
+    for script in soup.find_all("script", attrs={"type": True}):
+        typ=clean_text(script.get("type")).lower()
+        if "ld+json" not in typ: continue
+        raw=clean_text(script.string or script.get_text() or "")
+        if not raw: continue
+        try: data=json.loads(raw)
+        except Exception:
+            try: data=json.loads(raw.rstrip(";"))
+            except Exception: continue
+        for node in _iter_json_ld(data):
+            types=node.get("@type") or node.get("type") or ""
+            if isinstance(types, list): types=" ".join(str(x) for x in types)
+            if "product" not in str(types).lower(): continue
+            desc=clean_text(node.get("description") or "")
+            if desc: out.setdefault("long_desc", desc[:30000])
+            sku=clean_text(node.get("sku") or node.get("mpn") or "")
+            if sku: out.setdefault("sku", sku[:500])
+            brand=node.get("brand")
+            if isinstance(brand, dict): brand=brand.get("name")
+            brand=clean_text(brand)
+            if brand: out.setdefault("brand", brand[:1000])
+            img=node.get("image")
+            for item in (img if isinstance(img, list) else [img]):
+                url=image_value(item, base)
+                if _usable_image(url) and url not in images: images.append(url)
+    if images:
+        out["image"], out["images"], out["images_count"]=images[0], images[:30], min(30, len(images))
+    return out
+
+def detail_quality(fields: dict[str, Any]) -> int:
+    n=len(fields.get("images") or ([] if not fields.get("image") else [fields.get("image")]))
+    desc=len(clean_text(fields.get("long_desc") or fields.get("short_desc") or ""))
+    return (2 if n>=2 else 1 if n else 0) + (2 if desc>=80 else 1 if desc>=20 else 0)
 
 
 def parse_detail_fields(soup: BeautifulSoup, base: str, selectors: dict[str, str]) -> dict[str, Any]:
@@ -930,7 +1004,7 @@ def parse_detail_fields(soup: BeautifulSoup, base: str, selectors: dict[str, str
         "brand": ("[itemprop='brand'],[class*='brand'],[data-brand]", 1000),
         "stock": ("[class*='stock'],[class*='availability'],[itemprop='availability']", 1000),
         "short_desc": ("[class*='short-description'],[class*='short_description'],[class*='excerpt'],[class*='summary'] [class*='description']", 12000),
-        "long_desc": ("[itemprop='description'],[class*='product-description'],[class*='product_description'],#description,[id*='description']", 30000),
+        "long_desc": ("#tab-description,.woocommerce-Tabs-panel--description,[itemprop='description'],[class*='product-description'],[class*='product_description'],#description,[id*='description'],[class*='product-content']", 30000),
     }
     for field, (fallback, limit) in mapping.items():
         selector = clean_text(selectors.get(field)) or fallback
@@ -987,18 +1061,43 @@ def parse_detail_fields(soup: BeautifulSoup, base: str, selectors: dict[str, str
         price=extract_price(price_node.get("content") or price_node.get_text(" ",strip=True))
         if price:out["price"]=price
 
-    gallery_selector=clean_text(selectors.get("gallery")) or "[class*='product-gallery'] img,[class*='product_gallery'] img,[class*='gallery'] img,[class*='swiper'] img,[class*='slider'] img,main img[itemprop='image']"
+    gallery_selector=clean_text(selectors.get("gallery")) or "[class*='product-gallery'] img,[class*='product_gallery'] img,[class*='woocommerce-product-gallery'] img,[class*='gallery'] img,[class*='swiper'] img,[class*='slider'] img,main img[itemprop='image'],img[data-large_image],img[data-zoom-image],[data-fancybox] img,a[data-fancybox],.woocommerce-product-gallery__image a"
     try:image_nodes=soup.select(gallery_selector)
     except Exception as exc:raise ValueError(f"سلکتور گالری نامعتبر است: {exc}") from exc
     images=[]
-    for node in image_nodes[:100]:
+    for node in image_nodes[:120]:
         url=_detail_image_url(node,base)
-        low=url.lower()
-        if url and not any(x in low for x in ("logo","icon","avatar","placeholder","spinner")) and url not in images:images.append(url)
-    meta=soup.select_one("meta[property='og:image'],meta[name='twitter:image']")
-    meta_url=absolute_url(meta.get("content"),base) if meta else ""
-    if meta_url and meta_url not in images:images.insert(0,meta_url)
+        if _usable_image(url) and url not in images:images.append(url)
+    for meta in soup.select("meta[property='og:image'],meta[property='og:image:secure_url'],meta[name='twitter:image']"):
+        meta_url=absolute_url(meta.get("content"),base)
+        if _usable_image(meta_url) and meta_url not in images:images.append(meta_url)
+    for node in soup.select("[style*='background-image']")[:40]:
+        style=clean_text(node.get("style"))
+        m=re.search(r"url\((['\"]?)(.+?)\1\)", style)
+        if m:
+            bg=absolute_url(m.group(2),base)
+            if _usable_image(bg) and bg not in images:images.append(bg)
+    ld=parse_json_ld_product(soup,base)
+    for url in ld.get("images") or ([] if not ld.get("image") else [ld["image"]]):
+        if _usable_image(url) and url not in images:images.append(url)
+    for key,value in ld.items():
+        if key in {"image","images","images_count"}: continue
+        if value not in ("",None,[],{}) and not out.get(key): out[key]=value
     if images:out["image"],out["images"],out["images_count"]=images[0],images[:30],min(30,len(images))
+    if len(clean_text(out.get("long_desc") or out.get("short_desc") or ""))<40:
+        blocks=[]
+        for sel in ("#tab-description",".woocommerce-Tabs-panel--description","[itemprop='description']",".product-description","#description","[class*='product-content']","[class*='description']"):
+            try: nodes=soup.select(sel)
+            except Exception: nodes=[]
+            for node in nodes[:8]:
+                text=clean_text(node.get_text(" ", strip=True))
+                if len(text)>=40: blocks.append((len(text), node, text))
+        if blocks:
+            blocks.sort(key=lambda x:x[0], reverse=True)
+            _len, node, text = blocks[0]
+            out["long_desc"]=text[:30000]
+            html_value=sanitize_rich_html("".join(str(x) for x in node.contents).strip())
+            if html_value: out["long_desc_html"]=html_value
 
     attributes=[];attribute_selector=clean_text(selectors.get("attributes")) or "table[class*='spec'] tr,table[class*='attribute'] tr,[class*='specification'] li,[class*='product-attribute'] li"
     try:attribute_rows=soup.select(attribute_selector)
@@ -1360,28 +1459,39 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
                 if task_id:
                     detail_percent=round(attempted/max(1,min(len(candidates),detail_limit))*96) if details_only else 88+round(attempted/max(1,min(len(candidates),detail_limit))*9)
                     live_task_update(task_id,detail_percent,f"جزئیات محصول {attempted} از {min(len(candidates),detail_limit)}","running",clean_text(product.get("title"))[:160],done=position,total=min(len(candidates),detail_limit),extracted=len(report.products))
-                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";detail_engines=[] if requested in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested=="auto" else [requested]));detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[]
+                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";host=(urlparse(product.get("link") or "").hostname or "").lower();spa=any(x in host for x in ("snappshop.ir","snapp.ir"));detail_engines=[] if requested in {"playwright","selenium"} or spa else (["requests","httpx","cloudscraper","curl_cffi"] if requested=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested=="auto" else [requested]));detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[];best_q=-1
                 if mode!="browser":
                     for engine in detail_engines:
                         try:
-                            candidate_detail=fetcher.get(product["link"],referer=source,engine=engine);candidate_rows,candidate_soup,_=parse_html(candidate_detail.text,candidate_detail.url);candidate_fields=parse_detail_fields(candidate_soup,candidate_detail.url,detail_selectors)
-                            if candidate_fields:detail,detail_rows,detail_soup,custom_detail=candidate_detail,candidate_rows,candidate_soup,candidate_fields;report.modes.add("detail-"+engine);break
-                            detail_errors.append(f"{engine}: DOM جزئیات خالی بود")
+                            candidate_detail=fetcher.get(product["link"],referer=source,engine=engine);candidate_rows,candidate_soup,_=parse_html(candidate_detail.text,candidate_detail.url);candidate_fields=parse_detail_fields(candidate_soup,candidate_detail.url,detail_selectors);q=detail_quality(candidate_fields)
+                            if q>best_q and candidate_fields:detail,detail_rows,detail_soup,custom_detail,best_q=candidate_detail,candidate_rows,candidate_soup,candidate_fields,q;report.modes.add("detail-"+engine)
+                            if q>=3:break
+                            if not candidate_fields:detail_errors.append(f"{engine}: DOM جزئیات خالی بود")
                         except FetchError as exc:detail_errors.append(f"{engine}: {exc}")
-                if detail is None and mode in ("auto","browser"):
+                if (detail is None or best_q<3) and mode in ("auto","browser"):
                     try:
-                        candidate_detail=render_playwright(product["link"],fetcher.timeout,1);candidate_rows,candidate_soup,_=parse_html(candidate_detail.text,candidate_detail.url);candidate_fields=parse_detail_fields(candidate_soup,candidate_detail.url,detail_selectors)
-                        if candidate_fields:detail,detail_rows,detail_soup,custom_detail=candidate_detail,candidate_rows,candidate_soup,candidate_fields;report.modes.add("detail-playwright-stealth")
-                        else:detail_errors.append("playwright: DOM جزئیات خالی بود")
+                        candidate_detail=render_playwright(product["link"],fetcher.timeout,4 if spa else 3);candidate_rows,candidate_soup,_=parse_html(candidate_detail.text,candidate_detail.url);candidate_fields=parse_detail_fields(candidate_soup,candidate_detail.url,detail_selectors);q=detail_quality(candidate_fields)
+                        if q>best_q and candidate_fields:detail,detail_rows,detail_soup,custom_detail,best_q=candidate_detail,candidate_rows,candidate_soup,candidate_fields,q;report.modes.add("detail-playwright-stealth")
+                        elif not candidate_fields:detail_errors.append("playwright: DOM جزئیات خالی بود")
                     except FetchError as exc:detail_errors.append(f"playwright: {exc}")
                 if detail is None:raise FetchError(" · ".join(detail_errors) or "دریافت جزئیات ناموفق بود")
+                incoming=custom_detail.get("images") or ([] if not custom_detail.get("image") else [custom_detail.get("image")])
+                existing=product.get("images") or ([] if not product.get("image") else [product.get("image")])
+                merged=[]
+                for url in list(incoming)+list(existing):
+                    if _usable_image(url) and url not in merged:merged.append(url)
                 for key,value in custom_detail.items():
+                    if key in {"image","images","images_count"}: continue
                     if value not in ("",None,[],{}):product[key]=value
+                if merged:
+                    product["image"],product["images"],product["images_count"]=merged[0],merged[:30],min(30,len(merged))
                 candidate=max(detail_rows,key=lambda x:int(clean_text(x.get("title")) in clean_text(product.get("title"))),default=None)
                 if candidate:
                     for key,value in candidate.items():
                         if value not in ("",None,[],{}) and product.get(key) in ("",None,[],{}):product[key]=value
-                product["detail_extracted_at"]=int(time.time());product["detail_status"]="complete";enriched+=1
+                has_gallery=len(product.get("images") or [])>=2;has_desc=bool(clean_text(product.get("short_desc") or product.get("long_desc") or ""))
+                product["detail_extracted_at"]=int(time.time());product["detail_status"]="complete" if (has_gallery or has_desc) else "partial"
+                if has_gallery or has_desc:enriched+=1
             except (FetchError,ValueError) as exc:
                 product["detail_status"]="failed";product["detail_error"]=str(exc)[:500];detail_failures.append(clean_text(product.get("title"))[:80]+": "+str(exc)[:180])
         report.diagnostics["details"]={"requested":attempted,"completed":enriched,"failed":len(detail_failures),"errors":detail_failures[:20]}
@@ -3228,6 +3338,10 @@ def profile_save():
     data = load_data()
     previous_profile=data.get("profiles",{}).get(name,{})
     config=dict(config);config["saved_products"]=[dict(x) for x in data.get("last_result",[])[:MAX_PRODUCTS_HARD] if isinstance(x,dict)]
+    if not clean_text(config.get("display_name")):
+        config["display_name"]=clean_text(previous_profile.get("display_name")) or name
+    else:
+        config["display_name"]=clean_text(config.get("display_name"))[:100]
     for retained in ("last_comparison","comparison_history"):
         if retained in previous_profile:config[retained]=previous_profile[retained]
     data["profiles"][name] = config
@@ -3269,8 +3383,9 @@ def profile_rename():
         profiles[new] = profiles.pop(old)
         if data.get("active_profile") == old:
             data["active_profile"] = new
-        data["profiles"] = profiles
-        save_data(data)
+    profiles[new]["display_name"] = new
+    data["profiles"] = profiles
+    save_data(data)
     return jsonify(ok=True, profiles=data["profiles"], active_profile=data.get("active_profile", new))
 
 
@@ -4448,11 +4563,11 @@ button.linkish.danger{color:#fb7185!important}
 </style></head><body>
 <header class="app-chrome" id="appChrome">
 <button type="button" class="chrome-btn hamburger-btn" id="hamburgerBtn" onclick="toggleSettingsPanel()" aria-label="تنظیمات">☰</button>
-<div class="chrome-title">اسکرپر <small id="chromeVer">v10.136</small></div>
+<div class="chrome-title">اسکرپر <small id="chromeVer">v10.137</small></div>
 <button type="button" class="chrome-btn task-manager-btn" id="taskManagerTopBtn" onclick="openTaskManager()" aria-label="وظایف"><span class="task-btn-icon">◷</span><span class="task-btn-text">وظایف</span><b id="taskTopCount">۰</b></button>
 <button type="button" class="chrome-btn fullscreen-btn" id="fullscreenBtn" onclick="toggleFullscreen()" aria-label="تمام‌صفحه">⛶</button>
 </header><div class="settings-overlay" id="settingsOverlay" onclick="toggleSettingsPanel(false)"></div><aside class="settings-panel" id="settingsPanel"><div class="settings-panel-head"><h2>☰ تنظیمات عمومی <small>مرکز کنترل</small></h2><button class="gray" onclick="toggleSettingsPanel(false)">✕</button></div><div class="settings-panel-body"><div class="admin-nav nav-list"><button onclick="showAdmin('appearanceAdmin')"><i>🔠</i><span>نمایش و فونت</span></button><button onclick="showAdmin('backupAdmin')"><i>💾</i><span>پشتیبان سایت</span></button><button onclick="showAdmin('settings')"><i>🌐</i><span>اتصال مرکزی</span></button><button onclick="showAdmin('aiAdmin');loadAI()"><i>🤖</i><span>هوش مصنوعی</span></button><button onclick="showAdmin('basalamAdmin');loadBasalam()"><i>🏪</i><span>اتصال باسلام</span></button><button onclick="showAdmin('profiles')"><i>☆</i><span>پروفایل‌ها</span></button><button onclick="showAdmin('changelogAdmin');loadChangelog()"><i>📋</i><span>تغییرات نسخه</span></button><button onclick="showAdmin('deploy')"><i>↻</i><span>بروزرسانی</span></button><button onclick="showAdmin('files');browseFiles('')"><i>📁</i><span>فایل‌ها</span></button></div><section id="appearanceAdmin" class="admin-section"><div class="card appearance-card"><div class="section-head"><div><h3>🔠 اندازه نوشته‌ها</h3><small>اندازه تمام بخش‌های سایت فوراً تغییر می‌کند و در همین مرورگر می‌ماند.</small></div><span id="fontScaleBadge" class="badge">۱۰۰٪</span></div><label>اندازه فونت و کنترل‌ها</label><select id="fontScale" onchange="applyFontScale(this.value)"><option value="0.9">کوچک — ۹۰٪</option><option value="1">معمولی — ۱۰۰٪</option><option value="1.1">درشت — ۱۱۰٪</option><option value="1.2">خیلی درشت — ۱۲۰٪</option><option value="1.3">بسیار درشت — ۱۳۰٪</option></select><div class="font-preview"><b>نمونه عنوان محصول</b><span>این یک متن نمونه برای بررسی خوانایی رابط است.</span><button>نمونه دکمه</button></div><button class="gray" onclick="applyFontScale(1)">بازگردانی اندازه پیش‌فرض</button></div></section><section id="backupAdmin" class="admin-section"><div class="card backup-hero"><h3>💾 ذخیره و بازیابی همه تنظیمات سایت</h3><p class="note">این همان بخش پشتیبان کلی سایت است و شامل پروفایل‌ها، اتصال‌ها، صف‌ها، ارائه‌دهندگان، مدل‌ها و کلیدهای خصوصی می‌شود. فایل را امن نگه دارید.</p><div class="actions"><button class="green" onclick="backupSettings()">⬇ دانلود پشتیبان کامل</button><label class="file-btn">♻ بارگذاری و بازیابی فایل<input type="file" accept=".json,application/json" onchange="restoreSettings(this)"></label></div><div id="backupStatus" class="status">آماده دانلود یا بازیابی تنظیمات Python و بسته‌های PHP</div></div></section><section id="basalamAdmin" class="admin-section"><div class="card"><div class="section-head"><div><h3>🛍️ اتصال هوشمند باسلام</h3><small>SDK رسمی با fallback خودکار به REST API مستقل</small></div><span id="bslSdkBadge" class="badge">در حال بررسی…</span></div><div class="grid"><div><label>شناسه غرفه</label><input id="bsl_vendor" type="number"></div><div><label>شناسه دسته‌بندی پیش‌فرض</label><input id="bsl_category" type="number"></div><div class="wide"><label>جستجوی دسته‌بندی رسمی باسلام</label><div class="inline-search"><input id="bsl_category_query" placeholder="نام یا شناسه دسته"><button class="gray" onclick="searchBasalamCategories()">جستجو</button></div><div id="bslCategoryResults" class="category-results"></div></div><div class="wide"><label>Personal Token</label><input id="bsl_token" type="password" dir="ltr"></div><div class="wide"><label>Refresh Token</label><input id="bsl_refresh" type="password" dir="ltr"></div><div><label>روش مدیریت باسلام</label><select id="bsl_client_mode"><option value="auto">خودکار: SDK ← REST API</option><option value="api">فقط REST API مستقیم</option><option value="sdk">فقط SDK رسمی</option></select></div><div class="wide"><label>Base URL رسمی REST API</label><input id="bsl_api_base_url" dir="ltr" value="https://openapi.basalam.com"></div><div><label>زمان آماده‌سازی</label><input id="bsl_days" type="number" value="3"></div><div><label>وزن پیش‌فرض گرم</label><input id="bsl_weight" type="number" value="500"></div><div><label>موجودی پیش‌فرض</label><input id="bsl_stock" type="number" value="10"></div><div><label><input id="bsl_update" type="checkbox" checked style="width:auto"> بروزرسانی محصول هم‌SKU</label></div></div><div class="note" style="margin-top:12px">حالت خودکار ابتدا SDK و سپس REST API را امتحان می‌کند. مسیر شبکه از «دروازه اتصال مرکزی» خوانده می‌شود. Worker باید هدر <code>X-Proxy-Authorization</code> را به <code>Authorization</code> تبدیل و method/body را حفظ کند.</div><div class="actions"><button onclick="saveBasalam()">ذخیره</button><button class="gray" onclick="installBasalamSdk()">نصب/ترمیم SDK</button><button class="gray" onclick="testBasalam()">تست اتصال باسلام</button><button class="green" onclick="loadBasalamVendor()">اطلاعات غرفه</button><button class="green" onclick="loadBasalamProducts()">محصولات غرفه</button></div><div id="bslAdminStatus" class="status">توکن را بدون عبارت Bearer وارد کنید؛ در خطای 401 یک canary بی‌خطر مشخص می‌کند مشکل از Worker است یا خود توکن. هیچ fallback مخفی به اتصال مستقیم انجام نمی‌شود.</div><div id="bslLiveTask" class="live-task" style="display:none"><div class="live-task-head"><b id="bslTaskTitle">در حال اجرا</b><span id="bslTaskPercent">۰٪</span></div><div class="progress-track"><i id="bslTaskBar"></i></div><div id="bslTaskStep" class="live-step"></div><div id="bslTaskDetails" class="live-details"></div></div><div id="bslVendorCard"></div><div id="bslProductList" class="provider-list"></div></div><div class="card operations-card"><div class="section-head"><div><h3>💬 مرکز عملیات باسلام</h3><small>REST API مستقل برای گفت‌وگوها، پیام‌ها و سفارش‌های غرفه</small></div><span class="badge">فاز عملیات</span></div><div class="actions"><button class="green" onclick="loadBasalamOperations()">دریافت داشبورد</button><button class="gray" onclick="loadBasalamOperations()">↻ بروزرسانی</button></div><div id="bslOperationStats" class="stats"></div><div class="operation-columns"><div><h4>گفت‌وگوهای اخیر</h4><div id="bslChatList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div><div><h4>سفارش‌های غرفه</h4><div id="bslOrderList" class="operation-list"><div class="note">داشبورد را دریافت کنید.</div></div></div></div><div id="bslChatPanel" class="chat-panel" style="display:none"><div class="section-head"><b id="bslChatTitle">گفت‌وگو</b><button class="gray" onclick="$('bslChatPanel').style.display='none'">✕</button></div><div id="bslMessages" class="message-list"></div><div class="chat-compose"><textarea id="bslMessageText" rows="2" placeholder="پاسخ به مشتری…"></textarea><button onclick="sendBasalamMessage()">ارسال پیام</button></div></div><div id="bslOperationStatus" class="status">این بخش از REST API استفاده می‌کند و به نصب SDK وابسته نیست.</div></div></section><section id="aiAdmin" class="admin-section"><div class="card"><div class="section-head"><div><h3>🤖 مرکز هوش مصنوعی</h3><small>مدیریت چند ارائه‌دهنده، مدل‌ها و چند کلید API مانند نسخه PHP</small></div><span id="aiSummary" class="badge">در حال خواندن…</span></div><div class="ai-tabs"><button class="on" onclick="aiPane('providers',this)">🧠 ارائه‌دهنده‌ها</button><button onclick="aiPane('editor',this)">✏️ ویرایش</button><button onclick="aiPane('models',this);loadAIStats()">📋 مدل‌ها</button><button onclick="aiPane('candidates',this);loadAICandidates()">🏆 کاندید + مستر</button><button onclick="aiPane('test',this)">✨ محتوا</button><button onclick="aiPane('health',this);loadAITestJobs()">🧪 تست مدل‌ها</button></div><div id="aiPaneProviders" class="ai-pane on"><div class="grid"><div><label>ارائه‌دهنده فعال</label><select id="ai_provider" onchange="aiSelectProvider()"><option value="">— ارائه‌دهنده‌ای نیست —</option></select></div><div><label>مدل فعال</label><select id="ai_model" onchange="aiSelectModel()"><option value="">—</option></select></div></div><div id="aiProviderList" class="provider-list"></div><div class="actions"><label class="file-btn">⬆ بارگذاری ai_providers.json<input type="file" accept=".json,application/json" onchange="importAIProviders(this)"></label><button class="gray" onclick="loadAI()">↻ تازه‌سازی</button></div></div><div id="aiPaneEditor" class="ai-pane"><div class="grid"><div><label>شناسه یکتا</label><input id="ai_edit_id" dir="ltr" placeholder="openrouter"></div><div><label>نام نمایشی</label><input id="ai_edit_name" placeholder="OpenRouter"></div><div><label>Vendor اختیاری</label><input id="ai_edit_vendor" dir="ltr"></div><div><label><input id="ai_edit_enabled" type="checkbox" checked style="width:auto"> ارائه‌دهنده فعال باشد</label></div><div class="wide"><label>Base URL یا Endpoint</label><input id="ai_endpoint" dir="ltr" placeholder="https://.../v1/chat/completions"></div><div class="wide"><label>کلیدهای API — هر خط: کلید | برچسب | Account ID کلادفلر</label><textarea id="ai_keys" rows="4" dir="ltr" placeholder="sk-... | حساب اول"></textarea></div><div class="wide"><label>مدل‌ها — هر خط: model-id | نام نمایشی | free</label><textarea id="ai_models" rows="7" dir="ltr" placeholder="model/id | نام مدل | free"></textarea></div></div><div class="actions"><button onclick="saveAIProvider()">ذخیره ارائه‌دهنده</button><button class="gray" onclick="newAIProvider()">ارائه‌دهنده تازه</button><button class="gray" onclick="deleteAIProvider()">حذف</button></div></div><div id="aiPaneModels" class="ai-pane"><div id="aiStatsCards" class="stats"></div><div id="aiStatsBars"></div><div class="modal-tools" style="padding:10px 0"><input id="aiCatalogSearch" placeholder="جستجوی مدل یا ارائه‌دهنده…" oninput="renderAIModelCatalog()"><select id="aiCatalogFilter" onchange="renderAIModelCatalog()"><option value="all">همه مدل‌ها</option><option value="available">سالم</option><option value="failed">ناموفق</option><option value="untested">تست‌نشده</option><option value="free">رایگان</option></select></div><div id="aiModelCatalog" class="model-catalog"></div></div><div id="aiPaneCandidates" class="ai-pane"><div class="note">مانند نسخه PHP، مدل‌های سالم را به کاندیدها اضافه کنید و یک مدل مستر برای دسته‌بندی و پاسخ خودکار تعیین کنید.</div><div class="grid"><div><label>ارائه‌دهنده</label><select id="aiCandProvider" onchange="renderCandidateModels()"></select></div><div><label>مدل سالم</label><select id="aiCandModel"></select></div></div><div class="actions"><button onclick="addAICandidate()">افزودن کاندید</button><button class="green" onclick="addAllHealthyCandidates()">افزودن همه سالم‌ها</button><button class="gray" onclick="saveAICandidates()">ذخیره</button></div><div id="aiCandidateList" class="candidate-list"></div><div class="grid"><div class="wide"><label>مدل مستر</label><select id="aiMasterModel" onchange="saveAICandidates()"><option value="">خودکار — بهترین امتیاز</option></select></div></div></div><div id="aiPaneTest" class="ai-pane"><div class="grid"><div><label>Temperature</label><input id="ai_temperature" type="number" min="0" max="2" step="0.1"></div><div><label>Max tokens</label><input id="ai_max_tokens" type="number" min="64" max="32000"></div><div class="wide"><label>System prompt</label><textarea id="ai_system_prompt" rows="3"></textarea></div><div class="wide"><label>پیام آزمایش</label><textarea id="ai_test_prompt" rows="3">فقط این JSON را برگردان: {"status":"ok"}</textarea></div></div><div class="actions"><button onclick="saveAIOptions()">ذخیره گزینه‌ها</button><button class="gray" onclick="testAI()">تست مدل فعال</button><button class="green" onclick="enrichAI()">تکمیل ۳ محصول</button></div></div><div id="aiPaneHealth" class="ai-pane"><div class="grid grid4"><div><label>حداکثر مدل هر ارائه‌دهنده</label><input id="ai_test_per" type="number" min="1" max="5000" value="5000"></div><div><label>تأخیر بین مدل‌ها (ms)</label><input id="ai_test_delay" type="number" min="0" max="60000" value="120"></div><div><label>مدل در هر درخواست</label><input id="ai_test_batch" type="number" min="1" max="3" value="1"></div><div><label><input id="ai_test_only" type="checkbox" style="width:auto"> فقط تست‌نشده‌ها</label><label><input id="ai_test_skip" type="checkbox" checked style="width:auto"> ردکردن مدل غیرچت</label></div><div class="wide"><label>پیام نمونه مشتری</label><textarea id="ai_reply_sample" rows="2">سلام، این محصول موجود است و چه زمانی ارسال می‌شود؟</textarea></div><div class="wide"><label>عنوان نمونه برای دسته‌بندی</label><input id="ai_category_sample" value="ادو پرفیوم مردانه دیور ساواج ۱۰۰ میلی‌لیتر"></div></div><div class="actions"><button class="green" onclick="startAutoAITests()">▶ تست خودکار همه مدل‌ها</button><button onclick="processAITests()">اجرای فقط یک مرحله</button><button class="gray" onclick="stopAutoAITests()">توقف خودکار</button><button class="gray" onclick="openAITestModal()">جدول پیشرفته نتایج</button></div><div id="aiTestSummary" class="stats"></div><div id="aiTestRows" class="test-results"></div></div><div id="aiStatus" class="status">فایل PHP را بارگذاری کنید؛ ارائه‌دهنده‌ها و مدل‌ها فوراً در فهرست ظاهر می‌شوند.</div></div></section><div id="adminMount"></div></div></aside><div class="wrap">
-<div id="deployBanner" class="deploy-banner"><span id="deployBannerText" style="flex:1;min-width:200px">⬆ نسخه جدید موجود است</span><button onclick="deployGoTo()">نصب کن</button><button class="ghost" onclick="dismissDeployBanner()">بعداً</button></div><header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>🛒 اسکرپر <small id="appVersion" onclick="deployGoTo()" title="برای بررسی به‌روزرسانی کلیک کنید">v10.136</small></h1><div class="sub">استخراج و مدیریت هوشمند محصولات</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header><div id="toast"></div>
+<div id="deployBanner" class="deploy-banner"><span id="deployBannerText" style="flex:1;min-width:200px">⬆ نسخه جدید موجود است</span><button onclick="deployGoTo()">نصب کن</button><button class="ghost" onclick="dismissDeployBanner()">بعداً</button></div><header class="hero"><div class="hero-main"><div class="logo">🕸️</div><div><div class="eyebrow">مرکز استخراج محصول</div><h1>🛒 اسکرپر <small id="appVersion" onclick="deployGoTo()" title="برای بررسی به‌روزرسانی کلیک کنید">v10.137</small></h1><div class="sub">استخراج و مدیریت هوشمند محصولات</div></div></div><div class="hero-badge"><span>●</span> آنلاین و آماده</div></header><div id="toast"></div>
 
 <section id="scrape" class="pane on"><div class="start-journey"><div class="journey-step active"><i>۱</i><span><b>پروفایل</b><small>انتخاب فروشگاه</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۲</i><span><b>منبع</b><small>آدرس و صفحات</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۳</i><span><b>استخراج سریع</b><small>فهرست بدون انتظار</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۴</i><span><b>جزئیات</b><small>وظیفه پس‌زمینه</small></span></div></div><div class="card profile-picker start-block"><div class="row-head"><h3>پروفایل</h3><span id="activeProfileBadge" class="badge">جدید</span></div><select id="profileSelect" onchange="loadSelectedProfile()"><option value="">— پروفایل جدید —</option></select><div id="activeProfileInfo" class="quiet">با انتخاب، روی سرور ذخیره می‌شود.</div><div class="text-actions"><button type="button" class="linkish" onclick="saveProfilePrompt()">ذخیره</button><button type="button" class="linkish" onclick="renameSelectedProfile()">تغییر نام</button><button type="button" class="linkish danger" onclick="deleteSelectedProfile()">حذف</button></div></div><div class="card source-card start-block"><div class="row-head"><h3>منبع</h3></div>
 <label>آدرس فهرست</label>
@@ -4513,7 +4628,7 @@ function pickerMove(action){$('pickerFrame').contentWindow?.postMessage({action}
 function pickerContext(){$('pickerFrame').contentWindow?.postMessage({action:'context',selector:pickerKind==='list'&&$('pickerField').value!=='container'?$('sel_container').value.trim():''},'*')}
 function setPickerHeight(value){$('pickerFrameWrap').style.height=value+'px'}
 window.addEventListener('message',event=>{if(event.source!==$('pickerFrame').contentWindow)return;let d=event.data||{};if(d.type==='s4-picker-ready'){pickerContext();$('pickerReady').textContent='آماده انتخاب';$('pickerReady').className='badge ok';$('pickerStatus').textContent='فیلد را انتخاب کنید، سپس روی جزء متناظر در پیش‌نمایش بزنید.'}if(d.type==='s4-picker-error'){$('pickerReady').textContent='خطای بارگذاری';$('pickerReady').className='badge error';$('pickerStatus').innerHTML='<span class="error">'+esc(d.error||'بارگذاری ناموفق بود')+'</span>'}if(d.type==='s4-picker-picked'){let field=$('pickerField').value,input=$(pickerInputId(field));if(input){input.value=d.selector;input.dispatchEvent(new Event('change'));$('pickerSelection').textContent=d.selector;$('pickerStatus').innerHTML='<span class="ok">✓ '+esc(d.tag)+' · '+d.matches+' تطابق · '+esc(d.text||'')+'</span>';renderPickerChips()}}});selectorTab('list');
-function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());let profile_rules={title_prefix:$('rule_title_prefix').value.trim(),title_suffix:$('rule_title_suffix').value.trim(),price_mode:$('rule_price_mode').value,price_value:+$('rule_price_value').value,price_round:+$('rule_price_round').value,default_stock:$('rule_default_stock').value,default_category:$('rule_default_category').value.trim(),bsl_category_id:+$('rule_bsl_category_id').value,woo_category_id:+$('rule_woo_category_id').value,woo_price_mode:$('rule_woo_price_mode').value,woo_price_value:+$('rule_woo_price_value').value,woo_price_round:+$('rule_woo_price_round').value,bsl_price_mode:$('rule_bsl_price_mode').value,bsl_price_value:+$('rule_bsl_price_value').value,bsl_price_round:+$('rule_bsl_price_round').value};return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,fetch_engine:$('fetch_engine').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_scope:$('detail_scope').value,detail_limit:+$('detail_limit').value,selectors,detail_selectors,profile_rules}}
+function config(){let selectors={},detail_selectors={};['container','title','price','link','image','sku'].forEach(k=>selectors[k]=$('sel_'+k).value.trim());['gallery','variations','weight','category','price','stock','brand','sku','short_desc','long_desc','tags','attributes'].forEach(k=>detail_selectors[k]=$('det_'+k).value.trim());let profile_rules={title_prefix:$('rule_title_prefix').value.trim(),title_suffix:$('rule_title_suffix').value.trim(),price_mode:$('rule_price_mode').value,price_value:+$('rule_price_value').value,price_round:+$('rule_price_round').value,default_stock:$('rule_default_stock').value,default_category:$('rule_default_category').value.trim(),bsl_category_id:+$('rule_bsl_category_id').value,woo_category_id:+$('rule_woo_category_id').value,woo_price_mode:$('rule_woo_price_mode').value,woo_price_value:+$('rule_woo_price_value').value,woo_price_round:+$('rule_woo_price_round').value,bsl_price_mode:$('rule_bsl_price_mode').value,bsl_price_value:+$('rule_bsl_price_value').value,bsl_price_round:+$('rule_bsl_price_round').value};return {url:$('url').value.trim(),pages:+$('pages').value,render:$('render').value,fetch_engine:$('fetch_engine').value,pagination:$('pagination').value,page_value:$('page_value').value.trim(),scrolls:+$('scrolls').value,enrich:$('enrich').value==='1',detail_scope:$('detail_scope').value,detail_limit:+$('detail_limit').value,selectors,detail_selectors,profile_rules,display_name:(profiles[activeProfile]&&profiles[activeProfile].display_name)||''}}
 function apply(c){if(!c)return;['url','pages','render','fetch_engine','pagination','page_value','scrolls','detail_scope','detail_limit'].forEach(k=>{if(c[k]!==undefined&&$(k))$(k).value=c[k]});if($('enrich'))$('enrich').value=c.enrich?'1':'0';Object.entries(c.selectors||{}).forEach(([k,v])=>{if($('sel_'+k))$('sel_'+k).value=v||''});Object.entries(c.detail_selectors||{}).forEach(([k,v])=>{if($('det_'+k))$('det_'+k).value=v||''});let r=c.profile_rules||{};['title_prefix','title_suffix','price_mode','price_value','price_round','default_stock','default_category','bsl_category_id','woo_category_id','woo_price_mode','woo_price_value','woo_price_round','bsl_price_mode','bsl_price_value','bsl_price_round'].forEach(k=>{if($('rule_'+k)&&r[k]!==undefined)$('rule_'+k).value=r[k]});if($('pickerUrl'))$('pickerUrl').value=c.url||$('url')?.value||'';syncProfileAcrossTabs()}
 function syncProfileAcrossTabs(){const u=$('url')?.value||'';if($('pickerUrl')&&u)$('pickerUrl').value=u;if($('dispatchProfile')&&activeProfile)$('dispatchProfile').value=activeProfile;if($('dispatchProfileBasalam')&&activeProfile)$('dispatchProfileBasalam').value=activeProfile}
 async function api(path,opt={}){let r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let j=await r.json();if(!r.ok||j.ok===false)throw Error(j.error||'خطای درخواست');return j}
@@ -4628,9 +4743,11 @@ function openProductDetail(i){let p=products[i];if(!p)return;$('productDetailTit
 function closeProductDetail(){$('productDetailModal').classList.remove('open');document.body.style.overflow=''}
 function renderRows(){if($('resultCountBadge'))$('resultCountBadge').textContent=toFa(products.length)+' محصول';renderDetailCoverage();renderResultAlternatives();if(!products.length){$('rows').innerHTML='<tr><td class="empty" colspan="7">محصولی پیدا نشد. آدرس، روش محتوا یا سلکتورها را بررسی کنید.</td></tr>';return}$('rows').innerHTML=products.map((p,i)=>`<tr><td data-label="ردیف">${toFa(i+1)}</td><td data-label="تصویر">${p.image?`<img src="${esc(p.image)}" loading="lazy" alt="">`:''}</td><td data-label="عنوان">${esc(p.title)}</td><td data-label="قیمت" dir="ltr">${esc(p.price)}</td><td data-label="SKU">${esc(p.sku)}</td><td data-label="جزئیات"><button class="gray" onclick="openProductDetail(${i})">${p.detail_status==='complete'?'✓ مشاهده':'مشاهده'}</button></td><td data-label="لینک">${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener">مشاهده ↗</a>`:''}</td></tr>`).join('')}
 
-async function saveProfilePrompt(){let name=prompt('نام پروفایل:',activeProfile||'');if(!name)return;let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name,config:config()})});profiles=d.profiles;activeProfile=d.active_profile||name;renderProfiles();updateActiveProfileUI()}
+async function saveProfilePrompt(){const current=activeProfile||'';const shown=prettyProfile(current,profiles[current]||{});let name=prompt('نام پروفایل:',shown||'');if(!name)return;const c=config();c.display_name=name.trim();const key=current||name.trim();let d=await api('/api/profile',{method:'POST',body:JSON.stringify({name:key,config:c})});profiles=d.profiles;activeProfile=d.active_profile||key;renderProfiles();updateActiveProfileUI()}
 function prettyProfile(name,cfg){
   if(cfg&&cfg.display_name) return String(cfg.display_name).trim();
+  const key=String(name||'').trim();
+  if(key && !/https?:/i.test(key) && !/__/.test(key) && key.length<=60 && !/_D[89ABab]/.test(key) && (/[\u0600-\u06FF]/.test(key) || !/\.(ir|com|shop|net)\b/i.test(key))) return key;
   const url=(cfg&&cfg.url)||'';
   let host='', tail='';
   try{
@@ -4652,7 +4769,7 @@ function renderProfiles(){const entries=Object.entries(profiles);$('profileList'
 function updateActiveProfileUI(){let p=profiles[activeProfile];$('profileSelect').value=activeProfile||'';$('activeProfileBadge').textContent=activeProfile?prettyProfile(activeProfile,p):'جدید';$('activeProfileBadge').className='badge '+(activeProfile?'ok':'');$('activeProfileInfo').textContent=p?toFa(p.saved_products?.length||0)+' محصول':'پروفایل را انتخاب کنید.';}
 async function loadSelectedProfile(){let n=$('profileSelect').value;await loadProfile(n,false,true)}
 function deleteSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}delProfile(n)}
-async function renameSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}const nn=prompt('نام جدید پروفایل:',prettyProfile(n));if(!nn||!nn.trim()||nn.trim()===n)return;try{let d=await api('/api/profile/rename',{method:'POST',body:JSON.stringify({old:n,name:nn.trim()})});profiles=d.profiles;activeProfile=d.active_profile||nn.trim();renderProfiles();updateActiveProfileUI();if($('status'))$('status').innerHTML='<span class="ok">✓ نام پروفایل به «'+esc(prettyProfile(activeProfile))+'» تغییر کرد.</span>'}catch(e){alert(e.message)}}
+async function renameSelectedProfile(){const n=$('profileSelect').value;if(!n){alert('یک پروفایل انتخاب کنید');return}const shown=prettyProfile(n,profiles[n]||{});const nn=(prompt('نام نمایشی پروفایل:',shown)||'').trim();if(!nn||nn===shown)return;try{let d=await api('/api/profile/rename',{method:'POST',body:JSON.stringify({old:n,name:nn})});profiles=d.profiles||{};activeProfile=d.active_profile||nn;renderProfiles();updateActiveProfileUI();if($('status'))$('status').innerHTML='<span class="ok">✓ نام پروفایل به «'+esc(prettyProfile(activeProfile,profiles[activeProfile]||{}))+'» تغییر کرد.</span>'}catch(e){alert(e.message)}}
 async function loadProfile(n,switchTab=false,persist=true){if(persist){let d=await api('/api/profile/active',{method:'POST',body:JSON.stringify({name:n})});activeProfile=d.active_profile||'';if(d.config)profiles[activeProfile]=d.config}else activeProfile=n||'';let p=profiles[activeProfile];if(p){apply(p);if(Array.isArray(p.saved_products)){products=p.saved_products;renderRows();renderComparisonCards(p.last_comparison||{});renderComparisonHistory(p.comparison_history||[])}if($('status'))$('status').innerHTML='<span class="ok">✓ پروفایل «'+esc(prettyProfile(activeProfile,p))+'» · '+toFa(products.length)+' محصول.</span>'}renderProfiles();updateActiveProfileUI();syncProfileAcrossTabs();if(switchTab)openTab('scrape')}
 async function delProfile(n){if(!confirm('پروفایل حذف شود؟'))return;let d=await api('/api/profile/'+encodeURIComponent(n),{method:'DELETE'});profiles=d.profiles;activeProfile=d.active_profile||'';renderProfiles();updateActiveProfileUI()}
 async function loadJobs(){try{let d=await api('/api/extract/jobs');$('jobList').innerHTML=(d.jobs||[]).map(j=>`<div class="card"><b>${esc(j.id)}</b><br><small>وضعیت: ${esc(j.status)} · محصول: ${j.total||0} · صفحه بعد: ${j.next_page||'-'}</small><div class="actions">${j.status!=='completed'?`<button onclick="resumeJob('${esc(j.id)}')">ادامه</button>`:''}<button class="gray" onclick="deleteJob('${esc(j.id)}')">حذف</button></div></div>`).join('')||'<div class="note">صف خالی است.</div>'}catch(e){$('jobList').textContent=e.message}}

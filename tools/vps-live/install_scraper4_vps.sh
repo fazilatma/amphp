@@ -9,6 +9,7 @@ APP_DIR="${SCRAPER_DIR:-/opt/scraper4}"
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SRC="${REPO_DIR}/scraper4.py"
 PY="${PYTHON:-python3}"
+VENV="$APP_DIR/venv"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root on the VPS." >&2
@@ -30,9 +31,10 @@ mkdir -p "$APP_DIR"
 cp -a "$SRC" "$APP_DIR/scraper4.py"
 chmod 755 "$APP_DIR/scraper4.py"
 
-# Required for gunicorn to boot. Do not bundle optional scrape libs here —
-# one failed extra package used to abort the whole install before :8000 existed.
-"$PY" -m pip install --break-system-packages flask requests beautifulsoup4 lxml gunicorn
+# Isolated venv — never uninstall Debian pip/blinker RECORD-less packages.
+"$PY" -m venv "$VENV"
+"$VENV/bin/pip" install --upgrade pip
+"$VENV/bin/pip" install flask requests beautifulsoup4 lxml gunicorn
 
 install -m 644 "${REPO_DIR}/deploy/scraper4.service" /etc/systemd/system/scraper4.service
 systemctl daemon-reload
@@ -95,8 +97,8 @@ systemctl --no-pager --full status scraper4 | head -20
 
 echo
 echo "Installing optional scrape engines (httpx, selenium, playwright, …)…"
-"$PY" -m pip install --break-system-packages \
+"$VENV/bin/pip" install \
   playwright cloudscraper curl_cffi httpx selenium playwright-stealth basalam-sdk || true
-# Full Chromium (not PythonAnywhere headless-shell).
-"$PY" -m playwright install --with-deps chromium || "$PY" -m playwright install chromium || true
+"$VENV/bin/python" -m playwright install --with-deps chromium || \
+  "$VENV/bin/python" -m playwright install chromium || true
 echo "Optional engines done."

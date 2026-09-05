@@ -13,7 +13,7 @@ Environment=SCRAPER_URL_PREFIX=/put
 Environment=PYTHONUNBUFFERED=1
 Environment=PORT=8000
 # No request kill — extract, Woo and Basalam drain until finished.
-ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 8 --timeout 0 --graceful-timeout 30 --keep-alive 5 scraper4:application
+ExecStart=/opt/scraper4/venv/bin/python3 -m gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 8 --timeout 0 --graceful-timeout 30 --keep-alive 5 scraper4:application
 ExecReload=/bin/kill -s HUP $MAINPID
 KillMode=mixed
 Restart=always

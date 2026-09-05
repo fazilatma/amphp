@@ -64,8 +64,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.128"
+APP_VERSION = "10.129"
 CHANGELOG = [
+    {"version":"10.129","date":"2026-09-05","title":"استخراج اسنپ‌شاپ و جدول برنچ دیپلویِر","items":["صفحه‌بندی query از page موجود در URL ادامه می‌دهد (مثلاً ۳۳۶ → ۳۳۷)","خواندن JSON-LD و __NEXT_DATA__ برای فروشگاه‌های SPA مثل snappshop.ir"]},
     {"version":"10.128","date":"2026-09-05","title":"نصب از git به‌جای GitHub API","items":["دیپلویِر و به‌روزرسانی خودکار از git clone/fetch استفاده می‌کنند چون api.github.com از ایران 403 می‌دهد"]},
     {"version":"10.127","date":"2026-09-05","title":"جدول افقی نتایج AI و به‌روزرسانی خودکار","items":["جدول آزمون مدل‌ها روی موبایل اسکرول افقی است نه کارت فشرده","به‌روزرسانی خودکار روی VPS مستقیم از GitHub و restart سرویس","دیپلویِر جدا روی /deploy/ برای نصب جدیدترین یا انتخاب برنچ"]},
     {"version":"10.126","date":"2026-09-05","title":"حذف فیلترهای آزمایشگاه مدل","items":["دراپ‌داون‌های فیلتر جدول نتایج تست AI حذف شد تا ردیف مدل‌ها روی موبایل جا شود","فقط جستجوی تک‌خطی بالای فهرست می‌ماند"]},
@@ -608,6 +609,96 @@ def _html_product(node: Tag, base: str, selectors: Optional[dict[str, str]] = No
     return {"title": title[:300], "price": price, "link": link, "image": image, "sku": sku}
 
 
+def _json_price(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("final", "selling", "sale", "amount", "value", "min", "current", "discounted", "rrp", "price"):
+            if key in value:
+                got = _json_price(value[key])
+                if got:
+                    return got
+        return ""
+    if isinstance(value, (int, float)) and value > 0:
+        number = int(value)
+        if number >= 10**7:
+            number = number // 10  # rial → toman-ish display; extract_price still runs
+        return extract_price(f"{number} تومان") or str(number)
+    return extract_price(value)
+
+
+def _json_text(*values: Any) -> str:
+    for value in values:
+        text = clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def parse_embedded_catalog(text: str, base: str) -> list[dict[str, Any]]:
+    """Products hidden in JSON-LD / Next / Nuxt — Snappshop category pages need this."""
+    blobs: list[str] = []
+    for pattern in (
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        r'<script[^>]+id=["\']__NUXT_DATA__["\'][^>]*>(.*?)</script>',
+        r'window\.__NUXT__\s*=\s*(\{.*?\})\s*;\s*</script>',
+    ):
+        blobs.extend(m.group(1) for m in re.finditer(pattern, text or "", re.I | re.S))
+    found: list[dict[str, Any]] = []
+
+    def consider(obj: Any) -> None:
+        if not isinstance(obj, dict):
+            return
+        title = _json_text(obj.get("title"), obj.get("name"), obj.get("productTitle"), obj.get("fa_title"), obj.get("displayName"))
+        if not title or len(title) < 3:
+            return
+        price = _json_price(obj.get("price") or obj.get("offers") or obj.get("finalPrice") or obj.get("sellingPrice") or obj.get("discountedPrice") or obj.get("minPrice"))
+        href = _json_text(obj.get("url"), obj.get("link"), obj.get("href"), obj.get("slug"), obj.get("productUrl"))
+        ident = _json_text(obj.get("sku"), obj.get("id"), obj.get("productId"), obj.get("code"))
+        if href:
+            if re.fullmatch(r"snp-\d+", href, re.I):
+                href = "/product/" + href
+            href = absolute_url(href, base)
+        elif ident and re.fullmatch(r"snp-\d+", ident, re.I):
+            href = absolute_url("/product/" + ident, base)
+        image = obj.get("image") or obj.get("thumbnail") or obj.get("cover") or obj.get("mainImage")
+        if isinstance(image, list) and image:
+            image = image[0]
+        if isinstance(image, dict):
+            image = image.get("url") or image.get("src")
+        image = absolute_url(clean_text(image), base) if image else ""
+        if not href and not price:
+            return
+        found.append({"title": title[:300], "price": price, "link": href, "image": image, "sku": ident[:80]})
+
+    def walk(obj: Any, depth: int = 0) -> None:
+        if depth > 14:
+            return
+        if isinstance(obj, dict):
+            consider(obj)
+            items = obj.get("itemListElement")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        consider(item.get("item") if isinstance(item.get("item"), dict) else item)
+            for value in obj.values():
+                walk(value, depth + 1)
+        elif isinstance(obj, list) and len(obj) < 4000:
+            for item in obj:
+                walk(item, depth + 1)
+
+    for blob in blobs:
+        raw = (blob or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        walk(data)
+    # de-dupe while walking via add_product later
+    return found
+
+
 def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None) -> tuple[list[dict[str, Any]], BeautifulSoup, dict[str, int]]:
     """Parse only the downloaded/rendered DOM, matching scraper4.php (never APIs/hydration)."""
     soup = BeautifulSoup(text, "lxml")
@@ -628,7 +719,7 @@ def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None)
     if not store:
         # PHP-style last fallback: product links with images are reliable even
         # when a shop uses unknown generated class names (e.g. barfbox.ir).
-        for link in soup.select("a[href*='/product/'],a[href*='/products/'],a[href*='/shop/']"):
+        for link in soup.select("a[href*='/product/'],a[href*='/products/'],a[href*='/shop/'],a[href*='/snp-']"):
             if not link.find("img") and not link.select_one("[class*='price']"): continue
             node: Tag = link
             for _ in range(5):
@@ -637,6 +728,8 @@ def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None)
                 node=parent
                 if node.find("img") and extract_price(node.get_text(" ",strip=True)): break
             add_product(store,_html_product(node,base,selectors))
+    for row in parse_embedded_catalog(text, base):
+        add_product(store, row)
     return list(store.values()), soup, {"selector_matches": len(selector_rows), "dom_products": len(store), "html_bytes": len(text.encode("utf-8", "ignore"))}
 
 
@@ -774,7 +867,14 @@ def page_url(original: str, page: int, kind: str, value: str) -> str:
         return value.replace("{page}",str(page)) if value else original
     param = value or "page"
     query = parse_qs(parsed.query, keep_blank_values=True)
-    query[param] = [str(page)]
+    try:
+        origin = int((query.get(param) or ["1"])[0] or 1)
+    except ValueError:
+        origin = 1
+    origin = max(1, origin)
+    if page <= 1:
+        return original
+    query[param] = [str(origin + page - 1)]
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
@@ -1016,7 +1116,7 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
             for bengine in browser_try:
                 try:
                     if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+2),f"رندر {bengine} صفحه {number} از {pages}","running",("HTML محصولی نداشت"+(" · "+fetch_error if fetch_error else "")+f"؛ {bengine} در حال اجراست"),done=number-1,total=pages,extracted=len(report.products))
-                    result = render_playwright(url, fetcher.timeout, int(config.get("scrolls", 4))) if bengine=="playwright" else render_selenium(url, fetcher.timeout, int(config.get("scrolls", 4)))
+                    snapp="snappshop.ir" in (urlparse(url).hostname or "").lower();scrolls=int(config.get("scrolls", 8 if snapp else 4));result = render_playwright(url, fetcher.timeout, scrolls) if bengine=="playwright" else render_selenium(url, fetcher.timeout, scrolls)
                     rows, soup, diag = parse_html(result.text, result.url, selectors);diag={**diag,"engine":bengine,"attempts":diag.get("attempts",[])}
                     report.modes.add(bengine+"-dom")
                     report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده با {bengine}")

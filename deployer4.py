@@ -58,7 +58,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DEPLOYER_VERSION = "1.2.1"
+DEPLOYER_VERSION = "1.3.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # فایل اصلی سایت که باید آپدیت شود. پیش‌فرض: scraper4.py کنار همین فایل.
@@ -1098,10 +1098,17 @@ button:disabled{opacity:.6;cursor:wait}
 #toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);z-index:99999;max-width:92vw;padding:11px 18px;border-radius:12px;background:#0f172a;border:1px solid #38bdf866;font-size:13px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}#toast.err{border-color:#fb718588;color:#fecaca}
 .foot{color:var(--muted);font-size:11px;text-align:center;margin-top:14px}
-@media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:12px;border:1px solid var(--line);border-radius:14px}
+.branch-table{width:100%;min-width:560px;border-collapse:collapse}
+.branch-table th{text-align:right;padding:10px 12px;background:#0b1728;color:#93c5fd;font-size:12px;position:sticky;top:0}
+.branch-table td{padding:10px 12px;border-top:1px solid #1e293b;vertical-align:middle;font-size:13px}
+.branch-table tr.new{background:#052e1b55}
+.branch-table tr.bad td{color:#fecaca}
+.branch-table button{width:auto;min-height:36px;padding:6px 14px}
+@media(max-width:640px){.grid{grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr}.actions button{width:100%}.branch-table{min-width:520px}}
 </style></head><body><div class="wrap">
 <div id="banner" class="banner"><span id="bannerText" style="flex:1;min-width:200px"></span><button onclick="goInstall()">نصب کن</button><button class="ghost" onclick="hideBanner()">بعداً</button></div>
-<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.2.0</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
+<header class="hero"><div class="logo">🚀</div><div><h1>مرکز نصب Scraper4 <small id="depVer">v1.3.0</small></h1><div class="sub">جستجوی همه برنچ‌ها · نصب جدیدترین نسخه یا انتخاب دستی · به‌روزرسانی خودکار</div></div></header>
 <div class="card"><h3>نسخه زنده</h3>
 <div class="note">آدرس جدا: <code>/deploy/</code> — ریشه سایت PHP می‌ماند و اسکرپر روی <code>/put/</code> است. همه برنچ‌ها اسکن می‌شوند؛ <b>جدیدترین APP_VERSION</b> نصب می‌شود یا یک برنچ را دستی انتخاب می‌کنید. آپدیت خودکار فقط ارتقا می‌دهد.</div>
 <div id="localBox" class="local">—</div>
@@ -1153,7 +1160,7 @@ $('localBox').innerHTML='فایل اصلی: <b>'+esc(d.target||'scraper4.py')+'<
 if(d.local_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.local_error)+'</span>';if(d.discovery_error)$('localBox').innerHTML+='<br><span class="error">'+esc(d.discovery_error)+'</span>';else $('localBox').innerHTML+='<br><span>'+toFa(d.total_branches||0)+' برنچ بررسی شد'+(d.searched_all?' (همه برنچ‌های ریپو)':' (فقط برنچ‌های ثابت)')+'</span>';
 if(!d.update_available){$('status').innerHTML='<span class="ok">✓ به‌روز است — v'+esc(d.local_version)+'</span>';$('updateBtn').classList.add('hidden');hideBanner()}
 else{$('status').innerHTML='⬆ نسخه جدید: <b>v'+esc(d.newest_version||'?')+'</b> در برنچ <code>'+esc(d.newest_branch||'')+'</code> · جاری v'+esc(d.local_version);$('updateBtn').classList.remove('hidden');showBanner('⬆ نسخه جدید v'+(d.newest_version||'')+' در برنچ '+(d.newest_branch||'')+' موجود است')}
-$('cands').innerHTML=(d.candidates||[]).map(c=>{if(c.error)return '<div class="cand"><div><b dir="ltr">'+esc(c.branch)+'</b><small class="error">'+esc(c.error)+'</small></div></div>';let isN=c.branch===(d.newest_branch||'');return '<div class="cand'+(isN?' new':'')+'"><div><b dir="ltr">'+esc(c.branch)+'</b>'+(isN?' <span style="color:var(--green);font-size:10px">★ جدیدترین</span>':'')+'<small>نسخه: <b>v'+esc(c.version||'?')+'</b> · SHA: <code>'+esc((c.sha||'').slice(0,10))+'</code> · '+(c.update_available?'متفاوت از فایل اصلی':'یکسان')+'</small></div><div><button class="gray" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب این برنچ</button></div></div>'}).join('')||'<div class="note">کاندیدی یافت نشد.</div>';
+$('cands').innerHTML=(d.candidates||[]).length?'<div class="table-wrap"><table class="branch-table"><thead><tr><th>برنچ</th><th>نسخه</th><th>وضعیت</th><th>نصب</th></tr></thead><tbody>'+(d.candidates||[]).map(c=>{let isN=c.branch===(d.newest_branch||'');let ver=(!c.error&&c.version)?('v'+esc(c.version)):'—';let st=c.error?('<span class="error">'+esc(c.error)+'</span>'):(isN?'★ جدیدترین':(c.update_available?'متفاوت از نصب فعلی':'همین نسخه'));return '<tr class="'+(isN?'new':'')+(c.error?' bad':'')+'"><td dir="ltr">'+esc(c.branch)+'</td><td>'+ver+'</td><td>'+st+'</td><td><button class="green" onclick="updateBranch(\''+esc(c.branch)+'\')">نصب</button></td></tr>'}).join('')+'</tbody></table></div>':'<div class="note">کاندیدی یافت نشد.</div>';
 if(manual&&d.update_available)showToast('⬆ نسخه جدید v'+(d.newest_version||'')+' آماده نصب است');return d}catch(e){$('status').innerHTML='<span class="error">'+esc(e.message)+'</span>';if(manual)showToast(e.message,1);throw e}}
 async function checkInstall(manual){let b=$('mainBtn');if(b){b.disabled=true;b.textContent='⏳ در حال بررسی…'}try{let d=await check(false);if(!d.update_available){if(manual)showToast('✓ به‌روز است');return d}await updateNewest()}catch(e){}finally{if(b){b.disabled=false;b.textContent='🔍 بررسی و نصب نسخهٔ جدید'}}}
 async function updateNewest(){let t='';try{let d0=await api('api/check',{method:'POST',body:'{}'});if(d0&&d0.newest_branch)t=d0.newest_branch}catch(e){}await updateBranch(t)}

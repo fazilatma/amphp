@@ -20,6 +20,7 @@ if [[ ! -f "$SRC" ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
 apt-get update -y
 apt-get install -y python3 python3-pip python3-venv python3-dev \
   libxml2-dev libxslt1-dev zlib1g-dev gcc \
@@ -29,7 +30,7 @@ mkdir -p "$APP_DIR"
 cp -a "$SRC" "$APP_DIR/scraper4.py"
 chmod 755 "$APP_DIR/scraper4.py"
 
-"$PY" -m pip install --break-system-packages --upgrade pip
+# Debian/Ubuntu pip has no RECORD file — never try to uninstall/upgrade it.
 "$PY" -m pip install --break-system-packages \
   flask requests beautifulsoup4 lxml playwright cloudscraper curl_cffi \
   gunicorn basalam-sdk httpx selenium playwright-stealth
@@ -38,7 +39,7 @@ chmod 755 "$APP_DIR/scraper4.py"
 
 install -m 644 "${REPO_DIR}/deploy/scraper4.service" /etc/systemd/system/scraper4.service
 systemctl daemon-reload
-systemctl enable --now scraper4.service
+systemctl enable scraper4.service
 systemctl restart scraper4.service
 
 a2enmod proxy proxy_http headers rewrite >/dev/null
@@ -82,7 +83,16 @@ apache2ctl configtest
 systemctl reload apache2
 
 echo
-echo "Scraper4 VPS is up. PHP stays on / ; Python is /put/"
+if systemctl is-active --quiet scraper4; then
+  echo "Scraper4 VPS is up. PHP stays on / ; Python is /put/"
+else
+  echo "scraper4.service failed:" >&2
+  journalctl -u scraper4 -n 50 --no-pager >&2 || true
+  exit 1
+fi
 echo "  health:  curl -sS http://127.0.0.1:8000/health"
 echo "  public:  http://$(hostname -I | awk '{print $1}')/put/"
+curl -sS http://127.0.0.1:8000/health || true
+echo
+curl -sSI http://127.0.0.1/put/ | head -n 15 || true
 systemctl --no-pager --full status scraper4 | head -20

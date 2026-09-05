@@ -66,8 +66,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.130"
+APP_VERSION = "10.131"
 CHANGELOG = [
+    {"version":"10.131","date":"2026-09-05","title":"باسلام status و سلکتور XPath","items":["ارسال status=2976 و وزن بسته‌بندی به API باسلام تا خطای Field required قطع شود","سلکتور ظرف XPath دیگر کل استخراج را خراب نمی‌کند؛ Playwright منتظر networkidle نمی‌ماند"]},
     {"version":"10.130","date":"2026-09-05","title":"لاگ یکپارچه خطاها","items":["همه خطاهای Flask، نخ‌های پس‌زمینه و استثناهای گرفته‌نشده در scraper4-errors.jsonl نوشته می‌شوند","خواندن آخرین خطاها از /api/errors برای رفع خودکار"]},
     {"version":"10.129","date":"2026-09-05","title":"استخراج اسنپ‌شاپ و جدول برنچ دیپلویِر","items":["صفحه‌بندی query از page موجود در URL ادامه می‌دهد (مثلاً ۳۳۶ → ۳۳۷)","خواندن JSON-LD و __NEXT_DATA__ برای فروشگاه‌های SPA مثل snappshop.ir"]},
     {"version":"10.128","date":"2026-09-05","title":"نصب از git به‌جای GitHub API","items":["دیپلویِر و به‌روزرسانی خودکار از git clone/fetch استفاده می‌کنند چون api.github.com از ایران 403 می‌دهد"]},
@@ -279,7 +280,7 @@ def default_data() -> dict[str, Any]:
         "ai_providers": {},
         "ai_candidates": [],
         "ai_master": "",
-        "basalam": {"token": "", "refresh_token": "", "vendor_id": 0, "category_id": 0, "preparation_days": 3, "weight": 500, "stock": 10, "update_existing": True, "client_mode": "auto", "api_mode": "direct", "api_base_url": "https://openapi.basalam.com", "relay_url": "", "worker_key": "", "last_test_at": 0, "last_test_user": "", "last_client": ""},
+        "basalam": {"token": "", "refresh_token": "", "vendor_id": 0, "category_id": 0, "preparation_days": 3, "weight": 500, "package_weight": 600, "status": 2976, "stock": 10, "update_existing": True, "client_mode": "auto", "api_mode": "direct", "api_base_url": "https://openapi.basalam.com", "relay_url": "", "worker_key": "", "last_test_at": 0, "last_test_user": "", "last_client": ""},
         "bsl_jobs": {},
         "ai_test_jobs": {},
         "dispatch_jobs": {},
@@ -622,11 +623,54 @@ def add_product(store: dict[str, dict[str, Any]], product: Optional[dict[str, An
 # ---------------------------------------------------------------------------
 # HTML, selector and hydration extraction
 # ---------------------------------------------------------------------------
+def is_xpath(selector: str) -> bool:
+    sel = (selector or "").strip()
+    if sel.startswith(("//", "(//", "/html", "/*", "./", ".//")):
+        return True
+    return sel.startswith("/") and ("@" in sel or "[" in sel)
+
+
+def query_nodes(root: Any, selector: str) -> list[Any]:
+    """CSS or XPath — Chrome copy-xpath starts with // and is invalid CSS."""
+    sel = clean_text(selector)
+    if not sel:
+        return []
+    if not is_xpath(sel):
+        try:
+            return list(root.select(sel))
+        except Exception:
+            if "/" not in sel:
+                raise
+    try:
+        from lxml import etree, html as lhtml
+    except ImportError as exc:
+        raise ValueError(f"برای XPath به lxml نیاز است: {exc}") from exc
+    html_s = str(root)
+    try:
+        tree = lhtml.fromstring(html_s)
+    except Exception:
+        tree = lhtml.fromstring(f"<div>{html_s}</div>")
+    found = tree.xpath(sel)
+    out: list[Any] = []
+    for el in found:
+        if isinstance(el, (str, bytes)):
+            continue
+        try:
+            frag = etree.tostring(el, encoding="unicode", method="html")
+        except Exception:
+            continue
+        parsed = BeautifulSoup(frag, "lxml")
+        node = parsed.find(True)
+        if node:
+            out.append(node)
+    return out
+
+
 def select_value(node: Tag, selector: str, kind: str, base: str) -> str:
     if not selector:
         return ""
     try:
-        matches = node.select(selector)
+        matches = query_nodes(node, selector)
     except Exception as exc:
         raise ValueError(f"سلکتور نامعتبر ({kind}): {exc}") from exc
     for match in matches:
@@ -654,7 +698,7 @@ def parse_selectors(soup: BeautifulSoup, base: str, selectors: dict[str, str]) -
     if not container:
         return []
     try:
-        nodes = soup.select(container)
+        nodes = query_nodes(soup, container)
     except Exception as exc:
         raise ValueError(f"سلکتور ظرف نامعتبر است: {exc}") from exc
     out: list[dict[str, Any]] = []
@@ -812,7 +856,12 @@ def parse_html(text: str, base: str, selectors: Optional[dict[str, str]] = None)
     soup = BeautifulSoup(text, "lxml")
     store: dict[str, dict[str, Any]] = {}
     selectors = selectors or {}
-    selector_rows = parse_selectors(soup, base, selectors) if selectors.get("container") else []
+    selector_rows: list[dict[str, Any]] = []
+    if selectors.get("container"):
+        try:
+            selector_rows = parse_selectors(soup, base, selectors)
+        except Exception:
+            selector_rows = []
     for row in selector_rows:
         add_product(store, row)
     if not store:
@@ -1073,11 +1122,26 @@ def render_playwright(url: str, timeout: int, scrolls: int = 4) -> FetchResult:
                 relay_headers={"X-Proxy-UA":USER_AGENT}
                 if network.get("worker_key"):relay_headers["X-Proxy-Key"]=str(network["worker_key"])
                 page.set_extra_http_headers(relay_headers)
-            page.goto(outbound_browser_target(url), wait_until="networkidle", timeout=timeout * 1000)
+            target=outbound_browser_target(url);timeout_ms=max(8000,int(timeout)*1000);goto_ok=False
+            for wait in ("load","domcontentloaded"):
+                try:
+                    page.goto(target, wait_until=wait, timeout=timeout_ms);goto_ok=True;break
+                except Exception as exc:
+                    if "timeout" not in str(exc).lower() and "Timeout" not in str(exc):
+                        raise
+            if not goto_ok:
+                page.goto(target, wait_until="commit", timeout=timeout_ms)
+            page.wait_for_timeout(1500 if "snappshop.ir" in (url or "").lower() else 500)
             for _ in range(max(0, min(12, scrolls))):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(700)
             html = page.content();final_url = url if network_mode=="relay" else page.url
+            try:
+                blob=page.evaluate("() => {try{const n=window.__NEXT_DATA__||window.__NUXT__||window.__NUXT_DATA__;return n?JSON.stringify(n):'';}catch(e){return '';}}")
+                if blob and "__NEXT_DATA__" not in html and "__NUXT__" not in html:
+                    html += '<script id="__NEXT_DATA__" type="application/json">'+blob+'</script>'
+            except Exception:
+                pass
             sample=clean_text(BeautifulSoup(html[:200000],"html.parser").get_text(" ",strip=True)).lower()
             if any(x in sample for x in ("access denied","موقتا vpn خود را خاموش","temporarily blocked","captcha","درخواست شما مشکوک","دسترسی شما مسدود")):
                 raise FetchError("Playwright Stealth نیز صفحه ضدبات/VPN دریافت کرد؛ IP مسیر اتصال توسط سایت رد شده است. مسیر مستقیم یا HTTP Proxy مجاز را در دروازه مرکزی انتخاب کنید")
@@ -3604,6 +3668,57 @@ def basalam_photo_files(product: dict[str,Any]) -> list[io.BytesIO]:
     return files
 
 
+def basalam_status_value(cfg: dict[str,Any]) -> int:
+    """Basalam ProductStatusInputEnum.PUBLISHED = 2976 (docs sample status=1 is stale)."""
+    raw = cfg.get("status") if isinstance(cfg, dict) else None
+    if raw in (None, "", 0, "0"):
+        return 2976
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return {"published": 2976, "publish": 2976, "draft": 3790, "unpublished": 3790}.get(str(raw).lower(), 2976)
+
+
+def basalam_weight_fields(product: dict[str,Any], cfg: dict[str,Any]) -> tuple[float, int]:
+    weight = float(re.sub(r"[^0-9.]", "", clean_text(product.get("weight"))) or cfg.get("weight", 500) or 500)
+    pkg = int(cfg.get("package_weight", 0) or 0) or max(1, int(weight) + 100)
+    return weight, pkg
+
+
+def basalam_product_kwargs(product: dict[str,Any], cfg: dict[str,Any], category: int, sku: str) -> dict[str,Any]:
+    weight, pkg = basalam_weight_fields(product, cfg)
+    kw: dict[str, Any] = {
+        "name": clean_text(product.get("title"))[:250],
+        "brief": clean_text(product.get("short_desc"))[:600],
+        "description": clean_text(product.get("long_desc"))[:10000],
+        "category_id": category,
+        "preparation_days": max(1, int(cfg.get("preparation_days", 3))),
+        "weight": weight,
+        "package_weight": pkg,
+        "primary_price": int(woo_price(product.get("price"))),
+        "stock": int(re.sub(r"\D", "", clean_text(product.get("stock"))) or cfg.get("stock", 10)),
+        "sku": sku or None,
+        "status": basalam_status_value(cfg),
+        "is_wholesale": False,
+    }
+    try:
+        from basalam_sdk.core.models import ProductStatusInputEnum
+        kw["status"] = ProductStatusInputEnum(int(kw["status"]))
+    except Exception:
+        pass
+    return kw
+
+
+def basalam_rest_payload(product: dict[str,Any], cfg: dict[str,Any], category: int, sku: str) -> dict[str,Any]:
+    kw = basalam_product_kwargs(product, cfg, category, sku)
+    if hasattr(kw.get("status"), "value"):
+        kw["status"] = int(kw["status"].value)
+    payload = {k: v for k, v in kw.items() if v is not None}
+    if sku:
+        payload["sku"] = sku
+    return payload
+
+
 def basalam_send_one_sdk(product: dict[str,Any]) -> dict[str,Any]:
     ensure_basalam_sdk()
     from basalam_sdk.core.models import ProductRequestSchema, GetVendorProductsSchema
@@ -3612,7 +3727,12 @@ def basalam_send_one_sdk(product: dict[str,Any]) -> dict[str,Any]:
     client=basalam_client();sku=clean_text(product.get("sku"));can_update=bool(cfg.get("update_existing",True) or product.get("_force_destination_update"));existing_id=int(product.get("_destination_id") or 0) if can_update else 0
     if can_update and not existing_id and sku:
         found=client.get_vendor_products_sync(vendor,GetVendorProductsSchema(skus=[sku],per_page=10));existing=next((x for x in (found.data or []) if clean_text(getattr(x,"sku",""))==sku),None);existing_id=int(getattr(existing,"id",0) or 0) if existing else 0
-    req=ProductRequestSchema(name=clean_text(product.get("title"))[:250],brief=clean_text(product.get("short_desc"))[:600],description=clean_text(product.get("long_desc"))[:10000],category_id=category,preparation_days=max(1,int(cfg.get("preparation_days",3))),weight=float(re.sub(r"[^0-9.]","",clean_text(product.get("weight"))) or cfg.get("weight",500)),package_weight=int(cfg.get("package_weight",0) or 0) or None,primary_price=int(woo_price(product.get("price"))),stock=int(re.sub(r"\D","",clean_text(product.get("stock"))) or cfg.get("stock",10)),sku=sku or None)
+    kw=basalam_product_kwargs(product,cfg,category,sku)
+    try:
+        req=ProductRequestSchema(**kw)
+    except TypeError:
+        kw.pop("status", None)
+        req=ProductRequestSchema(**kw)
     photos=basalam_photo_files(product)
     try:
         result=client.update_product_sync(existing_id,req,photo_files=photos or None) if existing_id else client.create_product_sync(vendor,req,photo_files=photos or None)
@@ -3645,8 +3765,7 @@ def basalam_send_one_api(product: dict[str,Any]) -> dict[str,Any]:
         for photo in photos:
             upload=basalam_api_request("POST","/v1/files",data={"file_type":"product.photo"},files={"file":(getattr(photo,"name","product.jpg"),photo,"image/jpeg")});file_data=upload.get("data",upload) if isinstance(upload,dict) else {};file_id=file_data.get("id") if isinstance(file_data,dict) else None
             if file_id:photo_ids.append(int(file_id))
-        payload={"name":clean_text(product.get("title"))[:250],"brief":clean_text(product.get("short_desc"))[:600],"description":clean_text(product.get("long_desc"))[:10000],"category_id":category,"preparation_days":max(1,int(cfg.get("preparation_days",3))),"weight":float(re.sub(r"[^0-9.]","",clean_text(product.get("weight"))) or cfg.get("weight",500)),"primary_price":int(woo_price(product.get("price"))),"stock":int(re.sub(r"\D","",clean_text(product.get("stock"))) or cfg.get("stock",10)),"is_wholesale":False}
-        if sku:payload["sku"]=sku
+        payload=basalam_rest_payload(product,cfg,category,sku)
         if photo_ids:payload.update(photo=photo_ids[0],photos=photo_ids[1:] or None)
         if not existing_id:existing_id=int((existing or {}).get("id",0))
         result=basalam_api_request("PATCH" if existing_id else "POST",f"/v1/products/{existing_id}" if existing_id else f"/v1/vendors/{vendor}/products",json_data=payload);row=result.get("data",result) if isinstance(result,dict) else {}

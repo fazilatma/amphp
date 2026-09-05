@@ -67,7 +67,7 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.142"
+APP_VERSION = "10.143"
 CHANGELOG = [
     {"version":"10.141","date":"2026-09-05","title":"گالری جزئیات هم‌تراز PHP","items":["روش خودکار/دستی/شماره‌دار مثل PHP","ادغام گالری تا یک عکس فهرست چندعکس محصول را پاک نکند","تنظیم گالری در تب سلکتورها"]},
     {"version":"10.140","date":"2026-09-05","title":"پشتیبان بدون سقف ۲۰ مگابایت","items":["بازیابی فایل پشتیبان دیگر به ۲۰ مگابایت محدود نیست"]},
@@ -1531,8 +1531,10 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
         # scraper4.php strategy: fetch the page DOM and run selectors. In auto mode,
         # Playwright is only a DOM renderer fallback; it never calls a product API.
         if mode != "browser":
-            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","httpx","cloudscraper","curl_cffi","playwright","selenium"} else "auto";engines=[] if requested_engine in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested_engine=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine]));engine_errors=[]
+            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","httpx","cloudscraper","curl_cffi","playwright","selenium"} else "auto";engines=[] if requested_engine in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine]);engine_errors=[]
             for engine_index,engine in enumerate(engines):
+                if not fetch_engine_installed(engine):
+                    continue
                 try:
                     if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"موتور {engine} · صفحه {number} از {pages}","running",f"تلاش DOM بدون API/hydration · {url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
                     result=fetcher.get(url,engine=engine);candidate_rows,candidate_soup,candidate_diag=parse_html(result.text,result.url,selectors);engine_errors.append(f"{engine}: HTTP {result.status} · DOM={len(candidate_rows)}")

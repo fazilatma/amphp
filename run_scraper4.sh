@@ -135,10 +135,33 @@ ensure_venv() {
     echo "pip: flask gunicorn requests beautifulsoup4 lxml (network this once)"
     "$PY" -m pip install flask gunicorn requests beautifulsoup4 lxml || fail "pip install failed"
   fi
-  if ! "$PY" -c "import httpx,cloudscraper" 2>/dev/null; then
-    echo "pip optional: httpx cloudscraper (picker fallback; skip if offline)"
-    "$PY" -m pip install httpx cloudscraper || echo "optional httpx/cloudscraper skipped"
-  fi
+  # Selector/preview quality. Each package is separate so a failed wheel
+  # (curl_cffi often has none on Termux) does not skip the rest.
+  # Playwright/Selenium need desktop Chromium — not installed on the phone.
+  echo "pip optional fetch engines (httpx, cloudscraper, curl_cffi)"
+  for spec in "httpx[http2]" cloudscraper curl_cffi; do
+    case "$spec" in
+      httpx*) mod=httpx ;;
+      *) mod="$spec" ;;
+    esac
+    if "$PY" -c "import ${mod}" 2>/dev/null; then
+      echo "  ${mod}: already installed"
+      continue
+    fi
+    echo "  pip install ${spec}"
+    if "$PY" -m pip install "$spec"; then
+      echo "  ${mod}: OK"
+    else
+      echo "  ${mod}: skipped (no wheel/build on this device)"
+    fi
+  done
+  "$PY" -c "import importlib
+for n in ('httpx','cloudscraper','curl_cffi'):
+    try:
+        importlib.import_module(n); print('fetch engine ready:', n)
+    except ImportError:
+        print('fetch engine missing:', n)
+"
 }
 
 sync_code() {

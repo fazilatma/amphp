@@ -1,5 +1,5 @@
 [Unit]
-Description=Scraper4 VPS (Python port of scraper4.php 10.123)
+Description=Scraper4 VPS (Python port of scraper4.php, URL prefix /put)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +9,7 @@ User=root
 Group=root
 WorkingDirectory=/opt/scraper4
 Environment=SCRAPER_RUNTIME=vps
+Environment=SCRAPER_URL_PREFIX=/put
 Environment=PYTHONUNBUFFERED=1
 Environment=PORT=8000
 # No request kill — extract, Woo and Basalam drain until finished.

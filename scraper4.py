@@ -64,8 +64,9 @@ except ImportError as exc:
         "Missing dependency. Run: pip3 install flask requests beautifulsoup4 lxml"
     ) from exc
 
-APP_VERSION = "10.123"
+APP_VERSION = "10.124"
 CHANGELOG = [
+    {"version":"10.124","date":"2026-09-05","title":"آدرس /put و موتور کامل استخراج روی VPS","items":["رابط و API پایتون روی http://SERVER/put — ریشهٔ Apache برای PHP می‌ماند","نصب کامل Chromium Playwright به‌جای headless-shell سبک PythonAnywhere","افزودن httpx و Selenium به زنجیرهٔ استخراج در کنار requests، cloudscraper، curl_cffi و Playwright"]},
     {"version":"10.123","date":"2026-09-05","title":"نسخه کامل VPS هم‌تراز PHP ۱۰.۱۲۳","items":["حذف سقف‌های PythonAnywhere: صفحه، محصول، timeout، صف ۱۲تایی و قطع وظیفه در ۶۰۰ ثانیه","اتصال پیش‌فرض مستقیم بدون Worker؛ رله اختیاری می‌ماند","نگهبان extractBeat/extractChainResume مثل PHP: استخراج گیرکرده خودش از checkpoint ادامه می‌دهد","صف ووکامرس و باسلام تا انتها در پس‌زمینه خالی می‌شود نه مرحله‌به‌مرحله برای محدودیت رایگان","Task Manager پایدار کنار فایل برنامه؛ gunicorn بدون timeout روی systemd"]},
     {"version":"4.6.0","date":"2026-09-04","title":"نصب چندبرنچی با انتخاب جدیدترین نسخه","items":["افزودن چند برنچ کاندید در بخش نصب نسخه؛ بررسی همه برنچ‌ها و نصب خودکار جدیدترین APP_VERSION","پنل نصب همسان PHP: اطلاعات محلی، فهرست برنچ‌ها، انتخاب فایل، بررسی خودکار هنگام باز شدن و بنر نسخه جدید","دکمه بررسی و نصب یک‌مرحله‌ای، جدول مقایسه نسخه هر برنچ و نصب تکی هر برنچ","اسکریپت نصب PythonAnywhere چندبرنچی: دانلود همه کاندیدها و انتخاب جدیدترین نسخه"]},
     {"version":"4.5.0","date":"2026-09-04","title":"ترمیم کنترل‌شده مغایرت‌های مقصد","items":["ارسال مستقیم محصولات موجودنبودن در مقصد از گزارش مغایرت","ترمیم قیمت و عنوان محصولات مغایر با استفاده از شناسه پایدار مقصد","وظیفه سرورساید مستقل با توقف امن و گزارش موفق/خطا","بررسی مجدد خودکار پس از ترمیم و ممنوعیت حذف خودکار محصولات اضافی مقصد"]},
@@ -102,7 +103,12 @@ LIVE_TASK_DIR = os.environ.get("SCRAPER_LIVE_DIR") or (
     else os.path.join(tempfile.gettempdir(), "scraper4-live-"+str(os.getuid() if hasattr(os,"getuid") else "user"))
 )
 if os.path.isdir(LOCAL_DEPS_DIR):site.addsitedir(LOCAL_DEPS_DIR)
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get("SCRAPER_PLAYWRIGHT_PATH", os.path.join(BASE_DIR, "ms-playwright"))
+# VPS: use Playwright's normal browser cache (full Chromium). PA: keep a local folder.
+if os.environ.get("SCRAPER_PLAYWRIGHT_PATH"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["SCRAPER_PLAYWRIGHT_PATH"]
+elif not VPS_MODE:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(BASE_DIR, "ms-playwright")
+URL_PREFIX = os.environ.get("SCRAPER_URL_PREFIX", "/put" if VPS_MODE else "").strip().rstrip("/")
 try:
     with open(__file__, "rb") as _build_file:
         BUILD_ID = hashlib.sha256(_build_file.read()).hexdigest()[:12]
@@ -350,6 +356,11 @@ class Fetcher:
             if self.worker_key: headers["X-Proxy-Key"] = self.worker_key
         if accept_json:
             headers["Accept"] = "application/json,text/plain,*/*"
+        if engine in {"playwright", "selenium"}:
+            self.last_by_host[host] = time.monotonic()
+            if engine == "playwright":
+                return render_playwright(target_url, self.timeout, 4)
+            return render_selenium(target_url, self.timeout, 4)
         last_error = ""
         for attempt in range(3):
             try:
@@ -357,6 +368,25 @@ class Fetcher:
                     try:import cloudscraper
                     except ImportError as exc:raise FetchError("کتابخانه cloudscraper نصب نیست") from exc
                     client=cloudscraper.create_scraper(browser={"browser":"chrome","platform":"windows","mobile":False});client.headers.update(self.session.headers);client.proxies.update(self.session.proxies);response=client.get(request_url,headers=headers,timeout=self.timeout,allow_redirects=True,verify=self.verify);body=response.content
+                elif engine=="httpx":
+                    try:
+                        import httpx
+                    except ImportError as exc:
+                        raise FetchError("کتابخانه httpx نصب نیست") from exc
+                    merged={**dict(self.session.headers), **headers}
+                    proxy=None
+                    if self.session.proxies:
+                        proxy=self.session.proxies.get("https") or self.session.proxies.get("http")
+                    client_kw=dict(timeout=self.timeout, follow_redirects=True, verify=self.verify, headers=merged)
+                    try:
+                        if proxy: client_kw["proxy"]=proxy
+                        with httpx.Client(**client_kw) as hx:
+                            response=hx.get(request_url); body=response.content
+                    except TypeError:
+                        client_kw.pop("proxy", None)
+                        if proxy: client_kw["proxies"]=proxy
+                        with httpx.Client(**client_kw) as hx:
+                            response=hx.get(request_url); body=response.content
                 elif engine=="curl_cffi":
                     try:from curl_cffi import requests as curl_requests
                     except ImportError as exc:raise FetchError("کتابخانه curl_cffi نصب نیست") from exc
@@ -755,7 +785,15 @@ def configured_browser_path() -> str:
         path = clean_text(load_data().get("runtime", {}).get("playwright_path"))
     except Exception:
         path = ""
-    return path if path and os.path.isdir(path) else os.path.join(BASE_DIR, "ms-playwright")
+    if path and os.path.isdir(path):
+        return path
+    env_path = clean_text(os.environ.get("PLAYWRIGHT_BROWSERS_PATH"))
+    if env_path and os.path.isdir(env_path):
+        return env_path
+    cache = os.path.expanduser("~/.cache/ms-playwright")
+    if VPS_MODE and os.path.isdir(cache):
+        return cache
+    return os.path.join(BASE_DIR, "ms-playwright")
 
 
 def find_browser_executable(preferred: str = "") -> str:
@@ -770,14 +808,20 @@ def find_browser_executable(preferred: str = "") -> str:
             for name in files:
                 path = os.path.join(directory, name)
                 if name in names and os.access(path, os.X_OK): candidates.append(path)
-    # Prefer the compact headless shell, then newest installed executable.
-    candidates.sort(key=lambda x: ("headless" not in x.lower(), -os.path.getmtime(x)))
+    # VPS: prefer full Chromium. PA: prefer the compact headless shell.
+    if VPS_MODE:
+        candidates.sort(key=lambda x: ("headless" in x.lower(), -os.path.getmtime(x)))
+    else:
+        candidates.sort(key=lambda x: ("headless" not in x.lower(), -os.path.getmtime(x)))
     return candidates[0] if candidates else ""
 
 
 def render_playwright(url: str, timeout: int, scrolls: int = 4) -> FetchResult:
     browser_path = configured_browser_path()
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_path
+    if browser_path and os.path.isdir(browser_path):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browser_path
+    elif VPS_MODE:
+        os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -787,12 +831,18 @@ def render_playwright(url: str, timeout: int, scrolls: int = 4) -> FetchResult:
         with sync_playwright() as pw:
             expected = pw.chromium.executable_path
             executable = expected if expected and os.path.isfile(expected) else find_browser_executable(browser_path)
-            if not executable:
+            if not executable and not VPS_MODE:
                 raise FetchError("فایل اجرایی مرورگر پیدا نشد. دکمه «نصب سبک Playwright» را اجرا کنید؛ در صورت کمبود سهمیه، مرورگر خودکار در فضای موقت نصب می‌شود.")
-            network=load_data().get("network",{});network_mode=outbound_mode(network);launch_options={"headless":True,"executable_path":executable,"args":["--no-sandbox","--disable-dev-shm-usage"]}
+            network=load_data().get("network",{});network_mode=outbound_mode(network);launch_options={"headless":True,"args":["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--disable-blink-features=AutomationControlled"]}
+            if executable: launch_options["executable_path"]=executable
             if network_mode=="http" and network.get("proxy"):launch_options["proxy"]={"server":str(network["proxy"])}
             browser = pw.chromium.launch(**launch_options);page = browser.new_page(user_agent=USER_AGENT,locale="fa-IR",viewport={"width":1366,"height":768},timezone_id="Asia/Tehran")
             page.add_init_script("""Object.defineProperty(navigator,'webdriver',{get:()=>undefined});Object.defineProperty(navigator,'languages',{get:()=>['fa-IR','fa','en-US','en']});Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});window.chrome=window.chrome||{runtime:{}};""")
+            try:
+                from playwright_stealth import stealth_sync
+                stealth_sync(page)
+            except Exception:
+                pass
             if network_mode=="relay":
                 relay_headers={"X-Proxy-UA":USER_AGENT}
                 if network.get("worker_key"):relay_headers["X-Proxy-Key"]=str(network["worker_key"])
@@ -821,6 +871,54 @@ class ScrapeReport:
     modes: set[str] = field(default_factory=set)
     diagnostics: dict[str, Any] = field(default_factory=dict)
     job_id: str = ""
+
+
+def render_selenium(url: str, timeout: int, scrolls: int = 4) -> FetchResult:
+    """Full Chrome/Chromium via Selenium — VPS only path; Playwright is preferred."""
+    public_http_url(url)
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+    except ImportError as exc:
+        raise FetchError("کتابخانه Selenium نصب نیست") from exc
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument(f"--user-agent={USER_AGENT}")
+    opts.add_argument("--lang=fa-IR")
+    opts.add_argument("--window-size=1366,768")
+    chrome_bin = find_browser_executable(configured_browser_path())
+    if chrome_bin:
+        opts.binary_location = chrome_bin
+    driver = None
+    try:
+        driver = webdriver.Chrome(options=opts)
+        driver.set_page_load_timeout(max(15, int(timeout)))
+        driver.get(outbound_browser_target(url))
+        for _ in range(max(0, min(12, scrolls))):
+            try:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            except Exception:
+                break
+            time.sleep(0.7)
+        html = driver.page_source or ""
+        final_url = driver.current_url or url
+    except Exception as exc:
+        raise FetchError(f"Selenium: {exc}") from exc
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    sample = clean_text(BeautifulSoup(html[:200000], "html.parser").get_text(" ", strip=True)).lower()
+    if any(x in sample for x in ("access denied", "موقتا vpn خود را خاموش", "temporarily blocked", "captcha", "درخواست شما مشکوک", "دسترسی شما مسدود")):
+        raise FetchError("Selenium نیز صفحه ضدبات/VPN دریافت کرد؛ IP مسیر اتصال توسط سایت رد شده است")
+    return FetchResult(final_url, html, "text/html", 200, "selenium")
+
 
 
 def save_extract_checkpoint(job_id: str, config: dict[str, Any], report: ScrapeReport, next_page: int, next_url: str = "", status: str = "running") -> None:
@@ -879,7 +977,7 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
         # scraper4.php strategy: fetch the page DOM and run selectors. In auto mode,
         # Playwright is only a DOM renderer fallback; it never calls a product API.
         if mode != "browser":
-            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","cloudscraper","curl_cffi"} else "auto";engines=["requests","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine];engine_errors=[]
+            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto";requested_engine=requested_engine if requested_engine in {"auto","requests","httpx","cloudscraper","curl_cffi","playwright","selenium"} else "auto";engines=[] if requested_engine in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested_engine=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested_engine=="auto" else [requested_engine]));engine_errors=[]
             for engine_index,engine in enumerate(engines):
                 try:
                     if task_id:live_task_update(task_id,max(3,round((number-1)/pages*88)+engine_index),f"موتور {engine} · صفحه {number} از {pages}","running",f"تلاش DOM بدون API/hydration · {url}",done=number-1,total=pages,extracted=len(report.products),engine=engine)
@@ -892,14 +990,22 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
             if not rows and engine_errors:diag={**diag,"attempts":engine_errors};report.logs.extend(f"صفحه {number} · {x}" for x in engine_errors)
 
         if not rows and mode in ("auto", "browser"):
-            try:
-                if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+2),f"رندر مرورگر صفحه {number} از {pages}","running",("HTML محصولی نداشت"+(" · "+fetch_error if fetch_error else "")+"؛ Playwright در حال اجراست"),done=number-1,total=pages,extracted=len(report.products))
-                result = render_playwright(url, fetcher.timeout, int(config.get("scrolls", 4)))
-                rows, soup, diag = parse_html(result.text, result.url, selectors);diag={**diag,"engine":"playwright","attempts":diag.get("attempts",[])}
-                report.modes.add("playwright-stealth-dom")
-                report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده")
-            except (FetchError, ValueError) as exc:
-                fetch_error = str(exc)
+            requested_engine=clean_text(config.get("fetch_engine","auto")).lower() or "auto"
+            if requested_engine in {"playwright","selenium"}:
+                browser_try=[requested_engine]
+            else:
+                browser_try=["playwright","selenium"] if VPS_MODE else ["playwright"]
+            for bengine in browser_try:
+                try:
+                    if task_id:live_task_update(task_id,max(4,round((number-1)/pages*88)+2),f"رندر {bengine} صفحه {number} از {pages}","running",("HTML محصولی نداشت"+(" · "+fetch_error if fetch_error else "")+f"؛ {bengine} در حال اجراست"),done=number-1,total=pages,extracted=len(report.products))
+                    result = render_playwright(url, fetcher.timeout, int(config.get("scrolls", 4))) if bengine=="playwright" else render_selenium(url, fetcher.timeout, int(config.get("scrolls", 4)))
+                    rows, soup, diag = parse_html(result.text, result.url, selectors);diag={**diag,"engine":bengine,"attempts":diag.get("attempts",[])}
+                    report.modes.add(bengine+"-dom")
+                    report.logs.append(f"صفحه {number}: {len(rows)} محصول از DOM رندرشده با {bengine}")
+                    if rows:
+                        break
+                except (FetchError, ValueError) as exc:
+                    fetch_error = str(exc)
 
         if pag_kind == "next" and soup is not None:
             try:
@@ -949,7 +1055,7 @@ def scrape(config: dict[str, Any]) -> ScrapeReport:
                 if task_id:
                     detail_percent=round(attempted/max(1,min(len(candidates),detail_limit))*96) if details_only else 88+round(attempted/max(1,min(len(candidates),detail_limit))*9)
                     live_task_update(task_id,detail_percent,f"جزئیات محصول {attempted} از {min(len(candidates),detail_limit)}","running",clean_text(product.get("title"))[:160],done=position,total=min(len(candidates),detail_limit),extracted=len(report.products))
-                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";detail_engines=["requests","cloudscraper","curl_cffi"] if requested=="auto" else [requested];detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[]
+                requested=clean_text(config.get("fetch_engine","auto")).lower() or "auto";detail_engines=[] if requested in {"playwright","selenium"} else (["requests","httpx","cloudscraper","curl_cffi"] if requested=="auto" and VPS_MODE else (["requests","cloudscraper","curl_cffi"] if requested=="auto" else [requested]));detail=None;detail_rows=[];detail_soup=None;custom_detail={};detail_errors=[]
                 if mode!="browser":
                     for engine in detail_engines:
                         try:
@@ -1941,13 +2047,28 @@ def api_live_task(task_id: str):
 def health():
     return jsonify(ok=True, version=APP_VERSION, build=BUILD_ID, edition="vps", php_parity="10.123",
                    vps_mode=VPS_MODE, max_pages=MAX_PAGES_HARD, max_products=MAX_PRODUCTS_HARD,
-                   stall_after=STALL_AFTER, heartbeat=HEARTBEAT_STATE,
+                   stall_after=STALL_AFTER, heartbeat=HEARTBEAT_STATE, url_prefix=URL_PREFIX,
                    auto_update=AUTO_UPDATE_ENABLED, update_error=AUTO_UPDATE_STATE["error"])
+
+
+def render_index() -> str:
+    """Rewrite UI fetches so the app works under Apache /put while Flask still serves /."""
+    html = INDEX_HTML
+    html = html.replace(
+        "let products=[],profiles={}",
+        "const BASE="+json.dumps(URL_PREFIX)+";let products=[],profiles={}",
+        1,
+    )
+    html = html.replace("await fetch(path,{", "await fetch(BASE+path,{", 1)
+    html = html.replace("fetch('/", "fetch(BASE+'/")
+    html = html.replace("location.href='/api/", "location.href=BASE+'/api/")
+    html = html.replace("$('pickerFrame').src='/api/", "$('pickerFrame').src=BASE+'/api/")
+    return html
 
 
 @app.get("/")
 def index():
-    return Response(INDEX_HTML, mimetype="text/html; charset=utf-8")
+    return Response(render_index(), mimetype="text/html; charset=utf-8")
 
 
 
@@ -1957,12 +2078,15 @@ def api_picker_preview():
     url=public_http_url(clean_text(request.args.get("url")))
     render=clean_text(request.args.get("render","auto"));network=load_data().get("network",{});fetcher=Fetcher(network);result=None;errors=[]
     if render!="browser":
-        for engine in ("requests","cloudscraper","curl_cffi"):
+        for engine in (("requests","httpx","cloudscraper","curl_cffi") if VPS_MODE else ("requests","cloudscraper","curl_cffi")):
             try:result=fetcher.get(url,engine=engine);break
             except FetchError as exc:errors.append(f"{engine}: {exc}")
     if result is None and render in {"auto","browser"}:
         try:result=render_playwright(url,fetcher.timeout,2)
         except FetchError as exc:errors.append(f"playwright: {exc}")
+    if result is None and render in {"auto","browser"} and VPS_MODE:
+        try:result=render_selenium(url,fetcher.timeout,2)
+        except FetchError as exc:errors.append(f"selenium: {exc}")
     if result is None:
         message="\n".join(errors) or "دریافت صفحه ناموفق بود";payload=json.dumps({"type":"s4-picker-error","error":message},ensure_ascii=False)
         return Response("<h2 dir='rtl'>بارگذاری پیش‌نمایش ناموفق بود</h2><pre dir='rtl'>"+escape(message)+"</pre><script>parent.postMessage("+payload+",'*')</script>",status=502,mimetype="text/html")
@@ -2010,7 +2134,7 @@ def get_config():
     return jsonify(ok=True, profiles=data["profiles"], active_profile=active, network=network, woocommerce=woo,
                    deploy=deploy, last_count=len(data["last_result"]), version=APP_VERSION,
                    build=BUILD_ID, auto_update=AUTO_UPDATE_ENABLED, edition="vps", php_parity="10.123",
-                   vps_mode=VPS_MODE, max_pages=MAX_PAGES_HARD, max_products=MAX_PRODUCTS_HARD)
+                   vps_mode=VPS_MODE, max_pages=MAX_PAGES_HARD, max_products=MAX_PRODUCTS_HARD, url_prefix=URL_PREFIX)
 
 
 @app.post("/api/settings")
@@ -2128,9 +2252,9 @@ def account_cleanup() -> dict[str, Any]:
     """Clean only provably disposable account data; preserve system and user content."""
     home = os.path.abspath(os.path.expanduser("~")); app_root = os.path.abspath(BASE_DIR)
     allowed = [home, app_root]
-    candidates = [
+    candidates = ([] if VPS_MODE else [os.path.join(home, ".cache", "ms-playwright")]) + [
         os.path.join(home, ".cache", "pip"), os.path.join(home, ".cache", "uv"),
-        os.path.join(home, ".cache", "pypoetry"), os.path.join(home, ".cache", "ms-playwright"),
+        os.path.join(home, ".cache", "pypoetry"),
         os.path.join(home, ".npm", "_cacache"), os.path.join(home, ".npm", "_logs"),
         os.path.join(app_root, "__pycache__"), os.path.join(app_root, ".pytest_cache"),
     ]
@@ -2161,7 +2285,7 @@ def account_cleanup() -> dict[str, Any]:
     if os.path.isdir(browser_root):
         for name in os.listdir(browser_root):
             path=os.path.join(browser_root,name)
-            redundant=(headless_ready and name.startswith("chromium-") and "headless" not in name)
+            redundant=(not VPS_MODE and headless_ready and name.startswith("chromium-") and "headless" not in name)
             incomplete=os.path.isdir(path) and not playwright_browser_ready(path) and not name.startswith("ffmpeg")
             if redundant or incomplete:
                 amount=safe_remove_generated(path,allowed)
@@ -2172,8 +2296,9 @@ def account_cleanup() -> dict[str, Any]:
     uninstall_output=""
     if python_bin:
         try:
-            run=subprocess.run([python_bin,"-m","pip","uninstall","-y","selenium","html5lib","trio","trio-websocket"],capture_output=True,text=True,timeout=180)
-            uninstall_output=(run.stdout or run.stderr)[-1200:]
+            pkgs=["html5lib","trio","trio-websocket"] if VPS_MODE else ["selenium","html5lib","trio","trio-websocket"]
+            run=subprocess.run([python_bin,"-m","pip","uninstall","-y",*pkgs],capture_output=True,text=True,timeout=180) if pkgs else None
+            uninstall_output=((run.stdout or run.stderr)[-1200:] if run else "")
         except (OSError,subprocess.TimeoutExpired): pass
     return {"freed_bytes":freed,"freed_mb":round(freed/1048576,1),"removed":removed,"uninstall":uninstall_output}
 
@@ -2255,14 +2380,27 @@ def api_deploy_cleanup():
 @app.post("/api/deploy/dependencies")
 def api_deploy_dependencies():
     if not deploy_authorized(): return deploy_auth_error()
-    # Install only active runtime requirements; obsolete Selenium/html5lib remain
-    # excluded to preserve the free-plan quota.
+    python_bin = runtime_python_bin()
+    if not python_bin: return jsonify(ok=False, error="مفسر Python واقعی پیدا نشد؛ uWSGI برای نصب بسته قابل استفاده نیست"), 500
+    if VPS_MODE:
+        packages = ["flask", "requests", "beautifulsoup4", "lxml", "playwright", "basalam-sdk", "cloudscraper", "curl_cffi", "httpx", "selenium", "playwright-stealth"]
+        env = dict(os.environ); env["PIP_NO_CACHE_DIR"] = "1"
+        try:
+            pip_run = subprocess.run([python_bin, "-m", "pip", "install", "--no-cache-dir", *packages], capture_output=True, text=True, timeout=720, env=env)
+            if pip_run.returncode: raise RuntimeError((pip_run.stderr or pip_run.stdout)[-2000:])
+            browser_run = subprocess.run([python_bin, "-m", "playwright", "install", "--with-deps", "chromium"], capture_output=True, text=True, timeout=900, env=env)
+            if browser_run.returncode:
+                browser_run = subprocess.run([python_bin, "-m", "playwright", "install", "chromium"], capture_output=True, text=True, timeout=900, env=env)
+            ready = playwright_runtime_ready(python_bin, env)
+            warning = "" if ready else (browser_run.stderr or browser_run.stdout or "")[-1200:]
+            return jsonify(ok=True, browser_installed=ready, message="وابستگی‌های کامل VPS و Chromium نصب شد" if ready else "کتابخانه‌ها نصب شد اما Chromium کامل نشد", warning=warning)
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            return jsonify(ok=False, error=f"نصب وابستگی‌های VPS ناموفق بود: {exc}"), 400
+    # PythonAnywhere: keep the quota-safe headless-shell path.
     packages = ["flask", "requests", "beautifulsoup4", "lxml", "playwright", "basalam-sdk", "cloudscraper", "curl_cffi"]
     env = dict(os.environ); browser_root = os.path.join(BASE_DIR, "ms-playwright")
     env["PLAYWRIGHT_BROWSERS_PATH"] = browser_root
     env["PIP_NO_CACHE_DIR"] = "1"
-    python_bin = runtime_python_bin()
-    if not python_bin: return jsonify(ok=False, error="مفسر Python واقعی پیدا نشد؛ uWSGI برای نصب بسته قابل استفاده نیست"), 500
     freed = cleanup_dependency_space()
     try:
         pip_run = subprocess.run([python_bin, "-m", "pip", "install", "--no-cache-dir", *packages], capture_output=True, text=True, timeout=420, env=env)
@@ -3684,7 +3822,7 @@ body{background:#0c1528;background-image:none;color:#e8edf7}.wrap{max-width:1080
 <section id="scrape" class="pane on"><div class="start-journey"><div class="journey-step active"><i>۱</i><span><b>پروفایل</b><small>انتخاب فروشگاه</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۲</i><span><b>منبع</b><small>آدرس و صفحات</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۳</i><span><b>استخراج سریع</b><small>فهرست بدون انتظار</small></span></div><div class="journey-line"></div><div class="journey-step"><i>۴</i><span><b>جزئیات</b><small>وظیفه پس‌زمینه</small></span></div></div><div class="card profile-picker"><div class="section-head"><div><h3>☆ پروفایل فعال</h3><small>انتخاب شما روی سرور ذخیره و بعد از هر بار تازه‌سازی خودکار بازیابی می‌شود.</small></div><span id="activeProfileBadge" class="badge">پروفایل جدید</span></div><div class="grid"><div class="wide"><label>پروفایل ذخیره‌شده</label><select id="profileSelect" onchange="loadSelectedProfile()"><option value="">— پروفایل جدید —</option></select></div></div><div id="activeProfileInfo" class="note">یک پروفایل را انتخاب کنید؛ نیازی به دکمه بارگذاری نیست.</div><div class="actions"><button class="gray" onclick="saveProfilePrompt()">ذخیره پروفایل فعلی</button><button class="gray" onclick="deleteSelectedProfile()">حذف پروفایل</button></div></div><div class="card source-card"><div class="section-head"><div><h3>⚡ منبع استخراج سریع</h3><small>ابتدا فهرست فوراً آماده می‌شود؛ جزئیات در یک وظیفه جدا ادامه پیدا می‌کند.</small></div><span class="badge ok">دو مرحله‌ای</span></div><div class="grid grid4">
 <div class="wide"><label>آدرس صفحهٔ فهرست/جست‌وجو</label><input id="url" placeholder="https://www.digikala.com/search/?q=..." dir="ltr"></div>
 <div><label>تعداد صفحه</label><input id="pages" type="number" min="1" max="50" value="1"></div>
-<div><label>روش محتوا</label><select id="render"><option value="auto">خودکار: DOM سپس Playwright Stealth</option><option value="http">فقط HTML/DOM</option><option value="browser">فقط Playwright Stealth</option></select></div><div><label>موتور دریافت ضدبات</label><select id="fetch_engine"><option value="auto">چندلایه خودکار</option><option value="requests">Requests</option><option value="cloudscraper">Cloudscraper</option><option value="curl_cffi">curl_cffi با اثرانگشت Chrome</option></select></div><div class="wide engine-roadmap"><span>Requests</span><i>←</i><span>Cloudscraper</span><i>←</i><span>curl_cffi</span><i>←</i><span>Playwright Stealth</span></div><div class="wide note anti-bot-hint">برای سایت‌هایی مانند SnappShop، موتور چندلایه فقط DOM را پردازش می‌کند. اگر خود سایت IP دروازه را VPN تشخیص دهد، باید در دروازه مرکزی یک Worker/Proxy با IP قابل‌قبول تنظیم شود؛ هیچ کتابخانه‌ای مسدودی IP خروجی را پنهان نمی‌کند.</div>
+<div><label>روش محتوا</label><select id="render"><option value="auto">خودکار: DOM سپس Playwright Stealth</option><option value="http">فقط HTML/DOM</option><option value="browser">فقط Playwright Stealth</option></select></div><div><label>موتور دریافت ضدبات</label><select id="fetch_engine"><option value="auto">چندلایه خودکار</option><option value="requests">Requests</option><option value="httpx">httpx</option><option value="cloudscraper">Cloudscraper</option><option value="curl_cffi">curl_cffi با اثرانگشت Chrome</option><option value="playwright">Playwright Chromium</option><option value="selenium">Selenium</option></select></div><div class="wide engine-roadmap"><span>Requests</span><i>←</i><span>httpx</span><i>←</i><span>Cloudscraper</span><i>←</i><span>curl_cffi</span><i>←</i><span>Playwright</span><i>←</i><span>Selenium</span></div><div class="wide note anti-bot-hint">برای سایت‌هایی مانند SnappShop، موتور چندلایه فقط DOM را پردازش می‌کند. اگر خود سایت IP دروازه را VPN تشخیص دهد، باید در دروازه مرکزی یک Worker/Proxy با IP قابل‌قبول تنظیم شود؛ هیچ کتابخانه‌ای مسدودی IP خروجی را پنهان نمی‌کند.</div>
 <div><label>صفحه‌بندی</label><select id="pagination"><option value="query">پارامتر Query</option><option value="path">الگوی مسیر نسبت به صفحه فهرست</option><option value="full">الگوی کامل URL</option><option value="next">سلکتور لینک صفحه بعد</option></select></div>
 <div><label>نام پارامتر / الگو</label><input id="page_value" value="page" dir="ltr" placeholder="page یا /page/{page}/"></div>
 <div><label>تعداد اسکرول در Browser</label><input id="scrolls" type="number" value="4" min="0" max="12"></div>

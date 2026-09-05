@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install Scraper4 VPS edition (Python port of scraper4.php 10.123) on this server.
+# Install Scraper4 VPS edition on this server.
+# Apache keeps PHP on / ; Python UI is http://SERVER/put/
 # Run ON THE VPS as root:
 #   bash tools/vps-live/install_scraper4_vps.sh
 set -euo pipefail
@@ -30,21 +31,58 @@ chmod 755 "$APP_DIR/scraper4.py"
 
 "$PY" -m pip install --break-system-packages --upgrade pip
 "$PY" -m pip install --break-system-packages \
-  flask requests beautifulsoup4 lxml playwright cloudscraper curl_cffi gunicorn basalam-sdk
+  flask requests beautifulsoup4 lxml playwright cloudscraper curl_cffi \
+  gunicorn basalam-sdk httpx selenium playwright-stealth
+# Full Chromium (not PythonAnywhere headless-shell).
 "$PY" -m playwright install --with-deps chromium || "$PY" -m playwright install chromium || true
 
 install -m 644 "${REPO_DIR}/deploy/scraper4.service" /etc/systemd/system/scraper4.service
 systemctl daemon-reload
 systemctl enable --now scraper4.service
+systemctl restart scraper4.service
 
 a2enmod proxy proxy_http headers rewrite >/dev/null
-install -m 644 "${REPO_DIR}/deploy/scraper4.apache.conf" /etc/apache2/sites-available/scraper4.conf
-a2dissite 000-default >/dev/null 2>&1 || true
-a2ensite scraper4 >/dev/null || true
+
+# Undo any previous deploy that stole Apache /
+a2dissite scraper4 >/dev/null 2>&1 || true
+rm -f /etc/apache2/sites-enabled/scraper4.conf
+a2ensite 000-default >/dev/null 2>&1 || true
+
+install -m 644 "${REPO_DIR}/deploy/scraper4.apache.conf" /etc/apache2/conf-available/scraper4-put.conf
+# Do not a2enconf: ProxyPass must live inside the PHP vhost, not twice.
+"$PY" - <<'PY'
+from pathlib import Path
+snippet = Path("/etc/apache2/conf-available/scraper4-put.conf").read_text(encoding="utf-8")
+vhost = Path("/etc/apache2/sites-available/000-default.conf")
+if not vhost.exists():
+    vhost.write_text(
+        "<VirtualHost *:80>\n"
+        "    ServerAdmin webmaster@localhost\n"
+        "    DocumentRoot /var/www/html\n"
+        "    ErrorLog ${APACHE_LOG_DIR}/error.log\n"
+        "    CustomLog ${APACHE_LOG_DIR}/access.log combined\n"
+        "</VirtualHost>\n",
+        encoding="utf-8",
+    )
+text = vhost.read_text(encoding="utf-8")
+begin, end = "# scraper4-put BEGIN", "# scraper4-put END"
+if begin in text:
+    pre, rest = text.split(begin, 1)
+    rest = rest.split(end, 1)[-1]
+    text = pre.rstrip() + "\n" + snippet + rest.lstrip("\n")
+elif "</VirtualHost>" in text:
+    text = text.replace("</VirtualHost>", snippet + "\n</VirtualHost>", 1)
+else:
+    text += "\n" + snippet + "\n"
+vhost.write_text(text, encoding="utf-8")
+print("Apache /put/ injected into 000-default (PHP root kept).")
+PY
+
+apache2ctl configtest
 systemctl reload apache2
 
 echo
-echo "Scraper4 VPS is up."
+echo "Scraper4 VPS is up. PHP stays on / ; Python is /put/"
 echo "  health:  curl -sS http://127.0.0.1:8000/health"
-echo "  public:  http://$(hostname -I | awk '{print $1}')/scraper4/"
+echo "  public:  http://$(hostname -I | awk '{print $1}')/put/"
 systemctl --no-pager --full status scraper4 | head -20

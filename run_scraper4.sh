@@ -150,7 +150,8 @@ install_vps() {
   cp -a /opt/amphp/deploy/scraper4.apache.conf /etc/apache2/conf-available/scraper4-put.conf
   a2enconf scraper4-put >/dev/null 2>&1 || true
   systemctl daemon-reload
-  systemctl enable --now scraper4 deployer4
+  systemctl enable scraper4 deployer4
+  systemctl restart scraper4 deployer4
   systemctl reload apache2 || true
   echo "============================================================"
   echo "VPS:"

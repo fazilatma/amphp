@@ -68,8 +68,9 @@ except ImportError as exc:
     ) from exc
 
 # Every APP_VERSION bump must add a new top CHANGELOG row (گزارش تغییرات نسخه‌ها).
-APP_VERSION = "10.147"
+APP_VERSION = "10.148"
 CHANGELOG = [
+    {"version":"10.148","date":"2026-09-05","title":"قیمت باسلام به ریال","items":["هنگام ارسال به باسلام قیمت تومان در ۱۰ ضرب می‌شود مگر اینکه واحد از قبل ریال باشد"]},
     {"version":"10.147","date":"2026-09-05","title":"توضیح‌ساز و دسته‌بندی هوش مصنوعی","items":["توضیح کوتاه و بلند HTML با مدل فعال","دسته‌بندی فروشگاهی و تطبیق با دسته باسلام","اصلاح دسته‌های خالی، عمومی یا اشتباه در پس‌زمینه"]},
     {"version":"10.146","date":"2026-09-05","title":"رفع استخراج صفر در صفحه شروع","items":["اگر رله HTTP 503 بدهد استخراج هم مثل پیش‌نمایش مستقیم تکرار می‌شود","خطای خالی‌ماندن config دیگر شروع برداشت را متوقف نمی‌کند","صفر محصول به‌جای سکوت، پیام خطا می‌دهد"]},
     {"version":"10.145","date":"2026-09-05","title":"رفع خطای بارگذاری صفحه سلکتورها","items":["مسیر پیش‌نمایش سلکتور دوباره به تابع درست وصل شد تا fetch_engine_installed بدون آرگومان صدا نشود"]},
@@ -4363,6 +4364,16 @@ def basalam_weight_fields(product: dict[str,Any], cfg: dict[str,Any]) -> tuple[f
     return weight, pkg
 
 
+def basalam_price_rial(product: dict[str, Any]) -> int:
+    """Basalam primary_price is Rial. Scraped/Woo prices are Toman unless price_unit is rial."""
+    raw = product.get("price") or product.get("final_price") or product.get("source_price") or "0"
+    amount = int(woo_price(raw) or 0)
+    unit = clean_text(product.get("price_unit")).lower()
+    if unit in {"rial", "irr", "ریال"}:
+        return max(0, amount)
+    return max(0, amount * 10)
+
+
 def basalam_product_kwargs(product: dict[str,Any], cfg: dict[str,Any], category: int, sku: str) -> dict[str,Any]:
     weight, pkg = basalam_weight_fields(product, cfg)
     kw: dict[str, Any] = {
@@ -4373,7 +4384,7 @@ def basalam_product_kwargs(product: dict[str,Any], cfg: dict[str,Any], category:
         "preparation_days": max(1, int(cfg.get("preparation_days", 3))),
         "weight": weight,
         "package_weight": pkg,
-        "primary_price": int(woo_price(product.get("price"))),
+        "primary_price": basalam_price_rial(product),
         "stock": int(re.sub(r"\D", "", clean_text(product.get("stock"))) or cfg.get("stock", 10)),
         "sku": sku or None,
         "status": basalam_status_value(cfg),

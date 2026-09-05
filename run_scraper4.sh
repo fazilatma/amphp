@@ -135,6 +135,10 @@ ensure_venv() {
     echo "pip: flask gunicorn requests beautifulsoup4 lxml (network this once)"
     "$PY" -m pip install flask gunicorn requests beautifulsoup4 lxml || fail "pip install failed"
   fi
+  if ! "$PY" -c "import httpx,cloudscraper" 2>/dev/null; then
+    echo "pip optional: httpx cloudscraper (picker fallback; skip if offline)"
+    "$PY" -m pip install httpx cloudscraper || echo "optional httpx/cloudscraper skipped"
+  fi
 }
 
 sync_code() {
